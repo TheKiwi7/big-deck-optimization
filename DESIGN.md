@@ -140,7 +140,7 @@ Public (`src/BigDeckOptimization/Commands`, in every build):
 | C | Co-op test with a friend (both with the mod, default `sample` verification) | Done 2026-10-22: mismatches 0 on both peers, no desync |
 | D | Card grids (deck view, piles, upgrade/remove, shop) + log reduction | Done 2026-10-22: sort x10–17, Limitless tab reuse, pool free x2.5, combat refresh x11.7; grids already virtualized, logs not an issue |
 | E | Visual concessions (b), config (ModConfig soft dep) | Not started |
-| F | Release: hide bench commands, README, Workshop page → v0.1 | Prepared 2026-10-22: Release build without test commands (`bdopt` kept), `tools/release/package.py`, README/LICENSE/CHANGELOG, Workshop text, `docs/RELEASE.md` checklist. Left: the checklist (incl. co-op with a player without the mod, never tested), preview image, upload |
+| F | Release: hide bench commands, README, Workshop page → v0.1 | Prepared 2026-10-22: Release build without test commands (`bdopt` kept), `tools/release/package.py`, README/LICENSE/CHANGELOG, Workshop text, `docs/RELEASE.md` checklist. Preview image generated. Co-op with a player without the mod verified (2026-10-22). Left: rest of the checklist, Workshop upload |
 
 
 ### Lesson (stress trace 2, 2026-10-21)

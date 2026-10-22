@@ -25,7 +25,7 @@ Co-op was the worst case: after every action, the game checks that all players h
 
 ## Install
 
-- **Steam Workshop:** subscribe (link coming with the first upload).
+- **Steam Workshop:** [subscribe](https://steamcommunity.com/sharedfiles/filedetails/?id=3824717727).
 - **Manually:** download `BigDeckOptimization-vX.Y.Z.zip` from [Releases](../../releases) and extract it into `Slay the Spire 2/mods/` (you should end up with `mods/BigDeckOptimization/BigDeckOptimization.dll`).
 
 No dependencies. Works with or without other mods.
