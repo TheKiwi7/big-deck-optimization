@@ -1,0 +1,58 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>BigDeckOptimization</AssemblyName>
+    <RootNamespace>BigDeckOptimization</RootNamespace>
+    <!-- The game treats every .json in a mod folder as a manifest: never emit deps.json. -->
+    <GenerateDependencyFile>false</GenerateDependencyFile>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <DebugType>portable</DebugType>
+    <!-- Keep in sync with "version" in BigDeckOptimization.json. -->
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <!-- Test tooling (bigdeck / bdperf console commands, combat start timer) only in non-Release builds. -->
+  <PropertyGroup Condition="'$(Configuration)' != 'Release'">
+    <DefineConstants>$(DefineConstants);BENCH</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(Configuration)' == 'Release'">
+    <Compile Remove="Bench/**" />
+  </ItemGroup>
+
+  <!-- Public builds: no local paths in the DLL/PDB (source paths become /_/...). -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+    <PathMap>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../../'))=/_/</PathMap>
+  </PropertyGroup>
+
+  <!-- GameDir comes from Directory.Build.props (override in Directory.Build.local.props). -->
+  <PropertyGroup>
+    <GameDataDir>$(GameDir)\data_sts2_windows_x86_64</GameDataDir>
+    <ModDeployDir>$(GameDir)\mods\BigDeckOptimization</ModDeployDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="sts2" HintPath="$(GameDataDir)\sts2.dll" Private="false" />
+    <Reference Include="GodotSharp" HintPath="$(GameDataDir)\GodotSharp.dll" Private="false" />
+    <Reference Include="0Harmony" HintPath="$(GameDataDir)\0Harmony.dll" Private="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="BigDeckOptimization.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <Target Name="DeployToGame" AfterTargets="Build" Condition="'$(DeployToGame)' != 'false' And Exists('$(GameDir)')">
+    <ItemGroup>
+      <ModFiles Include="$(OutDir)BigDeckOptimization.dll;$(OutDir)BigDeckOptimization.pdb;$(OutDir)BigDeckOptimization.json" />
+    </ItemGroup>
+    <!-- The game locks the DLL while running: warn instead of failing the build. -->
+    <Copy SourceFiles="@(ModFiles)" DestinationFolder="$(ModDeployDir)" SkipUnchangedFiles="true" Retries="0" ContinueOnError="WarnAndContinue" />
+    <Message Importance="high" Condition="'$(MSBuildLastTaskResult)' == 'true'" Text="BigDeckOptimization deployed to $(ModDeployDir)" />
+    <Warning Condition="'$(MSBuildLastTaskResult)' != 'true'" Text="Deploy skipped: close Slay the Spire 2 and rebuild." />
+  </Target>
+
+</Project>

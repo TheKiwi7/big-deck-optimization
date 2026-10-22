@@ -1,0 +1,8 @@
+<Project>
+  <!-- Local overrides (e.g. a different GameDir) go in Directory.Build.local.props, which is gitignored. -->
+  <Import Project="Directory.Build.local.props" Condition="Exists('$(MSBuildThisFileDirectory)Directory.Build.local.props')" />
+
+  <PropertyGroup>
+    <GameDir Condition="'$(GameDir)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2</GameDir>
+  </PropertyGroup>
+</Project>

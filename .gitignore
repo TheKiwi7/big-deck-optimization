@@ -1,0 +1,20 @@
+# Decompiled game code — never commit (MegaCrit copyright)
+/decompiled/
+
+# Build output
+bin/
+obj/
+*.user
+.vs/
+.idea/
+
+# Release packages (tools/release/package.py)
+/dist/
+
+# Local game references / overrides
+/lib/
+Directory.Build.local.props
+CLAUDE.local.md
+
+# Local assistant notes (machine-specific)
+CLAUDE.md
