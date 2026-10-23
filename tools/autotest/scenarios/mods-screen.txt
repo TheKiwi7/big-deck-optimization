@@ -1,0 +1,5 @@
+# Mods screen with this mod selected (checks its image), then quits.
+timeout 120
+wait 2
+modsscreen shot-mods
+quit

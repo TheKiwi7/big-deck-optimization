@@ -25,7 +25,7 @@ OUTPUT = PROJECT / "bin" / "Release"
 DIST = ROOT / "dist"
 DOCS = ROOT / "docs"
 APP_ID = "2868840"
-FILES = ["BigDeckOptimization.dll", "BigDeckOptimization.pdb", "BigDeckOptimization.json"]
+FILES = ["BigDeckOptimization.dll", "BigDeckOptimization.pdb", "BigDeckOptimization.json", "mod_image.png"]
 
 
 def dotnet() -> str:

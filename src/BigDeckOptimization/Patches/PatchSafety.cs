@@ -14,7 +14,7 @@ public static class PatchSafety
     private static readonly HashSet<string> _faults = new();
 
     /// <summary>
-    /// Records that a patch turned itself off after an error: settings (bdopt, ModConfig) never turn it back on this
+    /// Records that a patch turned itself off after an error: settings (bdopt, the settings menu) never turn it back on this
     /// session.
     /// </summary>
     public static void Fault(string name)

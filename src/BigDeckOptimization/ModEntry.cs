@@ -27,6 +27,7 @@ public static class ModEntry
         TryApply(PileIndex.Name, PileIndex.Apply);
         TryApply(PileCounterBatch.Name, PileCounterBatch.Apply);
         TryApply(FastCombatStart.Name, FastCombatStart.Apply);
+        TryApply(ModImage.Name, ModImage.Apply);
 #if BENCH
         TryApply(Bench.CombatStartTimer.Name, Bench.CombatStartTimer.Apply);
         TryApply(Bench.PerfProbe.Name, Bench.PerfProbe.Apply);
@@ -34,11 +35,11 @@ public static class ModEntry
 #endif
         try
         {
-            Config.ModConfigBridge.Init();
+            Config.BaseLibSettings.Register();
         }
         catch (Exception e)
         {
-            Log.Warn($"[{Id}] {Config.ModConfigBridge.Name} integration failed: {e}");
+            Log.Warn($"[{Id}] {Config.BaseLibSettings.Name}: settings menu unavailable (bdopt still works): {e}");
         }
         Log.Info($"[{Id}] Initialized v{typeof(ModEntry).Assembly.GetName().Version?.ToString(3)}");
     }

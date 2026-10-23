@@ -1,0 +1,9 @@
+# Settings, part 1 (settings.ps1): captures BaseLib's menu, turns an option off through bdopt (saved in mod_configs).
+timeout 180
+wait 3
+cmd bdopt
+baselibmenu shot-settings
+cmd bdopt fast_combat_start off
+cmd bdopt
+wait 3
+quit

@@ -12,7 +12,7 @@
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <DebugType>portable</DebugType>
     <!-- Keep in sync with "version" in BigDeckOptimization.json. -->
-    <Version>0.2.0</Version>
+    <Version>0.2.1</Version>
   </PropertyGroup>
 
   <!-- Test tooling (bigdeck / bdperf console commands, combat start timer) only in non-Release builds. -->
@@ -33,21 +33,27 @@
   <PropertyGroup>
     <GameDataDir>$(GameDir)\data_sts2_windows_x86_64</GameDataDir>
     <ModDeployDir>$(GameDir)\mods\BigDeckOptimization</ModDeployDir>
+    <!-- BaseLib from the Steam Workshop (override in Directory.Build.local.props if installed elsewhere). -->
+    <BaseLibDll Condition="'$(BaseLibDll)' == ''">$(GameDir)\..\..\workshop\content\2868840\3737335127\BaseLib\BaseLib.dll</BaseLibDll>
   </PropertyGroup>
 
   <ItemGroup>
     <Reference Include="sts2" HintPath="$(GameDataDir)\sts2.dll" Private="false" />
     <Reference Include="GodotSharp" HintPath="$(GameDataDir)\GodotSharp.dll" Private="false" />
     <Reference Include="0Harmony" HintPath="$(GameDataDir)\0Harmony.dll" Private="false" />
+    <!-- Required mod (manifest dependency): its mod configuration menu hosts the settings. -->
+    <Reference Include="BaseLib" HintPath="$(BaseLibDll)" Private="false" />
   </ItemGroup>
 
   <ItemGroup>
     <None Include="BigDeckOptimization.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Shown on the mods screen (Patches/ModImage.cs). -->
+    <None Include="mod_image.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <Target Name="DeployToGame" AfterTargets="Build" Condition="'$(DeployToGame)' != 'false' And Exists('$(GameDir)')">
     <ItemGroup>
-      <ModFiles Include="$(OutDir)BigDeckOptimization.dll;$(OutDir)BigDeckOptimization.pdb;$(OutDir)BigDeckOptimization.json" />
+      <ModFiles Include="$(OutDir)BigDeckOptimization.dll;$(OutDir)BigDeckOptimization.pdb;$(OutDir)BigDeckOptimization.json;$(OutDir)mod_image.png" />
     </ItemGroup>
     <!-- The game locks the DLL while running: warn instead of failing the build. -->
     <Copy SourceFiles="@(ModFiles)" DestinationFolder="$(ModDeployDir)" SkipUnchangedFiles="true" Retries="0" ContinueOnError="WarnAndContinue" />

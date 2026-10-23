@@ -1,0 +1,8 @@
+# Settings, part 2: after a restart the saved setting is applied; turns it back on; captures the mods screen.
+timeout 180
+wait 3
+cmd bdopt
+cmd bdopt fast_combat_start on
+modsscreen shot-mods
+wait 3
+quit

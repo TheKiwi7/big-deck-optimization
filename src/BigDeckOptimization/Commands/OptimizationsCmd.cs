@@ -8,7 +8,7 @@ namespace BigDeckOptimization.Commands;
 /// <summary>
 /// bdopt [on|off] | bdopt &lt;option&gt; on|off: turns every optimization (or one) on/off at runtime, e.g. to check
 /// whether an issue comes from this mod, or shows their state. Local only, and safe in co-op: optimized and vanilla
-/// paths give identical results. Saved through ModConfig when it is installed. Part of the public build, unlike the
+/// paths give identical results. Saved in BaseLib's mod configuration. Part of the public build, unlike the
 /// test tooling in Bench.
 /// </summary>
 public class OptimizationsCmd : AbstractConsoleCmd

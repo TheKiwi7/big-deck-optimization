@@ -3,10 +3,10 @@
   "name": "Big Deck Optimization",
   "author": "TheKiwi7",
   "description": "Removes lag when playing with huge decks. Client-side only: safe in co-op even if other players don't have it.",
-  "version": "v0.2.0",
+  "version": "v0.2.1",
   "has_pck": false,
   "has_dll": true,
-  "dependencies": [],
+  "dependencies": [{"id": "BaseLib", "min_version": "3.4.7"}],
   "affects_gameplay": false,
   "min_game_version": "0.107.1"
 }

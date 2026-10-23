@@ -228,6 +228,12 @@ public static class AutoTest
                 case "speed":
                     SetSpeed(Enum.Parse<FastModeType>(arg, ignoreCase: true));
                     break;
+                case "baselibmenu":
+                    await BaseLibMenu(tree, arg.Trim());
+                    break;
+                case "modsscreen":
+                    await ModsScreen(tree, arg.Trim());
+                    break;
                 case "screenshot":
                     await Screenshot(tree, arg.Trim());
                     break;
@@ -534,6 +540,46 @@ public static class AutoTest
         Say($"  scrolled {steps} steps in {total:F0} ms: {total / steps:F1} ms/frame, worst {worst:F0} ms");
         MegaCrit.Sts2.Core.Nodes.Screens.Capstones.NCapstoneContainer.Instance?.Close();
         await Frames(tree, 5);
+    }
+
+    /// <summary>Script <c>modsscreen &lt;screenshot name&gt;</c>: opens the main menu's mods screen on this mod and captures it.</summary>
+    private static async Task ModsScreen(SceneTree tree, string shot)
+    {
+        var menu = NGame.Instance?.MainMenu ?? throw new InvalidOperationException("not on the main menu");
+        var screen = menu.SubmenuStack.PushSubmenuType<MegaCrit.Sts2.Core.Nodes.Screens.ModdingScreen.NModdingScreen>();
+        await Frames(tree, 30);
+        var row = FindAll<MegaCrit.Sts2.Core.Nodes.Screens.ModdingScreen.NModMenuRow>(screen).FirstOrDefault(r => r.Mod?.manifest?.id == ModEntry.Id)
+            ?? throw new InvalidOperationException("this mod is not in the list");
+        screen.OnRowSelected(row);
+        await Frames(tree, 30);
+        await Screenshot(tree, shot);
+    }
+
+    /// <summary>Script <c>baselibmenu &lt;screenshot name&gt;</c>: BaseLib's mod configuration menu on this mod's settings.</summary>
+    private static async Task BaseLibMenu(SceneTree tree, string shot)
+    {
+        var menu = NGame.Instance?.MainMenu ?? throw new InvalidOperationException("not on the main menu");
+        var submenu = menu.SubmenuStack.PushSubmenuType<BaseLib.Config.UI.NModConfigSubmenu>();
+        await Frames(tree, 30);
+        var config = BaseLib.Config.ModConfigRegistry.Get(ModEntry.Id) ?? throw new InvalidOperationException("settings not registered in BaseLib");
+        AccessTools.Method(submenu.GetType(), "LoadModConfig").Invoke(submenu, new object[] { config });
+        await Frames(tree, 40);
+        await Screenshot(tree, shot);
+    }
+
+    private static IEnumerable<T> FindAll<T>(Node node) where T : Node
+    {
+        foreach (Node child in node.GetChildren())
+        {
+            if (child is T found)
+            {
+                yield return found;
+            }
+            foreach (T deeper in FindAll<T>(child))
+            {
+                yield return deeper;
+            }
+        }
     }
 
     private static T? FindChild<T>(Node node) where T : Node

@@ -8,7 +8,7 @@ traces) go to `results/` (gitignored).
 |---|---|
 | `run.ps1 -Name <scenario> [-TraceSec 60]` | Singleplayer through Steam (save profile 3, in memory only: your profiles and last-profile setting are untouched). |
 | `coop.ps1 -Name coop [-WithMods]` | Local co-op: two instances without Steam (`--force-steam off --fastmp host_standard/join`), scenarios `<name>-host.txt` / `<name>-client.txt`. `-WithMods` copies your enabled Workshop mods into `<game>/mods_STEAMTEST` for the test and always deletes it afterwards. |
-| `modconfig.ps1` | Enables ModConfig for two sessions (setting changed, then reloaded), then restores your `settings.save` byte for byte. |
+| `settings.ps1` | Two sessions: BaseLib's settings menu captured and an option turned off, then reloaded after a restart and turned back on (mods screen captured); restores your `mod_configs/BigDeckOptimization.cfg` byte for byte. |
 
 Prerequisites: a Debug build deployed (`dotnet build -c Debug`), `dotnet-trace` on PATH for traces, a run history file
 copied to `%APPDATA%\SlayTheSpire2\bigdeck\ref.run` (scenarios import its decks and relics). Before the first co-op
@@ -24,7 +24,8 @@ One command per line, `#` comments, `{hash:NAME}` replaced by the hash of `bigde
 - `cmd <console command>` (networked commands go through the action queue in co-op)
 - `play <n>`, `playcard <ID>` (after `cmd card <ID> hand`), `endturn`
 - `enemyhp <hp>` (next combats), `state [label]` (creatures, powers, piles), `speed normal|fast|instant` (default fast)
-- `deckview [s]`, `deckscroll <steps>`, `marker <text>`, `log <text>`, `quit`
+- `deckview [s] [shot]`, `deckscroll <steps>`, `screenshot <name>`, `modsscreen <shot>`, `baselibmenu <shot>` (this mod's page in BaseLib's settings)
+- `marker <text>`, `log <text>`, `quit`
 
 Card choices are answered with the first options, identically on every peer. The runner also fixes the `fight`
 command's clock-based encounter seed (peers would desync) and skips Fur Coat when no map point exists yet.

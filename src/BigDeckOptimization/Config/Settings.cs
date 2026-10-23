@@ -10,7 +10,7 @@ namespace BigDeckOptimization.Config;
 /// User choices for the optimizations: a master switch plus one switch per optimization, all on by default. Each
 /// patch's own Enabled flag is the effective state: master AND its option AND not faulted. A patch that turned itself
 /// off after an error (<see cref="PatchSafety.Fault"/>) stays off for the session whatever the settings say.
-/// Without ModConfig the choices only live for the session (bdopt); with it they are shown in its menu and saved by it.
+/// They are shown in BaseLib's mod configuration menu and saved by it (see BaseLibSettings); bdopt changes them too.
 /// </summary>
 public static class Settings
 {
@@ -89,7 +89,7 @@ public static class Settings
             () => EnchantmentTabReuse.Applied ? null : "not applied (Limitless absent or changed)"),
     };
 
-    /// <summary>Raised after a choice changed (not when loading), so ModConfig can mirror bdopt.</summary>
+    /// <summary>Raised after a choice changed through bdopt (not from the menu or when loading), so the menu saves it.</summary>
     public static event Action<string, bool>? Changed;
 
     public static Option? Find(string key) => Options.FirstOrDefault(o => o.Key == key);

@@ -30,7 +30,7 @@ Target game version: **v0.107.1** (Godot 4, C# / .NET 9, game logic in `sts2.dll
 
 - Harmony runtime patching (`0Harmony.dll` ships with the game). C# .NET 9 class library referencing `sts2.dll`, `GodotSharp.dll`, `0Harmony.dll` from the game folder (not copied).
 - Decompile with ILSpy (`ilspycmd`) into `/decompiled` — **gitignored, never committed** (MegaCrit and other mod authors' code). The public repo contains only our patches.
-- Standalone: no hard dependency. ModConfig is an optional soft dependency (not wired yet); config files must go to `%APPDATA%/SlayTheSpire2/mod_configs`, **never as `.json` in the mod folder** (see modding facts).
+- One dependency: BaseLib (manifest dependency + Workshop required item, `affects_gameplay: false` so the mod stays client-side), for its mod configuration menu. Config files must go to `%APPDATA%/SlayTheSpire2/mod_configs` (BaseLib: `BigDeckOptimization.cfg`), **never as `.json` in the mod folder** (see modding facts).
 - Compatibility: **must** work with Limitless and BetterSpire2; best effort with SpeedX, CampfireTrade, BaseLib. Patches are prefixes/postfixes/finalizers that only skip the original inside well-defined read-only scopes.
 - Language: English only for v1.
 
@@ -122,7 +122,8 @@ The group often desynced. `RecalculateCardValues` only runs for the local player
 | `CardDbScan` | Skips `NetCombatCardDb`'s whole-pile walk when every card added to that pile since its last walk already has an ID (the walk would ID nothing) | Network IDs: same cards, same order (vanilla walk runs whenever something needs an ID; ownerless cards stay pending). 1 skip in 64 checked on the whole pile. |
 | `PileCounterBatch` | Inside `CardPile.Clear`, pile buttons update their count like vanilla but fit the label once at the end | UI only. `NCombatCardPile.RemoveCard` fingerprint. |
 | `FastCombatStart` | Visual concession: from entering a combat room until the local player's first play phase, `Cmd.Wait`/`CustomScaledWait` return at once (like the game's Instant speed), with 50+ relics in total | Waits never change state (each player already has their own speed); verified identical relic results in singleplayer (fast / normal / mod off) and in local co-op with 368 relics and the Workshop mods (both peers identical every turn, ~105 waits = 72–79 s skipped per combat start). Option `fast_combat_start`. |
-| `Settings` / `ModConfigBridge` | Master switch + one switch per optimization (effective = master && option && not faulted, `PatchSafety.Fault`), registered in ModConfig by reflection when it loads (values saved by ModConfig, read back after registering, bdopt mirrored into it) | Without ModConfig: session-only via `bdopt`. |
+| `Settings` / `BaseLibSettings` | Master switch + one switch per optimization (effective = master && option && not faulted, `PatchSafety.Fault`), shown in BaseLib's mod configuration (`SimpleModConfig`, one static bool property per option, saved in `mod_configs/BigDeckOptimization.cfg`, bdopt changes saved too). Menu texts merged into the `settings_ui` table at runtime (no pck), EN/FR | If BaseLib's registration fails: `bdopt` still works, session-only. |
+| `ModImage` | Mods screen: shows `mod_image.png` from the mod folder for this mod (the game only looks in a pck) | UI only. |
 | `MethodFingerprint` | Helper: hash of a method's IL with tokens resolved to member names (stable across recompiles) | Patches that mirror code require the fingerprint of the code they mirror, so updates only disable them when that exact code changes. |
 | `PatchSafety` | Helper: is a method Harmony-patched by another owner? | — |
 
@@ -133,7 +134,7 @@ All patches catch their own exceptions and fall back to vanilla.
 Public (`src/BigDeckOptimization/Commands`, in every build):
 
 - `bdopt [on|off]` — every optimization on/off at runtime (vanilla when off), or the state of each one (incl. patches skipped or self-disabled). Local, safe in co-op.
-- `bdopt <option> on|off` — one optimization (keys: `coop_checksum`, `combat_refresh`, `hook_filter`, `relic_input`, `grid_sort`, `grid_pool`, `pile_lookup`, `card_ids`, `pile_counters`, `fast_combat_start`, `limitless_tabs`). Saved through ModConfig when installed. Never re-enables a patch that turned itself off after an error.
+- `bdopt <option> on|off` — one optimization (keys: `coop_checksum`, `combat_refresh`, `hook_filter`, `relic_input`, `grid_sort`, `grid_pool`, `pile_lookup`, `card_ids`, `pile_counters`, `fast_combat_start`, `limitless_tabs`). Saved in BaseLib's mod configuration. Never re-enables a patch that turned itself off after an error.
 
 ## Test tooling (`src/BigDeckOptimization/Bench`, Debug builds only: excluded from Release by the csproj, `BENCH` symbol)
 
@@ -169,7 +170,7 @@ Public (`src/BigDeckOptimization/Commands`, in every build):
 | B | Post-action refresh + relic bar input | Done, measured x3.9 (refresh), relic input ~x50 |
 | C | Co-op test with a friend (both with the mod, default `sample` verification) | Done 2026-10-22: mismatches 0 on both peers, no desync |
 | D | Card grids (deck view, piles, upgrade/remove, shop) + log reduction | Done 2026-10-22: sort x10–17, Limitless tab reuse, pool free x2.5, combat refresh x11.7; grids already virtualized, logs not an issue |
-| E | Visual concessions (b), config (ModConfig soft dep) | In progress 2026-10-23: ModConfig integration + per-option `bdopt` (not tested in game with ModConfig yet), `FastCombatStart` |
+| E | Visual concessions (b), config | Done 2026-10-23: `FastCombatStart`, per-option `bdopt`, settings in BaseLib's mod configuration (v0.2.1, tested in game: menu, save, reload) |
 | G | 8k-card unattended sessions (`AutoTest`) and their fixes | In progress 2026-10-23: `PileIndex`, `CardDbScan`, `PileCounterBatch`, `ExtraScopes`, listener reuse across refreshes |
 | F | Release: hide bench commands, README, Workshop page → v0.1 | Prepared 2026-10-22: Release build without test commands (`bdopt` kept), `tools/release/package.py`, README/LICENSE/CHANGELOG, Workshop text, `docs/RELEASE.md` checklist. Preview image generated. Co-op with a player without the mod verified (2026-10-22). Left: rest of the checklist, Workshop upload |
 

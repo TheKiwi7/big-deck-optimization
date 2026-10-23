@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.1
+
+- The settings are now in the game's settings menu, under Mods → Big Deck Optimization (from BaseLib's mod configuration). BaseLib is now required; on the Workshop it is installed with this mod.
+- The mod has its own image on the mods screen.
+- Switches turned off in ModConfig with v0.2.0 are not carried over: everything starts on again.
+
 ## v0.2.0
 
 Huge decks are now playable well past 10,000 cards.
@@ -9,7 +15,7 @@ Huge decks are now playable well past 10,000 cards.
 - The freeze at the end of a combat is mostly gone.
 - With 50+ relics, the relic effects at the start of a combat skip their animation pauses (same effects, just faster). Can be turned off.
 - Co-op: no more multi-second freezes from the mod's own safety checks with very big decks.
-- New settings: with ModConfig, each improvement has its own switch. Without it, `bdopt <name> off` in the console.
+- New settings: each improvement has its own switch (`bdopt <name> off` in the console).
 
 ## v0.1.0
 
