@@ -19,6 +19,8 @@ With a huge deck, the game slows down more and more until every action freezes i
 - **Lots of relics:** moving the mouse no longer slows the game down.
 - **Optional:** with 50+ relics, the relic effects at the start of a combat skip their animation pauses. It looks faster, and the effects stay exactly the same.
 
+**Client side:** the mod only speeds up the game of the player who has it. Each player who installs it gets the speed-up on their own machine.
+
 ## What it doesn't change
 
 - **The game itself:** same rules, same results, same saves. The mod only makes the game do the same work faster.
