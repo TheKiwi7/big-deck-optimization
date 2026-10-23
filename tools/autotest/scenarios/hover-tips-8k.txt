@@ -1,0 +1,74 @@
+# Hover tip reuse at ~8,400 cards: the mouse on an enemy (hover) during plays and end of turn, hover_tips on/off
+# alternating. checktips: the panel on screen must match the enemy's current tips after every phase.
+timeout 1200
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd bdopt hover_tips on
+hover 0
+checktips hovered on
+fpsstat
+play 4
+waitfor idle 120
+checktips plays on
+fpsstat plays, hover tips on
+hover 0
+endturn
+waitfor idle 300
+checktips end of turn on
+fpsstat end of turn, hover tips on
+cmd bdopt hover_tips off
+hover 0
+checktips hovered off
+fpsstat
+play 4
+waitfor idle 120
+checktips plays off
+fpsstat plays, hover tips off
+hover 0
+endturn
+waitfor idle 300
+checktips end of turn off
+fpsstat end of turn, hover tips off
+cmd bdopt hover_tips on
+hover 0
+checktips hovered on
+fpsstat
+play 4
+waitfor idle 120
+checktips plays on
+fpsstat plays, hover tips on
+hover 0
+endturn
+waitfor idle 300
+checktips end of turn on
+fpsstat end of turn, hover tips on
+cmd bdopt hover_tips off
+hover 0
+checktips hovered off
+fpsstat
+play 4
+waitfor idle 120
+checktips plays off
+fpsstat plays, hover tips off
+hover 0
+endturn
+waitfor idle 300
+checktips end of turn off
+fpsstat end of turn, hover tips off
+cmd bdopt hover_tips on
+quit

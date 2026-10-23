@@ -1,0 +1,38 @@
+# Frame rate per combat phase (fpsstat), starting deck (10 cards), the baseline: idle, plays, end of turn, idle with the mod off, deck view,
+# rewards screen. Release-like timings (Debug re-checks off).
+timeout 1200
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bdperf checks off
+enemyhp 999999
+cmd bigdeck tank
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 2
+fpsstat
+wait 10
+fpsstat combat idle
+play 4
+waitfor idle 120
+fpsstat plays
+endturn
+waitfor idle 300
+fpsstat end of turn
+wait 2
+fpsstat
+cmd bdopt off
+wait 10
+fpsstat combat idle, mod off
+cmd bdopt on
+wait 2
+fpsstat
+deckview 6
+fpsstat deck view
+cmd kill all
+waitfor nocombat 300
+wait 3
+fpsstat
+wait 10
+fpsstat rewards screen
+quit

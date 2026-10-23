@@ -1,0 +1,64 @@
+# FastListeners at ~8,400 cards: bdperf listeners (same listener objects in the same order as vanilla, walk time),
+# then plays + end of turn with listeners on/off alternating (fps and GC per phase).
+timeout 1200
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd bdperf listeners 30
+cmd bdopt listeners on
+gcstat
+fpsstat
+play 4
+waitfor idle 120
+fpsstat plays, listeners on
+endturn
+waitfor idle 300
+fpsstat end of turn, listeners on
+gcstat turn, listeners on
+cmd bdopt listeners off
+gcstat
+fpsstat
+play 4
+waitfor idle 120
+fpsstat plays, listeners off
+endturn
+waitfor idle 300
+fpsstat end of turn, listeners off
+gcstat turn, listeners off
+cmd bdopt listeners on
+gcstat
+fpsstat
+play 4
+waitfor idle 120
+fpsstat plays, listeners on
+endturn
+waitfor idle 300
+fpsstat end of turn, listeners on
+gcstat turn, listeners on
+cmd bdopt listeners off
+gcstat
+fpsstat
+play 4
+waitfor idle 120
+fpsstat plays, listeners off
+endturn
+waitfor idle 300
+fpsstat end of turn, listeners off
+gcstat turn, listeners off
+cmd bdopt listeners on
+cmd bdperf listeners 30
+quit

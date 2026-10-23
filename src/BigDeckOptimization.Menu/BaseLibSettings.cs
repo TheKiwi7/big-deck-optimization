@@ -36,6 +36,9 @@ public sealed class BaseLibSettings : SimpleModConfig
     public static bool RelicInput { get => Get(nameof(RelicInput)); set => Apply(nameof(RelicInput), value); }
     public static bool LimitlessTabs { get => Get(nameof(LimitlessTabs)); set => Apply(nameof(LimitlessTabs), value); }
     public static bool FastCombatStart { get => Get(nameof(FastCombatStart)); set => Apply(nameof(FastCombatStart), value); }
+    public static bool Listeners { get => Get(nameof(Listeners)); set => Apply(nameof(Listeners), value); }
+    public static bool HookSkip { get => Get(nameof(HookSkip)); set => Apply(nameof(HookSkip), value); }
+    public static bool HoverTips { get => Get(nameof(HoverTips)); set => Apply(nameof(HoverTips), value); }
 
     private static string Key(string property) => StringHelper.Slugify(property).ToLowerInvariant();
 

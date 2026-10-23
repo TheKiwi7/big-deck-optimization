@@ -59,6 +59,12 @@ public static class AutoTest
             postfix: new HarmonyMethod(typeof(AutoTest), nameof(InitProfilePostfix)));
         harmony.Patch(AccessTools.Method(typeof(CombatManager), nameof(CombatManager.SetUpCombat)),
             postfix: new HarmonyMethod(typeof(AutoTest), nameof(SetUpCombatPostfix)));
+        harmony.Patch(AccessTools.Method(typeof(Creature), nameof(Creature.LoseHpInternal)),
+            prefix: new HarmonyMethod(typeof(AutoTest), nameof(ImmortalPrefix)),
+            postfix: new HarmonyMethod(typeof(AutoTest), nameof(ImmortalPostfix)));
+        // Timings must not depend on which window has focus: no 30 fps cap while the game is in the background.
+        harmony.Patch(AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.NBackgroundModeHandler), "EnterBackgroundMode"),
+            prefix: new HarmonyMethod(typeof(AutoTest), nameof(StayForeground)));
         // Fur Coat reads the current map point, which is null when the fight command runs before visiting the map.
         harmony.Patch(AccessTools.Method(typeof(MegaCrit.Sts2.Core.Models.Relics.FurCoat), nameof(MegaCrit.Sts2.Core.Models.Relics.FurCoat.BeforeCombatStart)),
             prefix: new HarmonyMethod(typeof(AutoTest), nameof(SkipFurCoatWithoutMapPoint)));
@@ -137,6 +143,28 @@ public static class AutoTest
         }
     }
 
+    private static bool StayForeground() => false;
+
+    private static bool _immortal;
+
+    /// <summary>Script <c>immortal [off]</c>: enemies never drop below 1 HP from a hit (long benches, huge decks).</summary>
+    private static void ImmortalPrefix(Creature __instance, ref decimal amount)
+    {
+        if (_immortal && __instance.IsEnemy && __instance.CurrentHp > 1)
+        {
+            amount = Math.Min(amount, __instance.CurrentHp - 1);
+        }
+    }
+
+    /// <summary>...and are healed back to full below half, so the next hits land the same way.</summary>
+    private static void ImmortalPostfix(Creature __instance)
+    {
+        if (_immortal && __instance.IsEnemy && __instance.CurrentHp < __instance.MaxHp / 2)
+        {
+            __instance.SetCurrentHpInternal(__instance.MaxHp);
+        }
+    }
+
     private static void SetUpCombatPostfix(CombatState state)
     {
         if (_enemyHp is not { } hp)
@@ -196,6 +224,8 @@ public static class AutoTest
         await Until(tree, () => NGame.Instance?.MainMenu != null, 300, "menu");
         await Frames(tree, 60);
         NGame game = NGame.Instance!;
+        tree.ProcessFrame += RecordFrame;
+        Say($"  display: max fps {Engine.MaxFps} (0 = uncapped), vsync {DisplayServer.WindowGetVsyncMode()}");
         // Test profiles start at Normal speed; players with huge decks play in Fast.
         SetSpeed(FastModeType.Fast);
         foreach (string raw in lines)
@@ -222,8 +252,15 @@ public static class AutoTest
                 case "enemyhp":
                     _enemyHp = int.Parse(arg);
                     break;
+                case "immortal":
+                    _immortal = arg.Trim() != "off";
+                    Say($"  enemies immortal: {_immortal}");
+                    break;
                 case "state":
                     LogState(arg);
+                    break;
+                case "checksum":
+                    LogChecksum(arg.Trim());
                     break;
                 case "speed":
                     SetSpeed(Enum.Parse<FastModeType>(arg, ignoreCase: true));
@@ -239,6 +276,29 @@ public static class AutoTest
                     break;
                 case "gcstat":
                     GcStat(arg.Trim());
+                    break;
+                case "setenergy":
+                    // Exact energy (the game's 'energy' command adds): X-cost cards spend all of it.
+                    (Me()?.PlayerCombatState ?? throw new InvalidOperationException("not in combat")).Energy = int.Parse(arg);
+                    break;
+                case "emptyhand":
+                    await EmptyHand(tree);
+                    break;
+                case "gcfull":
+                    // Live memory after a full blocking collection: comparable between sessions, shows leaks.
+                    GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+                    GC.WaitForPendingFinalizers();
+                    GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+                    Say($"  GCFULL {arg.Trim()}: live heap {GC.GetTotalMemory(false) / (1024.0 * 1024):F1} MB");
+                    break;
+                case "fpsstat":
+                    FpsStat(arg.Trim());
+                    break;
+                case "hover":
+                    Hover(int.Parse(arg));
+                    break;
+                case "checktips":
+                    CheckTips(arg.Trim());
                     break;
                 case "marker":
                     // A line the profiling scripts look for to cut traces into phases.
@@ -414,6 +474,118 @@ public static class AutoTest
         string path = Path.Combine(folder, name + ".png");
         image.SavePng(path);
         Say($"  screenshot {image.GetWidth()}x{image.GetHeight()}: {path}");
+    }
+
+    private static readonly List<double> _frameMs = new();
+    private static long _lastFrame;
+
+    private static void RecordFrame()
+    {
+        long now = Stopwatch.GetTimestamp();
+        if (_lastFrame != 0)
+        {
+            _frameMs.Add(Stopwatch.GetElapsedTime(_lastFrame, now).TotalMilliseconds);
+        }
+        _lastFrame = now;
+    }
+
+    /// <summary>
+    /// Script <c>fpsstat [label]</c>: frame rate since the previous fpsstat: average fps, "1% low" (fps of the 99th
+    /// percentile frame time), worst frame and how many frames went over 33 / 50 / 100 ms.
+    /// </summary>
+    private static void FpsStat(string label)
+    {
+        if (label.Length > 0 && _frameMs.Count > 0)
+        {
+            double[] sorted = _frameMs.OrderBy(ms => ms).ToArray();
+            double total = sorted.Sum();
+            double p99 = sorted[Math.Min(sorted.Length - 1, (int)(sorted.Length * 0.99))];
+            Say($"  FPSSTAT {label}: {sorted.Length} frames in {total / 1000:F1} s, avg {sorted.Length * 1000 / total:F0} fps, " +
+                $"1% low {1000 / p99:F0} fps, worst {sorted[^1]:F0} ms, over 33 ms {sorted.Count(ms => ms > 33)}, " +
+                $"over 50 ms {sorted.Count(ms => ms > 50)}, over 100 ms {sorted.Count(ms => ms > 100)}");
+        }
+        _frameMs.Clear();
+    }
+
+    /// <summary>Script <c>emptyhand</c>: moves the hand to the discard pile (room for the next test card).</summary>
+    private static async Task EmptyHand(SceneTree tree)
+    {
+        await Until(tree, IsIdle, 120, "idle");
+        Player me = Me() ?? throw new InvalidOperationException("no local player");
+        List<CardModel> hand = PileType.Hand.GetPile(me).Cards.ToList();
+        await CardPileCmd.Add(hand, PileType.Discard);
+        await Frames(tree, 2);
+    }
+
+    private static MegaCrit.Sts2.Core.Nodes.Combat.NCreature? _hovered;
+
+    /// <summary>Script <c>hover &lt;enemy index&gt;</c>: as if the mouse rested on that enemy (its focus handler).</summary>
+    private static void Hover(int enemyIndex)
+    {
+        CombatState state = CombatManager.Instance.DebugOnlyGetState() ?? throw new InvalidOperationException("not in combat");
+        Creature enemy = state.Enemies[enemyIndex];
+        if (_hovered != null && GodotObject.IsInstanceValid(_hovered))
+        {
+            // Mouse leaves the previous one first, as it would (focus subscribes to state changes).
+            AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Combat.NCreature), "OnUnfocus").Invoke(_hovered, null);
+        }
+        _hovered = MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom.Instance?.GetCreatureNode(enemy) ?? throw new InvalidOperationException("no node for " + enemy);
+        AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Combat.NCreature), "OnFocus").Invoke(_hovered, null);
+        Say($"  hovering {enemy}");
+    }
+
+    /// <summary>
+    /// Script <c>checktips [label]</c>: the hovered creature's tip panel on screen must show exactly its current tips
+    /// (titles and descriptions, in order); logs TIPS OK / TIPS MISMATCH and HoverTipReuse's counters.
+    /// </summary>
+    private static void CheckTips(string label)
+    {
+        if (_hovered == null)
+        {
+            throw new InvalidOperationException("hover a creature first");
+        }
+        var active = (Dictionary<Control, MegaCrit.Sts2.Core.Nodes.HoverTips.NHoverTipSet>)AccessTools.Field(
+            typeof(MegaCrit.Sts2.Core.Nodes.HoverTips.NHoverTipSet), "_activeHoverTips").GetValue(null)!;
+        List<string> expected = MegaCrit.Sts2.Core.HoverTips.IHoverTip.RemoveDupes(_hovered.Entity.HoverTips)
+            .OfType<MegaCrit.Sts2.Core.HoverTips.HoverTip>().Select(t => $"{t.Title}: {t.Description}").ToList();
+        List<string> shown = new();
+        if (!active.TryGetValue(_hovered.Hitbox, out var panel))
+        {
+            // The game hides them itself (targeting a card, card play in progress): nothing to compare.
+            Say($"  TIPS hidden {label}: reused {HoverTipReuse.Reused}, rebuilt {HoverTipReuse.Rebuilt}");
+            return;
+        }
+        {
+            var container = (Control)AccessTools.Field(panel.GetType(), "_textHoverTipContainer").GetValue(panel)!;
+            foreach (Node tip in container.GetChildren())
+            {
+                var title = tip.GetNodeOrNull<Control>("%Title");
+                string titleText = title is { Visible: true } ? (string)title.Get("text") : "";
+                shown.Add($"{(titleText.Length > 0 ? titleText : null)}: {tip.GetNode<RichTextLabel>("%Description").Text}");
+            }
+        }
+        bool same = shown.SequenceEqual(expected);
+        Say($"  TIPS {(same ? "OK" : "MISMATCH")} {label}: {shown.Count} shown / {expected.Count} expected, " +
+            $"reused {HoverTipReuse.Reused}, rebuilt {HoverTipReuse.Rebuilt}" +
+            (same ? "" : $" | shown: {string.Join(" / ", shown)} | expected: {string.Join(" / ", expected)}"));
+    }
+
+    /// <summary>
+    /// Script <c>checksum [label] [vanilla]</c>: the full combat state checksum (what co-op peers compare after every
+    /// action). Two sessions running the same script must log the same values. By default through the game's path with
+    /// this mod's snapshot optimizations (verified identical, ~40 ms); "vanilla" disables them (tens of seconds with huge
+    /// decks).
+    /// </summary>
+    private static void LogChecksum(string arg)
+    {
+        bool vanilla = arg.EndsWith(" vanilla", StringComparison.Ordinal);
+        string label = vanilla ? arg[..^" vanilla".Length] : arg;
+        RunState state = RunManager.Instance.DebugOnlyGetState() ?? throw new InvalidOperationException("no run");
+        Func<uint> compute = () => RunManager.Instance.ChecksumTracker.GenerateChecksum(
+            MegaCrit.Sts2.Core.Entities.Multiplayer.NetFullCombatState.FromRun(state, null));
+        long start = Stopwatch.GetTimestamp();
+        uint checksum = vanilla ? ListenerCache.RunVanilla(compute) : compute();
+        Say($"  CHECKSUM {label}: {checksum:X8} ({Stopwatch.GetElapsedTime(start).TotalMilliseconds:F0} ms)");
     }
 
     private static double _gcWall;

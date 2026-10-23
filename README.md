@@ -11,7 +11,8 @@ Removes the lag of huge decks in Slay the Spire 2: thousands of cards, hundreds 
 With a huge deck, the game slows down more and more until every action freezes it. With the mod:
 
 - **Entering a combat:** with 8,000+ cards and hundreds of relics, about 4 seconds instead of half a minute.
-- **Playing cards:** smooth again, even past 10,000 cards.
+- **Playing cards:** smooth again, even past 10,000 cards. Turns are about 20% faster than in v0.2.
+- **Cards that search your piles:** cards like Hidden Gem no longer freeze the game.
 - **Waiting in combat:** no more constant stutter.
 - **End of combat:** no more long freeze before the rewards.
 - **Co-op:** the long pause after every action is gone. Players with big decks no longer slow down everyone else.

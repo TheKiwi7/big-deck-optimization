@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.3.0
+
+Faster turns with huge decks.
+
+- With 8,000+ cards, playing cards and ending your turn is about 20% faster than in v0.2, and the longest freezes during a turn are about halved.
+- Cards that look through your draw pile, like Hidden Gem, no longer freeze the game for seconds.
+- Less memory churn during combat.
+- Hovering an enemy no longer rebuilds its tooltip after every action when nothing changed (it still updates when something does).
+- Three new switches in the settings: effect listener lists, skip non-reacting cards, creature hover tips.
+
 ## v0.2.3
 
 - BaseLib is now optional. Some players have reported problems with BaseLib: this mod now works without it. BaseLib only adds the settings menu (Mods → Big Deck Optimization); without it, the bdopt console command still turns improvements on or off until you quit the game.

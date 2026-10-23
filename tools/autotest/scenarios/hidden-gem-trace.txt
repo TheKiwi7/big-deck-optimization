@@ -1,0 +1,35 @@
+# Hidden Gem at ~8,400 cards (picks a random draw pile card: keywords and replay count of every card) for
+# run.ps1 -TraceSec 50: three plays, then stays open until the trace ends.
+timeout 900
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd card HIDDEN_GEM hand
+marker gem 1
+playcard HIDDEN_GEM
+waitfor idle 120
+cmd card HIDDEN_GEM hand
+marker gem 2
+playcard HIDDEN_GEM
+waitfor idle 120
+cmd card HIDDEN_GEM hand
+marker gem 3
+playcard HIDDEN_GEM
+waitfor idle 120
+wait 60
+quit

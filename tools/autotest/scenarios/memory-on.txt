@@ -1,0 +1,117 @@
+# Memory check (on): 15 turns at ~8,400 cards with hook_skip on; GCFULL = live heap after a full collection each
+# turn, to compare with the other session (a leak would grow turn after turn).
+timeout 1500
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bdopt hook_skip on
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+cmd bigdeck tank
+wait 1
+gcfull start
+gcstat
+play 4
+waitfor idle 120
+endturn
+waitfor idle 300
+gcstat turn t1
+gcfull t1
+play 4
+waitfor idle 120
+endturn
+waitfor idle 300
+gcstat turn t2
+gcfull t2
+play 4
+waitfor idle 120
+endturn
+waitfor idle 300
+gcstat turn t3
+gcfull t3
+play 4
+waitfor idle 120
+endturn
+waitfor idle 300
+gcstat turn t4
+gcfull t4
+play 4
+waitfor idle 120
+endturn
+waitfor idle 300
+gcstat turn t5
+gcfull t5
+play 4
+waitfor idle 120
+endturn
+waitfor idle 300
+gcstat turn t6
+gcfull t6
+play 4
+waitfor idle 120
+endturn
+waitfor idle 300
+gcstat turn t7
+gcfull t7
+play 4
+waitfor idle 120
+endturn
+waitfor idle 300
+gcstat turn t8
+gcfull t8
+play 4
+waitfor idle 120
+endturn
+waitfor idle 300
+gcstat turn t9
+gcfull t9
+play 4
+waitfor idle 120
+endturn
+waitfor idle 300
+gcstat turn t10
+gcfull t10
+play 4
+waitfor idle 120
+endturn
+waitfor idle 300
+gcstat turn t11
+gcfull t11
+play 4
+waitfor idle 120
+endturn
+waitfor idle 300
+gcstat turn t12
+gcfull t12
+play 4
+waitfor idle 120
+endturn
+waitfor idle 300
+gcstat turn t13
+gcfull t13
+play 4
+waitfor idle 120
+endturn
+waitfor idle 300
+gcstat turn t14
+gcfull t14
+play 4
+waitfor idle 120
+endturn
+waitfor idle 300
+gcstat turn t15
+gcfull t15
+cmd bdopt hook_skip on
+quit

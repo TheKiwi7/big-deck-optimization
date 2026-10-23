@@ -27,7 +27,11 @@ One command per line, `#` comments, `{hash:NAME}` replaced by the hash of `bigde
 - `play <n>`, `playcard <ID>` (after `cmd card <ID> hand`), `endturn`
 - `enemyhp <hp>` (next combats), `state [label]` (creatures, powers, piles), `speed normal|fast|instant` (default fast)
 - `deckview [s] [shot]`, `deckscroll <steps>`, `screenshot <name>`, `modsscreen <shot>`, `baselibmenu <shot>` (this mod's page in BaseLib's settings)
-- `gcstat [label]` (wall time, GC pause time and collections since the previous gcstat)
+- `gcstat [label]` (wall time, GC pause time and collections since the previous gcstat), `gcfull [label]` (live heap after a full collection)
+- `fpsstat [label]` (frames since the previous fpsstat: average fps, 1% low, worst frame, frames over 33/50/100 ms)
+- `checksum [label] [vanilla]` (full combat state checksum, as co-op peers compare), `immortal [off]` (enemies never drop below 1 HP)
+- `setenergy <n>`, `emptyhand`, `hover <enemy>` / `checktips [label]` (creature hover tips match the current tips)
+- Test sessions ignore the game's 30 fps cap in the background, so timings don't depend on window focus.
 - `marker <text>`, `log <text>`, `quit`, `handoff` (stop answering card choices and leave the game to the player)
 
 Card choices are answered with the first options, identically on every peer. The runner also fixes the `fight`

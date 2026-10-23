@@ -1,5 +1,6 @@
 // Prints MethodFingerprint values for a type's methods, to fill the expected fingerprints of mirroring patches.
-// Usage: dotnet run -- <assembly.dll> <type full name> <method name|*> [describe]
+// Usage: dotnet run -- <assembly.dll> <type full name> <method name|*> [describe|body]
+// "body": for async and iterator methods, the fingerprint of their state machine's MoveNext (the code they run).
 using System.Reflection;
 using System.Runtime.Loader;
 using BigDeckOptimization.Patches;
@@ -21,6 +22,13 @@ foreach (MethodBase m in type.GetMethods(BindingFlags.Public | BindingFlags.NonP
     .Concat(type.GetConstructors(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)))
 {
     if (args[2] != "*" && m.Name != args[2]) continue;
+    if (args.Length > 3 && args[3] == "body")
+    {
+        Type? machine = m.GetCustomAttribute<System.Runtime.CompilerServices.StateMachineAttribute>()?.StateMachineType;
+        MethodBase body = machine?.GetMethod("MoveNext", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public) ?? m;
+        Console.WriteLine($"{type.Name}.{m.Name}: {MethodFingerprint.Of(body)}");
+        continue;
+    }
     Console.WriteLine($"{type.Name}.{m.Name}: {MethodFingerprint.Of(m)}");
     if (args.Length > 3) Console.WriteLine(MethodFingerprint.Describe(m));
 }

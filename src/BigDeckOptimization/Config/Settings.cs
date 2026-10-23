@@ -88,6 +88,21 @@ public static class Settings
             "Avec Limitless : réutilise les onglets d'enchantement au lieu de les reconstruire à chaque affichage de carte.",
             new[] { EnchantmentTabReuse.Name }, on => EnchantmentTabReuse.Enabled = on,
             () => EnchantmentTabReuse.Applied ? null : "not applied (Limitless absent or changed)"),
+        new("listeners", "Effect listener lists", "Listes d'écoute des effets",
+            "Builds the list of cards, relics and powers that each triggered effect asks with less copying and memory churn (same list, same order).",
+            "Construit la liste des cartes, reliques et effets interrogés à chaque effet déclenché avec moins de copies et de mémoire (même liste, même ordre).",
+            new[] { FastListeners.Name }, on => FastListeners.Enabled = on,
+            () => FastListeners.Applied ? null : "not applied (game code changed)"),
+        new("hook_skip", "Skip non-reacting cards", "Ignorer les cartes non concernées",
+            "Each time the game processes an effect (card played, damage, turn end...), only asks the cards and enchantments whose type reacts to it (same results).",
+            "À chaque effet traité par le jeu (carte jouée, dégâts, fin de tour...), n'interroge que les cartes et enchantements qui y réagissent (mêmes résultats).",
+            new[] { HookSkip.Name }, on => HookSkip.Enabled = on,
+            () => HookSkip.Applied ? null : "not applied (game code changed)"),
+        new("hover_tips", "Creature hover tips", "Infobulles des créatures",
+            "While the mouse is on a creature, rebuilds its tooltips after an action only when their content changed (they stay live).",
+            "Quand la souris est sur une créature, reconstruit ses infobulles après une action seulement si leur contenu a changé (elles restent à jour).",
+            new[] { HoverTipReuse.Name }, on => HoverTipReuse.Enabled = on,
+            () => HoverTipReuse.Applied ? null : "not applied (game code changed)"),
     };
 
     /// <summary>Raised after a choice changed through bdopt (not from the menu or when loading), so the menu saves it.</summary>

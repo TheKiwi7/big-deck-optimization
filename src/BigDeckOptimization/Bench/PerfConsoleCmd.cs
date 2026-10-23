@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
@@ -12,6 +13,7 @@ using MegaCrit.Sts2.Core.DevConsole.ConsoleCommands;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Logging;
+using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Runs;
 
@@ -39,7 +41,7 @@ public class PerfConsoleCmd : AbstractConsoleCmd
 
     public override string CmdName => "bdperf";
 
-    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | verify [off|sample|all] | combatstart | grid [cards:int] | probe [reset|log|on|off|hitch <ms>] | pile [verify <n>] | checks on|off | opt on|off";
+    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | verify [off|sample|all] | combatstart | grid [cards:int] | probe [reset|log|on|off|hitch <ms>] | pile [verify <n>] | checks on|off | opt on|off | listeners [iterations:int]";
 
     public override string Description => "[BigDeckOptimization] Measures the multiplayer post-action checksum cost, vanilla vs optimized, or shows/sets live snapshot verification.";
 
@@ -78,6 +80,9 @@ public class PerfConsoleCmd : AbstractConsoleCmd
                 return new CmdResult(success: true, $"Bench re-checks {args[1]} (first-turn filter, ShouldAllowHitting, PileIndex 1/1024).");
             case "opt":
                 return SetOptimizations(args.Length >= 2 ? args[1] : null);
+            case "listeners":
+                int listenerIterations = args.Length >= 2 && int.TryParse(args[1], out int li) && li > 0 ? li : 50;
+                return CompareListeners(listenerIterations);
             case "refresh":
                 int refreshIterations = args.Length >= 2 && int.TryParse(args[1], out int r) && r > 0 ? r : 5;
                 return CompareRefresh(refreshIterations);
@@ -90,6 +95,74 @@ public class PerfConsoleCmd : AbstractConsoleCmd
     /// Turns every optimization off/on for an A/B comparison in the same session. Safe in co-op: optimized and vanilla
     /// paths give identical results, so peers can't tell.
     /// </summary>
+    /// <summary>
+    /// bdperf listeners [n]: the combat and run (with the combat as child) listener sequences, FastListeners off then
+    /// on: the same objects in the same order, and the time of n full walks each.
+    /// </summary>
+    private static CmdResult CompareListeners(int iterations)
+    {
+        RunState? run = RunManager.Instance.DebugOnlyGetState();
+        CombatState? combat = CombatManager.Instance.DebugOnlyGetState();
+        if (run == null || combat == null || !CombatManager.Instance.IsInProgress)
+        {
+            return new CmdResult(success: false, "Start a combat first.");
+        }
+        if (!FastListeners.Applied)
+        {
+            return new CmdResult(success: false, "FastListeners is not applied (see the log).");
+        }
+
+        (double CombatMs, double RunMs, List<AbstractModel> Combat, List<AbstractModel> Run) Walk()
+        {
+            var combatList = combat.IterateHookListeners().ToList();
+            var runList = run.IterateHookListeners(combat).ToList();
+            Stopwatch sw = Stopwatch.StartNew();
+            for (int i = 0; i < iterations; i++)
+            {
+                foreach (AbstractModel _ in combat.IterateHookListeners())
+                {
+                }
+            }
+            double combatMs = sw.Elapsed.TotalMilliseconds / iterations;
+            sw.Restart();
+            for (int i = 0; i < iterations; i++)
+            {
+                foreach (AbstractModel _ in run.IterateHookListeners(combat))
+                {
+                }
+            }
+            return (combatMs, sw.Elapsed.TotalMilliseconds / iterations, combatList, runList);
+        }
+
+        bool wasEnabled = FastListeners.Enabled;
+        (double CombatMs, double RunMs, List<AbstractModel> Combat, List<AbstractModel> Run) vanilla, fast;
+        int gen2 = GC.CollectionCount(2);
+        try
+        {
+            FastListeners.Enabled = false;
+            Walk();
+            gen2 = GC.CollectionCount(2);
+            vanilla = Walk();
+            int vanillaGen2 = GC.CollectionCount(2) - gen2;
+            FastListeners.Enabled = true;
+            Walk();
+            gen2 = GC.CollectionCount(2);
+            fast = Walk();
+            int fastGen2 = GC.CollectionCount(2) - gen2;
+            bool same = vanilla.Combat.SequenceEqual(fast.Combat, ReferenceEqualityComparer.Instance)
+                && vanilla.Run.SequenceEqual(fast.Run, ReferenceEqualityComparer.Instance);
+            string text = $"{(same ? "OK: identical" : "MISMATCH")} listeners: combat {vanilla.Combat.Count}/{fast.Combat.Count}, " +
+                $"run {vanilla.Run.Count}/{fast.Run.Count}. Walk: combat {vanilla.CombatMs:F2} -> {fast.CombatMs:F2} ms, " +
+                $"run {vanilla.RunMs:F2} -> {fast.RunMs:F2} ms; gen2 collections {vanillaGen2} -> {fastGen2} over {iterations * 2} walks.";
+            Log.Info($"[{ModEntry.Id}] bdperf listeners: {text}");
+            return new CmdResult(same, text);
+        }
+        finally
+        {
+            FastListeners.Enabled = wasEnabled;
+        }
+    }
+
     private static CmdResult SetOptimizations(string? value)
     {
         if (value is not ("on" or "off"))

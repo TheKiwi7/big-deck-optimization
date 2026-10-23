@@ -1,0 +1,48 @@
+# fps-8k's deck for run.ps1 -TraceSec 60: five turns of plays + end of turn (the phases that drop to ~30-45 fps),
+# then stays open until the trace ends.
+timeout 1200
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+marker turn 1
+play 4
+waitfor idle 120
+endturn
+waitfor idle 300
+marker turn 2
+play 4
+waitfor idle 120
+endturn
+waitfor idle 300
+marker turn 3
+play 4
+waitfor idle 120
+endturn
+waitfor idle 300
+marker turn 4
+play 4
+waitfor idle 120
+endturn
+waitfor idle 300
+marker turn 5
+play 4
+waitfor idle 120
+endturn
+waitfor idle 300
+wait 70
+quit
