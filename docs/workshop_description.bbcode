@@ -1,42 +1,40 @@
-Removes the lag of huge decks and relic piles: hundreds or thousands of cards, hundreds of relics, in singleplayer and especially in co-op.
+Removes the lag of huge decks in Slay the Spire 2: thousands of cards, hundreds of relics, in singleplayer and in co-op.
 
-It changes nothing about the game itself: same rules, same results, same saves. It only computes the same things faster.
+[b]Disclaimer:[/b] this mod is still in early development. Although I haven't found any bug, some might still exist. I will update it regularly for a while, to spot any bug and optimize the game further.
 
-[h2]What it fixes[/h2]
-Measured in game, against the unmodified game on the same state:
+[h2]What it changes[/h2]
+With a huge deck, the game slows down more and more until every action freezes it. With the mod:
 [list]
-[*][b]Entering a combat[/b] (8,400 cards, 368 relics): ~31 s → ~4 s.
-[*][b]Combat:[/b] card plays, refreshes and the idle screen stay smooth with thousands of cards (with BetterSpire2 too).
-[*][b]End of combat:[/b] ~1.2 s freeze → ~0.3 s.
-[*][b]Co-op:[/b] the state check the game runs after every action went from 1.7 s to 40 ms (2830 combat cards, 370 relics).
-[*][b]Deck view:[/b] sorting no longer freezes the game (30–110 ms → under 5 ms), and opening or sorting a card grid stutters less.
-[*][b]Relics:[/b] hundreds of relics no longer slow down every mouse move.
+[*][b]Entering a combat:[/b] with 8,000+ cards and hundreds of relics, about 4 seconds instead of half a minute.
+[*][b]Playing cards:[/b] smooth again, even past 10,000 cards.
+[*][b]Waiting in combat:[/b] no more constant stutter.
+[*][b]End of combat:[/b] no more long freeze before the rewards.
+[*][b]Co-op:[/b] the long pause after every action is gone. Players with big decks no longer slow down everyone else.
+[*][b]Deck view and card grids:[/b] sorting, opening and scrolling are fast again.
+[*][b]Lots of relics:[/b] moving the mouse no longer slows the game down.
+[*][b]Optional:[/b] with 50+ relics, the relic effects at the start of a combat skip their animation pauses. It looks faster, and the effects stay exactly the same.
 [/list]
 
-[h2]Fast combat start (visual)[/h2]
-With 50+ relics, the combat-start relic effects (Vulnerable, Weak, Block...) play without their animation pauses, like the game's Instant speed. Same effects, same results. Turn it off with [b]bdopt fast_combat_start off[/b] or in ModConfig.
-
-[h2]Co-op[/h2]
+[h2]What it doesn't change[/h2]
 [list]
-[*][b]Client-side only:[/b] players without the mod can join you. Each player gets the speed-up only if they have it.
-[*][b]Same results as the unmodified game:[/b] every optimization was checked against vanilla on large states and in co-op sessions. Up to 1,000 cards in combat, the mod also re-runs the vanilla state check from time to time and compares; on any difference it goes back to vanilla for the session.
+[*][b]The game itself:[/b] same rules, same results, same saves. The mod only makes the game do the same work faster.
+[*][b]Your friends:[/b] they can join you without the mod. They just won't get the speed-up on their side.
+[*][b]Your other mods:[/b] no dependencies. It works alongside BaseLib, Limitless, BetterSpire2, CampfireTrade, ModConfig and Unlimited. If another mod changes the same part of the game, this mod steps aside there.
+[*][b]Its safety:[/b] after a game or mod update, any part of the mod that no longer fits turns itself off instead of guessing.
 [/list]
+Co-op with very big decks is much better, but not instant: going from one turn to the next can still take a few seconds.
 
 [h2]Settings[/h2]
-Everything is on by default. With ModConfig, each optimization has its own switch in its settings tab. In the console ([b]`[/b] key, [b]*[/b] or [b]^[/b] on AZERTY):
+Everything is on by default. With ModConfig, each improvement has its own switch. Otherwise, open the console ([b]`[/b] key, [b]*[/b] or [b]^[/b] on AZERTY):
 [list]
-[*][b]bdopt[/b] — state of each optimization.
-[*][b]bdopt off[/b] / [b]bdopt on[/b] — vanilla behavior / optimizations back on, no restart needed.
-[*][b]bdopt <option> off[/b] — one optimization (names listed by [b]bdopt[/b]).
+[*][b]bdopt[/b] shows what is on.
+[*][b]bdopt off[/b] / [b]bdopt on[/b] turns the whole mod off or back on, without restarting.
+[*][b]bdopt fast_combat_start off[/b] turns off just the faster combat start.
 [/list]
 
-[h2]Compatibility[/h2]
-[list]
-[*]No dependencies. Tested with BaseLib, Limitless, CampfireTrade, BetterSpire2, ModConfig and Unlimited.
-[*]If another mod changes the same game code, the overlapping optimization steps aside.
-[*]After a game or mod update, an optimization whose underlying code changed turns itself off (logged) instead of guessing.
-[/list]
+[h2]Something looks wrong?[/h2]
+Try again with [b]bdopt off[/b]. If the problem is still there, it doesn't come from this mod. If it goes away, please tell me in the comments with your log ([i]%APPDATA%\SlayTheSpire2\logs[/i]).
 
-If something looks wrong, check whether it still happens with [b]bdopt off[/b], then report it with your log ([i]%APPDATA%\SlayTheSpire2\logs[/i]).
+Feedback will be highly appreciated! Don't hesitate to leave a comment <3
 
 Source code (MIT): https://github.com/TheKiwi7/big-deck-optimization

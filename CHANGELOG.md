@@ -2,14 +2,14 @@
 
 ## v0.2.0
 
-For Slay the Spire 2 v0.107.1. Measured with 8,400 cards and 368 relics.
+Huge decks are now playable well past 10,000 cards.
 
-- Entering a combat: ~31 s → ~4 s. The first turn no longer freezes for seconds (Innate cards check), and with 50+ relics the combat-start relic effects play without their animation pauses (visual only, same results; option `fast_combat_start`).
-- Combat: finding which pile a card is in no longer scans every card (it is used by costs, keywords, playability...), so card plays and refreshes stay fast with thousands of cards.
-- With BetterSpire2: its damage preview, recomputed several times a second, no longer slows down every frame.
-- End of combat: ~1.2 s → ~0.3 s (combat card IDs and pile counters no longer re-scan whole piles for each card).
-- Co-op: the safety re-check of the state against vanilla is skipped above 1,000 cards in combat, where it froze the game for seconds.
-- Settings: one switch per optimization in ModConfig (optional), or `bdopt <option> on|off` in the console. An optimization that turned itself off after an error stays off.
+- With 8,000+ cards and hundreds of relics, entering a combat takes about 4 seconds instead of half a minute.
+- Playing cards and waiting in combat are smooth again, even with BetterSpire2 installed.
+- The freeze at the end of a combat is mostly gone.
+- With 50+ relics, the relic effects at the start of a combat skip their animation pauses (same effects, just faster). Can be turned off.
+- Co-op: no more multi-second freezes from the mod's own safety checks with very big decks.
+- New settings: with ModConfig, each improvement has its own switch. Without it, `bdopt <name> off` in the console.
 
 ## v0.1.0
 

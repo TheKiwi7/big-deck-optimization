@@ -1,0 +1,36 @@
+# Singleplayer at ~10,300 cards (reference run's cards imported 11x) + its relics: same measurements as solo-8k.
+timeout 1200
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 999999
+cmd bdperf probe reset
+cmd fight CULTISTS_NORMAL
+waitfor idle 400
+cmd bdperf combatstart
+cmd bdperf probe log
+cmd bdperf probe reset
+play 5
+endturn
+waitfor idle 300
+play 5
+waitfor idle 120
+cmd bdperf probe log
+cmd bdperf probe reset
+cmd kill all
+waitfor nocombat 300
+wait 5
+cmd bdperf probe log
+quit

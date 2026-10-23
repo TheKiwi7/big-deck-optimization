@@ -1,0 +1,35 @@
+# Co-op performance, client (with coopperf-host.txt).
+timeout 2400
+mplobby IRONCLAD 2
+waitfor run 240
+cmd bdperf checks off
+wait 14
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+enemyhp 999999
+cmd bdperf probe reset
+waitfor combat 900
+waitfor idle 900
+cmd bdperf combatstart
+cmd bdperf probe log
+cmd bdperf probe reset
+state t1
+play 5
+endturn
+waitfor idle 900
+state t2
+play 5
+endturn
+waitfor idle 900
+state t3
+cmd bdperf probe log
+cmd bdperf probe reset
+waitfor nocombat 900
+wait 8
+cmd bdperf probe log
+cmd bdperf verify
+wait 25
+quit

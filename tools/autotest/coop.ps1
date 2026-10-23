@@ -1,10 +1,11 @@
 # Local co-op: two game instances without Steam (ENet on 127.0.0.1), each running its own scenario:
 # scenarios/<Name>-host.txt and scenarios/<Name>-client.txt. Logs go to results/<Name>-host.log / -client.log.
-#   powershell -File tools/autotest/coop.ps1 -Name coop [-TimeoutSec 1500] [-WithMods]
+#   powershell -File tools/autotest/coop.ps1 -Name coop [-TimeoutSec 1500] [-WithMods] [-TraceSec 120]
+# -TraceSec records a CPU trace of the host (results/<Name>-host.nettrace); keep the host alive until it ends.
 # Without Steam only <game>/mods and <game>/mods_STEAMTEST load. -WithMods copies the Workshop mods enabled in your
 # settings into mods_STEAMTEST for the test and always deletes it afterwards (a normal Steam launch reads that folder
 # too and would load the mods twice). Copies, never links, so the cleanup can't touch the Workshop folders.
-param([Parameter(Mandatory)][string]$Name, [int]$TimeoutSec = 1500, [switch]$WithMods)
+param([Parameter(Mandatory)][string]$Name, [int]$TimeoutSec = 1500, [switch]$WithMods, [int]$TraceSec = 0)
 . (Join-Path $PSScriptRoot "common.ps1")
 Assert-GameNotRunning
 $hostScript = Join-Path $Scenarios "$Name-host.txt"
@@ -39,11 +40,19 @@ try {
     Remove-Item $hostLog, $clientLog -ErrorAction SilentlyContinue
     $h = Start-Process -FilePath $GameExe -WorkingDirectory $GameDir -PassThru -ArgumentList "--force-steam", "off",
         "--fastmp", "host_standard", "--log-file", "`"$hostLog`"", "--bdtest", "`"$hostScript`""
+    $trace = $null
+    if ($TraceSec -gt 0) {
+        Start-Sleep 5  # the runtime only accepts diagnostics once started
+        $span = [TimeSpan]::FromSeconds($TraceSec).ToString("dd\:hh\:mm\:ss")
+        $trace = Start-Process -FilePath "dotnet-trace" -PassThru -WindowStyle Hidden -ArgumentList "collect", "-p", $h.Id,
+            "--profile", "cpu-sampling", "--duration", $span, "-o", "`"$Results\$Name-host.nettrace`""
+    }
     Start-Sleep 12
     $c = Start-Process -FilePath $GameExe -WorkingDirectory $GameDir -PassThru -ArgumentList "--force-steam", "off",
         "--fastmp", "join", "--clientId", "1001", "--log-file", "`"$clientLog`"", "--bdtest", "`"$clientScript`""
     $t = 0
     while ((-not $h.HasExited -or -not $c.HasExited) -and $t -lt $TimeoutSec) { Start-Sleep 5; $t += 5 }
+    if ($trace) { $trace.WaitForExit(60000) | Out-Null }
     Write-Output "done in $t s: $hostLog, $clientLog"
 }
 finally {

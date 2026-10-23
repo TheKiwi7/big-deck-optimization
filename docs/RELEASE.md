@@ -25,7 +25,7 @@ Produces in `dist/` (gitignored): `BigDeckOptimization-vX.Y.Z.zip` and `workshop
 
 The game has no uploader: use SteamCMD (https://developer.valvesoftware.com/wiki/SteamCMD).
 
-1. Put a preview image (under 1 MB) at `docs/workshop_preview.png` (or `.jpg`) before packaging. Current one: crop of [Cards -Deck Playing.jpg](https://commons.wikimedia.org/wiki/File:Cards_-Deck_Playing.jpg) (tookapic on Pixabay, CC0: no attribution required).
+1. Put a preview image (under 1 MB, square: Workshop lists show ~135 px thumbnails, so a big readable text beats a full screenshot) at `docs/workshop_preview.jpg` before packaging. Current one: an in-game deck view and hand from an unattended session (`tools/autotest`, `screenshot` command) with the title text in Kreon (SIL Open Font License). To change only the image on an existing item, run SteamCMD with a VDF holding just `appid`, `publishedfileid` and `previewfile`: subscribers and collections are kept (only deleting and recreating the item loses them).
 2. Upload: `steamcmd +login <steam account> +workshop_build_item "<repo>\dist\workshop\workshop_item.vdf" +quit`
    - First upload (`docs/workshop_id.txt` absent): creates the item **hidden**, with title and description from `docs/workshop_description.bbcode`. SteamCMD prints the new item ID: save it in `docs/workshop_id.txt` so later uploads update that item (title/description are then edited on the page, not by the script).
 3. On the item page: check the description and preview, add the game version tag if offered, then set visibility to Public.

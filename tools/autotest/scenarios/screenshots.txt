@@ -1,0 +1,33 @@
+# Candidate screenshots for the Workshop preview (results/*.png): combats with ~8,400 cards and 368 relics.
+timeout 900
+newrun NECROBINDER 8425CARDS
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 420
+cmd fight THE_KIN_BOSS
+waitfor idle 400
+wait 4
+screenshot shot-boss
+cmd kill all
+waitfor nocombat 300
+cmd fight BYGONE_EFFIGY_ELITE
+waitfor idle 400
+wait 4
+screenshot shot-elite
+cmd kill all
+waitfor nocombat 300
+cmd fight KNIGHTS_ELITE
+waitfor idle 400
+wait 4
+screenshot shot-knights
+quit

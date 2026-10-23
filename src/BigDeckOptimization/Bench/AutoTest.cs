@@ -228,6 +228,9 @@ public static class AutoTest
                 case "speed":
                     SetSpeed(Enum.Parse<FastModeType>(arg, ignoreCase: true));
                     break;
+                case "screenshot":
+                    await Screenshot(tree, arg.Trim());
+                    break;
                 case "marker":
                     // A line the profiling scripts look for to cut traces into phases.
                     Say("MARKER " + arg);
@@ -256,7 +259,8 @@ public static class AutoTest
                     await Play(tree, int.Parse(arg));
                     break;
                 case "deckview":
-                    await DeckView(tree, arg.Length > 0 ? double.Parse(arg) : 3);
+                    string[] viewArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    await DeckView(tree, viewArgs.Length > 0 ? double.Parse(viewArgs[0]) : 3, viewArgs.Length > 1 ? viewArgs[1] : null);
                     break;
                 case "deckscroll":
                     await DeckScroll(tree, int.Parse(arg));
@@ -381,6 +385,18 @@ public static class AutoTest
         }
     }
 
+    /// <summary>Script <c>screenshot &lt;name&gt;</c>: saves the game's frame as results/&lt;name&gt;.png (next to the scenarios folder).</summary>
+    private static async Task Screenshot(SceneTree tree, string name)
+    {
+        await Frames(tree, 2);
+        Image image = tree.Root.GetTexture().GetImage();
+        string folder = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(_script!)!, "..", "results"));
+        Directory.CreateDirectory(folder);
+        string path = Path.Combine(folder, name + ".png");
+        image.SavePng(path);
+        Say($"  screenshot {image.GetWidth()}x{image.GetHeight()}: {path}");
+    }
+
     private static void SetSpeed(FastModeType speed)
     {
         SaveManager.Instance.PrefsSave.FastMode = speed;
@@ -477,8 +493,8 @@ public static class AutoTest
 
     private static MegaCrit.Sts2.Core.Nodes.Screens.NDeckViewScreen? _deckView;
 
-    /// <summary>Script <c>deckview [s]</c>: opens the deck view (timed), keeps it open, closes it (timed).</summary>
-    private static async Task DeckView(SceneTree tree, double seconds)
+    /// <summary>Script <c>deckview [s] [screenshot name]</c>: opens the deck view (timed), keeps it open, closes it (timed).</summary>
+    private static async Task DeckView(SceneTree tree, double seconds, string? screenshot)
     {
         Player me = Me() ?? throw new InvalidOperationException("no local player");
         long start = Stopwatch.GetTimestamp();
@@ -487,6 +503,10 @@ public static class AutoTest
         await Frames(tree, 1);
         Say($"  deck view opened: {openMs:F0} ms call, {Stopwatch.GetElapsedTime(start).TotalMilliseconds:F0} ms to first frame ({me.Deck.Cards.Count} cards)");
         await Seconds(tree, seconds);
+        if (screenshot != null)
+        {
+            await Screenshot(tree, screenshot);
+        }
         start = Stopwatch.GetTimestamp();
         MegaCrit.Sts2.Core.Nodes.Screens.Capstones.NCapstoneContainer.Instance?.Close();
         await Frames(tree, 1);

@@ -1,0 +1,37 @@
+# Co-op performance, host (with coopperf-client.txt): ~8,400 combat cards in total (host ~3,750 + 368 relics,
+# client ~4,700), Workshop mods, release-like timings. Probe reports per phase on both sides.
+timeout 2400
+mplobby NECROBINDER 2
+waitfor run 240
+cmd bdperf checks off
+wait 8
+cmd bigdeck import ref all all {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+enemyhp 999999
+wait 30
+cmd bdperf probe reset
+cmd fight THE_KIN_BOSS
+waitfor idle 900
+cmd bdperf combatstart
+cmd bdperf probe log
+cmd bdperf probe reset
+state t1
+play 5
+endturn
+waitfor idle 900
+state t2
+play 5
+endturn
+waitfor idle 900
+state t3
+cmd bdperf probe log
+cmd bdperf probe reset
+cmd kill all
+waitfor nocombat 600
+wait 8
+cmd bdperf probe log
+cmd bdperf verify
+wait 20
+quit
