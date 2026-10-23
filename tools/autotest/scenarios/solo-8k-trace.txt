@@ -1,0 +1,26 @@
+# Same deck as solo-8k, for run.ps1 -TraceSec 60: combat start, a turn, combat end, then stays open until the trace ends.
+timeout 600
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 400
+cmd bdperf combatstart
+play 3
+endturn
+waitfor idle 300
+cmd kill all
+waitfor nocombat 300
+wait 70
+quit

@@ -5,32 +5,38 @@ It changes nothing about the game itself: same rules, same results, same saves. 
 [h2]What it fixes[/h2]
 Measured in game, against the unmodified game on the same state:
 [list]
+[*][b]Entering a combat[/b] (8,400 cards, 368 relics): ~31 s → ~4 s.
+[*][b]Combat:[/b] card plays, refreshes and the idle screen stay smooth with thousands of cards (with BetterSpire2 too).
+[*][b]End of combat:[/b] ~1.2 s freeze → ~0.3 s.
 [*][b]Co-op:[/b] the state check the game runs after every action went from 1.7 s to 40 ms (2830 combat cards, 370 relics).
-[*][b]Combat:[/b] the refresh after every action (card costs, hand, intents, enchantments) is up to 12x faster.
 [*][b]Deck view:[/b] sorting no longer freezes the game (30–110 ms → under 5 ms), and opening or sorting a card grid stutters less.
 [*][b]Relics:[/b] hundreds of relics no longer slow down every mouse move.
 [/list]
 
+[h2]Fast combat start (visual)[/h2]
+With 50+ relics, the combat-start relic effects (Vulnerable, Weak, Block...) play without their animation pauses, like the game's Instant speed. Same effects, same results. Turn it off with [b]bdopt fast_combat_start off[/b] or in ModConfig.
+
 [h2]Co-op[/h2]
 [list]
 [*][b]Client-side only:[/b] players without the mod can join you. Each player gets the speed-up only if they have it.
-[*][b]Same results as the unmodified game:[/b] every optimization was checked against vanilla on large states, and in co-op the mod regularly re-runs the vanilla state check and compares; on any difference it goes back to vanilla for the session.
+[*][b]Same results as the unmodified game:[/b] every optimization was checked against vanilla on large states and in co-op sessions. Up to 1,000 cards in combat, the mod also re-runs the vanilla state check from time to time and compares; on any difference it goes back to vanilla for the session.
+[/list]
+
+[h2]Settings[/h2]
+Everything is on by default. With ModConfig, each optimization has its own switch in its settings tab. In the console ([b]`[/b] key, [b]*[/b] or [b]^[/b] on AZERTY):
+[list]
+[*][b]bdopt[/b] — state of each optimization.
+[*][b]bdopt off[/b] / [b]bdopt on[/b] — vanilla behavior / optimizations back on, no restart needed.
+[*][b]bdopt <option> off[/b] — one optimization (names listed by [b]bdopt[/b]).
 [/list]
 
 [h2]Compatibility[/h2]
 [list]
-[*]No dependencies. Tested with BaseLib, Limitless and CampfireTrade.
-[*]With Limitless, scrolling enchanted cards in card grids is faster too.
+[*]No dependencies. Tested with BaseLib, Limitless, CampfireTrade, BetterSpire2, ModConfig and Unlimited.
 [*]If another mod changes the same game code, the overlapping optimization steps aside.
 [*]After a game or mod update, an optimization whose underlying code changed turns itself off (logged) instead of guessing.
 [/list]
 
-[h2]Troubleshooting[/h2]
-In the console ([b]`[/b] key, [b]*[/b] or [b]^[/b] on AZERTY):
-[list]
-[*][b]bdopt[/b] — state of each optimization.
-[*][b]bdopt off[/b] / [b]bdopt on[/b] — vanilla behavior / optimizations back on, no restart needed.
-[/list]
 If something looks wrong, check whether it still happens with [b]bdopt off[/b], then report it with your log ([i]%APPDATA%\SlayTheSpire2\logs[/i]).
 
 Source code (MIT): https://github.com/TheKiwi7/big-deck-optimization

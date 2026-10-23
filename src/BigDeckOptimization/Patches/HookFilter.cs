@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
@@ -85,6 +86,15 @@ public static class HookFilter
     // Hook indexes. The first group filters combat listeners, the second run listeners (deck + combat).
     private const int EnergyCost = 0, EnergyCostLate = 1, Keywords = 2, ShouldPlay = 3;
     private const int DamageAdditive = 4, DamageMultiplicative = 5, DamageCap = 6;
+    private const int AllowHitting = 7;
+
+#if BENCH
+    public static long HittingChecks { get; private set; }
+    public static long HittingMismatches { get; private set; }
+#endif
+
+    /// <summary>v0.107.1 <c>Hook.ShouldAllowHitting</c>, mirrored by <see cref="ShouldAllowHittingPrefix"/>.</summary>
+    private const string ShouldAllowHittingFingerprint = "C4F317D182865D23";
 
     private static FilteredHook[] _hooks = Array.Empty<FilteredHook>();
 
@@ -100,6 +110,7 @@ public static class HookFilter
         MethodInfo keywordsHook = Require(AccessTools.Method(typeof(Hook), nameof(Hook.ModifyKeywordsInCombat)));
         MethodInfo shouldPlayHook = Require(AccessTools.Method(typeof(Hook), nameof(Hook.ShouldPlay)));
         MethodInfo damageHook = Require(AccessTools.Method(typeof(Hook), "ModifyDamageInternal"));
+        MethodInfo hittingHook = Require(AccessTools.Method(typeof(Hook), nameof(Hook.ShouldAllowHitting)));
         _hooks = new[]
         {
             new FilteredHook(nameof(AbstractModel.TryModifyEnergyCostInCombat), energyHook),
@@ -109,15 +120,31 @@ public static class HookFilter
             new FilteredHook(nameof(AbstractModel.ModifyDamageAdditive), damageHook),
             new FilteredHook(nameof(AbstractModel.ModifyDamageMultiplicative), damageHook),
             new FilteredHook(nameof(AbstractModel.ModifyDamageCap), damageHook),
+            new FilteredHook(nameof(AbstractModel.ShouldAllowHitting), hittingHook),
         };
         harmony.Patch(energyHook, prefix: Method(nameof(ModifyEnergyCostPrefix)));
         harmony.Patch(keywordsHook, prefix: Method(nameof(ModifyKeywordsPrefix)));
         harmony.Patch(shouldPlayHook, prefix: Method(nameof(ShouldPlayPrefix)));
         harmony.Patch(damageHook, prefix: Method(nameof(ModifyDamageInternalPrefix)));
+        // Read by Creature.IsHittable, e.g. BetterSpire2's damage preview several times a second.
+        if (MethodFingerprint.Of(hittingHook) == ShouldAllowHittingFingerprint)
+        {
+            harmony.Patch(hittingHook, prefix: Method(nameof(ShouldAllowHittingPrefix)));
+        }
+        else
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: Hook.ShouldAllowHitting changed (fingerprint {MethodFingerprint.Of(hittingHook)}): left vanilla");
+        }
         ListenerCache.ScopeEnded += () =>
         {
-            _filtered = null;
+            // Filtered lists stay valid for their source list (listener lists are immutable and reused across
+            // refreshes while nothing changed); they are rebuilt when patch safety changes.
             _safe = null;
+            if (_filtered != null && (_filtered.Count > 8 || _filteredWith == null || !_filteredWith.SequenceEqual(CurrentSafety())))
+            {
+                _filtered = null;
+                _filteredWith = null;
+            }
         };
     }
 
@@ -141,16 +168,27 @@ public static class HookFilter
     }
 
     /// <summary>One pass over the listeners builds the filtered list of every safe hook (null for unsafe ones).</summary>
+    private static bool[] CurrentSafety()
+    {
+        bool[] safe = new bool[_hooks.Length];
+        for (int i = 0; i < _hooks.Length; i++)
+        {
+            safe[i] = _hooks[i].IsSafe();
+        }
+        return safe;
+    }
+
+    /// <summary>The patch safety the lists in <see cref="_filtered"/> were built with.</summary>
+    [ThreadStatic] private static bool[]? _filteredWith;
+
     private static List<AbstractModel>?[] FilterAll(IReadOnlyList<AbstractModel> listeners)
     {
-        if (_safe == null)
+        _safe ??= CurrentSafety();
+        if (_filteredWith != null && !_filteredWith.SequenceEqual(_safe))
         {
-            _safe = new bool[_hooks.Length];
-            for (int i = 0; i < _hooks.Length; i++)
-            {
-                _safe[i] = _hooks[i].IsSafe();
-            }
+            _filtered?.Clear();
         }
+        _filteredWith = _safe;
         var perHook = new List<AbstractModel>?[_hooks.Length];
         for (int i = 0; i < _hooks.Length; i++)
         {
@@ -213,6 +251,54 @@ public static class HookFilter
                 item.TryModifyEnergyCostInCombatLate(card, modifiedCost, out modifiedCost);
             }
             __result = modifiedCost;
+            return false;
+        }
+        catch (Exception e)
+        {
+            Disable(e);
+            return true;
+        }
+    }
+
+    /// <summary>Mirrors <see cref="Hook.ShouldAllowHitting"/> over the filtered listeners.</summary>
+    private static bool ShouldAllowHittingPrefix(ICombatState combatState, Creature creature, ref bool __result)
+    {
+        if (!Active || combatState is not CombatState state)
+        {
+            return true;
+        }
+        try
+        {
+            List<AbstractModel>? listeners = Get(ListenerCache.GetListeners(state), AllowHitting);
+            if (listeners == null)
+            {
+                return true;
+            }
+            // Vanilla goes through IterateCombatHookListeners, which yields nothing while combat is ending.
+            bool allowed = true;
+            if (!CombatHookListenersEmpty)
+            {
+                foreach (AbstractModel item in listeners)
+                {
+                    if (!item.ShouldAllowHitting(creature))
+                    {
+                        allowed = false;
+                        break;
+                    }
+                }
+            }
+#if BENCH
+            if (ExtraScopes.BenchChecks && ++HittingChecks % 64 == 0)
+            {
+                bool vanilla = ListenerCache.RunVanilla(() => Hook.ShouldAllowHitting(combatState, creature));
+                if (vanilla != allowed)
+                {
+                    HittingMismatches++;
+                    Log.Error($"[{ModEntry.Id}] {Name}: ShouldAllowHitting({creature}) filtered {allowed}, vanilla {vanilla}");
+                }
+            }
+#endif
+            __result = allowed;
             return false;
         }
         catch (Exception e)
@@ -363,6 +449,7 @@ public static class HookFilter
     private static void Disable(Exception e)
     {
         Enabled = false;
+        PatchSafety.Fault(Name);
         Log.Error($"[{ModEntry.Id}] {Name} disabled after exception, falling back to vanilla: {e}");
     }
 }

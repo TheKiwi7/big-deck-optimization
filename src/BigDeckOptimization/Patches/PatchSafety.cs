@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using HarmonyLib;
@@ -10,6 +11,28 @@ public class PatchSkippedException(string reason) : Exception(reason);
 
 public static class PatchSafety
 {
+    private static readonly HashSet<string> _faults = new();
+
+    /// <summary>
+    /// Records that a patch turned itself off after an error: settings (bdopt, ModConfig) never turn it back on this
+    /// session.
+    /// </summary>
+    public static void Fault(string name)
+    {
+        lock (_faults)
+        {
+            _faults.Add(name);
+        }
+    }
+
+    public static bool IsFaulted(string name)
+    {
+        lock (_faults)
+        {
+            return _faults.Contains(name);
+        }
+    }
+
     /// <summary>
     /// Throws <see cref="PatchSkippedException"/> unless <paramref name="method"/> still has the code a patch mirrors.
     /// </summary>
@@ -33,7 +56,25 @@ public static class PatchSafety
         {
             return true;
         }
+        // Harmony.GetPatchInfo is costly and this runs per scope (several times per frame): results are reused for
+        // a short while, so a mod patching later is still seen within RecheckAfterMs.
+        long now = Environment.TickCount64;
+        lock (_patchedByOthers)
+        {
+            if (_patchedByOthers.TryGetValue(method, out var cached) && now - cached.CheckedAt < RecheckAfterMs)
+            {
+                return cached.Patched;
+            }
+        }
         HarmonyLib.Patches? info = Harmony.GetPatchInfo(method);
-        return info != null && info.Owners.Any(owner => owner != ModEntry.Harmony.Id);
+        bool patched = info != null && info.Owners.Any(owner => owner != ModEntry.Harmony.Id);
+        lock (_patchedByOthers)
+        {
+            _patchedByOthers[method] = (patched, now);
+        }
+        return patched;
     }
+
+    private const long RecheckAfterMs = 2000;
+    private static readonly Dictionary<MethodBase, (bool Patched, long CheckedAt)> _patchedByOthers = new();
 }

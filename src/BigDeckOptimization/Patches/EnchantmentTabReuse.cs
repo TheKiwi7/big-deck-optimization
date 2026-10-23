@@ -118,6 +118,7 @@ public static class EnchantmentTabReuse
         {
             // Limitless then frees every tab and rebuilds them from scratch, so a half-done render leaves no trace.
             Enabled = false;
+            PatchSafety.Fault(Name);
             Log.Error($"[{ModEntry.Id}] {Name} disabled after exception: {e}");
         }
         LeftToLimitless++;

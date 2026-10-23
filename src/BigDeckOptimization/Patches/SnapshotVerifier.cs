@@ -1,6 +1,9 @@
 using System;
+using System.Diagnostics;
 using HarmonyLib;
+using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
+using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.GameActions;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Multiplayer.Serialization;
@@ -28,6 +31,27 @@ public static class SnapshotVerifier
     public const int AlwaysVerifyFirst = 3;
     public const int SampleEvery = 25;
 
+    /// <summary>
+    /// The vanilla rebuild is O(cards²): ~50–200 ms at 1,000 cards, ~10 s at 7,500. Verifications are spaced so they take
+    /// at most this share of play time, and the "first snapshots" rule only applies while a verification is cheap.
+    /// </summary>
+    private const double MaxTimeShare = 0.01;
+    private const double CheapMs = 250;
+    private static long _nextAllowedTicks;
+    private static double _lastVerifyMs;
+
+    /// <summary>
+    /// Above this many cards in combat (all players) a verification freezes the game noticeably (~0.2 s at 1,000 cards,
+    /// ~1.7 s at 2,800, ~10 s at 7,500): skipped (user's choice). A verification over <see cref="GiveUpMs"/> also stops
+    /// them for the session.
+    /// </summary>
+    public const int MaxCombatCards = 1000;
+    private const double GiveUpMs = 1000;
+    private static bool _gaveUp;
+    private static bool _loggedSkip;
+
+    public static int SkippedTooLarge { get; private set; }
+
     public static VerifyMode Mode { get; set; } = VerifyMode.Sample;
 
     public static int Snapshots { get; private set; }
@@ -52,10 +76,24 @@ public static class SnapshotVerifier
             return;
         }
         int index = Snapshots++;
+        long now = Stopwatch.GetTimestamp();
         bool sampled = Mode == VerifyMode.All
-            || (Mode == VerifyMode.Sample && (index < AlwaysVerifyFirst || index % SampleEvery == 0));
+            || (Mode == VerifyMode.Sample && (index == 0
+                || (index < AlwaysVerifyFirst && _lastVerifyMs < CheapMs)
+                || (index % SampleEvery == 0 && now >= _nextAllowedTicks)));
         if (!sampled)
         {
+            return;
+        }
+        if (Mode == VerifyMode.Sample && (_gaveUp || CombatCards(runState) > MaxCombatCards))
+        {
+            SkippedTooLarge++;
+            if (!_loggedSkip)
+            {
+                _loggedSkip = true;
+                Log.Info($"[{ModEntry.Id}] {Name}: state too large for a vanilla re-check without freezing the game "
+                    + $"(over {MaxCombatCards} combat cards or a re-check over {GiveUpMs / 1000:F0} s): verification skipped.");
+            }
             return;
         }
 
@@ -64,6 +102,13 @@ public static class SnapshotVerifier
         {
             NetFullCombatState vanilla = ListenerCache.RunVanilla(() => NetFullCombatState.FromRun(runState, justFinishedAction));
             Verified++;
+            _lastVerifyMs = Stopwatch.GetElapsedTime(now).TotalMilliseconds;
+            _nextAllowedTicks = Stopwatch.GetTimestamp() + (long)(_lastVerifyMs / MaxTimeShare / 1000 * Stopwatch.Frequency);
+            if (_lastVerifyMs > GiveUpMs && !_gaveUp)
+            {
+                _gaveUp = true;
+                Log.Info($"[{ModEntry.Id}] {Name}: a vanilla verification took {_lastVerifyMs / 1000:F1} s: no more verifications this session.");
+            }
             int diffAt = FirstDifference(__result, vanilla, out int optimizedLength, out int vanillaLength);
             if (diffAt >= 0)
             {
@@ -71,6 +116,8 @@ public static class SnapshotVerifier
                 __result = vanilla;
                 ListenerCache.SnapshotEnabled = false;
                 HookFilter.Enabled = false;
+                PatchSafety.Fault(ListenerCache.SnapshotFault);
+                PatchSafety.Fault(HookFilter.Name);
                 Log.Error($"[{ModEntry.Id}] {Name}: optimized snapshot differs from vanilla at byte {diffAt} "
                     + $"(lengths {optimizedLength} vs {vanillaLength}, action {justFinishedAction}). "
                     + "Using vanilla snapshot; snapshot optimizations disabled for this session. Please report this log.");
@@ -84,6 +131,22 @@ public static class SnapshotVerifier
         {
             _verifying = false;
         }
+    }
+
+    private static int CombatCards(IRunState runState)
+    {
+        int cards = 0;
+        foreach (Player player in runState.Players)
+        {
+            if (player.PlayerCombatState != null)
+            {
+                foreach (CardPile pile in player.PlayerCombatState.AllPiles)
+                {
+                    cards += pile.Cards.Count;
+                }
+            }
+        }
+        return cards;
     }
 
     public static void ResetStats()

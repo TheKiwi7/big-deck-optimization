@@ -11,6 +11,9 @@ obj/
 # Release packages (tools/release/package.py)
 /dist/
 
+# Unattended test results (tools/autotest)
+/tools/autotest/results/
+
 # Local game references / overrides
 /lib/
 Directory.Build.local.props

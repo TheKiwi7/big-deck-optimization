@@ -39,7 +39,7 @@ public class PerfConsoleCmd : AbstractConsoleCmd
 
     public override string CmdName => "bdperf";
 
-    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | verify [off|sample|all] | combatstart | grid [cards:int] | opt on|off";
+    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | verify [off|sample|all] | combatstart | grid [cards:int] | probe [reset|log|on|off|hitch <ms>] | pile [verify <n>] | checks on|off | opt on|off";
 
     public override string Description => "[BigDeckOptimization] Measures the multiplayer post-action checksum cost, vanilla vs optimized, or shows/sets live snapshot verification.";
 
@@ -65,6 +65,17 @@ public class PerfConsoleCmd : AbstractConsoleCmd
                 return GridBench.Run(tabCards);
             case "combatstart":
                 return new CmdResult(success: true, CombatStartTimer.LastReport);
+            case "probe":
+                return ProbeCmd(args.Skip(1).ToArray());
+            case "pile" when args.Length >= 3 && args[1] == "verify" && int.TryParse(args[2], out int every) && every > 0:
+                PileIndex.VerifyEvery = every;
+                return new CmdResult(success: true, $"PileIndex verifies 1 answer in {every}.");
+            case "pile":
+                return ComparePile();
+            case "checks" when args.Length >= 2 && args[1] is "on" or "off":
+                ExtraScopes.BenchChecks = args[1] == "on";
+                PileIndex.VerifyEvery = ExtraScopes.BenchChecks ? 1024 : int.MaxValue;
+                return new CmdResult(success: true, $"Bench re-checks {args[1]} (first-turn filter, ShouldAllowHitting, PileIndex 1/1024).");
             case "opt":
                 return SetOptimizations(args.Length >= 2 ? args[1] : null);
             case "refresh":
@@ -90,6 +101,61 @@ public class PerfConsoleCmd : AbstractConsoleCmd
         return new CmdResult(success: true, $"BigDeckOptimization optimizations {(on ? "ON" : "OFF (vanilla)")}.");
     }
 
+    /// <summary>CardModel.Pile for every card of every pile: indexed vs vanilla answers and timings.</summary>
+    private static CmdResult ComparePile()
+    {
+        RunState? state = RunManager.Instance.DebugOnlyGetState();
+        if (state == null)
+        {
+            return new CmdResult(success: false, "Start a run first.");
+        }
+        System.Collections.Generic.List<MegaCrit.Sts2.Core.Models.CardModel> cards = state.Players
+            .SelectMany(p => p.Piles).SelectMany(p => p.Cards).ToList();
+        int mismatches = 0;
+        Stopwatch vanilla = Stopwatch.StartNew();
+        var expected = cards.Select(PileIndex.Vanilla).ToList();
+        vanilla.Stop();
+        Stopwatch fast = Stopwatch.StartNew();
+        var actual = cards.Select(c => c.Pile).ToList();
+        fast.Stop();
+        for (int i = 0; i < cards.Count; i++)
+        {
+            if (expected[i] != actual[i])
+            {
+                mismatches++;
+            }
+        }
+        string verdict = mismatches == 0 ? "OK: identical piles" : $"MISMATCH: {mismatches} cards differ";
+        return new CmdResult(mismatches == 0,
+            $"pile lookup — {cards.Count} cards, index {(PileIndex.Enabled ? "on" : "OFF")}\n"
+            + $"  vanilla: {vanilla.Elapsed.TotalMilliseconds:F1} ms ({vanilla.Elapsed.TotalMilliseconds * 1000 / Math.Max(1, cards.Count):F2} us/card)\n"
+            + $"  index  : {fast.Elapsed.TotalMilliseconds:F1} ms ({fast.Elapsed.TotalMilliseconds * 1000 / Math.Max(1, cards.Count):F2} us/card)\n"
+            + $"  fast {PileIndex.Fast}, fallbacks {PileIndex.Fallbacks}, verified {PileIndex.Verified}\n  {verdict}");
+    }
+
+    private static CmdResult ProbeCmd(string[] args)
+    {
+        switch (args.Length > 0 ? args[0].ToLowerInvariant() : "")
+        {
+            case "":
+                return new CmdResult(success: true, PerfProbe.Report());
+            case "reset":
+                PerfProbe.Reset();
+                return new CmdResult(success: true, "Probe stats cleared.");
+            case "log":
+                PerfProbe.LogReport();
+                return new CmdResult(success: true, "Probe report written to the game log.");
+            case "on" or "off":
+                PerfProbe.Enabled = args[0].ToLowerInvariant() == "on";
+                return new CmdResult(success: true, $"Probe {(PerfProbe.Enabled ? "on" : "off")}.");
+            case "hitch" when args.Length > 1 && double.TryParse(args[1], out double ms) && ms > 0:
+                PerfProbe.HitchMs = ms;
+                return new CmdResult(success: true, $"Hitch threshold {ms:F0} ms.");
+            default:
+                return new CmdResult(success: false, "Usage: bdperf probe [reset|log|on|off|hitch <ms>]");
+        }
+    }
+
     private static CmdResult Verify(string? mode)
     {
         if (mode != null)
@@ -101,8 +167,8 @@ public class PerfConsoleCmd : AbstractConsoleCmd
             SnapshotVerifier.Mode = parsed;
         }
         return new CmdResult(success: true,
-            $"verify mode: {SnapshotVerifier.Mode} — snapshots {SnapshotVerifier.Snapshots}, verified {SnapshotVerifier.Verified}, mismatches {SnapshotVerifier.Mismatches}\n"
-            + $"  {ListenerCache.Name}: snapshot {(ListenerCache.SnapshotEnabled ? "on" : "OFF")}, refresh {(ListenerCache.RefreshEnabled ? "on" : "OFF")}, {HookFilter.Name}: {(HookFilter.Enabled ? "on" : "OFF")}");
+            $"verify mode: {SnapshotVerifier.Mode} — snapshots {SnapshotVerifier.Snapshots}, verified {SnapshotVerifier.Verified}, mismatches {SnapshotVerifier.Mismatches}, skipped (too large) {SnapshotVerifier.SkippedTooLarge}\n"
+            + $"  {ListenerCache.Name}: snapshot {(ListenerCache.SnapshotEnabled ? "on" : "OFF")}, refresh {(ListenerCache.RefreshEnabled ? "on" : "OFF")}, {HookFilter.Name}: {(HookFilter.Enabled ? "on" : "OFF")}, reuse {(ListenerCache.ReuseEnabled ? "on" : "OFF")} (reused {ListenerCache.Reused}, verified {ListenerCache.ReuseVerified}), hitting checks {HookFilter.HittingChecks} mismatches {HookFilter.HittingMismatches}");
     }
 
     /// <summary>

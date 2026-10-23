@@ -17,14 +17,29 @@ public static class ModEntry
     {
         TryApply(ListenerCache.Name, ListenerCache.Apply);
         TryApply(HookFilter.Name, HookFilter.Apply);
+        TryApply(ExtraScopes.Name, ExtraScopes.Apply);
         TryApply(SnapshotVerifier.Name, SnapshotVerifier.Apply);
         TryApply(IdleButtonInput.Name, IdleButtonInput.Apply);
         TryApply(GridSortCache.Name, GridSortCache.Apply);
         TryApply(EnchantmentTabReuse.Name, EnchantmentTabReuse.Apply);
         TryApply(PoolSignalScan.Name, PoolSignalScan.Apply);
+        TryApply(CardDbScan.Name, CardDbScan.Apply);
+        TryApply(PileIndex.Name, PileIndex.Apply);
+        TryApply(PileCounterBatch.Name, PileCounterBatch.Apply);
+        TryApply(FastCombatStart.Name, FastCombatStart.Apply);
 #if BENCH
         TryApply(Bench.CombatStartTimer.Name, Bench.CombatStartTimer.Apply);
+        TryApply(Bench.PerfProbe.Name, Bench.PerfProbe.Apply);
+        TryApply(Bench.AutoTest.Name, Bench.AutoTest.Apply);
 #endif
+        try
+        {
+            Config.ModConfigBridge.Init();
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"[{Id}] {Config.ModConfigBridge.Name} integration failed: {e}");
+        }
         Log.Info($"[{Id}] Initialized v{typeof(ModEntry).Assembly.GetName().Version?.ToString(3)}");
     }
 

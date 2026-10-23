@@ -1,0 +1,10 @@
+# ModConfig check, part 2: after a restart the saved setting is applied; puts everything back on.
+timeout 300
+wait 3
+cmd bdopt
+cmd bdopt grid_sort on
+cmd bdopt off
+cmd bdopt on
+cmd bdopt
+wait 3
+quit

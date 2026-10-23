@@ -104,6 +104,7 @@ public static class IdleButtonInput
     private static void Disable(Exception e)
     {
         Enabled = false;
+        PatchSafety.Fault(Name);
         Log.Error($"[{ModEntry.Id}] {Name} disabled after exception: {e}");
     }
 }

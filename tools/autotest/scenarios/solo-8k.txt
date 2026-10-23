@@ -1,0 +1,35 @@
+# Singleplayer, the reference run's cards imported 9x (~8,400 cards) + its relics once: combat start, plays,
+# end of turn, combat end, with release-like timings (Debug re-checks off). Needs %APPDATA%/SlayTheSpire2/bigdeck/ref.run.
+timeout 900
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 999999
+cmd bdperf probe reset
+cmd fight CULTISTS_NORMAL
+waitfor idle 400
+cmd bdperf combatstart
+cmd bdperf probe log
+cmd bdperf probe reset
+play 5
+endturn
+waitfor idle 300
+play 5
+waitfor idle 120
+cmd bdperf probe log
+cmd bdperf probe reset
+cmd kill all
+waitfor nocombat 300
+wait 5
+cmd bdperf probe log
+quit

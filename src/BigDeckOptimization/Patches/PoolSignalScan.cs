@@ -131,6 +131,7 @@ public static class PoolSignalScan
         {
             // Vanilla then redoes the whole free; what was already disconnected fails its IsConnected check.
             Enabled = false;
+            PatchSafety.Fault(Name);
             Log.Error($"[{ModEntry.Id}] {Name} disabled after exception: {e}");
             return true;
         }
@@ -184,6 +185,7 @@ public static class PoolSignalScan
             if (!entry.Names.SequenceEqual(names))
             {
                 Enabled = false;
+                PatchSafety.Fault(Name);
                 Log.Error($"[{ModEntry.Id}] {Name} disabled: signals of {key.Item1.Name} ({key.Item2}) differ between nodes of the same type");
             }
         }

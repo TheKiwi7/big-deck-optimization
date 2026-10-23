@@ -1,0 +1,37 @@
+# Fast combat start must not change results: the same combat with fast start, normal waits and the mod off.
+timeout 1500
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf pile verify 1
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 400
+state fast-t1
+cmd kill all
+waitfor nocombat 300
+cmd bdopt fast_combat_start off
+cmd fight CULTISTS_NORMAL
+waitfor idle 400
+state slow-t1
+cmd kill all
+waitfor nocombat 300
+cmd bdopt off
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+state vanilla-t1
+cmd kill all
+waitfor nocombat 300
+cmd bdopt on
+cmd bdopt fast_combat_start on
+cmd bdperf pile
+quit

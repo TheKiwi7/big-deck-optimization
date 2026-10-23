@@ -180,6 +180,13 @@ public class BigDeckConsoleCmd : AbstractConsoleCmd
 
     private const long MaxRunFileBytes = 64L * 1024 * 1024;
 
+    /// <summary>Hash of a shared run file, as <c>bigdeck hash</c> prints it (null if unreadable). Used by AutoTest scripts.</summary>
+    internal static string? SharedHash(string name)
+    {
+        byte[]? bytes = ReadShared(name, out _);
+        return bytes == null ? null : ShortHash(bytes);
+    }
+
     private static CmdResult Hash(string[] args)
     {
         if (args.Length == 0)
@@ -276,14 +283,18 @@ public class BigDeckConsoleCmd : AbstractConsoleCmd
         }
 
         // Same path as loading a save: no "card added" hooks, so relics like BingBong don't duplicate imported cards.
-        int cards = 0, relics = 0;
+        int cards = 0, relics = 0, clamped = 0, skipped = 0;
         foreach (RunHistoryPlayer source in sources)
         {
             if (what is "cards" or "all")
             {
                 foreach (SerializableCard save in source.Deck)
                 {
-                    CardModel card = CardModel.FromSerializable(save);
+                    CardModel? card = FromSerializableTolerant(save, ref clamped, ref skipped);
+                    if (card == null)
+                    {
+                        continue;
+                    }
                     scope.AddCard(card, player);
                     player.Deck.AddInternal(card);
                     cards++;
@@ -293,7 +304,17 @@ public class BigDeckConsoleCmd : AbstractConsoleCmd
             {
                 foreach (SerializableRelic save in source.Relics)
                 {
-                    AddRelic(player, RelicModel.FromSerializable(save));
+                    RelicModel relic;
+                    try
+                    {
+                        relic = RelicModel.FromSerializable(save);
+                    }
+                    catch (Exception)
+                    {
+                        skipped++; // A relic from a mod that isn't loaded here.
+                        continue;
+                    }
+                    AddRelic(player, relic);
                     relics++;
                 }
             }
@@ -301,7 +322,40 @@ public class BigDeckConsoleCmd : AbstractConsoleCmd
         // AddInternal skips the UI notification the deck counter listens to.
         player.Deck.InvokeCardAddFinished();
         string from = string.Join(", ", sources.Select(s => s.Character.Entry));
-        return new CmdResult(success: true, $"Imported {cards} cards and {relics} relics from {from} ({history.Players.Count} players in run). Deck: {player.Deck.Cards.Count} cards.");
+        string adjusted = clamped + skipped > 0 ? $" Without the run's mods: {clamped} upgrade levels capped, {skipped} cards/relics skipped." : "";
+        return new CmdResult(success: true, $"Imported {cards} cards and {relics} relics from {from} ({history.Players.Count} players in run). Deck: {player.Deck.Cards.Count} cards.{adjusted}");
+    }
+
+    /// <summary>
+    /// The card from the save; when the run was played with mods that aren't loaded here (e.g. no Workshop mods without
+    /// Steam), upgrades past the vanilla maximum are capped and unknown cards skipped. Deterministic: every peer reading
+    /// the same file gets the same cards.
+    /// </summary>
+    private static CardModel? FromSerializableTolerant(SerializableCard save, ref int clamped, ref int skipped)
+    {
+        try
+        {
+            return CardModel.FromSerializable(save);
+        }
+        catch (Exception)
+        {
+            try
+            {
+                int max = ModelDb.GetById<CardModel>(save.Id!).MaxUpgradeLevel;
+                if (save.CurrentUpgradeLevel > max)
+                {
+                    save.CurrentUpgradeLevel = max;
+                    clamped++;
+                    return CardModel.FromSerializable(save);
+                }
+            }
+            catch (Exception)
+            {
+                // Falls through to skipping the card.
+            }
+            skipped++;
+            return null;
+        }
     }
 
     /// <summary>

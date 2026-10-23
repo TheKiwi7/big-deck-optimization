@@ -1,0 +1,29 @@
+# Non-combat rooms with ~8,400 cards: shop, rest site, treasure, event, map (entering each, hitches logged).
+timeout 900
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf probe reset
+cmd room SHOP
+wait 4
+cmd room RESTSITE
+wait 4
+cmd room TREASURE
+wait 4
+cmd room EVENT
+wait 4
+cmd room MAP
+wait 4
+deckview 3
+cmd bdperf probe log
+quit

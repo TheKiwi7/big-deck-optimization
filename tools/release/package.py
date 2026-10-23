@@ -7,7 +7,7 @@ Produces, under dist/ (gitignored):
   workshop/content/                  Steam Workshop item content (files at the root, like other STS2 mods)
   workshop/workshop_item.vdf         SteamCMD script: steamcmd +login <account> +workshop_build_item <this file> +quit
 
-Release builds exclude the test tooling (bigdeck/bdperf console commands); the script checks the DLL has none.
+Release builds exclude the test tooling (bigdeck/bdperf console commands, AutoTest, PerfProbe); the script checks the DLL has none.
 The build does not deploy to the game folder, so a Debug install used for testing is left alone.
 """
 import json
@@ -37,9 +37,10 @@ def build() -> None:
     subprocess.run([dotnet(), "build", str(PROJECT / "BigDeckOptimization.csproj"), "-c", "Release",
                     "-p:DeployToGame=false", "-nologo", "-v", "q"], check=True)
     dll = (OUTPUT / "BigDeckOptimization.dll").read_bytes()
-    for marker in ("bdperf", "bigdeck"):
-        if marker.encode("utf-16-le") in dll:
-            sys.exit(f"Release DLL still contains test command '{marker}': is Bench excluded from Release?")
+    # Test tooling (console commands, unattended test runner, profiler) must not ship.
+    for marker in ("bdperf", "bigdeck", "--bdtest", "PerfProbe"):
+        if marker.encode("utf-16-le") in dll or marker.encode() in dll:
+            sys.exit(f"Release DLL still contains test tooling '{marker}': is Bench excluded from Release?")
 
 
 def changenote(version: str) -> str:

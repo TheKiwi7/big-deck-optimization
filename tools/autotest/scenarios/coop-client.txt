@@ -1,0 +1,36 @@
+# Local co-op (client), see coop.ps1: ~3,750 cards per player (+ the reference relics on the host), two combats,
+# turn states logged on both sides to compare. Every machine needs the same bigdeck/ref.run.
+timeout 2400
+mplobby IRONCLAD 2
+waitfor run 240
+cmd bdperf checks off
+wait 14
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+enemyhp 999999
+waitfor combat 900
+waitfor idle 900
+state t1
+play 4
+endturn
+waitfor idle 900
+state t2
+play 4
+endturn
+waitfor idle 900
+state t3
+cmd bdperf verify
+waitfor nocombat 900
+waitfor combat 900
+waitfor idle 900
+state f2t1
+play 3
+endturn
+waitfor idle 900
+state f2t2
+cmd bdperf verify
+waitfor nocombat 900
+wait 25
+quit

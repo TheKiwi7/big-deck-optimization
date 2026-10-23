@@ -4,7 +4,8 @@
 
 - [ ] Version bumped in both `src/BigDeckOptimization/BigDeckOptimization.json` (`"version"`) and `BigDeckOptimization.csproj` (`<Version>`), `min_game_version` still right.
 - [ ] `CHANGELOG.md` has a `## vX.Y.Z` section (the package script uses it as the Workshop change note).
-- [ ] Debug build, singleplayer with a huge deck (`bigdeck import <ref> all`): `bdperf checksum 5`, `bdperf refresh 10`, `bdperf grid` all `OK: identical`.
+- [ ] Debug build, singleplayer with a huge deck (`bigdeck import <ref> all`): `bdperf checksum 5`, `bdperf refresh 10`, `bdperf grid`, `bdperf pile` all `OK: identical` (keep `checksum`/`refresh` under ~3,000 cards: they run vanilla first).
+- [ ] Unattended checks (`tools/autotest`): `run.ps1 -Name solo-8k`, `run.ps1 -Name fast-start-check` (identical `STATE` lines), `coop.ps1 -Name coop -WithMods` (same `STATE` lines on both peers, no `divergence`), `modconfig.ps1` (setting saved and reloaded, settings restored).
 - [ ] Release build in game (`python tools/release/package.py`, then copy `dist/BigDeckOptimization-*.zip` content into `<game>/mods/` in place of the Debug install):
   - the log shows `[BigDeckOptimization] Initialized vX.Y.Z` and every patch `applied` (`EnchantmentTabReuse` only with Limitless);
   - `bdopt` works, `bdperf` / `bigdeck` are unknown commands.
@@ -32,10 +33,9 @@ The game has no uploader: use SteamCMD (https://developer.valvesoftware.com/wiki
 
 ## 4. GitHub
 
-1. Make the repository public (it is private until v0.1).
+1. Rename the CHANGELOG `## Unreleased` section to `## vX.Y.Z`.
 2. Commit, tag `vX.Y.Z`, push the tag.
 3. Create a release from the tag: attach `dist/BigDeckOptimization-vX.Y.Z.zip`, paste the CHANGELOG section.
-4. Put the Workshop link in `README.md` (Install section).
 
 ## 5. Nexus Mods
 

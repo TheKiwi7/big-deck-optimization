@@ -1,0 +1,8 @@
+# ModConfig check, part 1 (modconfig.ps1): change a setting through bdopt, ModConfig saves it.
+timeout 300
+wait 3
+cmd bdopt
+cmd bdopt grid_sort off
+cmd bdopt
+wait 3
+quit

@@ -1,0 +1,63 @@
+# A run's worth of rooms with ~8,400 cards: combat, shop, rest site, elite, then The Kin boss finished by Pommel Strike
+# (the friends' co-op case: ~80 s stuck after that kill with 8,274 combat cards).
+timeout 1500
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 999999
+cmd bdperf probe reset
+cmd fight CULTISTS_NORMAL
+waitfor idle 400
+play 4
+endturn
+waitfor idle 300
+cmd kill all
+waitfor nocombat 300
+wait 3
+cmd bdperf probe log
+cmd room SHOP
+wait 3
+cmd room RESTSITE
+wait 3
+cmd bdperf probe reset
+cmd fight BYGONE_EFFIGY_ELITE
+waitfor idle 400
+cmd bdperf combatstart
+play 4
+endturn
+waitfor idle 300
+cmd kill all
+waitfor nocombat 300
+wait 3
+cmd bdperf probe log
+cmd bdperf probe reset
+cmd fight THE_KIN_BOSS
+waitfor idle 400
+cmd bdperf combatstart
+state boss-t1
+play 3
+endturn
+waitfor idle 300
+cmd energy 99
+play 6
+cmd bigdeck tank 1
+cmd card POMMEL_STRIKE hand
+wait 1
+state before-pommel
+playcard POMMEL_STRIKE 2
+state after-pommel
+cmd kill all
+waitfor nocombat 600
+wait 5
+cmd bdperf probe log
+quit

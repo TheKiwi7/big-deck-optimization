@@ -39,6 +39,9 @@ public static class ListenerCache
     /// <summary>Snapshot-scope caching. Toggled by the bench, or off for the session by the fail-safes.</summary>
     public static bool SnapshotEnabled { get; set; } = true;
 
+    /// <summary>Fault recorded when the snapshot verifier saw an optimized snapshot differ from vanilla.</summary>
+    public const string SnapshotFault = Name + ".Snapshot";
+
     /// <summary>Refresh-scope caching. Toggled by the bench, or off for the session by the fail-safes.</summary>
     public static bool RefreshEnabled { get; set; } = true;
 
@@ -50,6 +53,9 @@ public static class ListenerCache
     {
         public bool Equals((object, object?) a, (object, object?) b) => ReferenceEquals(a.Item1, b.Item1) && ReferenceEquals(a.Item2, b.Item2);
         public int GetHashCode((object, object?) k) => HashCode.Combine(RuntimeHelpers.GetHashCode(k.Item1), k.Item2 == null ? 0 : RuntimeHelpers.GetHashCode(k.Item2));
+
+        /// <summary>Same models, by reference.</summary>
+        public static readonly IEqualityComparer<AbstractModel> Models = ReferenceEqualityComparer.Instance;
     }
 
     // Main thread in practice; thread-static state keeps any other caller fully vanilla.
@@ -123,8 +129,8 @@ public static class ListenerCache
         // One scope around the whole CombatStateChanged dispatch (hand, end turn button, intents, creature state,
         // energy, orbs...): the listener lists are built and filtered once per refresh instead of once per handler.
         TryDispatchScope(harmony);
-        TryScope(harmony, AccessTools.Method(typeof(NHandCardHolder), nameof(NHandCardHolder.UpdateCard)), nameof(EnterRefresh), nameof(ExitRefresh));
-        TryScope(harmony, AccessTools.Method(typeof(NCard), nameof(NCard.UpdateVisuals)), nameof(EnterRefresh), nameof(ExitRefresh));
+        TryScope(harmony, AccessTools.Method(typeof(NHandCardHolder), nameof(NHandCardHolder.UpdateCard)), nameof(EnterDisplayRefresh), nameof(ExitRefresh));
+        TryScope(harmony, AccessTools.Method(typeof(NCard), nameof(NCard.UpdateVisuals)), nameof(EnterDisplayRefresh), nameof(ExitRefresh));
     }
 
     private static MethodBase Require(MethodBase? method) =>
@@ -228,7 +234,10 @@ public static class ListenerCache
         _materializingCombat = true;
         try
         {
-            ReadOnlyCollection<AbstractModel> listeners = combatState.IterateHookListeners().ToList().AsReadOnly();
+            ReadOnlyCollection<AbstractModel>? kept = Kept((combatState, null));
+            ReadOnlyCollection<AbstractModel> listeners = kept != null && !VerifyThisReuse()
+                ? kept
+                : CheckedAgainstKept(kept, combatState.IterateHookListeners().ToList().AsReadOnly());
             _cache[(combatState, null)] = (_version, listeners);
             return listeners;
         }
@@ -251,7 +260,10 @@ public static class ListenerCache
         _materializingRun = true;
         try
         {
-            ReadOnlyCollection<AbstractModel> listeners = runState.IterateHookListeners(child).ToList().AsReadOnly();
+            ReadOnlyCollection<AbstractModel>? kept = Kept((runState, child));
+            ReadOnlyCollection<AbstractModel> listeners = kept != null && !VerifyThisReuse()
+                ? kept
+                : CheckedAgainstKept(kept, runState.IterateHookListeners(child).ToList().AsReadOnly());
             _cache[(runState, child)] = (_version, listeners);
             return listeners;
         }
@@ -287,14 +299,74 @@ public static class ListenerCache
     {
         if (_snapshotDepth + _refreshDepth == 0)
         {
+            // Refresh-only scopes hand their lists to the next refresh scope (valid while the version is unchanged).
+            _kept?.Clear();
+            if (!_reuseBlocked && ReuseEnabled && _cache != null)
+            {
+                _kept ??= new Dictionary<(object, object?), (int, ReadOnlyCollection<AbstractModel>)>(new RefComparer());
+                foreach (var pair in _cache)
+                {
+                    _kept[pair.Key] = pair.Value;
+                }
+            }
+            _reuseBlocked = false;
+            _fromKept?.Clear();
             _cache?.Clear();
             ScopeEnded?.Invoke();
         }
     }
 
+    /// <summary>
+    /// Reuse of listener lists across display refresh scopes (UI refreshing several times a second, e.g. BetterSpire2's
+    /// damage preview): never in or after a snapshot or game-state refresh scope, only while no invalidation happened.
+    /// </summary>
+    public static bool ReuseEnabled { get; set; } = true;
+    public const string ReuseFault = Name + ".Reuse";
+    private const int ReuseVerifyEvery = 16;
+    public static long Reused { get; private set; }
+    public static long ReuseVerified { get; private set; }
+    [ThreadStatic] private static Dictionary<(object, object?), (int Version, ReadOnlyCollection<AbstractModel> Listeners)>? _kept;
+    /// <summary>A snapshot or a game-state refresh scope is (or was) open in the current outermost scope.</summary>
+    [ThreadStatic] private static bool _reuseBlocked;
+    /// <summary>Cache keys whose list came from a kept one, dropped if a game-state scope opens inside.</summary>
+    [ThreadStatic] private static HashSet<(object, object?)>? _fromKept;
+
+    private static ReadOnlyCollection<AbstractModel>? Kept((object, object?) key)
+    {
+        if (!ReuseEnabled || _reuseBlocked || _kept == null
+            || !_kept.TryGetValue(key, out var entry) || entry.Version != _version)
+        {
+            return null;
+        }
+        Reused++;
+        (_fromKept ??= new HashSet<(object, object?)>(new RefComparer())).Add(key);
+        return entry.Listeners;
+    }
+
+    private static bool VerifyThisReuse() => Reused % ReuseVerifyEvery == 0;
+
+    /// <summary>Fresh list built while a kept one was available: they must match, else reuse is unsafe.</summary>
+    private static ReadOnlyCollection<AbstractModel> CheckedAgainstKept(ReadOnlyCollection<AbstractModel>? kept, ReadOnlyCollection<AbstractModel> fresh)
+    {
+        if (kept != null)
+        {
+            ReuseVerified++;
+            if (!kept.SequenceEqual(fresh, RefComparer.Models))
+            {
+                ReuseEnabled = false;
+                _kept?.Clear();
+                PatchSafety.Fault(ReuseFault);
+                Log.Error($"[{ModEntry.Id}] {Name}: a kept listener list differs from a fresh one ({kept.Count} vs {fresh.Count}): "
+                    + "reuse across refreshes disabled for this session. Please report this log.");
+            }
+        }
+        return fresh;
+    }
+
     private static void EnterSnapshot()
     {
         EnterAny();
+        BlockReuse();
         _snapshotDepth++;
     }
 
@@ -305,13 +377,39 @@ public static class ListenerCache
         return __exception;
     }
 
-    private static void EnterRefresh()
+    /// <summary>
+    /// Refresh scope around a pass whose results can feed game state (enchantment values, first-turn filters): lists
+    /// are always built fresh here, never reused from an earlier scope.
+    /// </summary>
+    internal static void EnterRefresh()
+    {
+        EnterAny();
+        BlockReuse();
+        _refreshDepth++;
+    }
+
+    /// <summary>Refresh scope around a display-only pass (card visuals, other mods' previews): may reuse kept lists.</summary>
+    internal static void EnterDisplayRefresh()
     {
         EnterAny();
         _refreshDepth++;
     }
 
-    private static Exception? ExitRefresh(Exception? __exception)
+    /// <summary>From here to the end of the outermost scope, no kept list is used, and lists already taken from one are dropped.</summary>
+    private static void BlockReuse()
+    {
+        _reuseBlocked = true;
+        if (_fromKept is { Count: > 0 })
+        {
+            foreach (var key in _fromKept)
+            {
+                _cache?.Remove(key);
+            }
+            _fromKept.Clear();
+        }
+    }
+
+    internal static Exception? ExitRefresh(Exception? __exception)
     {
         _refreshDepth--;
         ExitAny();
@@ -358,7 +456,9 @@ public static class ListenerCache
     {
         SnapshotEnabled = false;
         RefreshEnabled = false;
+        PatchSafety.Fault(Name);
         _cache?.Clear();
+        _kept?.Clear();
         Log.Error($"[{ModEntry.Id}] {Name} disabled after exception, falling back to vanilla: {e}");
     }
 }
