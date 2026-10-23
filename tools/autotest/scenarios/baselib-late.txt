@@ -1,0 +1,7 @@
+# BaseLib optional, case 1 (baselib-optional.ps1): this mod loads before BaseLib. The settings menu must still appear.
+timeout 180
+wait 3
+cmd bdopt
+baselibmenu shot-settings-late
+wait 2
+quit

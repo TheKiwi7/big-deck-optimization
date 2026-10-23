@@ -9,6 +9,7 @@ traces) go to `results/` (gitignored).
 | `run.ps1 -Name <scenario> [-TraceSec 60]` | Singleplayer through Steam (save profile 3, in memory only: your profiles and last-profile setting are untouched). |
 | `coop.ps1 -Name coop [-WithMods]` | Local co-op: two instances without Steam (`--force-steam off --fastmp host_standard/join`), scenarios `<name>-host.txt` / `<name>-client.txt`. `-WithMods` copies your enabled Workshop mods into `<game>/mods_STEAMTEST` for the test and always deletes it afterwards. |
 | `try.ps1 [-Cleanup]` | Hands-on demo: a new run with ~16,800 cards and 736 relics (scenario `try-it`), then you play (`bdopt off` / `bdopt on` to compare). `-Cleanup` removes the local Debug copy afterwards. |
+| `baselib-optional.ps1` | Two sessions with your mod list edited (restored byte for byte): this mod loaded before BaseLib (the settings menu must still appear), then BaseLib disabled (every patch applies, bdopt works; Limitless and CampfireTrade fail to load, they need BaseLib). |
 | `settings.ps1` | Two sessions: BaseLib's settings menu captured and an option turned off, then reloaded after a restart and turned back on (mods screen captured); restores your `mod_configs/BigDeckOptimization.cfg` byte for byte. |
 
 Prerequisites: a Debug build deployed (`dotnet build -c Debug`), `dotnet-trace` on PATH for traces, a run history file

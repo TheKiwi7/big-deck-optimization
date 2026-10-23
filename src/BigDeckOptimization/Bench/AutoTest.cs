@@ -618,14 +618,19 @@ public static class AutoTest
         await Screenshot(tree, shot);
     }
 
-    /// <summary>Script <c>baselibmenu &lt;screenshot name&gt;</c>: BaseLib's mod configuration menu on this mod's settings.</summary>
+    /// <summary>
+    /// Script <c>baselibmenu &lt;screenshot name&gt;</c>: BaseLib's mod configuration menu on this mod's settings. By
+    /// reflection: this DLL must not reference BaseLib (optional).
+    /// </summary>
     private static async Task BaseLibMenu(SceneTree tree, string shot)
     {
         var menu = NGame.Instance?.MainMenu ?? throw new InvalidOperationException("not on the main menu");
-        var submenu = menu.SubmenuStack.PushSubmenuType<BaseLib.Config.UI.NModConfigSubmenu>();
+        Type submenuType = AccessTools.TypeByName("BaseLib.Config.UI.NModConfigSubmenu") ?? throw new InvalidOperationException("BaseLib not loaded");
+        object submenu = menu.SubmenuStack.PushSubmenuType(submenuType);
         await Frames(tree, 30);
-        var config = BaseLib.Config.ModConfigRegistry.Get(ModEntry.Id) ?? throw new InvalidOperationException("settings not registered in BaseLib");
-        AccessTools.Method(submenu.GetType(), "LoadModConfig").Invoke(submenu, new object[] { config });
+        object config = AccessTools.Method("BaseLib.Config.ModConfigRegistry:Get", new[] { typeof(string) }).Invoke(null, new object[] { ModEntry.Id })
+            ?? throw new InvalidOperationException("settings not registered in BaseLib");
+        AccessTools.Method(submenuType, "LoadModConfig").Invoke(submenu, new[] { config });
         await Frames(tree, 40);
         await Screenshot(tree, shot);
     }

@@ -9,7 +9,7 @@ using MegaCrit.Sts2.Core.Logging;
 namespace BigDeckOptimization.Config;
 
 /// <summary>
-/// The settings in BaseLib's mod configuration menu: one switch per <see cref="Settings"/> entry, saved by BaseLib in
+/// The settings in BaseLib's mod configuration menu (registered by <see cref="SettingsMenu"/> once BaseLib is loaded): one switch per <see cref="Settings"/> entry, saved by BaseLib in
 /// mod_configs/BigDeckOptimization.cfg. Property names give the option keys (CoopChecksum = coop_checksum).
 /// Labels and hover texts are added to the game's settings_ui table at runtime (this mod has no resource pack).
 /// </summary>

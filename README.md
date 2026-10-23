@@ -25,7 +25,7 @@ With a huge deck, the game slows down more and more until every action freezes i
 
 - **The game itself:** same rules, same results, same saves. The mod only makes the game do the same work faster.
 - **Your friends:** they can join you without the mod. They just won't get the speed-up on their side.
-- **Your other mods:** it only needs BaseLib (installed automatically with it on the Workshop) and works alongside Limitless, BetterSpire2, CampfireTrade, ModConfig and Unlimited. If another mod changes the same part of the game, this mod steps aside there.
+- **Your other mods:** it needs no other mod and works alongside Limitless, BetterSpire2, CampfireTrade, ModConfig and Unlimited. If another mod changes the same part of the game, this mod steps aside there.
 - **Its safety:** after a game or mod update, any part of the mod that no longer fits turns itself off instead of guessing.
 
 Co-op with very big decks is much better, but not instant: going from one turn to the next can still take a few seconds.
@@ -33,11 +33,11 @@ Co-op with very big decks is much better, but not instant: going from one turn t
 ## Install
 
 - **Steam Workshop:** [subscribe](https://steamcommunity.com/sharedfiles/filedetails/?id=3824717727).
-- **Manually:** download `BigDeckOptimization-vX.Y.Z.zip` from [Releases](../../releases) and extract it into `Slay the Spire 2/mods/`. [BaseLib](https://steamcommunity.com/sharedfiles/filedetails/?id=3737335127) is required.
+- **Manually:** download `BigDeckOptimization-vX.Y.Z.zip` from [Releases](../../releases) and extract it into `Slay the Spire 2/mods/`.
 
 ## Settings
 
-Everything is on by default. Each improvement has its own switch in the game's settings, under **Mods → Big Deck Optimization** (BaseLib's mod configuration menu). You can also use the console (`` ` `` key, `*` or `^` on AZERTY):
+Everything is on by default. With [BaseLib](https://steamcommunity.com/sharedfiles/filedetails/?id=3737335127) (optional), each improvement has its own switch in the game's settings, under **Mods → Big Deck Optimization**. Some players have reported problems with BaseLib: this mod works without it, you just won't have that settings menu. You can also use the console (`` ` `` key, `*` or `^` on AZERTY; without BaseLib, these changes last until you quit the game):
 
 - `bdopt` shows what is on.
 - `bdopt off` / `bdopt on` turns the whole mod off or back on, without restarting.
@@ -49,7 +49,7 @@ Turn the mod off in its settings (or type `bdopt off` in the console) and try ag
 
 ## Building from source
 
-.NET 9 SDK, Slay the Spire 2 and [BaseLib](https://steamcommunity.com/sharedfiles/filedetails/?id=3737335127) installed (found in the Workshop folder; elsewhere, set `<BaseLibDll>` in `Directory.Build.local.props`), then `dotnet build src/BigDeckOptimization/BigDeckOptimization.csproj -c Debug` (copies the mod into the game's `mods` folder). Debug builds also include test tools ([tools/autotest](tools/autotest/README.md)). `python tools/release/package.py` prepares a release. Design notes and measurements: [DESIGN.md](DESIGN.md).
+.NET 9 SDK, Slay the Spire 2 and [BaseLib](https://steamcommunity.com/sharedfiles/filedetails/?id=3737335127) installed (for the settings menu DLL; found in the Workshop folder, elsewhere set `<BaseLibDll>` in `Directory.Build.local.props`), then `dotnet build src/BigDeckOptimization/BigDeckOptimization.csproj -c Debug` (copies the mod into the game's `mods` folder). Debug builds also include test tools ([tools/autotest](tools/autotest/README.md)). `python tools/release/package.py` prepares a release. Design notes and measurements: [DESIGN.md](DESIGN.md).
 
 ## License
 

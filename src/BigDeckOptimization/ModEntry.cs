@@ -35,11 +35,11 @@ public static class ModEntry
 #endif
         try
         {
-            Config.BaseLibSettings.Register();
+            Config.SettingsMenu.Init();
         }
         catch (Exception e)
         {
-            Log.Warn($"[{Id}] {Config.BaseLibSettings.Name}: settings menu unavailable (bdopt still works): {e}");
+            Log.Warn($"[{Id}] {Config.SettingsMenu.Name}: settings menu unavailable (bdopt still works): {e}");
         }
         Log.Info($"[{Id}] Initialized v{typeof(ModEntry).Assembly.GetName().Version?.ToString(3)}");
     }

@@ -12,7 +12,7 @@
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <DebugType>portable</DebugType>
     <!-- Keep in sync with "version" in BigDeckOptimization.json. -->
-    <Version>0.2.2</Version>
+    <Version>0.2.3</Version>
   </PropertyGroup>
 
   <!-- Test tooling (bigdeck / bdperf console commands, combat start timer) only in non-Release builds. -->
@@ -33,16 +33,12 @@
   <PropertyGroup>
     <GameDataDir>$(GameDir)\data_sts2_windows_x86_64</GameDataDir>
     <ModDeployDir>$(GameDir)\mods\BigDeckOptimization</ModDeployDir>
-    <!-- BaseLib from the Steam Workshop (override in Directory.Build.local.props if installed elsewhere). -->
-    <BaseLibDll Condition="'$(BaseLibDll)' == ''">$(GameDir)\..\..\workshop\content\2868840\3737335127\BaseLib\BaseLib.dll</BaseLibDll>
   </PropertyGroup>
 
   <ItemGroup>
     <Reference Include="sts2" HintPath="$(GameDataDir)\sts2.dll" Private="false" />
     <Reference Include="GodotSharp" HintPath="$(GameDataDir)\GodotSharp.dll" Private="false" />
     <Reference Include="0Harmony" HintPath="$(GameDataDir)\0Harmony.dll" Private="false" />
-    <!-- Required mod (manifest dependency): its mod configuration menu hosts the settings. -->
-    <Reference Include="BaseLib" HintPath="$(BaseLibDll)" Private="false" />
   </ItemGroup>
 
   <ItemGroup>
@@ -51,9 +47,18 @@
     <None Include="mod_image.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
-  <Target Name="DeployToGame" AfterTargets="Build" Condition="'$(DeployToGame)' != 'false' And Exists('$(GameDir)')">
+  <!-- The settings menu DLL (the only one referencing BaseLib, which is optional): built next to this one. -->
+  <Target Name="BuildMenu" AfterTargets="Build">
+    <!-- Restore runs on its own (different global properties), as NuGet requires. -->
+    <MSBuild Projects="..\BigDeckOptimization.Menu\BigDeckOptimization.Menu.csproj" Targets="Restore"
+             Properties="Configuration=$(Configuration);MainDll=$(TargetPath);MenuRestore=true" />
+    <MSBuild Projects="..\BigDeckOptimization.Menu\BigDeckOptimization.Menu.csproj" Targets="Build"
+             Properties="Configuration=$(Configuration);MainDll=$(TargetPath)" />
+  </Target>
+
+  <Target Name="DeployToGame" AfterTargets="BuildMenu" Condition="'$(DeployToGame)' != 'false' And Exists('$(GameDir)')">
     <ItemGroup>
-      <ModFiles Include="$(OutDir)BigDeckOptimization.dll;$(OutDir)BigDeckOptimization.pdb;$(OutDir)BigDeckOptimization.json;$(OutDir)mod_image.png" />
+      <ModFiles Include="$(OutDir)BigDeckOptimization.dll;$(OutDir)BigDeckOptimization.pdb;$(OutDir)BigDeckOptimization.json;$(OutDir)mod_image.png;$(OutDir)BigDeckOptimization.Menu.dll;$(OutDir)BigDeckOptimization.Menu.pdb" />
     </ItemGroup>
     <!-- The game locks the DLL while running: warn instead of failing the build. -->
     <Copy SourceFiles="@(ModFiles)" DestinationFolder="$(ModDeployDir)" SkipUnchangedFiles="true" Retries="0" ContinueOnError="WarnAndContinue" />

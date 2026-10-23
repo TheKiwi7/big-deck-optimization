@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The settings menu, in its own DLL because it derives from a BaseLib class: BaseLib is optional, and the game reads
+    every type of a mod's main DLL when loading it (one type it can't resolve and the whole mod fails). The main
+    project builds this one after itself (target BuildMenu) and Config/SettingsMenu.cs loads it once BaseLib is loaded.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>BigDeckOptimization.Menu</AssemblyName>
+    <!-- BaseLib names the config file and its texts after the root namespace: keep BigDeckOptimization. -->
+    <RootNamespace>BigDeckOptimization</RootNamespace>
+    <GenerateDependencyFile>false</GenerateDependencyFile>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <DebugType>portable</DebugType>
+    <!-- Next to the main DLL, so deploy and packaging find both. -->
+    <OutDir>$(MSBuildThisFileDirectory)..\BigDeckOptimization\bin\$(Configuration)\</OutDir>
+    <!-- Set by the main project; this default allows building this project alone after the main one. -->
+    <MainDll Condition="'$(MainDll)' == ''">$(OutDir)BigDeckOptimization.dll</MainDll>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+    <PathMap>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../../'))=/_/</PathMap>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <GameDataDir>$(GameDir)\data_sts2_windows_x86_64</GameDataDir>
+    <BaseLibDll Condition="'$(BaseLibDll)' == ''">$(GameDir)\..\..\workshop\content\2868840\3737335127\BaseLib\BaseLib.dll</BaseLibDll>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="sts2" HintPath="$(GameDataDir)\sts2.dll" Private="false" />
+    <Reference Include="GodotSharp" HintPath="$(GameDataDir)\GodotSharp.dll" Private="false" />
+    <Reference Include="BaseLib" HintPath="$(BaseLibDll)" Private="false" />
+    <Reference Include="BigDeckOptimization" HintPath="$(MainDll)" Private="false" />
+  </ItemGroup>
+
+</Project>

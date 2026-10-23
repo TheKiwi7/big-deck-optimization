@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.3
+
+- BaseLib is now optional. Some players have reported problems with BaseLib: this mod now works without it. BaseLib only adds the settings menu (Mods → Big Deck Optimization); without it, the bdopt console command still turns improvements on or off until you quit the game.
+
 ## v0.2.2
 
 - New, cleaner image on the mods screen and the Workshop page.

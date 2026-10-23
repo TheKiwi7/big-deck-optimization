@@ -1,0 +1,10 @@
+# BaseLib optional, case 2 (baselib-optional.ps1): BaseLib disabled. Every patch applies and bdopt still works.
+timeout 180
+wait 3
+cmd bdopt
+cmd bdopt fast_combat_start off
+cmd bdopt
+cmd bdopt fast_combat_start on
+modsscreen shot-mods-nobaselib
+wait 2
+quit

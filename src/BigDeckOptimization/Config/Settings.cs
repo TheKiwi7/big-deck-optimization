@@ -10,7 +10,8 @@ namespace BigDeckOptimization.Config;
 /// User choices for the optimizations: a master switch plus one switch per optimization, all on by default. Each
 /// patch's own Enabled flag is the effective state: master AND its option AND not faulted. A patch that turned itself
 /// off after an error (<see cref="PatchSafety.Fault"/>) stays off for the session whatever the settings say.
-/// They are shown in BaseLib's mod configuration menu and saved by it (see BaseLibSettings); bdopt changes them too.
+/// With BaseLib (optional) they are shown in its mod configuration menu and saved by it (see SettingsMenu); bdopt
+/// changes them too, for the session only without BaseLib.
 /// </summary>
 public static class Settings
 {
