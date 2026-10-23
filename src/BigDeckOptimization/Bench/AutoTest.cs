@@ -271,6 +271,10 @@ public static class AutoTest
                 case "deckscroll":
                     await DeckScroll(tree, int.Parse(arg));
                     break;
+                case "deckpages":
+                    string[] pageArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    await DeckPages(tree, pageArgs[0], int.Parse(pageArgs[1]));
+                    break;
                 case "playcard":
                     string[] playArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                     await PlayCard(tree, playArgs[0].ToUpperInvariant(), playArgs.Length > 1 ? int.Parse(playArgs[1]) : 0);
@@ -538,6 +542,35 @@ public static class AutoTest
         }
         double total = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
         Say($"  scrolled {steps} steps in {total:F0} ms: {total / steps:F1} ms/frame, worst {worst:F0} ms");
+        MegaCrit.Sts2.Core.Nodes.Screens.Capstones.NCapstoneContainer.Instance?.Close();
+        await Frames(tree, 5);
+    }
+
+    /// <summary>
+    /// Script <c>deckpages &lt;prefix&gt; &lt;pages&gt;</c>: deck view screenshots scrolled two card rows per page, so every
+    /// page shows its cards at the same screen positions (card art for the Workshop preview).
+    /// </summary>
+    private static async Task DeckPages(SceneTree tree, string prefix, int pages)
+    {
+        Player me = Me() ?? throw new InvalidOperationException("no local player");
+        var screen = MegaCrit.Sts2.Core.Nodes.Screens.NDeckViewScreen.ShowScreen(me) ?? throw new InvalidOperationException("no deck view");
+        await Frames(tree, 30);
+        NCardGrid grid = FindChild<NCardGrid>(screen) ?? throw new InvalidOperationException("no card grid in the deck view");
+        float pitch = Traverse.Create(grid).Field("_cardSize").GetValue<Vector2>().Y + 40f; // + NCardGrid.CardPadding
+        MethodInfo allocate = AccessTools.Method(typeof(NCardGrid), "AllocateCardHolders");
+        for (int page = 0; page < pages; page++)
+        {
+            // SetScrollPosition skips the grid's holder recycling (it only runs while animating a scroll), which
+            // moves one row at a time: move there in small steps and recycle after each.
+            for (int step = 1; page > 0 && step <= 16; step++)
+            {
+                grid.SetScrollPosition(-((page - 1) * 2 + step / 8f) * pitch);
+                allocate.Invoke(grid, null);
+                await Frames(tree, 1);
+            }
+            await Frames(tree, 20);
+            await Screenshot(tree, $"{prefix}-{page:D2}");
+        }
         MegaCrit.Sts2.Core.Nodes.Screens.Capstones.NCapstoneContainer.Instance?.Close();
         await Frames(tree, 5);
     }

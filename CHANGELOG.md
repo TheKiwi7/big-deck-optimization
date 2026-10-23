@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.2
+
+- New, cleaner image on the mods screen and the Workshop page.
+
 ## v0.2.1
 
 - The settings are now in the game's settings menu, under Mods → Big Deck Optimization (from BaseLib's mod configuration). BaseLib is now required; on the Workshop it is installed with this mod.

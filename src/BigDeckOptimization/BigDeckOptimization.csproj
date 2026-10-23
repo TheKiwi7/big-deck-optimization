@@ -12,7 +12,7 @@
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <DebugType>portable</DebugType>
     <!-- Keep in sync with "version" in BigDeckOptimization.json. -->
-    <Version>0.2.1</Version>
+    <Version>0.2.2</Version>
   </PropertyGroup>
 
   <!-- Test tooling (bigdeck / bdperf console commands, combat start timer) only in non-Release builds. -->

@@ -1,0 +1,10 @@
+# Card art for the Workshop preview: a deck mixing the reference run's Defect, Ironclad and Necrobinder cards with
+# random Necrobinder cards, captured page by page from the deck view (results/cardart-NN.png).
+timeout 300
+newrun NECROBINDER CARDART
+waitfor run 120
+wait 2
+cmd bigdeck import ref 0,1,3 cards
+cmd bigdeck 300
+deckpages cardart 30
+quit
