@@ -2,7 +2,7 @@
 
 ## v0.4.0
 
-Turns about twice as fast with huge decks, and much of Limitless' and BaseLib's work optimized.
+With huge decks (8,000+ cards), a turn now takes about half as long as with v0.3.0, and much of Limitless' and BaseLib's work optimized.
 
 - Co-op: every player now needs the mod, with the same version (the game checks it when someone joins). With huge decks, a player without the mod starts every combat far behind the others, and the game drops the actions played in the meantime: desyncs or a frozen run. This was already the case with earlier versions.
 - The faster combat start is always on in co-op (its switch now only applies to solo), so every player starts the combat at the same pace.
@@ -24,7 +24,7 @@ Faster turns with huge decks.
 
 ## v0.2.3
 
-- BaseLib is now optional. Some players have reported problems with BaseLib: this mod now works without it. BaseLib only adds the settings menu (Mods → Big Deck Optimization); without it, the bdopt console command still turns improvements on or off until you quit the game.
+- BaseLib is now optional. Some players have reported problems with BaseLib: this mod now works without it. BaseLib only adds the settings menu (Mod Configuration → Big Deck Optimization); without it, the bdopt console command still turns improvements on or off until you quit the game.
 
 ## v0.2.2
 
@@ -32,7 +32,7 @@ Faster turns with huge decks.
 
 ## v0.2.1
 
-- The settings are now in the game's settings menu, under Mods → Big Deck Optimization (from BaseLib's mod configuration). BaseLib is now required; on the Workshop it is installed with this mod.
+- The settings are now in the game's settings menu, under Mod Configuration → Big Deck Optimization (from BaseLib's mod configuration). BaseLib is now required; on the Workshop it is installed with this mod.
 - The mod has its own image on the mods screen.
 - Switches turned off in ModConfig with v0.2.0 are not carried over: everything starts on again.
 

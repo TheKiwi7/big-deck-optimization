@@ -1,5 +1,10 @@
 Removes the lag of huge decks in Slay the Spire 2: thousands of cards, hundreds of relics, in singleplayer and in co-op.
 
+[b]Playing with Limitless or BaseLib?[/b] The mod also speeds up a large part of their work during combat, with the same results.
+
+[b]In co-op, every player needs this mod.[/b] The game won't let a player without it join.
+Why: with a huge deck, the mod speeds the game up so much that a player without it falls far behind. For example, with about 8,000 cards and a few hundred relics, starting a combat takes about 4 seconds with the mod and over 30 seconds without it. The game can't handle players that far apart: the cards played in the meantime get lost, and the run desyncs or freezes.
+
 [b]BaseLib is not required.[/b] The mod works on its own; with [url=https://steamcommunity.com/sharedfiles/filedetails/?id=3737335127]BaseLib[/url] installed, you also get a settings menu to turn each improvement on or off.
 
 [b]Disclaimer:[/b] this mod is still in early development. Although I haven't found any bug, some might still exist. I will update it regularly for a while, to spot any bug and optimize the game further.
@@ -18,7 +23,6 @@ With a huge deck, the game slows down more and more until every action freezes i
 [*][b]Lots of relics:[/b] moving the mouse no longer slows the game down.
 [*][b]Optional:[/b] with 50+ relics, the relic effects at the start of a combat skip their animation pauses. It looks faster, and the effects stay exactly the same (always on in co-op).
 [/list]
-[b]Co-op: every player needs the mod, with the same version.[/b] The game checks it when someone joins. With huge decks, a player without the mod would start every combat far behind the others, and the game drops the actions played in the meantime: desyncs or a frozen run.
 
 [h2]What it doesn't change[/h2]
 [list]
@@ -29,13 +33,13 @@ With a huge deck, the game slows down more and more until every action freezes i
 Co-op with very big decks is much better, but not instant: going from one turn to the next can still take a few seconds.
 
 [h2]Settings[/h2]
-Everything is on by default. With [url=https://steamcommunity.com/sharedfiles/filedetails/?id=3737335127]BaseLib[/url] (optional), each improvement has its own switch in the game's settings, under [b]Mods → Big Deck Optimization[/b]. Some players have reported problems with BaseLib: this mod works without it, you just won't have that settings menu.
+Everything is on by default. With [url=https://steamcommunity.com/sharedfiles/filedetails/?id=3737335127]BaseLib[/url] (optional), each improvement has its own switch under [b]Mod Configuration → Big Deck Optimization[/b]. Some players have reported problems with BaseLib: this mod works without it, you just won't have that settings menu.
 
 You can also use the console ([b]`[/b] key, [b]*[/b] or [b]^[/b] on AZERTY; without BaseLib, these changes last until you quit the game):
 [list]
 [*][b]bdopt[/b] shows what is on.
 [*][b]bdopt off[/b] / [b]bdopt on[/b] turns the whole mod off or back on, without restarting.
-[*][b]bdopt fast_combat_start off[/b] turns off just the faster combat start in solo (it stays on in co-op).
+[*][b]bdopt fast_combat_start off[/b] turns off just the faster combat start. In co-op it stays on for everyone, so all players start each combat at the same pace.
 [/list]
 The Limitless-only switches appear unticked without Limitless, and ticked once it is installed.
 
@@ -46,8 +50,9 @@ Source code (MIT): https://github.com/TheKiwi7/big-deck-optimization
 [h2]Something looks wrong?[/h2]
 Check whether the bug still happens with the mod turned off, then switch it back on:
 [list]
-[*]With BaseLib: in the game's settings, [b]Mods → Big Deck Optimization[/b], untick [b]Optimizations enabled[/b].
+[*]With BaseLib: in [b]Mod Configuration → Big Deck Optimization[/b], untick [b]Optimizations enabled[/b].
 [*]With or without BaseLib: open the console and type [b]bdopt off[/b] ([b]bdopt on[/b] to switch it back on).
 [/list]
-In co-op, every player turns it off (and back on) together: a player with the mod off falls far behind the others.
+In co-op, every player turns it off (and back on) together, for the same reason: a player with the mod off falls far behind the others.
+
 Then report it in the comments.
