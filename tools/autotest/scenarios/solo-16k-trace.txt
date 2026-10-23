@@ -1,0 +1,42 @@
+# Same deck as solo-16k, for run.ps1 -TraceSec: the phases with markers, then stays open until the trace ends.
+timeout 1200
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+cmd bdperf combatstart
+marker idle
+wait 10
+marker plays
+play 5
+waitfor idle 120
+marker endturn
+endturn
+waitfor idle 300
+marker end
+cmd kill all
+waitfor nocombat 300
+wait 5
+wait 120
+quit

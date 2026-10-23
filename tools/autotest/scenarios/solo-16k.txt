@@ -1,0 +1,52 @@
+# Singleplayer at double the reference size: its cards imported 18x (~16,800) and its relics twice (736). Combat start,
+# idle, plays, end of turn, combat end with per-phase probe logs and release-like timings.
+timeout 1200
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 999999
+cmd bdperf probe reset
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+cmd bdperf combatstart
+cmd bdperf probe log
+cmd bdperf probe reset
+marker idle
+wait 10
+cmd bdperf probe log
+cmd bdperf probe reset
+marker plays
+play 5
+waitfor idle 120
+cmd bdperf probe log
+cmd bdperf probe reset
+marker endturn
+endturn
+waitfor idle 300
+cmd bdperf probe log
+cmd bdperf probe reset
+marker end
+cmd kill all
+waitfor nocombat 300
+wait 5
+cmd bdperf probe log
+quit

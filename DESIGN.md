@@ -26,6 +26,20 @@ Target game version: **v0.107.1** (Godot 4, C# / .NET 9, game logic in `sts2.dll
 - **(b) Visual concessions — "Auto" mode.** Enabled by default only above a deck-size threshold (default 300, configurable), each one toggleable. Examples: capped shuffle animation, faster draw animations, per-card VFX cut. Not started.
 - **(c) Gameplay logic changes — never.**
 
+### 16,800 cards + 736 relics (2026-10-23, `solo-16k`, `solo-16k-trace`)
+
+Double the reference size (its cards 18x, relics 2x), release-like timings: idle combat smooth (no frame over 100 ms in
+10 s), combat start 10.2 s, plays and end of turn at ~8 fps (frames 110-190 ms), ~30% of action time in GC pauses
+(`gcstat`: e.g. 4 plays 7.6 s with 2.3 s of GC; mostly gen1 collections, ~50 ms each). Trace: Limitless'
+`RecalculateCardValues` patch re-serializes every stacked enchantment after each action (`MultiEnchantment.SetSerializableCards`,
+~13% of the main thread here: ~13,000 enchanted cards since the reference run's 735 are copied 18x), with BaseLib's
+extended save data (`ConditionalWeakTable` entry per `ToSerializable`) on top; per-frame rich-text effects (`RichTextGold`/`RichTextSine`) ~16%.
+
+Tried and dropped: skipping BaseLib's empty extended-data entries (identical checksum and save packet, but no clear gain
+in an A/B over 4 turns: plays 7.6/8.0 s off vs 5.2/6.1 s on with different cards, end of turn 5.5/4.7 vs 6.3/5.0 s).
+The table cost in the trace is mostly GC triggered there. A real fix would be in Limitless (re-serialize only changed
+cards); its serialized state is checksummed, so it stays untouched here.
+
 ## Technical choices
 
 - Harmony runtime patching (`0Harmony.dll` ships with the game). C# .NET 9 class library referencing `sts2.dll`, `GodotSharp.dll`, `0Harmony.dll` from the game folder (not copied).

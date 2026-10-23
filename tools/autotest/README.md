@@ -8,6 +8,7 @@ traces) go to `results/` (gitignored).
 |---|---|
 | `run.ps1 -Name <scenario> [-TraceSec 60]` | Singleplayer through Steam (save profile 3, in memory only: your profiles and last-profile setting are untouched). |
 | `coop.ps1 -Name coop [-WithMods]` | Local co-op: two instances without Steam (`--force-steam off --fastmp host_standard/join`), scenarios `<name>-host.txt` / `<name>-client.txt`. `-WithMods` copies your enabled Workshop mods into `<game>/mods_STEAMTEST` for the test and always deletes it afterwards. |
+| `try.ps1 [-Cleanup]` | Hands-on demo: a new run with ~16,800 cards and 736 relics (scenario `try-it`), then you play (`bdopt off` / `bdopt on` to compare). `-Cleanup` removes the local Debug copy afterwards. |
 | `settings.ps1` | Two sessions: BaseLib's settings menu captured and an option turned off, then reloaded after a restart and turned back on (mods screen captured); restores your `mod_configs/BigDeckOptimization.cfg` byte for byte. |
 
 Prerequisites: a Debug build deployed (`dotnet build -c Debug`), `dotnet-trace` on PATH for traces, a run history file
@@ -25,7 +26,8 @@ One command per line, `#` comments, `{hash:NAME}` replaced by the hash of `bigde
 - `play <n>`, `playcard <ID>` (after `cmd card <ID> hand`), `endturn`
 - `enemyhp <hp>` (next combats), `state [label]` (creatures, powers, piles), `speed normal|fast|instant` (default fast)
 - `deckview [s] [shot]`, `deckscroll <steps>`, `screenshot <name>`, `modsscreen <shot>`, `baselibmenu <shot>` (this mod's page in BaseLib's settings)
-- `marker <text>`, `log <text>`, `quit`
+- `gcstat [label]` (wall time, GC pause time and collections since the previous gcstat)
+- `marker <text>`, `log <text>`, `quit`, `handoff` (stop answering card choices and leave the game to the player)
 
 Card choices are answered with the first options, identically on every peer. The runner also fixes the `fight`
 command's clock-based encounter seed (peers would desync) and skips Fur Coat when no map point exists yet.

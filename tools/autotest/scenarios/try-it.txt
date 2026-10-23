@@ -1,0 +1,29 @@
+# Hands-on demo (try.ps1): a new Necrobinder run with the reference run's cards imported 18x (~16,800 cards) and its
+# relics twice (736), release-like timings (Debug re-checks off), then the player takes over on the map.
+# Compare with `bdopt off` (unmodified game) and `bdopt on` in the console.
+timeout 300
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 3000
+speed fast
+handoff

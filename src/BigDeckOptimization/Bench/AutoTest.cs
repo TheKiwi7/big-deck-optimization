@@ -237,6 +237,9 @@ public static class AutoTest
                 case "screenshot":
                     await Screenshot(tree, arg.Trim());
                     break;
+                case "gcstat":
+                    GcStat(arg.Trim());
+                    break;
                 case "marker":
                     // A line the profiling scripts look for to cut traces into phases.
                     Say("MARKER " + arg);
@@ -284,6 +287,12 @@ public static class AutoTest
                     break;
                 case "quit":
                     Quit();
+                    return;
+                case "handoff":
+                    // The player takes over: stop answering card choices, keep the game open.
+                    _selector?.Dispose();
+                    _selector = null;
+                    Say("handed over to the player");
                     return;
                 default:
                     Say("unknown script command: " + parts[0]);
@@ -405,6 +414,27 @@ public static class AutoTest
         string path = Path.Combine(folder, name + ".png");
         image.SavePng(path);
         Say($"  screenshot {image.GetWidth()}x{image.GetHeight()}: {path}");
+    }
+
+    private static double _gcWall;
+    private static TimeSpan _gcPause;
+    private static readonly int[] _gcCounts = new int[3];
+
+    /// <summary>Script <c>gcstat [label]</c>: wall time, GC pause time and collections since the previous gcstat.</summary>
+    private static void GcStat(string label)
+    {
+        double wall = _clock.Elapsed.TotalMilliseconds;
+        TimeSpan pause = GC.GetTotalPauseDuration();
+        int[] counts = { GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2) };
+        if (label.Length > 0)
+        {
+            Say($"  GCSTAT {label}: {wall - _gcWall:F0} ms, GC pauses {(pause - _gcPause).TotalMilliseconds:F0} ms, " +
+                $"collections gen0 {counts[0] - _gcCounts[0]} gen1 {counts[1] - _gcCounts[1]} gen2 {counts[2] - _gcCounts[2]}, " +
+                $"heap {GC.GetTotalMemory(false) / (1024 * 1024)} MB");
+        }
+        _gcWall = wall;
+        _gcPause = pause;
+        counts.CopyTo(_gcCounts, 0);
     }
 
     private static void SetSpeed(FastModeType speed)
