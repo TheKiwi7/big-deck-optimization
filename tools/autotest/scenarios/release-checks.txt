@@ -1,0 +1,17 @@
+# Release checklist bdperf comparisons (vanilla first, so ~935 cards: the reference run once with its relics):
+# checksum, refresh, grid and pile must all say OK: identical.
+timeout 1200
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 2
+cmd bdperf checksum 5
+cmd bdperf refresh 10
+cmd bdperf grid
+cmd bdperf pile
+cmd bdperf listeners 10
+quit

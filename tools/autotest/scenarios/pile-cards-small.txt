@@ -1,0 +1,312 @@
+# Baseline for pile-cards-on: the same cards and relics (import ref all relics) with the starting deck, optimizations
+# on: per-card times without huge piles, to see what is left of deck-size costs at ~8,400 cards.
+timeout 2400
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all relics
+cmd bdperf checks off
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+cmd bigdeck tank
+wait 1
+cmd power NO_DRAW_POWER 1 0
+checksum start
+emptyhand
+setenergy 5
+cmd card ALL_FOR_ONE hand
+playcard ALL_FOR_ONE free
+checksum after ALL_FOR_ONE
+emptyhand
+setenergy 5
+cmd card ANOINTED hand
+playcard ANOINTED free
+checksum after ANOINTED
+emptyhand
+setenergy 5
+cmd card APOTHEOSIS hand
+playcard APOTHEOSIS free
+checksum after APOTHEOSIS
+emptyhand
+setenergy 5
+cmd card ARMAMENTS hand
+playcard ARMAMENTS free
+checksum after ARMAMENTS
+emptyhand
+setenergy 5
+cmd card ASHEN_STRIKE hand
+playcard ASHEN_STRIKE free
+checksum after ASHEN_STRIKE
+emptyhand
+setenergy 5
+cmd card BEAT_DOWN hand
+playcard BEAT_DOWN free
+checksum after BEAT_DOWN
+emptyhand
+setenergy 5
+cmd card BULLET_TIME hand
+playcard BULLET_TIME free
+checksum after BULLET_TIME
+emptyhand
+setenergy 5
+cmd card CALCULATED_GAMBLE hand
+playcard CALCULATED_GAMBLE free
+checksum after CALCULATED_GAMBLE
+emptyhand
+setenergy 5
+cmd card CASCADE hand
+playcard CASCADE free
+checksum after CASCADE
+emptyhand
+setenergy 5
+cmd card CATASTROPHE hand
+playcard CATASTROPHE free
+checksum after CATASTROPHE
+emptyhand
+setenergy 5
+cmd card CHARGE hand
+playcard CHARGE free
+checksum after CHARGE
+emptyhand
+setenergy 5
+cmd card CINDER hand
+playcard CINDER free
+checksum after CINDER
+emptyhand
+setenergy 5
+cmd card CLAW hand
+playcard CLAW free
+checksum after CLAW
+emptyhand
+setenergy 5
+cmd card CLEANSE hand
+playcard CLEANSE free
+checksum after CLEANSE
+emptyhand
+setenergy 5
+cmd card COMPACT hand
+playcard COMPACT free
+checksum after COMPACT
+emptyhand
+setenergy 5
+cmd card COSMIC_INDIFFERENCE hand
+playcard COSMIC_INDIFFERENCE free
+checksum after COSMIC_INDIFFERENCE
+emptyhand
+setenergy 5
+cmd card CRESCENT_SPEAR hand
+playcard CRESCENT_SPEAR free
+checksum after CRESCENT_SPEAR
+emptyhand
+setenergy 5
+cmd card DRAIN_POWER hand
+playcard DRAIN_POWER free
+checksum after DRAIN_POWER
+emptyhand
+setenergy 5
+cmd card DREDGE hand
+playcard DREDGE free
+checksum after DREDGE
+emptyhand
+setenergy 5
+cmd card EIDOLON hand
+playcard EIDOLON free
+checksum after EIDOLON
+emptyhand
+setenergy 5
+cmd card ENLIGHTENMENT hand
+playcard ENLIGHTENMENT free
+checksum after ENLIGHTENMENT
+emptyhand
+setenergy 5
+cmd card EXPECT_A_FIGHT hand
+playcard EXPECT_A_FIGHT free
+checksum after EXPECT_A_FIGHT
+emptyhand
+setenergy 5
+cmd card EXPERTISE hand
+playcard EXPERTISE free
+checksum after EXPERTISE
+emptyhand
+setenergy 5
+cmd card FIEND_FIRE hand
+playcard FIEND_FIRE free
+checksum after FIEND_FIRE
+emptyhand
+setenergy 5
+cmd card FLAK_CANNON hand
+playcard FLAK_CANNON free
+checksum after FLAK_CANNON
+emptyhand
+setenergy 5
+cmd card FLECHETTES hand
+playcard FLECHETTES free
+checksum after FLECHETTES
+emptyhand
+setenergy 5
+cmd card GRAVEBLAST hand
+playcard GRAVEBLAST free
+checksum after GRAVEBLAST
+emptyhand
+setenergy 5
+cmd card HAVOC hand
+playcard HAVOC free
+checksum after HAVOC
+emptyhand
+setenergy 5
+cmd card HEADBUTT hand
+playcard HEADBUTT free
+checksum after HEADBUTT
+emptyhand
+setenergy 5
+cmd card HIDDEN_GEM hand
+playcard HIDDEN_GEM free
+checksum after HIDDEN_GEM
+emptyhand
+setenergy 5
+cmd card HOLOGRAM hand
+playcard HOLOGRAM free
+checksum after HOLOGRAM
+emptyhand
+setenergy 5
+cmd card I_AM_INVINCIBLE hand
+playcard I_AM_INVINCIBLE free
+checksum after I_AM_INVINCIBLE
+emptyhand
+setenergy 5
+cmd card IMPATIENCE hand
+playcard IMPATIENCE free
+checksum after IMPATIENCE
+emptyhand
+setenergy 5
+cmd card KNIFE_TRAP hand
+playcard KNIFE_TRAP free
+checksum after KNIFE_TRAP
+emptyhand
+setenergy 5
+cmd card MAUL hand
+playcard MAUL free
+checksum after MAUL
+emptyhand
+setenergy 5
+cmd card MIND_BLAST hand
+playcard MIND_BLAST free
+checksum after MIND_BLAST
+emptyhand
+setenergy 5
+cmd card NEOWS_FURY hand
+playcard NEOWS_FURY free
+checksum after NEOWS_FURY
+emptyhand
+setenergy 5
+cmd card PERFECTED_STRIKE hand
+playcard PERFECTED_STRIKE free
+checksum after PERFECTED_STRIKE
+emptyhand
+setenergy 5
+cmd card PRECISE_CUT hand
+playcard PRECISE_CUT free
+checksum after PRECISE_CUT
+emptyhand
+setenergy 5
+cmd card PRIMAL_FORCE hand
+playcard PRIMAL_FORCE free
+checksum after PRIMAL_FORCE
+emptyhand
+setenergy 5
+cmd card REBOOT hand
+playcard REBOOT free
+checksum after REBOOT
+emptyhand
+setenergy 5
+cmd card RESTLESSNESS hand
+playcard RESTLESSNESS free
+checksum after RESTLESSNESS
+emptyhand
+setenergy 5
+cmd card SCRAWL hand
+playcard SCRAWL free
+checksum after SCRAWL
+emptyhand
+setenergy 5
+cmd card SEANCE hand
+playcard SEANCE free
+checksum after SEANCE
+emptyhand
+setenergy 5
+cmd card SECOND_WIND hand
+playcard SECOND_WIND free
+checksum after SECOND_WIND
+emptyhand
+setenergy 5
+cmd card SECRET_TECHNIQUE hand
+playcard SECRET_TECHNIQUE free
+checksum after SECRET_TECHNIQUE
+emptyhand
+setenergy 5
+cmd card SECRET_WEAPON hand
+playcard SECRET_WEAPON free
+checksum after SECRET_WEAPON
+emptyhand
+setenergy 5
+cmd card SEEKER_STRIKE hand
+playcard SEEKER_STRIKE free
+checksum after SEEKER_STRIKE
+emptyhand
+setenergy 5
+cmd card SHADOW_STEP hand
+playcard SHADOW_STEP free
+checksum after SHADOW_STEP
+emptyhand
+setenergy 5
+cmd card SOUL_STORM hand
+playcard SOUL_STORM free
+checksum after SOUL_STORM
+emptyhand
+setenergy 5
+cmd card SQUEEZE hand
+playcard SQUEEZE free
+checksum after SQUEEZE
+emptyhand
+setenergy 5
+cmd card STACK hand
+playcard STACK free
+checksum after STACK
+emptyhand
+setenergy 5
+cmd card STOKE hand
+playcard STOKE free
+checksum after STOKE
+emptyhand
+setenergy 5
+cmd card STORM_OF_STEEL hand
+playcard STORM_OF_STEEL free
+checksum after STORM_OF_STEEL
+emptyhand
+setenergy 5
+cmd card SUMMON_FORTH hand
+playcard SUMMON_FORTH free
+checksum after SUMMON_FORTH
+emptyhand
+setenergy 5
+cmd card THRASH hand
+playcard THRASH free
+checksum after THRASH
+emptyhand
+setenergy 5
+cmd card TRUE_GRIT hand
+playcard TRUE_GRIT free
+checksum after TRUE_GRIT
+emptyhand
+setenergy 5
+cmd card UPROAR hand
+playcard UPROAR free
+checksum after UPROAR
+emptyhand
+setenergy 5
+cmd card WISH hand
+playcard WISH free
+checksum after WISH
+quit

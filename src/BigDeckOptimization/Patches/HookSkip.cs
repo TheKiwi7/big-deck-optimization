@@ -29,7 +29,7 @@ namespace BigDeckOptimization.Patches;
 /// Per hook: a changed hook (fingerprint), or a hook or base method another mod patches, stays vanilla; other hooks
 /// keep the optimization. Per listener type: a type that overrides a hook's method is always walked for that hook, so
 /// a card or enchantment that starts reacting to something (game or mod update) is handled with no change here.
-/// Inside <see cref="ListenerCache"/> scopes the walk is left to it. BaseLib's hand size and heal hooks call listeners
+/// Inside <see cref="ListenerCache"/> scopes too (same state, no full materialization). BaseLib's hand size and heal hooks call listeners
 /// by interface: their walk keeps only the implementers. Verified by full combat checksums (sessions on/off match).
 /// </summary>
 public static partial class HookSkip
@@ -140,11 +140,15 @@ public static partial class HookSkip
         }
     }
 
-    /// <summary>The filter of a hook when it may run filtered right now, else null (vanilla walk).</summary>
+    /// <summary>
+    /// The filter of a hook when it may run filtered right now, else null (vanilla walk). Inside
+    /// <see cref="ListenerCache"/> scopes too: the walk reads the same unchanged state, without materializing every listener.
+    /// </summary>
     private static PileFilter? FilterFor(int index)
     {
         Entry entry = Hooks[index];
-        if (!Enabled || ListenerCache.IsCaching || PatchSafety.IsPatchedByOthers(entry.Method))
+        // RunVanilla (snapshot verifier, bench comparisons) is the vanilla reference: no filtering there.
+        if (!Enabled || ListenerCache.IsSuspended || PatchSafety.IsPatchedByOthers(entry.Method))
         {
             return null;
         }
@@ -267,7 +271,7 @@ public static partial class HookSkip
         /// <summary>The next RunState.IterateHookListeners call (this method's own walk) keeps only implementers.</summary>
         private static void Prefix(MethodBase __originalMethod)
         {
-            if (Enabled && !ListenerCache.IsCaching && !PatchSafety.IsPatchedByOthers(__originalMethod))
+            if (Enabled && !ListenerCache.IsCaching && !ListenerCache.IsSuspended && !PatchSafety.IsPatchedByOthers(__originalMethod))
             {
                 FastListeners.PendingRunFilter = _filters[__originalMethod];
             }

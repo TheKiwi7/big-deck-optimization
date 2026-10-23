@@ -78,6 +78,29 @@ public static class AutoTest
         Callable.From(Start).CallDeferred();
     }
 
+    private static bool _loggingPlays;
+
+    /// <summary>
+    /// Logs every card play, manual or auto-played by an effect (Havoc, Cascade...), from the combat history: a patch
+    /// on the play methods misses the calls the JIT inlined.
+    /// </summary>
+    private static void LogCardPlays()
+    {
+        if (_loggingPlays)
+        {
+            return;
+        }
+        _loggingPlays = true;
+        MegaCrit.Sts2.Core.Combat.History.CombatHistory history = CombatManager.Instance.History;
+        history.Changed += () =>
+        {
+            if (history.Entries.LastOrDefault() is MegaCrit.Sts2.Core.Combat.History.Entries.CardPlayStartedEntry { CardPlay: var play })
+            {
+                Say($"  CARDPLAY {(play.IsAutoPlay ? "auto" : "manual")} {play.Card.Id.Entry} -> {play.Target?.ToString() ?? "no target"}");
+            }
+        };
+    }
+
     /// <summary>Script <c>enemyhp</c>: enemies get this HP before any combat-start hook (relics) can hit them.</summary>
     private static int? _enemyHp;
 
@@ -167,6 +190,7 @@ public static class AutoTest
 
     private static void SetUpCombatPostfix(CombatState state)
     {
+        LogCardPlays();
         if (_enemyHp is not { } hp)
         {
             return;
@@ -300,6 +324,19 @@ public static class AutoTest
                 case "checktips":
                     CheckTips(arg.Trim());
                     break;
+                case "menuvalues":
+                    // What BaseLib's menu shows (each box reads its property), by reflection: this DLL must not reference BaseLib.
+                    Type? menu = AccessTools.TypeByName("BigDeckOptimization.Config.BaseLibSettings");
+                    Say(menu == null ? "  MENU: not loaded" : "  MENU " + arg.Trim() + ": " + string.Join(", ", menu.GetProperties(BindingFlags.Public | BindingFlags.Static)
+                        .Where(p => p.PropertyType == typeof(bool)).Select(p => $"{p.Name}={p.GetValue(null)}")));
+                    break;
+                case "counters":
+                    Say($"  COUNTERS {arg.Trim()}: {LimitlessReserialize.Name} kept {LimitlessReserialize.Kept}, rebuilt {LimitlessReserialize.Rebuilt}, "
+                        + $"verify mismatches {LimitlessReserialize.VerifyMismatches}; {FastListeners.Name} cache mismatches {FastListeners.CacheMismatches}, "
+                        + $"segments rebuilt {FastListeners.SegmentRebuilds} (versions {FastListeners.RebuiltVersions}, pile version {FastListeners.PileVersion}), "
+                        + $"hits {FastListeners.SegmentHits}, uncached walks {FastListeners.UncachedWalks}; "
+                        + $"{HookFilter.Name} walk checks {HookFilter.WalkChecks}, mismatches {HookFilter.WalkMismatches}");
+                    break;
                 case "marker":
                     // A line the profiling scripts look for to cut traces into phases.
                     Say("MARKER " + arg);
@@ -339,8 +376,9 @@ public static class AutoTest
                     await DeckPages(tree, pageArgs[0], int.Parse(pageArgs[1]));
                     break;
                 case "playcard":
-                    string[] playArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                    await PlayCard(tree, playArgs[0].ToUpperInvariant(), playArgs.Length > 1 ? int.Parse(playArgs[1]) : 0);
+                    List<string> playArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
+                    bool free = playArgs.Remove("free");
+                    await PlayCard(tree, playArgs[0].ToUpperInvariant(), playArgs.Count > 1 ? int.Parse(playArgs[1]) : 0, free);
                     break;
                 case "endturn":
                     EndTurn();
@@ -676,8 +714,11 @@ public static class AutoTest
         Say($"  played {played}");
     }
 
-    /// <summary>Script <c>playcard &lt;CARD_ID&gt; [living enemy index]</c>: moves that card from the draw pile to the hand if needed, plays it, waits.</summary>
-    private static async Task PlayCard(SceneTree tree, string id, int enemyIndex)
+    /// <summary>
+    /// Script <c>playcard &lt;CARD_ID&gt; [living enemy index] [free]</c>: plays that card from the hand, waits. "free" sets
+    /// its energy and star costs to 0 this turn first (not X costs: X is the energy spent).
+    /// </summary>
+    private static async Task PlayCard(SceneTree tree, string id, int enemyIndex, bool free)
     {
         await Until(tree, IsIdle, 120, "idle");
         Player me = Me() ?? throw new InvalidOperationException("no local player");
@@ -687,6 +728,10 @@ public static class AutoTest
         {
             Say($"  {id} not in hand: use 'cmd card {id}' first");
             return;
+        }
+        if (free && !card.EnergyCost.CostsX)
+        {
+            card.SetToFreeThisTurn();
         }
         Creature? enemy = combat.Enemies.Where(e => e.IsAlive).Skip(enemyIndex).FirstOrDefault();
         Creature? target = card.CanPlayTargeting(enemy) ? enemy : null;

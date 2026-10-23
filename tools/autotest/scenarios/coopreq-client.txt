@@ -1,0 +1,2 @@
+# Mod required in co-op: the client runs without this mod (disabled in its mod list), so this script never runs.
+quit

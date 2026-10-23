@@ -221,6 +221,12 @@ public static class ListenerCache
         }
     }
 
+    /// <summary>Bumped by every invalidation (this thread).</summary>
+    public static int Version => _version;
+
+    /// <summary>Inside <see cref="RunVanilla"/>: listener optimizations must stay off (the result is the reference).</summary>
+    public static bool IsSuspended => _suspended;
+
     /// <summary>
     /// The combat listener sequence, materialized once per scope and state version.
     /// </summary>

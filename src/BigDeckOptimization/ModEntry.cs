@@ -31,6 +31,7 @@ public static class ModEntry
         TryApply(HoverTipReuse.Name, HoverTipReuse.Apply);
         TryApply(FastListeners.Name, FastListeners.Apply);
         TryApply(HookSkip.Name, HookSkip.Apply);
+        TryApply(LimitlessReserialize.Name, LimitlessReserialize.Apply);
 #if BENCH
         TryApply(Bench.CombatStartTimer.Name, Bench.CombatStartTimer.Apply);
         TryApply(Bench.PerfProbe.Name, Bench.PerfProbe.Apply);

@@ -80,8 +80,8 @@ public static class Settings
             new[] { PileCounterBatch.Name }, on => PileCounterBatch.Enabled = on,
             () => PileCounterBatch.Applied ? null : "not applied (game code changed)"),
         new("fast_combat_start", "Fast combat start (50+ relics)", "Début de combat rapide (50+ reliques)",
-            "Visual: with 50+ relics, plays the combat-start relic effects without their animation waits (like the game's Instant speed). Same results.",
-            "Visuel : avec 50+ reliques, joue les effets de reliques du début de combat sans leurs temps d'animation (comme la vitesse Instantanée du jeu). Mêmes résultats.",
+            "Visual: with 50+ relics, plays the combat-start relic effects without their animation waits (like the game's Instant speed). Same results. Solo only: always on in co-op, so every player starts the combat at the same pace.",
+            "Visuel : avec 50+ reliques, joue les effets de reliques du début de combat sans leurs temps d'animation (comme la vitesse Instantanée du jeu). Mêmes résultats. Solo uniquement : toujours actif en co-op, pour que tous les joueurs démarrent le combat au même rythme.",
             new[] { FastCombatStart.Name }, on => FastCombatStart.Enabled = on),
         new("limitless_tabs", "Limitless enchantment tabs", "Onglets d'enchantement Limitless",
             "With Limitless: reuses enchantment tabs instead of rebuilding them on every card render.",
@@ -103,6 +103,11 @@ public static class Settings
             "Quand la souris est sur une créature, reconstruit ses infobulles après une action seulement si leur contenu a changé (elles restent à jour).",
             new[] { HoverTipReuse.Name }, on => HoverTipReuse.Enabled = on,
             () => HoverTipReuse.Applied ? null : "not applied (game code changed)"),
+        new("limitless_saves", "Limitless enchantment copies", "Copies d'enchantements Limitless",
+            "With Limitless: keeps the saved copy of stacked enchantments when rebuilding it would give the same content, instead of rebuilding it after every action.",
+            "Avec Limitless : garde la copie sauvegardée des enchantements empilés quand la reconstruire donnerait le même contenu, au lieu de la reconstruire après chaque action.",
+            new[] { LimitlessReserialize.Name }, on => LimitlessReserialize.Enabled = on,
+            () => LimitlessReserialize.Applied ? null : "not applied (Limitless absent or changed)"),
     };
 
     /// <summary>Raised after a choice changed through bdopt (not from the menu or when loading), so the menu saves it.</summary>
@@ -154,7 +159,7 @@ public static class Settings
         {
             string state = option.Unavailable() is { } why ? why
                 : option.Fault is { } fault ? $"OFF, disabled after an error ({fault}), see log"
-                : !option.Wanted ? "OFF (setting)"
+                : !option.Wanted ? (option.Key == "fast_combat_start" && Master ? "OFF in solo (setting), always on in co-op" : "OFF (setting)")
                 : Master ? "on" : "off";
             sb.Append($"  {option.Label} [{option.Key}]: {state}\n");
         }

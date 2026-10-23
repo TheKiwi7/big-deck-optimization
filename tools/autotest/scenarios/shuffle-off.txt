@@ -1,0 +1,59 @@
+# Reshuffle A/B (off): starting deck + the reference relics, 6 turns of plays and end of turn (the draw pile empties and
+# is reshuffled, ModifyShuffleOrder listeners included); compare CHECKSUM/STATE/CARDPLAY with shuffle-on.
+timeout 900
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bdopt off
+cmd bigdeck import ref all relics
+cmd bdperf checks off
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+cmd bigdeck tank
+checksum start
+play 3
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 3
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+play 3
+waitfor idle 120
+checksum t3 plays
+endturn
+waitfor idle 300
+checksum t3 end
+state t3
+play 3
+waitfor idle 120
+checksum t4 plays
+endturn
+waitfor idle 300
+checksum t4 end
+state t4
+play 3
+waitfor idle 120
+checksum t5 plays
+endturn
+waitfor idle 300
+checksum t5 end
+state t5
+play 3
+waitfor idle 120
+checksum t6 plays
+endturn
+waitfor idle 300
+checksum t6 end
+state t6
+cmd bdopt on
+quit

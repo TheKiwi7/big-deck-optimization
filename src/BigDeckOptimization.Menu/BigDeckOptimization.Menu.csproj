@@ -15,7 +15,8 @@
     <GenerateDependencyFile>false</GenerateDependencyFile>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
-    <DebugType>portable</DebugType>
+    <!-- PDB inside the DLL (compressed): line numbers in error logs, one file less. -->
+    <DebugType>embedded</DebugType>
     <!-- Next to the main DLL, so deploy and packaging find both. -->
     <OutDir>$(MSBuildThisFileDirectory)..\BigDeckOptimization\bin\$(Configuration)\</OutDir>
     <!-- Set by the main project; this default allows building this project alone after the main one. -->

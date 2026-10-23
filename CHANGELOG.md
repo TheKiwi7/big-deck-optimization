@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.4.0
+
+Turns about twice as fast with huge decks, and much of Limitless' and BaseLib's work optimized.
+
+- Co-op: every player now needs the mod, with the same version (the game checks it when someone joins). With huge decks, a player without the mod starts every combat far behind the others, and the game drops the actions played in the meantime: desyncs or a frozen run. This was already the case with earlier versions.
+- The faster combat start is always on in co-op (its switch now only applies to solo), so every player starts the combat at the same pace.
+- Turns are faster at 8,000+ cards: a turn of 4 plays and its end takes about half the time of v0.3.0, with far fewer memory pauses. The 59 cards that look through your piles, played one by one, also take about half the time.
+- With Limitless: stacked enchantments no longer rebuild their saved copy after every action when nothing changed (same content kept). This was the biggest cost of playing cards with thousands of enchanted cards, together with the save data BaseLib attached to every rebuilt copy.
+- New switch in the settings: Limitless enchantment copies. The Limitless-only switches now appear unticked when Limitless isn't installed, and ticked once it is.
+- Safer: card reshuffles are handled even when another effect reorders the draw pile, and the co-op safety check compares against a fully unoptimized game.
+- Smaller download (about 450 KB instead of 640 KB): the mods screen image is now a high-quality JPEG (242 KB instead of 433 KB, no visible difference), and the debug symbols are inside the DLLs (error logs keep their line numbers).
+
 ## v0.3.0
 
 Faster turns with huge decks.

@@ -10,13 +10,13 @@ namespace BigDeckOptimization.Patches;
 
 /// <summary>
 /// The mods screen shows <c>res://&lt;mod id&gt;/mod_image.png</c>, which only exists inside a Godot resource pack. This
-/// mod has none: when the screen shows this mod without an image, the image is loaded from <c>mod_image.png</c> next to
-/// the DLL instead. UI only.
+/// mod has none: when the screen shows this mod without an image, the image is loaded from <c>mod_image.jpg</c> next to
+/// the DLL instead (JPEG quality 97, full-resolution color: 242 KB instead of a 433 KB PNG, PSNR 42.5 dB). UI only.
 /// </summary>
 public static class ModImage
 {
     public const string Name = "ModImage";
-    private const string FileName = "mod_image.png";
+    private const string FileName = "mod_image.jpg";
 
     private static AccessTools.FieldRef<NModInfoContainer, TextureRect>? _image;
     private static Texture2D? _texture;

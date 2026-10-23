@@ -75,6 +75,37 @@ public static class PatchSafety
         return patched;
     }
 
+    /// <summary>
+    /// Like <see cref="IsPatchedByOthers(MethodBase?)"/>, except for these other mods' postfixes, whose effect the caller
+    /// reproduces (checked by fingerprint).
+    /// </summary>
+    public static bool IsPatchedByOthers(MethodBase? method, params MethodInfo[] allowedPostfixes)
+    {
+        if (method == null)
+        {
+            return true;
+        }
+        long now = Environment.TickCount64;
+        lock (_patchedBeyondAllowed)
+        {
+            if (_patchedBeyondAllowed.TryGetValue(method, out var cached) && now - cached.CheckedAt < RecheckAfterMs)
+            {
+                return cached.Patched;
+            }
+        }
+        HarmonyLib.Patches? info = Harmony.GetPatchInfo(method);
+        bool patched = info != null && (
+            info.Prefixes.Concat(info.Transpilers).Concat(info.Finalizers).Any(p => p.owner != ModEntry.Harmony.Id)
+            || info.Postfixes.Any(p => p.owner != ModEntry.Harmony.Id
+                && !allowedPostfixes.Any(a => a.MethodHandle == p.PatchMethod.MethodHandle)));
+        lock (_patchedBeyondAllowed)
+        {
+            _patchedBeyondAllowed[method] = (patched, now);
+        }
+        return patched;
+    }
+
     private const long RecheckAfterMs = 2000;
     private static readonly Dictionary<MethodBase, (bool Patched, long CheckedAt)> _patchedByOthers = new();
+    private static readonly Dictionary<MethodBase, (bool Patched, long CheckedAt)> _patchedBeyondAllowed = new();
 }

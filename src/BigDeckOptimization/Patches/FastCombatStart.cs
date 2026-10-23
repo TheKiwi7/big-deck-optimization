@@ -23,12 +23,20 @@ namespace BigDeckOptimization.Patches;
 /// (<c>Cmd.Wait</c>, <c>Cmd.CustomScaledWait</c>) return at once, exactly like the game's own Instant fast mode does.
 /// Waits never change game state (each player already picks their own animation speed), so results stay identical.
 /// Only when the players have at least <see cref="RelicThreshold"/> relics in total.
+///
+/// Always on in co-op (its own option then ignored; the master switch and faults still apply): the game drops combat
+/// actions that reach a player still starting the combat, so a player starting ~70 s later than the others (option off)
+/// would desync or freeze the run as soon as someone plays (`coopsolo1/2` scenarios).
 /// </summary>
 public static class FastCombatStart
 {
     public const string Name = "FastCombatStart";
 
     public static bool Enabled { get; set; } = true;
+
+    /// <summary>The option, or in co-op the master switch alone (every player must start at the same pace).</summary>
+    private static bool On => Enabled
+        || (Config.Settings.Master && !PatchSafety.IsFaulted(Name) && RunManager.Instance is { IsSingleplayerOrFakeMultiplayer: false });
 
     /// <summary>Total relics across players from which the combat start is sped up.</summary>
     public static int RelicThreshold { get; set; } = 50;
@@ -54,7 +62,7 @@ public static class FastCombatStart
         try
         {
             int relics = RunManager.Instance.DebugOnlyGetState()?.Players.Sum(p => p.Relics.Count) ?? 0;
-            _window = Enabled && relics >= RelicThreshold;
+            _window = On && relics >= RelicThreshold;
             SkippedWaits = 0;
             SkippedSeconds = 0;
         }
@@ -71,7 +79,7 @@ public static class FastCombatStart
         {
             return false;
         }
-        if (!Enabled)
+        if (!On)
         {
             _window = false;
             return false;

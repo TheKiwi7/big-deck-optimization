@@ -1,0 +1,8 @@
+# Limitless switches (present, limitless-switches.ps1): what the BaseLib menu shows and what applies, Limitless enabled.
+timeout 180
+wait 3
+cmd bdopt
+menuvalues present
+baselibmenu shot-limitless-present
+wait 2
+quit

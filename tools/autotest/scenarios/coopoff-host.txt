@@ -1,0 +1,43 @@
+# Local co-op control, both peers with the mod off (host): any divergence here is the game's (or another mod's), not this mod's.
+# See coopoff-client.txt.
+timeout 2400
+mplobby NECROBINDER 2
+waitfor run 240
+cmd bdopt off
+cmd bdperf checks off
+wait 8
+cmd bigdeck import ref all all {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+enemyhp 999999
+wait 25
+cmd fight CULTISTS_NORMAL
+waitfor idle 900
+cmd bdperf combatstart
+state t1
+play 4
+endturn
+waitfor idle 900
+state t2
+play 4
+endturn
+waitfor idle 900
+state t3
+cmd bdperf verify
+cmd kill all
+waitfor nocombat 600
+wait 8
+cmd fight CULTISTS_NORMAL
+waitfor idle 900
+state f2t1
+play 3
+endturn
+waitfor idle 900
+state f2t2
+cmd bdperf verify
+cmd kill all
+waitfor nocombat 600
+wait 20
+cmd bdopt on
+quit

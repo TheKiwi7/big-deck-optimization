@@ -6,9 +6,9 @@ waitfor run 120
 wait 2
 cmd bdperf checks off
 enemyhp 999999
-cmd bigdeck tank
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
+cmd bigdeck tank
 wait 2
 fpsstat
 wait 10

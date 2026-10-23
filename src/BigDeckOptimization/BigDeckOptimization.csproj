@@ -10,9 +10,10 @@
     <GenerateDependencyFile>false</GenerateDependencyFile>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
-    <DebugType>portable</DebugType>
+    <!-- PDB inside the DLL (compressed): line numbers in error logs, one file less. -->
+    <DebugType>embedded</DebugType>
     <!-- Keep in sync with "version" in BigDeckOptimization.json. -->
-    <Version>0.3.0</Version>
+    <Version>0.4.0</Version>
   </PropertyGroup>
 
   <!-- Test tooling (bigdeck / bdperf console commands, combat start timer) only in non-Release builds. -->
@@ -23,7 +24,7 @@
     <Compile Remove="Bench/**" />
   </ItemGroup>
 
-  <!-- Public builds: no local paths in the DLL/PDB (source paths become /_/...). -->
+  <!-- Public builds: no local paths in the DLL and its embedded PDB (source paths become /_/...). -->
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
     <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
     <PathMap>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../../'))=/_/</PathMap>
@@ -44,7 +45,7 @@
   <ItemGroup>
     <None Include="BigDeckOptimization.json" CopyToOutputDirectory="PreserveNewest" />
     <!-- Shown on the mods screen (Patches/ModImage.cs). -->
-    <None Include="mod_image.png" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="mod_image.jpg" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <!-- The settings menu DLL (the only one referencing BaseLib, which is optional): built next to this one. -->
@@ -58,7 +59,7 @@
 
   <Target Name="DeployToGame" AfterTargets="BuildMenu" Condition="'$(DeployToGame)' != 'false' And Exists('$(GameDir)')">
     <ItemGroup>
-      <ModFiles Include="$(OutDir)BigDeckOptimization.dll;$(OutDir)BigDeckOptimization.pdb;$(OutDir)BigDeckOptimization.json;$(OutDir)mod_image.png;$(OutDir)BigDeckOptimization.Menu.dll;$(OutDir)BigDeckOptimization.Menu.pdb" />
+      <ModFiles Include="$(OutDir)BigDeckOptimization.dll;$(OutDir)BigDeckOptimization.json;$(OutDir)mod_image.jpg;$(OutDir)BigDeckOptimization.Menu.dll" />
     </ItemGroup>
     <!-- The game locks the DLL while running: warn instead of failing the build. -->
     <Copy SourceFiles="@(ModFiles)" DestinationFolder="$(ModDeployDir)" SkipUnchangedFiles="true" Retries="0" ContinueOnError="WarnAndContinue" />

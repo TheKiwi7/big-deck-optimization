@@ -79,9 +79,13 @@ public static class FastListeners
         /// <summary>
         /// The pile entries this filter keeps depend only on what the piles hold (and in which order) and on each
         /// card's enchantment/affliction: all of it changes through the methods that bump <see cref="PileVersion"/>.
-        /// Filters keeping ExecutionFinished subscribers also depend on who subscribes, so they are never cached.
+        /// Filters keeping ExecutionFinished subscribers also depend on who subscribes: never cached, but they walk the
+        /// shared <see cref="PileSnapshot"/> and check subscribers live.
         /// </summary>
-        private bool Cacheable => !_keepSubscribed && Thread.CurrentThread.ManagedThreadId == _mainThread;
+        private static bool OnMainThread => Thread.CurrentThread.ManagedThreadId == _mainThread;
+
+        /// <summary>Snapshots and segments are usable: main thread, and not inside a shuffle (see <see cref="_shuffling"/>).</summary>
+        private static bool CanCache => OnMainThread && _shuffling == 0;
 
         private sealed class Segment
         {
@@ -91,23 +95,46 @@ public static class FastListeners
 
         private readonly ConditionalWeakTable<object, Segment> _segments = new();
 
+        /// <summary>Whether each <see cref="PileSnapshot"/> type id reacts: 0 unknown, 1 yes, -1 no (main thread only).</summary>
+        private sbyte[] _reactsById = Array.Empty<sbyte>();
+
         /// <summary>The kept entries of these piles, in walk order (card, affliction, enchantment), rebuilt after any pile change.</summary>
         internal void AddPiles(List<AbstractModel> list, object key, IReadOnlyList<CardPile> piles)
         {
-            if (!Cacheable)
+            if (!CanCache)
             {
                 AddPilesNow(list, piles);
+                return;
+            }
+            if (_keepSubscribed)
+            {
+#if BENCH
+                UncachedWalks++;
+                int start = list.Count;
+#endif
+                AddKept(list, PileSnapshot.Of(key, piles, withAfflictions: true));
+#if BENCH
+                VerifyUncached(list, start, piles);
+#endif
                 return;
             }
             Segment segment = _segments.GetValue(key, _ => new Segment());
             if (segment.Version != PileVersion)
             {
+#if BENCH
+                SegmentRebuilds++;
+                if (_lastRebuildVersion != PileVersion)
+                {
+                    _lastRebuildVersion = PileVersion;
+                    RebuiltVersions++;
+                }
+#endif
                 segment.Items.Clear();
-                AddPilesNow(segment.Items, piles);
+                AddKept(segment.Items, PileSnapshot.Of(key, piles, withAfflictions: true));
                 segment.Version = PileVersion;
             }
 #if BENCH
-            else if (++_cacheChecks % CacheVerifyEvery == 0)
+            else if (++SegmentHits % CacheVerifyEvery == 0)
             {
                 var fresh = new List<AbstractModel>();
                 AddPilesNow(fresh, piles);
@@ -121,6 +148,53 @@ public static class FastListeners
             }
 #endif
             list.AddRange(segment.Items);
+        }
+
+#if BENCH
+        /// <summary>One uncached walk in <see cref="CacheVerifyEvery"/> is compared with the per-entry walk.</summary>
+        private void VerifyUncached(List<AbstractModel> list, int start, IReadOnlyList<CardPile> piles)
+        {
+            if (UncachedWalks % CacheVerifyEvery != 0)
+            {
+                return;
+            }
+            var fresh = new List<AbstractModel>();
+            AddPilesNow(fresh, piles);
+            if (!fresh.SequenceEqual(list.Skip(start), ReferenceEqualityComparer.Instance))
+            {
+                CacheMismatches++;
+                Log.Error($"[{ModEntry.Id}] {Name}: snapshot walk differs from a fresh walk ({list.Count - start} vs {fresh.Count})");
+            }
+        }
+#endif
+
+        /// <summary>The snapshot's entries this filter keeps, in order: <see cref="Keeps"/> without a type lookup per entry.</summary>
+        private void AddKept(List<AbstractModel> list, PileSnapshot snapshot)
+        {
+            AbstractModel[] entries = snapshot.Entries;
+            int[] typeIds = snapshot.TypeIds;
+            for (int i = 0; i < snapshot.Count; i++)
+            {
+                if (Reacts(typeIds[i]) || (_keepSubscribed && _executionFinished!(entries[i]) != null))
+                {
+                    list.Add(entries[i]);
+                }
+            }
+        }
+
+        private bool Reacts(int typeId)
+        {
+            if (typeId < _reactsById.Length && _reactsById[typeId] != 0)
+            {
+                return _reactsById[typeId] > 0;
+            }
+            if (typeId >= _reactsById.Length)
+            {
+                Array.Resize(ref _reactsById, Math.Max(typeId + 1, _reactsById.Length * 2));
+            }
+            bool reacts = _byType.GetOrAdd(PileSnapshot.TypeOf(typeId), _reacts);
+            _reactsById[typeId] = reacts ? (sbyte)1 : (sbyte)-1;
+            return reacts;
         }
 
         private void AddPilesNow(List<AbstractModel> list, IReadOnlyList<CardPile> piles)
@@ -150,19 +224,39 @@ public static class FastListeners
         /// <summary>The run walk's deck entries (card, enchantment).</summary>
         internal void AddDeck(List<AbstractModel> list, CardPile deck)
         {
-            if (!Cacheable)
+            if (!CanCache)
             {
                 AddDeckNow(list, deck);
+                return;
+            }
+            if (_keepSubscribed)
+            {
+                AddKept(list, DeckSnapshot(deck));
                 return;
             }
             Segment segment = _segments.GetValue(deck, _ => new Segment());
             if (segment.Version != PileVersion)
             {
                 segment.Items.Clear();
-                AddDeckNow(segment.Items, deck);
+                AddKept(segment.Items, DeckSnapshot(deck));
                 segment.Version = PileVersion;
             }
             list.AddRange(segment.Items);
+        }
+
+        private static readonly CardPile[] _deckPiles = new CardPile[1];
+
+        private static PileSnapshot DeckSnapshot(CardPile deck)
+        {
+            _deckPiles[0] = deck;
+            try
+            {
+                return PileSnapshot.Of(deck, _deckPiles, withAfflictions: false);
+            }
+            finally
+            {
+                _deckPiles[0] = null!; // Don't keep the deck alive after the run.
+            }
         }
 
         private void AddDeckNow(List<AbstractModel> list, CardPile deck)
@@ -209,12 +303,16 @@ public static class FastListeners
             return new PileFilter(type => bases.Any(b => Overrides(type, b)), keepSubscribed) { BaseMethods = bases };
         }
 
+        private static readonly ConcurrentDictionary<Type, MethodInfo[]> _methodsByType = new();
+
         private static bool Overrides(Type type, MethodInfo baseMethod)
         {
             try
             {
-                // Reflection collapses overridden virtuals: only the most-derived implementation is returned.
-                foreach (MethodInfo m in type.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                // Reflection collapses overridden virtuals: only the most-derived implementation is returned. Shared by
+                // every filter (~150) asking about the same type.
+                MethodInfo[] methods = _methodsByType.GetOrAdd(type, t => t.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic));
+                foreach (MethodInfo m in methods)
                 {
                     if (m.Name == baseMethod.Name && m.GetBaseDefinition() == baseMethod)
                     {
@@ -230,6 +328,79 @@ public static class FastListeners
         }
     }
 
+    /// <summary>
+    /// Every pile entry of a player's combat piles (card, affliction, enchantment) or deck (card, enchantment), in walk
+    /// order, with a small id per type: built once per <see cref="PileVersion"/> and shared by every filter, which then
+    /// tests an array per type id instead of looking each entry's type up. Main thread only.
+    /// </summary>
+    private sealed class PileSnapshot
+    {
+        public long Version = -1;
+        public AbstractModel[] Entries = new AbstractModel[1024];
+        public int[] TypeIds = new int[1024];
+        public int Count;
+
+        private static readonly ConditionalWeakTable<object, PileSnapshot> _snapshots = new();
+        private static readonly Dictionary<Type, int> _ids = new();
+        private static readonly List<Type> _types = new();
+
+        public static Type TypeOf(int id) => _types[id];
+
+        public static PileSnapshot Of(object key, IReadOnlyList<CardPile> piles, bool withAfflictions)
+        {
+            PileSnapshot snapshot = _snapshots.GetValue(key, _ => new PileSnapshot());
+            if (snapshot.Version == PileVersion)
+            {
+                return snapshot;
+            }
+            int previous = snapshot.Count;
+            snapshot.Count = 0;
+            for (int l = 0; l < piles.Count; l++)
+            {
+                IReadOnlyList<CardModel> cards = piles[l].Cards;
+                for (int m = 0; m < cards.Count; m++)
+                {
+                    CardModel card = cards[m];
+                    snapshot.Add(card);
+                    if (withAfflictions && card.Affliction != null)
+                    {
+                        snapshot.Add(card.Affliction);
+                    }
+                    if (card.Enchantment != null)
+                    {
+                        snapshot.Add(card.Enchantment);
+                    }
+                }
+            }
+            if (previous > snapshot.Count)
+            {
+                // Don't keep cards that left the piles alive.
+                Array.Clear(snapshot.Entries, snapshot.Count, previous - snapshot.Count);
+            }
+            snapshot.Version = PileVersion;
+            return snapshot;
+        }
+
+        private void Add(AbstractModel model)
+        {
+            if (Count == Entries.Length)
+            {
+                Array.Resize(ref Entries, Count * 2);
+                Array.Resize(ref TypeIds, Count * 2);
+            }
+            Type type = model.GetType();
+            if (!_ids.TryGetValue(type, out int id))
+            {
+                id = _types.Count;
+                _ids[type] = id;
+                _types.Add(type);
+            }
+            Entries[Count] = model;
+            TypeIds[Count] = id;
+            Count++;
+        }
+    }
+
     private static AccessTools.FieldRef<AbstractModel, Action<AbstractModel>?>? _executionFinished;
 
     private static int _mainThread;
@@ -240,8 +411,11 @@ public static class FastListeners
 #if BENCH
     /// <summary>One cache hit in this many is compared with a fresh walk (Debug builds).</summary>
     internal static int CacheVerifyEvery = 256;
-    private static long _cacheChecks;
     public static long CacheMismatches { get; private set; }
+    /// <summary>Combat pile segments: rebuilt, served from cache, walked uncached (filters keeping subscribers); and
+    /// how many distinct pile versions needed a rebuild.</summary>
+    public static long SegmentRebuilds, SegmentHits, UncachedWalks, RebuiltVersions;
+    private static long _lastRebuildVersion = -1;
 #endif
 
     /// <summary>v0.107.1 code the pile cache relies on: every CardPile method touching its list (PileIndex checks the same).</summary>
@@ -256,6 +430,30 @@ public static class FastListeners
     };
 
     private static void BumpPileVersion() => PileVersion++;
+
+    /// <summary>
+    /// Inside <c>CardPile.RandomizeOrderInternal</c>: the game hands the pile's own list to <c>ModifyShuffleOrder</c>
+    /// listeners, which reorder it in place without going through a bumping method, so walks there read the piles
+    /// directly (main thread).
+    /// </summary>
+    private static int _shuffling;
+
+    private static void EnterShuffle()
+    {
+        if (Thread.CurrentThread.ManagedThreadId == _mainThread)
+        {
+            _shuffling++;
+        }
+    }
+
+    private static Exception? ExitShuffle(Exception? __exception)
+    {
+        if (Thread.CurrentThread.ManagedThreadId == _mainThread)
+        {
+            _shuffling--;
+        }
+        return __exception;
+    }
 
     private static Exception? BumpPileVersionFinally(Exception? __exception)
     {
@@ -309,6 +507,8 @@ public static class FastListeners
             PatchSafety.RequireFingerprint(target, fingerprint);
             harmony.Patch(target, prefix: bumpBefore, finalizer: bumpAfter);
         }
+        harmony.Patch(AccessTools.Method(typeof(CardPile), "RandomizeOrderInternal"),
+            prefix: new HarmonyMethod(typeof(FastListeners), nameof(EnterShuffle)), finalizer: new HarmonyMethod(typeof(FastListeners), nameof(ExitShuffle)));
         foreach (string property in new[] { nameof(CardModel.Enchantment), nameof(CardModel.Affliction) })
         {
             harmony.Patch(AccessTools.PropertySetter(typeof(CardModel), property) ?? throw new MissingMethodException(nameof(CardModel), property),

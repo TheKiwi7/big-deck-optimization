@@ -1,0 +1,30 @@
+# Co-op without action races (E1, client): mod off (stand-in for a player without the mod), never plays a card: waits for the other player's plays to run, then ends its turn. Only one player acts at a time, so the action order
+# can't differ between peers: any divergence would come from a different computation. See coopsolo1-host.txt.
+timeout 1800
+mplobby IRONCLAD 2
+waitfor run 240
+cmd bdopt off
+cmd bdperf checks off
+wait 14
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+enemyhp 999999
+waitfor combat 1200
+waitfor idle 1200
+state t1
+wait 150
+waitfor idle 1200
+endturn
+waitfor idle 1200
+state t2
+wait 150
+waitfor idle 1200
+endturn
+waitfor idle 1200
+state t3
+waitfor nocombat 1200
+wait 25
+cmd bdopt on
+quit

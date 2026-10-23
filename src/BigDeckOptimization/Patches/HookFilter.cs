@@ -140,6 +140,7 @@ public static class HookFilter
             // Filtered lists stay valid for their source list (listener lists are immutable and reused across
             // refreshes while nothing changed); they are rebuilt when patch safety changes.
             _safe = null;
+            _walked?.Clear();
             if (_filtered != null && (_filtered.Count > 8 || _filteredWith == null || !_filteredWith.SequenceEqual(CurrentSafety())))
             {
                 _filtered = null;
@@ -216,6 +217,89 @@ public static class HookFilter
         return perHook;
     }
 
+    /// <summary>Per hook, the pile entries whose type overrides its method (null until FastListeners is used).</summary>
+    private static FastListeners.PileFilter[]? _pileFilters;
+
+    /// <summary>Per (state, child) the filtered lists built by <see cref="Walked"/>, for one listener/pile version, dropped at scope end.</summary>
+    [ThreadStatic] private static Dictionary<(object, object?), (int Version, long PileVersion, List<AbstractModel>?[] PerHook)>? _walked;
+
+    /// <summary>
+    /// The combat listeners of one hook in walk order, or null when filtering it isn't safe. Built from FastListeners'
+    /// filtered walk (listeners outside piles + the pile entries overriding the hook, cached per pile version) instead
+    /// of materializing every listener: same objects, same order, then the same override mask.
+    /// </summary>
+    private static List<AbstractModel>? ForCombat(CombatState state, int hook) =>
+        CanWalk
+            ? Walked((state, null), hook, filter => FastListeners.Filtered(state, filter), () => ListenerCache.GetListeners(state))
+            : Get(ListenerCache.GetListeners(state), hook);
+
+    /// <summary>The run listeners (deck + child combat) of one hook, as <see cref="ForCombat"/>.</summary>
+    private static List<AbstractModel>? ForRun(RunState run, ICombatState? child, int hook) =>
+        CanWalk && (child == null || child is CombatState)
+            ? Walked((run, child), hook, filter => FastListeners.Filtered(run, child, filter), () => ListenerCache.GetRunListeners(run, child))
+            : Get(ListenerCache.GetRunListeners(run, child), hook);
+
+    private static bool CanWalk
+    {
+        get
+        {
+            // FastListeners applies after this patch: its filters are made on first use.
+            if (!FastListeners.Applied || !FastListeners.Enabled)
+            {
+                return false;
+            }
+            _pileFilters ??= _hooks.Select(h => FastListeners.PileFilter.Overriding(false, h.BaseMethod.Name)).ToArray();
+            return true;
+        }
+    }
+
+    private static List<AbstractModel>? Walked((object, object?) key, int hook, Func<FastListeners.PileFilter, IEnumerable<AbstractModel>> walk,
+        Func<IReadOnlyList<AbstractModel>> materialized)
+    {
+        _safe ??= CurrentSafety();
+        if (!_safe[hook])
+        {
+            return null;
+        }
+        _walked ??= new Dictionary<(object, object?), (int, long, List<AbstractModel>?[])>();
+        if (!_walked.TryGetValue(key, out var entry) || entry.Version != ListenerCache.Version || entry.PileVersion != FastListeners.PileVersion)
+        {
+            entry = (ListenerCache.Version, FastListeners.PileVersion, new List<AbstractModel>?[_hooks.Length]);
+            _walked[key] = entry;
+        }
+        List<AbstractModel>? list = entry.PerHook[hook];
+        if (list == null)
+        {
+            list = new List<AbstractModel>();
+            int bit = 1 << hook;
+            foreach (AbstractModel listener in walk(_pileFilters![hook]))
+            {
+                if ((OverrideMask(listener.GetType()) & bit) != 0)
+                {
+                    list.Add(listener);
+                }
+            }
+            entry.PerHook[hook] = list;
+#if BENCH
+            if (++WalkChecks % 32 == 0)
+            {
+                List<AbstractModel>? reference = Get(materialized(), hook);
+                if (reference == null || !reference.SequenceEqual(list, ReferenceEqualityComparer.Instance))
+                {
+                    WalkMismatches++;
+                    Log.Error($"[{ModEntry.Id}] {Name}: walked listeners of hook {hook} differ from the materialized ones ({list.Count} vs {reference?.Count})");
+                }
+            }
+#endif
+        }
+        return list;
+    }
+
+#if BENCH
+    public static long WalkChecks { get; private set; }
+    public static long WalkMismatches { get; private set; }
+#endif
+
     private static bool CombatHookListenersEmpty =>
         CombatManager.Instance.IsOverOrEnding && !CombatManager.Instance.IsStarting;
 
@@ -228,9 +312,8 @@ public static class HookFilter
         }
         try
         {
-            IReadOnlyList<AbstractModel> listeners = ListenerCache.GetListeners(state);
-            List<AbstractModel>? early = Get(listeners, EnergyCost);
-            List<AbstractModel>? late = Get(listeners, EnergyCostLate);
+            List<AbstractModel>? early = ForCombat(state, EnergyCost);
+            List<AbstractModel>? late = ForCombat(state, EnergyCostLate);
             if (early == null || late == null)
             {
                 return true;
@@ -269,7 +352,7 @@ public static class HookFilter
         }
         try
         {
-            List<AbstractModel>? listeners = Get(ListenerCache.GetListeners(state), AllowHitting);
+            List<AbstractModel>? listeners = ForCombat(state, AllowHitting);
             if (listeners == null)
             {
                 return true;
@@ -317,7 +400,7 @@ public static class HookFilter
         }
         try
         {
-            List<AbstractModel>? listeners = Get(ListenerCache.GetListeners(state), Keywords);
+            List<AbstractModel>? listeners = ForCombat(state, Keywords);
             if (listeners == null)
             {
                 return true;
@@ -345,7 +428,7 @@ public static class HookFilter
         }
         try
         {
-            List<AbstractModel>? listeners = Get(ListenerCache.GetListeners(state), ShouldPlay);
+            List<AbstractModel>? listeners = ForCombat(state, ShouldPlay);
             if (listeners == null)
             {
                 return true;
@@ -384,10 +467,9 @@ public static class HookFilter
         }
         try
         {
-            IReadOnlyList<AbstractModel> listeners = ListenerCache.GetRunListeners(run, combatState);
-            List<AbstractModel>? additive = Get(listeners, DamageAdditive);
-            List<AbstractModel>? multiplicative = Get(listeners, DamageMultiplicative);
-            List<AbstractModel>? cap = Get(listeners, DamageCap);
+            List<AbstractModel>? additive = ForRun(run, combatState, DamageAdditive);
+            List<AbstractModel>? multiplicative = ForRun(run, combatState, DamageMultiplicative);
+            List<AbstractModel>? cap = ForRun(run, combatState, DamageCap);
             if (additive == null || multiplicative == null || cap == null)
             {
                 return true;

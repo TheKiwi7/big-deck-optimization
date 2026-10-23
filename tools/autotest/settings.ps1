@@ -9,9 +9,9 @@ $backup = Join-Path $Results "BigDeckOptimization.cfg.backup"
 $hadConfig = Test-Path $config
 if ($hadConfig) { Copy-Item $config $backup -Force; $before = (Get-FileHash $config).Hash }
 try {
-    & (Join-Path $PSScriptRoot "run.ps1") -Name settings-menu -TimeoutSec 240
+    & (Join-Path $PSScriptRoot "run.ps1") -Name settings-menu -TimeoutSec 240 -KeepConfig
     if (Test-Path $config) { Write-Output "--- saved after settings-menu:"; Get-Content $config }
-    & (Join-Path $PSScriptRoot "run.ps1") -Name settings-menu-2 -TimeoutSec 240
+    & (Join-Path $PSScriptRoot "run.ps1") -Name settings-menu-2 -TimeoutSec 240 -KeepConfig
     if (Test-Path $config) { Write-Output "--- saved after settings-menu-2:"; Get-Content $config }
 }
 finally {

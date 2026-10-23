@@ -1,0 +1,5 @@
+# Mod required in co-op (coop-required.ps1), host with the mod: waits for a second player, who doesn't have the mod
+# and must be refused by the game's mod check when joining (client log: 'Mod mismatch').
+timeout 150
+mplobby NECROBINDER 2
+quit

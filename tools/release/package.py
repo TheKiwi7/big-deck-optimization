@@ -25,9 +25,8 @@ OUTPUT = PROJECT / "bin" / "Release"
 DIST = ROOT / "dist"
 DOCS = ROOT / "docs"
 APP_ID = "2868840"
-# The .Menu DLL holds the settings menu (BaseLib, optional): built by the main project's BuildMenu target.
-FILES = ["BigDeckOptimization.dll", "BigDeckOptimization.pdb", "BigDeckOptimization.json", "mod_image.png",
-         "BigDeckOptimization.Menu.dll", "BigDeckOptimization.Menu.pdb"]
+# The .Menu DLL holds the settings menu (BaseLib, optional): built by the main project's BuildMenu target. PDBs are embedded in the DLLs.
+FILES = ["BigDeckOptimization.dll", "BigDeckOptimization.json", "mod_image.jpg", "BigDeckOptimization.Menu.dll"]
 
 
 def dotnet() -> str:

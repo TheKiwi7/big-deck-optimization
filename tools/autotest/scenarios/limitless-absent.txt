@@ -1,0 +1,8 @@
+# Limitless switches (absent, limitless-switches.ps1): what the BaseLib menu shows and what applies, Limitless disabled in the mod list.
+timeout 180
+wait 3
+cmd bdopt
+menuvalues absent
+baselibmenu shot-limitless-absent
+wait 2
+quit

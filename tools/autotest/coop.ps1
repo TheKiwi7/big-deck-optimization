@@ -22,11 +22,28 @@ if ((Test-Path "$hostData\settings.save") -and -not (Test-Path "$clientData\sett
 }
 
 $testMods = Join-Path $GameDir "mods_STEAMTEST"
+$ownMods = Join-Path $testMods ".bdtest-created"
+# Both instances save bdopt changes in the shared mod_configs/BigDeckOptimization.cfg (with BaseLib): restored afterwards.
+$config = Join-Path $UserData "mod_configs\BigDeckOptimization.cfg"
+$configBackup = Join-Path $Results "BigDeckOptimization.cfg.coop-backup"
+# Present while a test runs: a test stopped from outside (its cleanup never ran) is cleaned up by the next one.
+$marker = Join-Path $Results "coop.inprogress"
+if (Test-Path $marker) {
+    Write-Output "the previous co-op test was interrupted: restoring its leftovers"
+    if ((Get-Content $marker) -eq "config" -and (Test-Path $configBackup)) { Copy-Item $configBackup $config -Force; Write-Output "  BigDeckOptimization.cfg restored" }
+    elseif ((Get-Content $marker) -eq "no config" -and (Test-Path $config)) { Remove-Item $config; Write-Output "  test BigDeckOptimization.cfg removed" }
+    if (Test-Path $ownMods) { Remove-Item -Recurse -Force $testMods; Write-Output "  mods_STEAMTEST removed" }
+    Remove-Item $marker
+}
 if (Test-Path $testMods) { throw "$testMods already exists (left over or not ours): remove it first" }
+$hadConfig = Test-Path $config
+if ($hadConfig) { Copy-Item $config $configBackup -Force; $configHash = (Get-FileHash $config).Hash }
+Set-Content $marker $(if ($hadConfig) { "config" } else { "no config" })
 if ($WithMods) {
     $settings = Get-Content (Join-Path (Get-SteamAccountDir) "settings.save") -Raw | ConvertFrom-Json
     $wanted = @($settings.mod_settings.mod_list | Where-Object { $_.is_enabled -and $_.source -eq "steam_workshop" -and $_.id -ne "BigDeckOptimization" } | ForEach-Object { $_.id })
     New-Item -ItemType Directory $testMods | Out-Null
+    Set-Content $ownMods "created by tools/autotest/coop.ps1"
     foreach ($item in Get-ChildItem $Workshop -Directory) {
         $ids = Get-ChildItem $item.FullName -Recurse -Filter *.json | ForEach-Object { try { (Get-Content $_.FullName -Raw | ConvertFrom-Json).id } catch { } }
         if (@($ids | Where-Object { $wanted -contains $_ }).Count -gt 0) { Copy-Item -Recurse $item.FullName (Join-Path $testMods $item.Name) }
@@ -58,4 +75,10 @@ try {
 finally {
     foreach ($p in @($h, $c)) { if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force; Write-Output "closed instance $($p.Id)" } }
     if (Test-Path $testMods) { Start-Sleep 2; Remove-Item -Recurse -Force $testMods; Write-Output "removed mods_STEAMTEST: $(-not (Test-Path $testMods))" }
+    if ($hadConfig) {
+        Copy-Item $configBackup $config -Force
+        if ($configHash -ne (Get-FileHash $config).Hash) { Write-Output "WARNING: BigDeckOptimization.cfg not restored, copy $configBackup back" }
+    }
+    elseif (Test-Path $config) { Remove-Item $config }
+    Remove-Item $marker -ErrorAction SilentlyContinue
 }

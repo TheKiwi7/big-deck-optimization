@@ -34,13 +34,39 @@ public sealed class BaseLibSettings : SimpleModConfig
     public static bool GridSort { get => Get(nameof(GridSort)); set => Apply(nameof(GridSort), value); }
     public static bool GridPool { get => Get(nameof(GridPool)); set => Apply(nameof(GridPool), value); }
     public static bool RelicInput { get => Get(nameof(RelicInput)); set => Apply(nameof(RelicInput), value); }
-    public static bool LimitlessTabs { get => Get(nameof(LimitlessTabs)); set => Apply(nameof(LimitlessTabs), value); }
+    [ConfigIgnoreRestoreDefaults]
+    public static bool LimitlessTabs { get => Shown(nameof(LimitlessTabs)); set => ApplyShown(nameof(LimitlessTabs), value); }
     public static bool FastCombatStart { get => Get(nameof(FastCombatStart)); set => Apply(nameof(FastCombatStart), value); }
     public static bool Listeners { get => Get(nameof(Listeners)); set => Apply(nameof(Listeners), value); }
     public static bool HookSkip { get => Get(nameof(HookSkip)); set => Apply(nameof(HookSkip), value); }
     public static bool HoverTips { get => Get(nameof(HoverTips)); set => Apply(nameof(HoverTips), value); }
+    [ConfigIgnoreRestoreDefaults]
+    public static bool LimitlessSaves { get => Shown(nameof(LimitlessSaves)); set => ApplyShown(nameof(LimitlessSaves), value); }
+
+    // Limitless-only optimizations: their box is ticked only while Limitless is there (patch applied) and the option is
+    // wanted. The wanted state is saved apart, hidden: a box shown unticked without Limitless comes back ticked (and on)
+    // once Limitless is installed, unless the player turned it off.
+    [ConfigHideInUI]
+    public static bool LimitlessTabsWanted { get => Get(nameof(LimitlessTabs)); set => Apply(nameof(LimitlessTabs), value); }
+    [ConfigHideInUI]
+    public static bool LimitlessSavesWanted { get => Get(nameof(LimitlessSaves)); set => Apply(nameof(LimitlessSaves), value); }
 
     private static string Key(string property) => StringHelper.Slugify(property).ToLowerInvariant();
+
+    private static bool Shown(string property) => Settings.Find(Key(property)) is { } option && option.Unavailable() == null && option.Wanted;
+
+    /// <summary>
+    /// A shown box changed from the menu (Limitless there). Ignored when loading: the saved box state isn't the
+    /// preference (unticked while Limitless was absent), the hidden ...Wanted value is.
+    /// </summary>
+    private static void ApplyShown(string property, bool on)
+    {
+        if (_loading || Settings.Find(Key(property))?.Unavailable() != null)
+        {
+            return;
+        }
+        Apply(property, on);
+    }
 
     private static bool Get(string property) => Settings.Find(Key(property))?.Wanted ?? true;
 
