@@ -9,9 +9,9 @@ Removes the lag of huge decks in Slay the Spire 2: thousands of cards, hundreds 
 **In co-op, every player needs this mod.** The game won't let a player without it join.
 Why: with a huge deck, the mod speeds the game up so much that a player without it falls far behind. For example, with about 8,000 cards and a few hundred relics, starting a combat takes about 4 seconds with the mod and over 30 seconds without it. The game can't handle players that far apart: the cards played in the meantime get lost, and the run desyncs or freezes.
 
-**BaseLib is not required.** The mod works on its own; with [BaseLib](https://steamcommunity.com/sharedfiles/filedetails/?id=3737335127) installed, you also get a settings menu to turn each improvement on or off.
+**Want a settings menu?** Install [BaseLib](https://steamcommunity.com/sharedfiles/filedetails/?id=3737335127) (optional) to turn each improvement on or off from the game's settings.
 
-> **Early development.** I haven't found any bug, but some might still exist. The mod gets regular updates to fix problems and speed things up further.
+> **Early development.** The mod gets regular updates to fix problems and speed things up further.
 
 ## What it changes
 
