@@ -1,0 +1,62 @@
+# Combat draw pile view scrolled like a held mouse wheel at ~31,800 cards (the user's report: it lags a lot).
+# Same deck as try-32k; release-like timings. Run with -TraceSec to profile the scroll.
+timeout 900
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+enemyhp 999999
+speed fast
+cmd fight CULTISTS_NORMAL
+waitfor idle 900
+cmd bdperf combatstart
+wait 3
+cmd bdperf plaque 100
+checksum before-scroll
+marker scroll-start
+pilescroll draw 300 40
+pilescroll draw 120 200
+pilescroll draw 60 3000
+pilescroll draw 600 120
+pilescroll discard 60 40
+marker scroll-end
+checksum after-scroll
+# Stay open until a -TraceSec 50 trace ends (a trace cut by the game exiting loses its method names).
+wait 25
+quit

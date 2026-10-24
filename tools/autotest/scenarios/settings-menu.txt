@@ -4,6 +4,7 @@ wait 3
 cmd bdopt
 baselibmenu shot-settings
 cmd bdopt fast_combat_start off
+cmd bdopt fast_combat_start_relics 17
 cmd bdopt
 wait 3
 quit

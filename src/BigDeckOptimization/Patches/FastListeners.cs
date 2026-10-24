@@ -813,7 +813,7 @@ public static class FastListeners
             // and assemblies not referencing BaseLib can't).
             AppDomain.CurrentDomain.AssemblyLoad += (_, args) =>
             {
-                if (_noCardModifierTypes == true && MayDefineCardModifiers(args.LoadedAssembly) && DefinesCardModifier(args.LoadedAssembly))
+                if (_noCardModifierTypes == true && BaseLibTypes.MayDefine(args.LoadedAssembly) && BaseLibTypes.Defines(args.LoadedAssembly, CardModifierType))
                 {
                     _noCardModifierTypes = false;
                 }
@@ -1036,40 +1036,8 @@ public static class FastListeners
         {
             return false;
         }
-        _noCardModifierTypes ??= !AnyCardModifierType();
+        _noCardModifierTypes ??= !BaseLibTypes.AnyDefined(CardModifierType);
         return _noCardModifierTypes.Value;
-    }
-
-    /// <summary>Whether any loaded assembly defines a concrete CardModifier subclass (or the base type is missing).</summary>
-    private static bool AnyCardModifierType() =>
-        AccessTools.TypeByName(CardModifierType) == null
-        || AppDomain.CurrentDomain.GetAssemblies().Any(a => MayDefineCardModifiers(a) && DefinesCardModifier(a));
-
-    /// <summary>Only BaseLib and assemblies referencing it can derive from its CardModifier.</summary>
-    private static bool MayDefineCardModifiers(Assembly assembly) =>
-        !assembly.IsDynamic && (assembly.GetName().Name == "BaseLib" || assembly.GetReferencedAssemblies().Any(r => r.Name == "BaseLib"));
-
-    private static bool DefinesCardModifier(Assembly assembly)
-    {
-        Type? baseType = AccessTools.TypeByName(CardModifierType);
-        if (baseType == null)
-        {
-            return true;
-        }
-        Type[] types;
-        try
-        {
-            types = assembly.GetTypes();
-        }
-        catch (ReflectionTypeLoadException e)
-        {
-            types = e.Types.Where(t => t != null).ToArray()!;
-        }
-        catch
-        {
-            return true; // Can't tell: don't skip.
-        }
-        return types.Any(t => !t.IsAbstract && baseType.IsAssignableFrom(t));
     }
 
     /// <summary><c>RunState.IterateHookListeners</c>, pooled list.</summary>

@@ -10,8 +10,10 @@ using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.DevConsole;
 using MegaCrit.Sts2.Core.DevConsole.ConsoleCommands;
+using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
@@ -41,7 +43,7 @@ public class PerfConsoleCmd : AbstractConsoleCmd
 
     public override string CmdName => "bdperf";
 
-    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | verify [off|sample|all] | combatstart | grid [cards:int] | probe [reset|log|on|off|hitch <ms>] | pile [verify <n>] | checks on|off | opt on|off | listeners [iterations:int]";
+    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | verify [off|sample|all] | combatstart | grid [cards:int] | probe [reset|log|on|off|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | checks on|off | opt on|off | listeners [iterations:int]";
 
     public override string Description => "[BigDeckOptimization] Measures the multiplayer post-action checksum cost, vanilla vs optimized, or shows/sets live snapshot verification.";
 
@@ -74,6 +76,9 @@ public class PerfConsoleCmd : AbstractConsoleCmd
                 return new CmdResult(success: true, $"PileIndex verifies 1 answer in {every}.");
             case "pile":
                 return ComparePile();
+            case "plaque":
+                int plaqueCards = args.Length >= 2 && int.TryParse(args[1], out int pc) && pc > 0 ? pc : 200;
+                return CompareTypePlaque(plaqueCards);
             case "segments" when args.Length >= 3 && args[1] == "verify" && args[2] is "all" or "sample" or "off":
                 FastListeners.VerifyAll = args[2] == "all";
                 FastListeners.CacheVerifyEvery = args[2] == "off" ? int.MaxValue : 256;
@@ -179,6 +184,57 @@ public class PerfConsoleCmd : AbstractConsoleCmd
     }
 
     /// <summary>CardModel.Pile for every card of every pile: indexed vs vanilla answers and timings.</summary>
+    /// <summary>
+    /// bdperf plaque [n]: BaseLib's card type line for the first n cards of the local player's piles, TypePlaqueSkip
+    /// off (BaseLib's walk of every hook listener) then on: the same LocString object for every card, and the times.
+    /// </summary>
+    private static CmdResult CompareTypePlaque(int count)
+    {
+        Player? me = RunManager.Instance.DebugOnlyGetState() is { } state ? LocalContext.GetMe(state) : null;
+        if (me == null || !CombatManager.Instance.IsInProgress)
+        {
+            return new CmdResult(success: false, "Start a combat first.");
+        }
+        if (!TypePlaqueSkip.Applied)
+        {
+            return new CmdResult(success: false, "TypePlaqueSkip is not applied (BaseLib absent or changed, see the log).");
+        }
+        List<CardModel> cards = me.Piles.SelectMany(p => p.Cards).Take(count).ToList();
+        var originals = cards.Select(c => c.Type.ToLocString()).ToList();
+        bool wasEnabled = TypePlaqueSkip.Enabled;
+        long skippedBefore = TypePlaqueSkip.Skipped;
+        List<LocString> expected, actual;
+        Stopwatch vanilla = Stopwatch.StartNew();
+        TypePlaqueSkip.Enabled = false;
+        try
+        {
+            expected = cards.Select((c, i) => TypePlaqueSkip.Invoke(originals[i], c)).ToList();
+        }
+        finally
+        {
+            TypePlaqueSkip.Enabled = wasEnabled;
+        }
+        vanilla.Stop();
+        Stopwatch fast = Stopwatch.StartNew();
+        TypePlaqueSkip.Enabled = true;
+        try
+        {
+            actual = cards.Select((c, i) => TypePlaqueSkip.Invoke(originals[i], c)).ToList();
+        }
+        finally
+        {
+            TypePlaqueSkip.Enabled = wasEnabled;
+        }
+        fast.Stop();
+        int mismatches = Enumerable.Range(0, cards.Count)
+            .Count(i => !ReferenceEquals(expected[i], actual[i]) || expected[i].GetFormattedText() != actual[i].GetFormattedText());
+        string verdict = mismatches == 0 ? "OK: identical type lines" : $"MISMATCH: {mismatches} cards differ";
+        return new CmdResult(mismatches == 0,
+            $"type line — {cards.Count} cards ({me.Piles.Sum(p => p.Cards.Count)} in piles), skipped {TypePlaqueSkip.Skipped - skippedBefore}\n"
+            + $"  BaseLib: {vanilla.Elapsed.TotalMilliseconds:F1} ms ({vanilla.Elapsed.TotalMilliseconds / Math.Max(1, cards.Count):F3} ms/card)\n"
+            + $"  skip   : {fast.Elapsed.TotalMilliseconds:F1} ms ({fast.Elapsed.TotalMilliseconds / Math.Max(1, cards.Count):F3} ms/card)\n  {verdict}");
+    }
+
     private static CmdResult ComparePile()
     {
         RunState? state = RunManager.Instance.DebugOnlyGetState();

@@ -1,0 +1,58 @@
+# BaseLib menu in every game language (session only: LocManager.SetLanguage, nothing saved): the texts follow the
+# game language; zht (no translation) must fall back to English. Screenshots shot-lang-<code>.
+timeout 600
+wait 3
+language eng
+baselibmenu shot-lang-eng
+menuback
+language fra
+baselibmenu shot-lang-fra
+menuback
+language deu
+baselibmenu shot-lang-deu
+menuback
+language spa
+baselibmenu shot-lang-spa
+menuback
+language esp
+baselibmenu shot-lang-esp
+menuback
+language ita
+baselibmenu shot-lang-ita
+menuback
+language ptb
+baselibmenu shot-lang-ptb
+menuback
+language pol
+baselibmenu shot-lang-pol
+menuback
+language rus
+baselibmenu shot-lang-rus
+menuback
+language tur
+baselibmenu shot-lang-tur
+menuback
+language jpn
+baselibmenu shot-lang-jpn
+menuback
+language kor
+baselibmenu shot-lang-kor
+menuback
+language zhs
+baselibmenu shot-lang-zhs
+menuback
+language tha
+baselibmenu shot-lang-tha
+menuback
+language zht
+baselibmenu shot-lang-zht
+menuback
+# Hovered rows (tooltip text logged as MENUHOVER and captured): the relic slider in French, the type line in Japanese.
+language fra
+baselibmenu shot-hover-fra FastCombatStartRelics
+menuback
+language jpn
+baselibmenu shot-hover-jpn CardTypeLine
+menuback
+language eng
+quit

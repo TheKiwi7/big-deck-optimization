@@ -119,7 +119,7 @@ public static class PoolSignalScan
                 _access[pool.GetType()] = access;
             }
             used = access.Used.GetValue(pool)!;
-            if (access.Mirrored.Any(PatchSafety.IsPatchedByOthers) || !(bool)access.UsedContains.Invoke(used, new object[] { poolable })!)
+            if (access.Mirrored.Any(method => PatchSafety.IsPatchedByOthers(method)) || !(bool)access.UsedContains.Invoke(used, new object[] { poolable })!)
             {
                 return true; // Vanilla logs the double free / foreign object.
             }

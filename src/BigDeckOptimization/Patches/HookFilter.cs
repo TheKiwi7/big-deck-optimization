@@ -86,15 +86,27 @@ public static class HookFilter
     // Hook indexes. The first group filters combat listeners, the second run listeners (deck + combat).
     private const int EnergyCost = 0, EnergyCostLate = 1, Keywords = 2, ShouldPlay = 3;
     private const int DamageAdditive = 4, DamageMultiplicative = 5, DamageCap = 6;
-    private const int AllowHitting = 7;
+    private const int AllowHitting = 7, StarCost = 8;
 
 #if BENCH
     public static long HittingChecks { get; private set; }
     public static long HittingMismatches { get; private set; }
+    public static long CostColorChecks { get; private set; }
+    public static long CostColorMismatches { get; private set; }
 #endif
 
     /// <summary>v0.107.1 <c>Hook.ShouldAllowHitting</c>, mirrored by <see cref="ShouldAllowHittingPrefix"/>.</summary>
     private const string ShouldAllowHittingFingerprint = "C4F317D182865D23";
+
+    /// <summary>
+    /// v0.107.1 <c>CardCostHelper.TryModifyEnergyCostWithHooks</c> / <c>TryModifyStarCostWithHooks</c>: the cost colors
+    /// of every card shown in combat (each hand card after every action) ask every combat listener, with their own
+    /// copy of the cost hooks' loops. Mirrored by <see cref="EnergyCostColorPrefix"/> / <see cref="StarCostColorPrefix"/>.
+    /// </summary>
+    private const string EnergyCostColorFingerprint = "DA4F986AFFB60B1C";
+    private const string StarCostColorFingerprint = "9DF34236EE3F9BC5";
+
+    private static MethodInfo? _energyCostColor, _starCostColor;
 
     private static FilteredHook[] _hooks = Array.Empty<FilteredHook>();
 
@@ -111,6 +123,9 @@ public static class HookFilter
         MethodInfo shouldPlayHook = Require(AccessTools.Method(typeof(Hook), nameof(Hook.ShouldPlay)));
         MethodInfo damageHook = Require(AccessTools.Method(typeof(Hook), "ModifyDamageInternal"));
         MethodInfo hittingHook = Require(AccessTools.Method(typeof(Hook), nameof(Hook.ShouldAllowHitting)));
+        // Optional: a missing or changed cost color helper only leaves that helper vanilla.
+        MethodInfo? energyColor = AccessTools.Method(typeof(MegaCrit.Sts2.Core.Helpers.Models.CardCostHelper), "TryModifyEnergyCostWithHooks");
+        MethodInfo? starColor = AccessTools.Method(typeof(MegaCrit.Sts2.Core.Helpers.Models.CardCostHelper), "TryModifyStarCostWithHooks");
         _hooks = new[]
         {
             new FilteredHook(nameof(AbstractModel.TryModifyEnergyCostInCombat), energyHook),
@@ -121,6 +136,7 @@ public static class HookFilter
             new FilteredHook(nameof(AbstractModel.ModifyDamageMultiplicative), damageHook),
             new FilteredHook(nameof(AbstractModel.ModifyDamageCap), damageHook),
             new FilteredHook(nameof(AbstractModel.ShouldAllowHitting), hittingHook),
+            new FilteredHook(nameof(AbstractModel.TryModifyStarCost), starColor ?? hittingHook),
         };
         harmony.Patch(energyHook, prefix: Method(nameof(ModifyEnergyCostPrefix)));
         harmony.Patch(keywordsHook, prefix: Method(nameof(ModifyKeywordsPrefix)));
@@ -134,6 +150,24 @@ public static class HookFilter
         else
         {
             Log.Info($"[{ModEntry.Id}] {Name}: Hook.ShouldAllowHitting changed (fingerprint {MethodFingerprint.Of(hittingHook)}): left vanilla");
+        }
+        if (energyColor != null && MethodFingerprint.Of(energyColor) == EnergyCostColorFingerprint)
+        {
+            _energyCostColor = energyColor;
+            harmony.Patch(energyColor, prefix: Method(nameof(EnergyCostColorPrefix)));
+        }
+        else
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: CardCostHelper.TryModifyEnergyCostWithHooks missing or changed: left vanilla");
+        }
+        if (starColor != null && MethodFingerprint.Of(starColor) == StarCostColorFingerprint)
+        {
+            _starCostColor = starColor;
+            harmony.Patch(starColor, prefix: Method(nameof(StarCostColorPrefix)));
+        }
+        else
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: CardCostHelper.TryModifyStarCostWithHooks missing or changed: left vanilla");
         }
         ListenerCache.ScopeEnded += () =>
         {
@@ -342,6 +376,103 @@ public static class HookFilter
             return true;
         }
     }
+
+    /// <summary>
+    /// Mirrors <c>CardCostHelper.TryModifyEnergyCostWithHooks</c> (energy cost color) over the filtered listeners: the
+    /// <see cref="AbstractModel"/> defaults return false and leave the cost as is, so skipping them changes nothing.
+    /// </summary>
+    private static bool EnergyCostColorPrefix(CardModel card, ICombatState state, ref decimal hookModifiedCost, ref bool __result)
+    {
+        if (!Active || state is not CombatState combat || PatchSafety.IsPatchedByOthers(_energyCostColor))
+        {
+            return true;
+        }
+        try
+        {
+            List<AbstractModel>? early = ForCombat(combat, EnergyCost);
+            List<AbstractModel>? late = ForCombat(combat, EnergyCostLate);
+            if (early == null || late == null)
+            {
+                return true;
+            }
+            // Vanilla iterates state.IterateHookListeners() directly here (no "combat ending" check).
+            hookModifiedCost = card.EnergyCost.GetWithModifiers(CostModifiers.None);
+            bool modified = false;
+            foreach (AbstractModel item in early)
+            {
+                modified |= item.TryModifyEnergyCostInCombat(card, hookModifiedCost, out hookModifiedCost);
+            }
+            foreach (AbstractModel item in late)
+            {
+                modified |= item.TryModifyEnergyCostInCombatLate(card, hookModifiedCost, out hookModifiedCost);
+            }
+#if BENCH
+            CheckCostColor(_energyCostColor!, card, state, modified, hookModifiedCost);
+#endif
+            __result = modified;
+            return false;
+        }
+        catch (Exception e)
+        {
+            Disable(e);
+            return true;
+        }
+    }
+
+    /// <summary>Mirrors <c>CardCostHelper.TryModifyStarCostWithHooks</c> (star cost color) over the filtered listeners.</summary>
+    private static bool StarCostColorPrefix(CardModel card, ICombatState state, ref decimal hookModifiedCost, ref bool __result)
+    {
+        if (!Active || state is not CombatState combat || PatchSafety.IsPatchedByOthers(_starCostColor))
+        {
+            return true;
+        }
+        try
+        {
+            List<AbstractModel>? listeners = ForCombat(combat, StarCost);
+            if (listeners == null)
+            {
+                return true;
+            }
+            hookModifiedCost = card.BaseStarCost;
+            bool modified = false;
+            foreach (AbstractModel item in listeners)
+            {
+                modified |= item.TryModifyStarCost(card, hookModifiedCost, out hookModifiedCost);
+            }
+#if BENCH
+            CheckCostColor(_starCostColor!, card, state, modified, hookModifiedCost);
+#endif
+            __result = modified;
+            return false;
+        }
+        catch (Exception e)
+        {
+            Disable(e);
+            return true;
+        }
+    }
+
+#if BENCH
+    /// <summary>Debug, with bench checks on: 1 call in 64 compared with the game's own helper run without caches.</summary>
+    private static void CheckCostColor(MethodInfo helper, CardModel card, ICombatState state, bool modified, decimal cost)
+    {
+        if (!ExtraScopes.BenchChecks || ++CostColorChecks % 64 != 0)
+        {
+            return;
+        }
+        (bool Modified, decimal Cost) vanilla = ListenerCache.RunVanilla(() =>
+        {
+            object[] args = { card, state, 0m };
+            bool result = (bool)helper.Invoke(null, args)!;
+            return (result, (decimal)args[2]);
+        });
+        if (vanilla.Modified != modified || vanilla.Cost != cost)
+        {
+            CostColorMismatches++;
+            Log.Error($"[{ModEntry.Id}] {Name}: {helper.Name}({card}) filtered ({modified}, {cost}), vanilla ({vanilla.Modified}, {vanilla.Cost})");
+        }
+    }
+#endif
 
     /// <summary>Mirrors <see cref="Hook.ShouldAllowHitting"/> over the filtered listeners.</summary>
     private static bool ShouldAllowHittingPrefix(ICombatState combatState, Creature creature, ref bool __result)

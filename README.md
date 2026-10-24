@@ -19,7 +19,7 @@ With a huge deck, the game slows down more and more until every action freezes i
 
 - **Entering a combat:** with 8,000+ cards and hundreds of relics, about 4 seconds instead of half a minute.
 - **Playing cards:** smooth again, even past 10,000 cards.
-- **Limitless and BaseLib:** the mod also speeds up a good part of their work during combat. Limitless' stacked enchantments are no longer re-saved after every action when nothing changed (nor the save data BaseLib attaches to each copy), and BaseLib's card modifier checks are skipped when no mod uses them. Same results.
+- **Limitless and BaseLib:** the mod also speeds up a good part of their work during combat. Limitless' stacked enchantments are no longer re-saved after every action when nothing changed (nor the save data BaseLib attaches to each copy), and BaseLib's card modifier and card type line checks are skipped when no mod uses them (smooth draw pile scrolling with tens of thousands of cards). Same results.
 - **Cards that search your piles:** cards like Hidden Gem no longer freeze the game.
 - **Copying lots of cards:** a campfire clone or Reflections' Shatter with thousands of cards takes seconds instead of minutes, and relics that trigger on every copy (Bing Bong) no longer black out the screen or crash the game.
 - **Waiting in combat:** no more constant stutter.
@@ -27,7 +27,7 @@ With a huge deck, the game slows down more and more until every action freezes i
 - **Co-op:** the long pause after every action is gone. Players with big decks no longer slow down everyone else.
 - **Deck view and card grids:** sorting, opening and scrolling are fast again.
 - **Lots of relics:** moving the mouse no longer slows the game down.
-- **Optional:** with 50+ relics, the relic effects at the start of a combat skip their animation pauses. It looks faster, and the effects stay exactly the same (always on in co-op).
+- **Optional:** the relic effects at the start of a combat skip their animation pauses. It looks faster, and the effects stay exactly the same. In solo you can make it start only from a number of relics (always on in co-op).
 
 ## What it doesn't change
 
@@ -44,13 +44,13 @@ Co-op with very big decks is much better, but not instant: going from one turn t
 
 ## Settings
 
-Everything is on by default. With [BaseLib](https://steamcommunity.com/sharedfiles/filedetails/?id=3737335127) (optional), each improvement has its own switch under **Mod Configuration → Big Deck Optimization**. Some players have reported problems with BaseLib: this mod works without it, you just won't have that settings menu. You can also use the console (`` ` `` key, `*` or `^` on AZERTY; without BaseLib, these changes last until you quit the game):
+Everything is on by default. With [BaseLib](https://steamcommunity.com/sharedfiles/filedetails/?id=3737335127) (optional), each improvement has its own switch under **Mod Configuration → Big Deck Optimization**. The menu follows the game's language (every language the game offers; English otherwise). Some players have reported problems with BaseLib: this mod works without it, you just won't have that settings menu. You can also use the console (`` ` `` key, `*` or `^` on AZERTY; without BaseLib, these changes last until you quit the game):
 
 - `bdopt` shows what is on.
 - `bdopt off` / `bdopt on` turns the whole mod off or back on, without restarting.
 - `bdopt fast_combat_start off` turns off just the faster combat start. In co-op it stays on for everyone, so all players start each combat at the same pace (`bdopt` lists the other names).
 
-A switch is greyed out when its optimization can't run: Limitless isn't installed (for the Limitless ones), a game or Limitless update changed what it speeds up, or it turned itself off after an error. Hover it to see why. The game then runs normally for that part.
+A switch is greyed out when its optimization can't run: Limitless isn't installed (for the Limitless ones), a game, Limitless or BaseLib update changed what it speeds up, or it turned itself off after an error. Hover it to see why. The game then runs normally for that part. If another mod changes the same part of the game, the switch stays available and its tooltip names that mod (that part runs normally).
 
 ## Something looks wrong?
 

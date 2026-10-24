@@ -75,7 +75,103 @@ public static class AutoTest
             postfix: new HarmonyMethod(typeof(AutoTest), nameof(LobbyScreenPostfix)));
         harmony.Patch(AccessTools.Method(typeof(NCharacterSelectScreen), nameof(NCharacterSelectScreen.InitializeMultiplayerAsClient)),
             postfix: new HarmonyMethod(typeof(AutoTest), nameof(LobbyScreenPostfix)));
+        if (OS.GetCmdlineArgs().Concat(OS.GetCmdlineUserArgs()).Contains("--bdhidden"))
+        {
+            _hidden = true;
+            harmony.Patch(AccessTools.Method(typeof(NGame), nameof(NGame.ApplyDisplaySettings)),
+                postfix: new HarmonyMethod(typeof(AutoTest), nameof(HideWindow)));
+            Callable.From(HideWindow).CallDeferred();
+        }
+        if (OS.GetCmdlineArgs().Concat(OS.GetCmdlineUserArgs()).Contains("--bdmute"))
+        {
+            // --bdmute (run.ps1 without -Sound): every master volume the game sets (startup, mute in background) is 0.
+            // The volume settings themselves are untouched.
+            var mute = new HarmonyMethod(typeof(AutoTest), nameof(MuteVolume));
+            harmony.Patch(AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Audio.NAudioManager), "SetMasterVol"), prefix: mute);
+            harmony.Patch(AccessTools.Method(typeof(MegaCrit.Sts2.Core.Audio.Debug.NDebugAudioManager), "SetMasterAudioVolume"), prefix: mute);
+            Callable.From(() =>
+            {
+                NGame.Instance?.AudioManager?.SetMasterVol(0f);
+                NGame.Instance?.DebugAudio?.SetMasterAudioVolume(0f);
+            }).CallDeferred();
+        }
         Callable.From(Start).CallDeferred();
+    }
+
+    private static void MuteVolume(ref float __0) => __0 = 0f;
+
+    private static void NoOpPostfix()
+    {
+    }
+
+    private static bool _hidden, _quitting;
+
+    /// <summary>
+    /// <c>--bdhidden</c> (run.ps1 without -Visible): the window, windowed at 1920x1080 (the fullscreen size here, for
+    /// comparable timings), sits beyond every screen and hands the focus back to the window that had it. It still
+    /// renders (not minimized): screenshots and fps are unchanged. Only the window moves, no setting changes; the game
+    /// saves the window position on exit only with fullscreen off, and <see cref="Quit"/> reapplies the display
+    /// settings first.
+    /// </summary>
+    private static void HideWindow()
+    {
+        if (_quitting)
+        {
+            return;
+        }
+        try
+        {
+            if (DisplayServer.WindowGetMode() != DisplayServer.WindowMode.Windowed)
+            {
+                DisplayServer.WindowSetMode(DisplayServer.WindowMode.Windowed);
+            }
+            DisplayServer.WindowSetSize(new Vector2I(1920, 1080));
+            int left = 0, top = 0;
+            for (int screen = 0; screen < DisplayServer.GetScreenCount(); screen++)
+            {
+                Vector2I position = DisplayServer.ScreenGetPosition(screen);
+                left = Math.Min(left, position.X);
+                top = Math.Min(top, position.Y);
+            }
+            DisplayServer.WindowSetPosition(new Vector2I(left - 1920 - 400, top));
+            Say($"window hidden at {DisplayServer.WindowGetPosition()} ({DisplayServer.WindowGetSize()}), focus handed back: {ReturnFocus()}");
+        }
+        catch (Exception e)
+        {
+            Say("could not hide the window: " + e.Message);
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr window, uint command);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool IsIconic(IntPtr window);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern int GetWindowTextLength(IntPtr window);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr window);
+
+    /// <summary>While the game window has the focus (it takes it at launch), gives it to the next visible window below it.</summary>
+    private static bool ReturnFocus()
+    {
+        if (OS.GetName() != "Windows")
+        {
+            return false;
+        }
+        IntPtr game = (IntPtr)DisplayServer.WindowGetNativeHandle(DisplayServer.HandleType.WindowHandle);
+        if (game == IntPtr.Zero || GetForegroundWindow() != game)
+        {
+            return false;
+        }
+        const uint NextWindow = 2; // GW_HWNDNEXT: the next window down the z-order.
+        for (IntPtr window = GetWindow(game, NextWindow); window != IntPtr.Zero; window = GetWindow(window, NextWindow))
+        {
+            GetWindowThreadProcessId(window, out uint process);
+            if (IsWindowVisible(window) && !IsIconic(window) && GetWindowTextLength(window) > 0 && process != (uint)System.Environment.ProcessId)
+            {
+                return SetForegroundWindow(window);
+            }
+        }
+        return false;
     }
 
     private static bool _loggingPlays;
@@ -304,6 +400,24 @@ public static class AutoTest
                     string[] menuArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                     await BaseLibMenu(tree, menuArgs[0], menuArgs.Length > 1 ? menuArgs[1] : null);
                     break;
+                case "language":
+                    await Language(tree, arg.Trim());
+                    break;
+                case "fakeconflict":
+                    // Another "mod" patching a game method (no-op postfix under another Harmony id): the optimization
+                    // using it must back off and report it.
+                    MethodInfo conflictTarget = AccessTools.Method(arg.Trim()) ?? throw new InvalidOperationException("no method " + arg.Trim());
+                    new Harmony("bdtest.fakeconflict").Patch(conflictTarget, postfix: new HarmonyMethod(typeof(AutoTest), nameof(NoOpPostfix)));
+                    Say($"  patched {conflictTarget.DeclaringType?.Name}.{conflictTarget.Name} as bdtest.fakeconflict");
+                    break;
+                case "menutext":
+                    string menuKey = $"BIGDECKOPTIMIZATION-{arg.Trim().ToUpperInvariant()}.hover.desc";
+                    Say($"  MENUTEXT {arg.Trim()}: {MegaCrit.Sts2.Core.Localization.LocString.GetIfExists("settings_ui", menuKey)?.GetFormattedText() ?? "(missing)"}");
+                    break;
+                case "menuback":
+                    NGame.Instance?.MainMenu?.SubmenuStack.Pop();
+                    await Frames(tree, 20);
+                    break;
                 case "modsscreen":
                     await ModsScreen(tree, arg.Trim());
                     break;
@@ -343,11 +457,11 @@ public static class AutoTest
                         .Where(p => p.PropertyType == typeof(bool)).Select(p => $"{p.Name}={p.GetValue(null)}")));
                     break;
                 case "counters":
-                    Say($"  COUNTERS {arg.Trim()}: {LimitlessReserialize.Name} kept {LimitlessReserialize.Kept}, rebuilt {LimitlessReserialize.Rebuilt}, "
+                    Say($"  COUNTERS {arg.Trim()}: {LimitlessReserialize.Name} kept {LimitlessReserialize.Kept}, rebuilt {LimitlessReserialize.Rebuilt}, skipped getters {LimitlessReserialize.SkippedGetters}, known data {LimitlessReserialize.KnownData}, "
                         + $"verify mismatches {LimitlessReserialize.VerifyMismatches}; {FastListeners.Name} cache mismatches {FastListeners.CacheMismatches}, "
                         + $"segments rebuilt {FastListeners.SegmentRebuilds} (versions {FastListeners.RebuiltVersions}, pile version {FastListeners.PileVersion}), "
                         + $"extended {FastListeners.SegmentExtends}, snapshot catch-ups {FastListeners.SnapshotCatchUps}, hits {FastListeners.SegmentHits}, uncached walks {FastListeners.UncachedWalks}; "
-                        + $"{HookFilter.Name} walk checks {HookFilter.WalkChecks}, mismatches {HookFilter.WalkMismatches}; {RelicFlashMerge.Name} merged {RelicFlashMerge.Merged}; {PileIndex.Name} duplicate checks fast {PileIndex.FastDuplicateChecks}, slow {PileIndex.SlowDuplicateChecks}; subscriber checks {FastListeners.SubscriberChecks} in {FastListeners.SubscriberCheckTicks * 1000.0 / Stopwatch.Frequency:F1} ms");
+                        + $"{HookFilter.Name} walk checks {HookFilter.WalkChecks}, mismatches {HookFilter.WalkMismatches}, cost color checks {HookFilter.CostColorChecks / 64}, mismatches {HookFilter.CostColorMismatches}; {RelicFlashMerge.Name} merged {RelicFlashMerge.Merged}; {PileIndex.Name} duplicate checks fast {PileIndex.FastDuplicateChecks}, slow {PileIndex.SlowDuplicateChecks}; subscriber checks {FastListeners.SubscriberChecks} in {FastListeners.SubscriberCheckTicks * 1000.0 / Stopwatch.Frequency:F1} ms");
                     break;
                 case "marker":
                     // A line the profiling scripts look for to cut traces into phases.
@@ -382,6 +496,10 @@ public static class AutoTest
                     break;
                 case "deckscroll":
                     await DeckScroll(tree, int.Parse(arg));
+                    break;
+                case "pilescroll":
+                    string[] pileArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    await PileScroll(tree, pileArgs[0], int.Parse(pileArgs[1]), pileArgs.Length > 2 ? float.Parse(pileArgs[2]) : 40f);
                     break;
                 case "deckpages":
                     string[] pageArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
@@ -920,6 +1038,44 @@ public static class AutoTest
     }
 
     /// <summary>
+    /// Script <c>pilescroll draw|discard|exhaust &lt;frames&gt; [px per frame]</c>: opens a combat pile view as its button
+    /// does, then moves the grid's scroll target down every frame like a held mouse wheel, so the grid's own
+    /// <c>_Process</c> scrolls and recycles its holders as in play.
+    /// </summary>
+    private static async Task PileScroll(SceneTree tree, string pileName, int frames, float step)
+    {
+        Player me = Me() ?? throw new InvalidOperationException("no local player");
+        PileType type = Enum.Parse<PileType>(pileName, ignoreCase: true);
+        CardPile pile = type.GetPile(me);
+        long start = Stopwatch.GetTimestamp();
+        var screen = MegaCrit.Sts2.Core.Nodes.Screens.NCardPileScreen.ShowScreen(pile, Array.Empty<string>());
+        double openMs = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        await Frames(tree, 1);
+        Say($"  {type} pile view opened: {openMs:F0} ms call, {Stopwatch.GetElapsedTime(start).TotalMilliseconds:F0} ms to first frame ({pile.Cards.Count} cards)");
+        await Frames(tree, 30);
+        NCardGrid grid = FindChild<NCardGrid>(screen) ?? throw new InvalidOperationException("no card grid in the pile view");
+        FieldInfo target = AccessTools.Field(typeof(NCardGrid), "_targetDrag");
+        var times = new List<double>(frames);
+        start = Stopwatch.GetTimestamp();
+        for (int i = 0; i < frames; i++)
+        {
+            long frame = Stopwatch.GetTimestamp();
+            target.SetValue(grid, (float)target.GetValue(grid)! - step);
+            await Frames(tree, 1);
+            times.Add(Stopwatch.GetElapsedTime(frame).TotalMilliseconds);
+        }
+        double total = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        times.Sort();
+        Say($"  scrolled {frames} frames ({step:F0} px each) in {total:F0} ms: {total / frames:F1} ms/frame, "
+            + $"median {times[frames / 2]:F1} ms, 95th {times[frames * 95 / 100]:F1} ms, worst {times[^1]:F0} ms");
+        start = Stopwatch.GetTimestamp();
+        MegaCrit.Sts2.Core.Nodes.Screens.Capstones.NCapstoneContainer.Instance?.Close();
+        await Frames(tree, 1);
+        Say($"  pile view closed in {Stopwatch.GetElapsedTime(start).TotalMilliseconds:F0} ms");
+        await Frames(tree, 5);
+    }
+
+    /// <summary>
     /// Script <c>deckpages &lt;prefix&gt; &lt;pages&gt;</c>: deck view screenshots scrolled two card rows per page, so every
     /// page shows its cards at the same screen positions (card art for the Workshop preview).
     /// </summary>
@@ -965,6 +1121,20 @@ public static class AutoTest
     /// Script <c>baselibmenu &lt;screenshot name&gt;</c>: BaseLib's mod configuration menu on this mod's settings. By
     /// reflection: this DLL must not reference BaseLib (optional).
     /// </summary>
+    /// <summary>
+    /// Script <c>language &lt;code&gt;</c>: switches the game language for this session only (LocManager, not saved), then
+    /// logs this mod's menu texts as the game's settings_ui table now has them.
+    /// </summary>
+    private static async Task Language(SceneTree tree, string code)
+    {
+        MegaCrit.Sts2.Core.Localization.LocManager.Instance.SetLanguage(code);
+        await Frames(tree, 5);
+        string Text(string key) => MegaCrit.Sts2.Core.Localization.LocString.GetIfExists("settings_ui", "BIGDECKOPTIMIZATION" + key)?.GetFormattedText() ?? "(missing)";
+        Say($"  LANG {MegaCrit.Sts2.Core.Localization.LocManager.Instance.Language}: general \"{Text("-GENERAL.title")}\", "
+            + $"enabled \"{Text("-ENABLED.title")}\", hook_skip \"{Text("-HOOK_SKIP.title")}\", "
+            + $"card_type_line \"{Text("-CARD_TYPE_LINE.title")}\" / \"{Text("-CARD_TYPE_LINE.hover.desc")}\"");
+    }
+
     private static async Task BaseLibMenu(SceneTree tree, string shot, string? hover = null)
     {
         var menu = NGame.Instance?.MainMenu ?? throw new InvalidOperationException("not on the main menu");
@@ -1071,6 +1241,16 @@ public static class AutoTest
     private static void Quit()
     {
         Say("quitting");
-        Callable.From(() => NGame.Instance?.Quit()).CallDeferred();
+        Callable.From(() =>
+        {
+            if (_hidden && SaveManager.Instance.SettingsSave is { Fullscreen: false })
+            {
+                // Back where the settings put it, so a windowed game doesn't save the hidden position on exit (a
+                // fullscreen game saves no position: it closes where it is, off-screen).
+                _quitting = true;
+                NGame.Instance?.ApplyDisplaySettings();
+            }
+            NGame.Instance?.Quit();
+        }).CallDeferred();
     }
 }

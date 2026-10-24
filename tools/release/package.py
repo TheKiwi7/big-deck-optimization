@@ -42,6 +42,24 @@ def build() -> None:
     for marker in ("bdperf", "bigdeck", "--bdtest", "PerfProbe"):
         if marker.encode("utf-16-le") in dll or marker.encode() in dll:
             sys.exit(f"Release DLL still contains test tooling '{marker}': is Bench excluded from Release?")
+    check_translations(dll)
+
+
+def check_translations(dll: bytes) -> None:
+    """Settings menu translations (Localization/<game language>.json): same keys, no empty text, embedded in the DLL."""
+    files = sorted((PROJECT / "Localization").glob("*.json"))
+    if not files:
+        sys.exit("No settings menu translations in src/BigDeckOptimization/Localization")
+    reference = None
+    for file in files:
+        texts = json.loads(file.read_text(encoding="utf-8"))
+        reference = reference or (file.name, set(texts))
+        if set(texts) != reference[1]:
+            sys.exit(f"{file.name} and {reference[0]} have different keys: {sorted(set(texts) ^ reference[1])}")
+        if any(not str(text).strip() for text in texts.values()):
+            sys.exit(f"{file.name} has an empty text")
+        if f"BigDeckOptimization.Localization.{file.stem}.json".encode() not in dll:
+            sys.exit(f"{file.name} is not embedded in the Release DLL")
 
 
 def changenote(version: str) -> str:

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using HarmonyLib;
 
 namespace BigDeckOptimization.Patches;
@@ -48,9 +49,11 @@ public static class PatchSafety
 
     /// <summary>
     /// True when a mod other than us has Harmony patches on the method. Our replacements mirror vanilla bodies, so
-    /// they would silently drop another mod's transpiler or double-apply its postfix: we back off instead.
+    /// they would silently drop another mod's transpiler or double-apply its postfix: we back off instead. Each
+    /// back-off is recorded for the calling patch (its source file name, e.g. HookFilter) with the other mods' names,
+    /// so the settings menu, bdopt and the log can say which mod keeps that part of an optimization vanilla.
     /// </summary>
-    public static bool IsPatchedByOthers(MethodBase? method)
+    public static bool IsPatchedByOthers(MethodBase? method, [CallerFilePath] string caller = "")
     {
         if (method == null)
         {
@@ -65,16 +68,18 @@ public static class PatchSafety
             return cached.Patched;
         }
         HarmonyLib.Patches? info = Harmony.GetPatchInfo(method);
-        bool patched = info != null && info.Owners.Any(owner => owner != ModEntry.Harmony.Id);
+        IEnumerable<Patch> others = info == null ? Enumerable.Empty<Patch>()
+            : info.Prefixes.Concat(info.Postfixes).Concat(info.Transpilers).Concat(info.Finalizers).Where(p => p.owner != ModEntry.Harmony.Id);
+        bool patched = Record(caller, method, others);
         _patchedByOthers[method] = (patched, now);
         return patched;
     }
 
     /// <summary>
-    /// Like <see cref="IsPatchedByOthers(MethodBase?)"/>, except for these other mods' postfixes, whose effect the caller
-    /// reproduces (checked by fingerprint).
+    /// Like <see cref="IsPatchedByOthers(MethodBase?, string)"/>, except for these other mods' postfixes, whose effect
+    /// the caller reproduces (checked by fingerprint).
     /// </summary>
-    public static bool IsPatchedByOthers(MethodBase? method, params MethodInfo[] allowedPostfixes)
+    public static bool IsPatchedByOthers(MethodBase? method, MethodInfo[] allowedPostfixes, [CallerFilePath] string caller = "")
     {
         if (method == null)
         {
@@ -86,12 +91,58 @@ public static class PatchSafety
             return cached.Patched;
         }
         HarmonyLib.Patches? info = Harmony.GetPatchInfo(method);
-        bool patched = info != null && (
-            info.Prefixes.Concat(info.Transpilers).Concat(info.Finalizers).Any(p => p.owner != ModEntry.Harmony.Id)
-            || info.Postfixes.Any(p => p.owner != ModEntry.Harmony.Id
-                && !allowedPostfixes.Any(a => a.MethodHandle == p.PatchMethod.MethodHandle)));
+        IEnumerable<Patch> others = info == null ? Enumerable.Empty<Patch>()
+            : info.Prefixes.Concat(info.Transpilers).Concat(info.Finalizers).Where(p => p.owner != ModEntry.Harmony.Id)
+                .Concat(info.Postfixes.Where(p => p.owner != ModEntry.Harmony.Id
+                    && !allowedPostfixes.Any(a => a.MethodHandle == p.PatchMethod.MethodHandle)));
+        bool patched = Record(caller, method, others);
         _patchedBeyondAllowed[method] = (patched, now);
         return patched;
+    }
+
+    /// <summary>Other mods' patches on a method a patch backs off from, keyed by (patch name, method).</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Patch, MethodBase Method), string[]> _conflicts = new();
+
+    private static bool Record(string caller, MethodBase method, IEnumerable<Patch> others)
+    {
+        string[] mods = others.Select(ModName).Distinct().OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToArray();
+        string patch = System.IO.Path.GetFileNameWithoutExtension(caller.Replace('\\', '/'));
+        if (mods.Length == 0)
+        {
+            _conflicts.TryRemove((patch, method), out _);
+            return false;
+        }
+        if (!_conflicts.TryGetValue((patch, method), out string[]? known) || !known.SequenceEqual(mods))
+        {
+            _conflicts[(patch, method)] = mods;
+            MegaCrit.Sts2.Core.Logging.Log.Info($"[{ModEntry.Id}] {patch}: {method.DeclaringType?.Name}.{method.Name} is also patched by {string.Join(", ", mods)}: normal game for that part");
+        }
+        return true;
+    }
+
+    /// <summary>The loaded mod whose assembly holds the patch method (its display name), else the Harmony id.</summary>
+    private static string ModName(Patch patch)
+    {
+        Assembly? assembly = patch.PatchMethod?.DeclaringType?.Assembly;
+        if (assembly != null && assembly != typeof(PatchSafety).Assembly)
+        {
+            foreach (MegaCrit.Sts2.Core.Modding.Mod mod in MegaCrit.Sts2.Core.Modding.ModManager.Mods)
+            {
+                if (mod.assembly == assembly)
+                {
+                    return mod.manifest?.name ?? mod.manifest?.id ?? patch.owner;
+                }
+            }
+        }
+        return patch.owner;
+    }
+
+    /// <summary>The mods other patches come from, for the methods these patches currently back off from.</summary>
+    public static IReadOnlyList<string> ConflictingMods(IEnumerable<string> patches)
+    {
+        var names = new HashSet<string>(patches);
+        return _conflicts.Where(entry => names.Contains(entry.Key.Patch)).SelectMany(entry => entry.Value)
+            .Distinct().OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     private const long RecheckAfterMs = 2000;

@@ -1,0 +1,121 @@
+# TypePlaqueSkip A/B (off): turns at ~31,800 cards + 736 relics (same deck as try-32k), BaseLib's type line walk
+# left as is (card_type_line off). Run turns-32k-off then turns-32k-on: CHECKSUM/STATE lines must match.
+timeout 1800
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bdopt card_type_line off
+cmd bigdeck import ref all all
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+fpsstat
+gcstat
+play 4
+waitfor idle 120
+fpsstat plays t1
+checksum t1 plays
+fpsstat
+endturn
+waitfor idle 300
+fpsstat end of turn t1
+gcstat turn t1
+checksum t1 end
+state t1
+fpsstat
+gcstat
+play 4
+waitfor idle 120
+fpsstat plays t2
+checksum t2 plays
+fpsstat
+endturn
+waitfor idle 300
+fpsstat end of turn t2
+gcstat turn t2
+checksum t2 end
+state t2
+fpsstat
+gcstat
+play 4
+waitfor idle 120
+fpsstat plays t3
+checksum t3 plays
+fpsstat
+endturn
+waitfor idle 300
+fpsstat end of turn t3
+gcstat turn t3
+checksum t3 end
+state t3
+fpsstat
+gcstat
+play 4
+waitfor idle 120
+fpsstat plays t4
+checksum t4 plays
+fpsstat
+endturn
+waitfor idle 300
+fpsstat end of turn t4
+gcstat turn t4
+checksum t4 end
+state t4
+fpsstat
+gcstat
+play 4
+waitfor idle 120
+fpsstat plays t5
+checksum t5 plays
+fpsstat
+endturn
+waitfor idle 300
+fpsstat end of turn t5
+gcstat turn t5
+checksum t5 end
+state t5
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+cmd bdopt card_type_line on
+quit

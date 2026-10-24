@@ -15,14 +15,12 @@ namespace BigDeckOptimization.Config;
 /// </summary>
 public static class Settings
 {
-    public sealed class Option(string key, string label, string labelFr, string description, string descriptionFr,
-        string[] faults, Action<bool> setEnabled, Func<string?>? unavailable = null)
+    public sealed class Option(string key, string label, string description, string[] faults, Action<bool> setEnabled,
+        Func<string?>? unavailable = null)
     {
         public string Key { get; } = key;
         public string Label { get; } = label;
-        public string LabelFr { get; } = labelFr;
         public string Description { get; } = description;
-        public string DescriptionFr { get; } = descriptionFr;
         /// <summary>Fault names (<see cref="PatchSafety.Fault"/>) that keep this optimization off.</summary>
         public string[] Faults { get; } = faults;
         public Action<bool> SetEnabled { get; } = setEnabled;
@@ -38,99 +36,129 @@ public static class Settings
     /// <summary><see cref="Option.Unavailable"/> answers (bdopt shows them as is, the menu explains them).</summary>
     public const string GameChanged = "not applied (game code changed)";
     public const string LimitlessMissing = "not applied (Limitless absent or changed)";
+    public const string BaseLibMissing = "not applied (BaseLib absent or changed)";
 
-    /// <summary>Why the menu shows this optimization greyed out, in a sentence; null when it can be switched.</summary>
-    public static string? Why(Option option, bool french) => option.Unavailable() switch
+    /// <summary>
+    /// Why the menu shows this optimization greyed out, in a sentence in this game language code (English when it has
+    /// no translation); null when it can be switched.
+    /// </summary>
+    public static string? Why(Option option, string? language) => option.Unavailable() switch
     {
-        LimitlessMissing => french
-            ? "Indisponible : Limitless n'est pas installé, ou une mise à jour de Limitless a changé ce que cette optimisation accélère."
-            : "Unavailable: Limitless isn't installed, or a Limitless update changed what this optimization speeds up.",
-        { } => french
-            ? "Indisponible : une mise à jour du jeu a changé ce que cette optimisation accélère. Elle reste désactivée (jeu normal) jusqu'à une mise à jour du mod."
-            : "Unavailable: a game update changed what this optimization speeds up. It stays off (normal game) until the mod is updated.",
-        null when option.Fault != null => french
-            ? "Désactivée pour cette session après une erreur (jeu normal à la place, détails dans le log). Revient au prochain lancement du jeu."
-            : "Turned off for this session after an error (normal game instead, details in the log). Back on next time you start the game.",
+        LimitlessMissing => Translations.Get(language, "why.limitless",
+            "Unavailable: Limitless isn't installed, or a Limitless update changed what this optimization speeds up."),
+        BaseLibMissing => Translations.Get(language, "why.baselib",
+            "Unavailable: a BaseLib update changed what this optimization speeds up. It stays off (normal game) until the mod is updated."),
+        { } => Translations.Get(language, "why.game",
+            "Unavailable: a game update changed what this optimization speeds up. It stays off (normal game) until the mod is updated."),
+        null when option.Fault != null => Translations.Get(language, "why.fault",
+            "Turned off for this session after an error (normal game instead, details in the log). Back on next time you start the game."),
         null => null,
     };
 
+    /// <summary>
+    /// The mods whose patches currently keep part of this optimization vanilla (it backs off from methods another mod
+    /// patches); empty when none. Known once the optimization has checked those methods (when it first runs).
+    /// </summary>
+    public static IReadOnlyList<string> ConflictingMods(Option option) => PatchSafety.ConflictingMods(option.Faults);
+
+    /// <summary>The menu's sentence about <see cref="ConflictingMods"/>, or null when there is none.</summary>
+    public static string? Conflict(Option option, string? language)
+    {
+        IReadOnlyList<string> mods = ConflictingMods(option);
+        return mods.Count == 0 ? null
+            : Translations.Get(language, "conflict",
+                "Partly inactive: {mods} also changes what this optimization speeds up (normal game for that part).").Replace("{mods}", string.Join(", ", mods));
+    }
+
     public static bool Master { get; private set; } = true;
+
+    public const string FastStartRelicsKey = "fast_combat_start_relics";
+    public const string FastStartRelicsLabel = "Fast combat start: minimum relics";
+    public const string FastStartRelicsDescription =
+        "Solo: speeds up the combat start only from this many relics (all players' relics counted). 0 = always. In co-op it's always on, whatever this value.";
+
+    /// <summary>Relics (all players) from which the fast combat start applies in solo, 0-100 (0 = always).</summary>
+    public static int FastStartRelics { get; private set; }
+
+    /// <summary>The menu's slider steps (its Godot Range snaps any other value, then saves the snapped one).</summary>
+    public const int FastStartRelicsStep = 10;
+
+    /// <summary>Sets the threshold, clamped to 0-100 and rounded to the slider's step as the slider would.</summary>
+    public static void SetFastStartRelics(int relics, bool notify = true)
+    {
+        relics = (int)Math.Round(Math.Clamp(relics, 0, 100) / (double)FastStartRelicsStep, MidpointRounding.AwayFromZero) * FastStartRelicsStep;
+        bool changed = FastStartRelics != relics;
+        FastStartRelics = relics;
+        FastCombatStart.RelicThreshold = relics;
+        if (changed && notify)
+        {
+            Changed?.Invoke(FastStartRelicsKey, true);
+        }
+    }
 
     public static IReadOnlyList<Option> Options { get; } = new Option[]
     {
-        new("coop_checksum", "Co-op state check", "Vérification d'état en co-op",
+        new("coop_checksum", "Co-op state check",
             "Faster state check after every action in co-op (the biggest co-op lag with huge decks).",
-            "Vérification d'état plus rapide après chaque action en co-op (le plus gros lag du co-op avec un énorme deck).",
             new[] { ListenerCache.Name, ListenerCache.SnapshotFault }, on => ListenerCache.SnapshotEnabled = on),
-        new("combat_refresh", "Combat refresh", "Rafraîchissement en combat",
+        new("combat_refresh", "Combat refresh",
             "Faster card and UI refresh after every action in combat.",
-            "Rafraîchissement plus rapide des cartes et de l'interface après chaque action en combat.",
             new[] { ListenerCache.Name }, on => ListenerCache.RefreshEnabled = on),
-        new("hook_filter", "Skip empty hooks", "Ignorer les hooks vides",
+        new("hook_filter", "Skip empty hooks",
             "Inside the two optimizations above, only asks the cards and relics that actually react to each check.",
-            "Dans les deux optimisations ci-dessus, n'interroge que les cartes et reliques qui réagissent vraiment à chaque test.",
             new[] { HookFilter.Name }, on => HookFilter.Enabled = on),
-        new("relic_input", "Relic bar input", "Entrées de la barre de reliques",
+        new("relic_input", "Relic bar input",
             "Stops hundreds of idle relic buttons from processing every mouse move.",
-            "Évite que des centaines de boutons de reliques inactifs traitent chaque mouvement de souris.",
             new[] { IdleButtonInput.Name }, on => IdleButtonInput.Enabled = on),
-        new("relic_flashes", "Merge repeated relic flashes", "Fusion des flashs de reliques répétés",
+        new("relic_flashes", "Merge repeated relic flashes",
             "Visual: a relic flashing several times in the same frame (Bing Bong copying each cloned card...) shows one flash instead of thousands stacked on the same spot, which could black out the screen or crash the game. Same results.",
-            "Visuel : une relique qui flashe plusieurs fois dans la même image (Bing Bong qui copie chaque carte clonée...) affiche un seul flash au lieu de milliers empilés au même endroit, qui pouvaient rendre l'écran noir ou faire crasher le jeu. Mêmes résultats.",
             new[] { RelicFlashMerge.Name }, on => RelicFlashMerge.Enabled = on),
-        new("grid_sort", "Card grid sorting", "Tri des grilles de cartes",
+        new("grid_sort", "Card grid sorting",
             "Faster sorting of the deck view and other card grids.",
-            "Tri plus rapide de la vue du deck et des autres grilles de cartes.",
             new[] { GridSortCache.Name }, on => GridSortCache.Enabled = on),
-        new("grid_pool", "Card grid recycling", "Recyclage des grilles de cartes",
+        new("grid_pool", "Card grid recycling",
             "Faster recycling of card nodes when a card grid opens or is sorted.",
-            "Recyclage plus rapide des cartes affichées à l'ouverture ou au tri d'une grille.",
             new[] { PoolSignalScan.Name }, on => PoolSignalScan.Enabled = on,
             () => PoolSignalScan.Applied ? null : GameChanged),
-        new("pile_lookup", "Card pile lookup", "Recherche de la pile d'une carte",
+        new("pile_lookup", "Card pile lookup",
             "Finds which pile a card is in without scanning every card (used by costs, keywords, playability...), and checks a card added to a pile (draws, reshuffles, clones) without scanning that pile.",
-            "Trouve la pile d'une carte sans parcourir toutes les cartes (utilisé par les coûts, mots-clés, jouabilité...), et vérifie une carte ajoutée à une pile (pioche, remélange, clonage) sans parcourir cette pile.",
             new[] { PileIndex.Name }, on => PileIndex.Enabled = on,
             () => PileIndex.Applied ? null : GameChanged),
-        new("card_ids", "Combat card IDs", "IDs des cartes en combat",
+        new("card_ids", "Combat card IDs",
             "Skips re-scanning whole card piles for new cards on every card move (reshuffles, end of combat).",
-            "Évite de reparcourir des piles entières à chaque carte déplacée (remélange, fin de combat).",
             new[] { CardDbScan.Name }, on => CardDbScan.Enabled = on,
             () => CardDbScan.Applied ? null : GameChanged),
-        new("pile_counters", "Pile counters at combat end", "Compteurs des piles en fin de combat",
+        new("pile_counters", "Pile counters at combat end",
             "Updates the draw/discard/exhaust counters once when piles are emptied, instead of once per card.",
-            "Met à jour les compteurs pioche/défausse/épuisement une seule fois quand les piles sont vidées, au lieu d'une fois par carte.",
             new[] { PileCounterBatch.Name }, on => PileCounterBatch.Enabled = on,
             () => PileCounterBatch.Applied ? null : GameChanged),
-        new("fast_combat_start", "Fast combat start (50+ relics)", "Début de combat rapide (50+ reliques)",
-            "Visual: with 50+ relics, plays the combat-start relic effects without their animation waits (like the game's Instant speed). Same results. Solo only: always on in co-op, so every player starts the combat at the same pace.",
-            "Visuel : avec 50+ reliques, joue les effets de reliques du début de combat sans leurs temps d'animation (comme la vitesse Instantanée du jeu). Mêmes résultats. Solo uniquement : toujours actif en co-op, pour que tous les joueurs démarrent le combat au même rythme.",
+        new("fast_combat_start", "Fast combat start",
+            "Visual: plays the combat-start relic effects without their animation waits (like the game's Instant speed), from the number of relics set below (0 = always, the default). Same results. Solo only: always on in co-op, so every player starts the combat at the same pace.",
             new[] { FastCombatStart.Name }, on => FastCombatStart.Enabled = on),
-        new("limitless_tabs", "Limitless enchantment tabs", "Onglets d'enchantement Limitless",
-            "With Limitless: reuses enchantment tabs instead of rebuilding them on every card render.",
-            "Avec Limitless : réutilise les onglets d'enchantement au lieu de les reconstruire à chaque affichage de carte.",
-            new[] { EnchantmentTabReuse.Name }, on => EnchantmentTabReuse.Enabled = on,
-            () => EnchantmentTabReuse.Applied ? null : LimitlessMissing),
-        new("listeners", "Effect listener lists", "Listes d'écoute des effets",
+        new("listeners", "Effect listener lists",
             "Builds the list of cards, relics and powers that each triggered effect asks with less copying and memory churn, and keeps it between effects while nothing changed (cloning thousands of cards: seconds instead of minutes). Same list, same order.",
-            "Construit la liste des cartes, reliques et effets interrogés à chaque effet déclenché avec moins de copies et de mémoire, et la garde d'un effet à l'autre tant que rien n'a changé (cloner des milliers de cartes : quelques secondes au lieu de minutes). Même liste, même ordre.",
             new[] { FastListeners.Name }, on => FastListeners.Enabled = on,
             () => FastListeners.Applied ? null : GameChanged),
-        new("hook_skip", "Skip non-reacting cards", "Ignorer les cartes non concernées",
+        new("hook_skip", "Skip non-reacting cards",
             "Each time the game processes an effect (card played, damage, turn end...), only asks the cards and enchantments whose type reacts to it (same results).",
-            "À chaque effet traité par le jeu (carte jouée, dégâts, fin de tour...), n'interroge que les cartes et enchantements qui y réagissent (mêmes résultats).",
             new[] { HookSkip.Name }, on => HookSkip.Enabled = on,
             () => HookSkip.Applied ? null : GameChanged),
-        new("hover_tips", "Creature hover tips", "Infobulles des créatures",
+        new("hover_tips", "Creature hover tips",
             "While the mouse is on a creature, rebuilds its tooltips after an action only when their content changed (they stay live).",
-            "Quand la souris est sur une créature, reconstruit ses infobulles après une action seulement si leur contenu a changé (elles restent à jour).",
             new[] { HoverTipReuse.Name }, on => HoverTipReuse.Enabled = on,
             () => HoverTipReuse.Applied ? null : GameChanged),
-        new("limitless_saves", "Limitless enchantment copies", "Copies d'enchantements Limitless",
+        new("limitless_tabs", "Limitless enchantment tabs",
+            "With Limitless: reuses enchantment tabs instead of rebuilding them on every card render.",
+            new[] { EnchantmentTabReuse.Name }, on => EnchantmentTabReuse.Enabled = on,
+            () => EnchantmentTabReuse.Applied ? null : LimitlessMissing),
+        new("limitless_saves", "Limitless enchantment copies",
             "With Limitless: keeps the saved copy of stacked enchantments when rebuilding it would give the same content, instead of rebuilding it after every action.",
-            "Avec Limitless : garde la copie sauvegardée des enchantements empilés quand la reconstruire donnerait le même contenu, au lieu de la reconstruire après chaque action.",
             new[] { LimitlessReserialize.Name }, on => LimitlessReserialize.Enabled = on,
             () => LimitlessReserialize.Applied ? null : LimitlessMissing),
+        new("card_type_line", "BaseLib card type line",
+            "With BaseLib: shows each card's type line without searching every card in combat for mods that change it, while no installed mod does (scrolling the draw pile, refreshing the hand). Same text.",
+            new[] { TypePlaqueSkip.Name }, on => TypePlaqueSkip.Enabled = on,
+            () => TypePlaqueSkip.Applied ? null : BaseLibMissing),
     };
 
     /// <summary>Raised after a choice changed through bdopt (not from the menu or when loading), so the menu saves it.</summary>
@@ -184,7 +212,15 @@ public static class Settings
                 : option.Fault is { } fault ? $"OFF, disabled after an error ({fault}), see log"
                 : !option.Wanted ? (option.Key == "fast_combat_start" && Master ? "OFF in solo (setting), always on in co-op" : "OFF (setting)")
                 : Master ? "on" : "off";
+            if (ConflictingMods(option) is { Count: > 0 } mods && option.Unavailable() == null && option.Fault == null)
+            {
+                state += $" (partly vanilla: also patched by {string.Join(", ", mods)})";
+            }
             sb.Append($"  {option.Label} [{option.Key}]: {state}\n");
+            if (option.Key == "fast_combat_start")
+            {
+                sb.Append($"  {FastStartRelicsLabel} [{FastStartRelicsKey}]: {FastStartRelics} (solo; co-op: always)\n");
+            }
         }
         return sb.ToString().TrimEnd();
     }

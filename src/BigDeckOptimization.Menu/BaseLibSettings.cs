@@ -37,14 +37,18 @@ public sealed class BaseLibSettings : SimpleModConfig
     public static bool GridPool { get => Get(nameof(GridPool)); set => Apply(nameof(GridPool), value); }
     public static bool RelicInput { get => Get(nameof(RelicInput)); set => Apply(nameof(RelicInput), value); }
     public static bool RelicFlashes { get => Get(nameof(RelicFlashes)); set => Apply(nameof(RelicFlashes), value); }
-    [ConfigIgnoreRestoreDefaults]
-    public static bool LimitlessTabs { get => Shown(nameof(LimitlessTabs)); set => ApplyShown(nameof(LimitlessTabs), value); }
     public static bool FastCombatStart { get => Get(nameof(FastCombatStart)); set => Apply(nameof(FastCombatStart), value); }
+    [ConfigSlider(0, 100, Settings.FastStartRelicsStep)]
+    public static int FastCombatStartRelics { get => Settings.FastStartRelics; set => ApplyRelics(value); }
     public static bool Listeners { get => Get(nameof(Listeners)); set => Apply(nameof(Listeners), value); }
     public static bool HookSkip { get => Get(nameof(HookSkip)); set => Apply(nameof(HookSkip), value); }
     public static bool HoverTips { get => Get(nameof(HoverTips)); set => Apply(nameof(HoverTips), value); }
+    // Optimizations of other mods' code (Limitless, BaseLib), at the bottom.
+    [ConfigIgnoreRestoreDefaults]
+    public static bool LimitlessTabs { get => Shown(nameof(LimitlessTabs)); set => ApplyShown(nameof(LimitlessTabs), value); }
     [ConfigIgnoreRestoreDefaults]
     public static bool LimitlessSaves { get => Shown(nameof(LimitlessSaves)); set => ApplyShown(nameof(LimitlessSaves), value); }
+    public static bool CardTypeLine { get => Get(nameof(CardTypeLine)); set => Apply(nameof(CardTypeLine), value); }
 
     // Limitless-only optimizations: their box is ticked only while Limitless is there (patch applied) and the option is
     // wanted. The wanted state is saved apart, hidden: a box shown unticked without Limitless comes back ticked (and on)
@@ -72,6 +76,16 @@ public sealed class BaseLibSettings : SimpleModConfig
     }
 
     private static bool Get(string property) => Settings.Find(Key(property))?.Wanted ?? true;
+
+    /// <summary>The fast combat start's relic threshold, from the menu's slider or the saved file.</summary>
+    private static void ApplyRelics(int relics)
+    {
+        Settings.SetFastStartRelics(relics, notify: false);
+        if (!_loading)
+        {
+            _instance?.SaveDebounced();
+        }
+    }
 
     /// <summary>From the menu or BaseLib loading the saved file: applied without echoing back to BaseLib.</summary>
     private static void Apply(string property, bool on)
@@ -106,6 +120,35 @@ public sealed class BaseLibSettings : SimpleModConfig
         {
             Log.Warn($"[{ModEntry.Id}] {Name}: could not grey out the unavailable options: {e.Message}");
         }
+        try
+        {
+            AddCoopNote(optionContainer);
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"[{ModEntry.Id}] {Name}: could not add the co-op note: {e.Message}");
+        }
+    }
+
+    public const string CoopNote =
+        "Co-op: every player needs this mod, same version. The fast combat start is always on there, so everyone starts each combat at the same pace; the other switches can be changed freely (same results either way, no desync).";
+
+    /// <summary>A short note above the options, in the game's language: what co-op requires and forces.</summary>
+    private static void AddCoopNote(Control optionContainer)
+    {
+        string text = Translations.Get(LocManager.Instance?.Language, "coop_note", CoopNote);
+        var label = ModConfig.CreateRawLabelControl(text, 24);
+        label.Name = "CoopNote";
+        label.FitContent = true;
+        label.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+        label.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        label.Modulate = new Color(1f, 1f, 1f, 0.8f);
+        var margin = new MarginContainer { Name = "CoopNoteMargin" };
+        margin.AddThemeConstantOverride("margin_top", 8);
+        margin.AddThemeConstantOverride("margin_bottom", 16);
+        margin.AddChild(label);
+        optionContainer.AddChild(margin);
+        optionContainer.MoveChild(margin, 0);
     }
 
     private static void GreyOut(Node node)
@@ -114,7 +157,7 @@ public sealed class BaseLibSettings : SimpleModConfig
         {
             if (child is NConfigOptionRow row)
             {
-                if (Settings.Find(Key(row.Name)) is { } option && Settings.Why(option, french: false) != null)
+                if (Settings.Find(Key(row.Name)) is { } option && Settings.Why(option, language: null) != null)
                 {
                     row.Modulate = new Color(1f, 1f, 1f, 0.45f);
                     if (row.SettingControl is NConfigTickbox tickbox)
@@ -146,7 +189,10 @@ public sealed class BaseLibSettings : SimpleModConfig
         Log.Info($"[{ModEntry.Id}] {Name}: registered in BaseLib's mod configuration. {Settings.Status().Replace("\n", " |")}");
     }
 
-    /// <summary>The menu texts, in the game's settings_ui table (re-added when the language changes).</summary>
+    /// <summary>
+    /// The menu texts, in the game's settings_ui table (re-added when the language changes): the game's language when
+    /// this mod has a translation for it (<see cref="Translations"/>), English otherwise.
+    /// </summary>
     private static class SettingsText
     {
         private const string Prefix = "BIGDECKOPTIMIZATION";
@@ -163,6 +209,8 @@ public sealed class BaseLibSettings : SimpleModConfig
             LocManager.Instance.SubscribeToLocaleChange(Add);
         }
 
+        private static string? _loggedLanguage;
+
         public static void Add()
         {
             try
@@ -172,23 +220,32 @@ public sealed class BaseLibSettings : SimpleModConfig
                 {
                     return;
                 }
-                bool french = LocManager.Instance!.Language.StartsWith("fr", StringComparison.OrdinalIgnoreCase);
+                string language = LocManager.Instance!.Language;
+                if (language != _loggedLanguage)
+                {
+                    _loggedLanguage = language;
+                    Log.Info($"[{ModEntry.Id}] {Name}: menu texts for game language '{language}': {(Translations.Has(language) ? "translated" : "English")}");
+                }
                 var texts = new Dictionary<string, string>
                 {
                     [$"{Prefix}.mod_title"] = "Big Deck Optimization",
-                    [$"{Prefix}-GENERAL.title"] = french ? "Général" : "General",
-                    [$"{Prefix}-OPTIMIZATIONS.title"] = french ? "Optimisations" : "Optimizations",
-                    [$"{Prefix}-ENABLED.title"] = french ? "Optimisations activées" : "Optimizations enabled",
-                    [$"{Prefix}-ENABLED.hover.desc"] = french
-                        ? "Active ou désactive tout le mod (désactivé = jeu non modifié), sans redémarrer."
-                        : "Turns the whole mod on or off (off = unmodified game), no restart needed.",
+                    [$"{Prefix}-GENERAL.title"] = Translations.Get(language, "general", "General"),
+                    [$"{Prefix}-OPTIMIZATIONS.title"] = Translations.Get(language, "optimizations", "Optimizations"),
+                    [$"{Prefix}-ENABLED.title"] = Translations.Get(language, "enabled.title", "Optimizations enabled"),
+                    [$"{Prefix}-ENABLED.hover.desc"] = Translations.Get(language, "enabled.desc",
+                        "Turns the whole mod on or off (off = unmodified game), no restart needed."),
+                    [$"{Prefix}-{Settings.FastStartRelicsKey.ToUpperInvariant()}.title"] =
+                        Translations.Get(language, Settings.FastStartRelicsKey + ".title", Settings.FastStartRelicsLabel),
+                    [$"{Prefix}-{Settings.FastStartRelicsKey.ToUpperInvariant()}.hover.desc"] =
+                        Translations.Get(language, Settings.FastStartRelicsKey + ".desc", Settings.FastStartRelicsDescription),
                 };
                 foreach (Settings.Option option in Settings.Options)
                 {
                     string slug = option.Key.ToUpperInvariant();
-                    texts[$"{Prefix}-{slug}.title"] = french ? option.LabelFr : option.Label;
-                    string description = french ? option.DescriptionFr : option.Description;
-                    texts[$"{Prefix}-{slug}.hover.desc"] = Settings.Why(option, french) is { } why
+                    texts[$"{Prefix}-{slug}.title"] = Translations.Get(language, option.Key + ".title", option.Label);
+                    string description = Translations.Get(language, option.Key + ".desc", option.Description);
+                    // Greyed out (Why), or still switchable but partly vanilla because of another mod (Conflict).
+                    texts[$"{Prefix}-{slug}.hover.desc"] = (Settings.Why(option, language) ?? Settings.Conflict(option, language)) is { } why
                         ? $"[color=#e0a040]{why}[/color]\n{description}"
                         : description;
                 }

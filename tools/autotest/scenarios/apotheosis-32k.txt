@@ -1,0 +1,61 @@
+# Apotheosis (upgrades every card in combat) at ~31,800 cards + 736 relics, the user's report: "still freezes a bit".
+# Played twice (fresh cards, then already upgraded ones): time until idle and the checksum after each.
+timeout 1800
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+emptyhand
+setenergy 5
+cmd card APOTHEOSIS hand
+playcard APOTHEOSIS free
+checksum after APOTHEOSIS 1
+emptyhand
+setenergy 5
+cmd card APOTHEOSIS hand
+playcard APOTHEOSIS free
+checksum after APOTHEOSIS 2
+# Stay open until a -TraceSec 50 trace ends (a trace cut by the game exiting loses its method names).
+wait 50
+quit

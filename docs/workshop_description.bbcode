@@ -14,7 +14,7 @@ With a huge deck, the game slows down more and more until every action freezes i
 [list]
 [*][b]Entering a combat:[/b] with 8,000+ cards and hundreds of relics, about 4 seconds instead of half a minute.
 [*][b]Playing cards:[/b] smooth again, even past 10,000 cards.
-[*][b]Limitless and BaseLib:[/b] the mod also speeds up a good part of their work during combat. Limitless' stacked enchantments are no longer re-saved after every action when nothing changed (nor the save data BaseLib attaches to each copy), and BaseLib's card modifier checks are skipped when no mod uses them. Same results.
+[*][b]Limitless and BaseLib:[/b] the mod also speeds up a good part of their work during combat. Limitless' stacked enchantments are no longer re-saved after every action when nothing changed (nor the save data BaseLib attaches to each copy), and BaseLib's card modifier and card type line checks are skipped when no mod uses them (smooth draw pile scrolling with tens of thousands of cards). Same results.
 [*][b]Cards that search your piles:[/b] cards like Hidden Gem no longer freeze the game.
 [*][b]Copying lots of cards:[/b] a campfire clone or Reflections' Shatter with thousands of cards takes seconds instead of minutes, and relics that trigger on every copy (Bing Bong) no longer black out the screen or crash the game.
 [*][b]Waiting in combat:[/b] no more constant stutter.
@@ -22,7 +22,7 @@ With a huge deck, the game slows down more and more until every action freezes i
 [*][b]Co-op:[/b] the long pause after every action is gone. Players with big decks no longer slow down everyone else.
 [*][b]Deck view and card grids:[/b] sorting, opening and scrolling are fast again.
 [*][b]Lots of relics:[/b] moving the mouse no longer slows the game down.
-[*][b]Optional:[/b] with 50+ relics, the relic effects at the start of a combat skip their animation pauses. It looks faster, and the effects stay exactly the same (always on in co-op).
+[*][b]Optional:[/b] the relic effects at the start of a combat skip their animation pauses. It looks faster, and the effects stay exactly the same. In solo you can make it start only from a number of relics (always on in co-op).
 [/list]
 
 [h2]What it doesn't change[/h2]
@@ -42,7 +42,7 @@ You can also use the console ([b]`[/b] key, [b]*[/b] or [b]^[/b] on AZERTY; with
 [*][b]bdopt off[/b] / [b]bdopt on[/b] turns the whole mod off or back on, without restarting.
 [*][b]bdopt fast_combat_start off[/b] turns off just the faster combat start. In co-op it stays on for everyone, so all players start each combat at the same pace.
 [/list]
-A switch is greyed out when its optimization can't run: Limitless isn't installed (for the Limitless ones), a game or Limitless update changed what it speeds up, or it turned itself off after an error. Hover it to see why. The game then runs normally for that part.
+A switch is greyed out when its optimization can't run: Limitless isn't installed (for the Limitless ones), a game, Limitless or BaseLib update changed what it speeds up, or it turned itself off after an error. Hover it to see why. The game then runs normally for that part. If another mod changes the same part of the game, the switch stays available and its tooltip names that mod (that part runs normally).
 
 Feedback will be highly appreciated! Don't hesitate to leave a comment <3
 

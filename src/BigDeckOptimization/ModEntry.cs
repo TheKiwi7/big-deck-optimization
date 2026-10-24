@@ -34,6 +34,7 @@ public static class ModEntry
         TryApply(HookSkip.Name, HookSkip.Apply);
         TryApply(LimitlessReserialize.Name, LimitlessReserialize.Apply);
         TryApply(RelicFlashMerge.Name, RelicFlashMerge.Apply);
+        TryApply(TypePlaqueSkip.Name, TypePlaqueSkip.Apply);
 #if BENCH
         TryApply(Bench.CombatStartTimer.Name, Bench.CombatStartTimer.Apply);
         TryApply(Bench.PerfProbe.Name, Bench.PerfProbe.Apply);

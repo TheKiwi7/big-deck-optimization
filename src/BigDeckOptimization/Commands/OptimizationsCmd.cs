@@ -6,7 +6,8 @@ using MegaCrit.Sts2.Core.Entities.Players;
 namespace BigDeckOptimization.Commands;
 
 /// <summary>
-/// bdopt [on|off] | bdopt &lt;option&gt; on|off: turns every optimization (or one) on/off at runtime, e.g. to check
+/// bdopt [on|off] | bdopt &lt;option&gt; on|off | bdopt fast_combat_start_relics &lt;0-100&gt;: turns every optimization
+/// (or one) on/off at runtime or sets the fast combat start's relic threshold, e.g. to check
 /// whether an issue comes from this mod, or shows their state. Local only, and safe in co-op: optimized and vanilla
 /// paths give identical results. Saved in BaseLib's mod configuration when BaseLib is installed. Part of the public
 /// build, unlike the test tooling in Bench.
@@ -15,7 +16,7 @@ public class OptimizationsCmd : AbstractConsoleCmd
 {
     public override string CmdName => "bdopt";
 
-    public override string Args => "[on|off] | <option> on|off";
+    public override string Args => "[on|off] | <option> on|off | fast_combat_start_relics <0-100, step 10>";
 
     public override string Description => "[BigDeckOptimization] Turns the mod's optimizations on/off (vanilla behavior when off), or shows their state.";
 
@@ -37,6 +38,11 @@ public class OptimizationsCmd : AbstractConsoleCmd
         if (Settings.Find(first) != null && value is "on" or "off")
         {
             Settings.SetOption(first, value == "on");
+            return new CmdResult(success: true, Settings.Status());
+        }
+        if (first == Settings.FastStartRelicsKey && int.TryParse(value, out int relics) && relics is >= 0 and <= 100)
+        {
+            Settings.SetFastStartRelics(relics);
             return new CmdResult(success: true, Settings.Status());
         }
         return new CmdResult(success: false, "Usage: bdopt " + Args + "\n" + Settings.Status());

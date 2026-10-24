@@ -2,6 +2,7 @@
 
 ## 1. Before releasing
 
+- [ ] Version check protocol (CLAUDE.md): `python -I tools/check_versions.py` says the installed game, BaseLib and Limitless are the verified versions; otherwise follow the protocol (`--log` on a fresh session, adapt or leave vanilla, A/B checks, `--accept`) before going on.
 - [ ] Manifest `dependencies` empty (BaseLib is optional: only `BigDeckOptimization.Menu.dll` references it).
 - [ ] Version bumped in both `src/BigDeckOptimization/BigDeckOptimization.json` (`"version"`) and `BigDeckOptimization.csproj` (`<Version>`), `min_game_version` still right.
 - [ ] `CHANGELOG.md` has a `## vX.Y.Z` section (the package script uses it as the Workshop change note).

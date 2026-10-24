@@ -13,7 +13,7 @@
     <!-- PDB inside the DLL (compressed): line numbers in error logs, one file less. -->
     <DebugType>embedded</DebugType>
     <!-- Keep in sync with "version" in BigDeckOptimization.json. -->
-    <Version>0.5.0</Version>
+    <Version>0.6.0</Version>
   </PropertyGroup>
 
   <!-- Test tooling (bigdeck / bdperf console commands, combat start timer) only in non-Release builds. -->
@@ -46,6 +46,12 @@
     <None Include="BigDeckOptimization.json" CopyToOutputDirectory="PreserveNewest" />
     <!-- Shown on the mods screen (Patches/ModImage.cs). -->
     <None Include="mod_image.jpg" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Settings menu translations (Config/Translations.cs), one per game language code, inside the DLL: the game treats
+       every .json in a mod folder as a manifest. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Localization\*.json" LogicalName="BigDeckOptimization.Localization.%(Filename).json" />
   </ItemGroup>
 
   <!-- The settings menu DLL (the only one referencing BaseLib, which is optional): built next to this one. -->

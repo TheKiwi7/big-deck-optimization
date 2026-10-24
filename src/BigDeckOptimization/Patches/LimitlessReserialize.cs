@@ -57,6 +57,12 @@ public static class LimitlessReserialize
 
     public static long Rebuilt { get; private set; }
 
+    /// <summary>Comparisons that knew BaseLib's card modifier getter's (empty) result without running it.</summary>
+    public static long SkippedGetters { get; private set; }
+
+    /// <summary>Data comparisons answered from the known expected data, without building it.</summary>
+    public static long KnownData { get; private set; }
+
     private static MethodInfo? _original;
     private static MethodInfo? _cardToSerializable;
     private static MethodInfo? _enchantmentToSerializable;
@@ -132,8 +138,100 @@ public static class LimitlessReserialize
             {
                 dictionary.Clear();
             }
+            if (_emptyList != null && EmptyModifiersOnly())
+            {
+                // What the only registered getter adds here: an empty list under its id.
+                _emptyListDictionary![EmptyModifiersId] = _emptyList;
+                SkippedGetters++;
+                return _scratch;
+            }
             _fill(model, _scratch);
+            if (_emptyList == null && EmptyModifiersOnly() && Dictionaries(_scratch).Values.SingleOrDefault(d => d.Count > 0) is { Count: 1 } added
+                && added.Contains(EmptyModifiersId) && added[EmptyModifiersId] is ICollection { Count: 0 } list)
+            {
+                _emptyListDictionary = added;
+                _emptyList = list;
+                _emptyListKey = Dictionaries(_scratch).First(entry => ReferenceEquals(entry.Value, added)).Key;
+            }
             return _scratch;
+        }
+
+        /// <summary>
+        /// When the expected data is known without building it: no registered save (no getter: every dictionary empty),
+        /// or the card modifier save alone with its known empty result (<paramref name="key"/>'s dictionary holds only an
+        /// empty list under its id). False: build it with <see cref="Expected"/>.
+        /// </summary>
+        public bool KnownWithoutBuilding(out Type? key, out object? emptyList)
+        {
+            key = null;
+            emptyList = null;
+            if (_registeredSaves().Count == 0)
+            {
+                return true;
+            }
+            if (_emptyList != null && EmptyModifiersOnly())
+            {
+                key = _emptyListKey;
+                emptyList = _emptyList;
+                return true;
+            }
+            return false;
+        }
+
+        public const string KnownEmptyId = EmptyModifiersId;
+
+        /// <summary>
+        /// BaseLib 3.4.7's card save "BaseLibCardModifiers": the getter <c>DirectModifiers(card).Select(...).ToList()</c>
+        /// (its lambda, fingerprinted) through RegisterSave's wrapper (adds the value under its id when not null). The
+        /// list holds CardModifier instances only (a NotNullSpireField, empty by default): with no concrete
+        /// CardModifier type loaded it is always empty. ~40% of the memory allocated during turns at 32,000 cards.
+        /// </summary>
+        private const string EmptyModifiersId = "BaseLibCardModifiers";
+        private const string EmptyModifiersGetterFingerprint = "E5675060A42DD1BB";
+        private const string RegisterSaveWrapperFingerprint = "495404B55F222A0D";
+        private const string CardModifierType = "BaseLib.Abstracts.CardModifier";
+
+        private IDictionary? _emptyListDictionary;
+        private object? _emptyList;
+        private Type? _emptyListKey;
+        private object? _checkedSave;
+        private bool _checkedSaveMatches;
+
+        /// <summary>Whether the only registered save is that one, unchanged, and no CardModifier type is loaded.</summary>
+        private bool EmptyModifiersOnly()
+        {
+            IList saves = _registeredSaves();
+            if (saves.Count != 1 || !BaseLibTypes.NoneDefined(CardModifierType))
+            {
+                return false;
+            }
+            object save = saves[0]!;
+            if (!ReferenceEquals(save, _checkedSave))
+            {
+                _checkedSave = save;
+                _checkedSaveMatches = false;
+                try
+                {
+                    var id = AccessTools.Property(save.GetType(), "Id")?.GetValue(save) as string;
+                    var wrapper = AccessTools.Property(save.GetType(), "Getter")?.GetValue(save) as Delegate;
+                    var getter = wrapper?.Target == null ? null : AccessTools.Field(wrapper.Target.GetType(), "getter")?.GetValue(wrapper.Target) as Delegate;
+                    // The wrapper is a method of a generic closure class: fingerprint its generic definition.
+                    MethodInfo? wrapperDefinition = wrapper?.Method.DeclaringType is { IsGenericType: true } closure
+                        ? closure.GetGenericTypeDefinition().GetMethod(wrapper.Method.Name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                        : wrapper?.Method;
+                    string? wrapperFingerprint = wrapperDefinition == null ? null : MethodFingerprint.Of(wrapperDefinition);
+                    string? getterFingerprint = getter == null ? null : MethodFingerprint.Of(getter.Method);
+                    _checkedSaveMatches = id == EmptyModifiersId && wrapperFingerprint == RegisterSaveWrapperFingerprint
+                        && getterFingerprint == EmptyModifiersGetterFingerprint;
+                    Log.Info($"[{ModEntry.Id}] {Name}: card save '{id}' (wrapper {wrapperFingerprint}, getter {getterFingerprint}): "
+                        + (_checkedSaveMatches ? "its empty result is known while no CardModifier type is loaded" : "getter kept"));
+                }
+                catch
+                {
+                    // Can't tell: run the getter.
+                }
+            }
+            return _checkedSaveMatches;
         }
 
         /// <summary>The ids of the registered saves (the only keys a getter adds), refreshed when one is registered.</summary>
@@ -215,8 +313,8 @@ public static class LimitlessReserialize
         if (now - _patchesCheckedAt >= 2000)
         {
             _patchedByOthers = PatchSafety.IsPatchedByOthers(_original) || PatchSafety.IsPatchedByOthers(_savedPropertiesFrom)
-                || PatchSafety.IsPatchedByOthers(_cardToSerializable, _cardData!.Postfix)
-                || PatchSafety.IsPatchedByOthers(_enchantmentToSerializable, _enchantmentData!.Postfix);
+                || PatchSafety.IsPatchedByOthers(_cardToSerializable, new[] { _cardData!.Postfix })
+                || PatchSafety.IsPatchedByOthers(_enchantmentToSerializable, new[] { _enchantmentData!.Postfix });
             _patchesCheckedAt = now;
         }
         return _patchedByOthers;
@@ -295,6 +393,37 @@ public static class LimitlessReserialize
     }
 #endif
 
+    /// <summary>
+    /// The BaseLib data objects of a stored list's cards and enchantments, found in BaseLib's table on a first
+    /// comparison and reused while the list holds the same objects: kept lists are compared at every state change, and
+    /// each table lookup was ~a third of the comparison at 32,000 cards. BaseLib sets an object's entry only when its
+    /// postfix creates that object (ToSerializable), so a found entry stays that object's; the contents are compared
+    /// every time.
+    /// </summary>
+    private sealed class StoredData
+    {
+        public object?[] Saved = Array.Empty<object?>();
+        public object?[] Data = Array.Empty<object?>();
+
+        /// <summary>The data of the object at slot i (card i at 2i, its enchantment at 2i + 1), null when it has none.</summary>
+        public object? For(int slot, object saved, ExtendedData data)
+        {
+            if (slot >= Saved.Length)
+            {
+                Array.Resize(ref Saved, Math.Max(slot + 1, Saved.Length * 2));
+                Array.Resize(ref Data, Saved.Length);
+            }
+            if (!ReferenceEquals(Saved[slot], saved) || Data[slot] == null)
+            {
+                Saved[slot] = saved;
+                Data[slot] = data.Stored(saved);
+            }
+            return Data[slot];
+        }
+    }
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<List<SerializableCard>, StoredData> _storedData = new();
+
     /// <summary>Whether <c>cards.Select(c => c.ToSerializable()).ToList()</c> would hold what the stored list holds.</summary>
     private static bool Unchanged(EnchantmentModel multi, List<CardModel>? cards)
     {
@@ -303,9 +432,10 @@ public static class LimitlessReserialize
         {
             return false;
         }
+        StoredData data = _storedData.GetValue(stored, static _ => new StoredData());
         for (int i = 0; i < cards.Count; i++)
         {
-            if (!SameCard(cards[i], stored[i]))
+            if (!SameCard(cards[i], stored[i], data, 2 * i))
             {
                 return false;
             }
@@ -314,7 +444,7 @@ public static class LimitlessReserialize
     }
 
     /// <summary><c>CardModel.ToSerializable</c> and BaseLib's postfix, compared field by field.</summary>
-    private static bool SameCard(CardModel? card, SerializableCard? saved)
+    private static bool SameCard(CardModel? card, SerializableCard? saved, StoredData data, int slot)
     {
         // Not mutable: ToSerializable throws, let Limitless do it.
         if (card == null || saved == null || !card.IsMutable)
@@ -327,17 +457,17 @@ public static class LimitlessReserialize
             return false;
         }
         EnchantmentModel? enchantment = card.Enchantment;
-        if (enchantment == null ? saved.Enchantment != null : !SameEnchantment(enchantment, saved.Enchantment))
+        if (enchantment == null ? saved.Enchantment != null : !SameEnchantment(enchantment, saved.Enchantment, data, slot + 1))
         {
             return false;
         }
-        return SameData(_cardData!, card, saved);
+        return SameData(_cardData!, card, data.For(slot, saved, _cardData!));
     }
 
     /// <summary><c>EnchantmentModel.ToSerializable</c> and BaseLib's postfix.</summary>
-    private static bool SameEnchantment(EnchantmentModel enchantment, SerializableEnchantment? saved) =>
+    private static bool SameEnchantment(EnchantmentModel enchantment, SerializableEnchantment? saved, StoredData data, int slot) =>
         saved != null && enchantment.IsMutable && Equals(saved.Id, enchantment.Id) && saved.Amount == enchantment.Amount
-        && SameProps(PropsOf(enchantment), saved.Props) && SameData(_enchantmentData!, enchantment, saved);
+        && SameProps(PropsOf(enchantment), saved.Props) && SameData(_enchantmentData!, enchantment, data.For(slot, saved, _enchantmentData!));
 
     /// <summary><c>SavedProperties.From</c>, which returns null without reading anything when the type has no saved property.</summary>
     private static SavedProperties? PropsOf(AbstractModel model) =>
@@ -347,12 +477,31 @@ public static class LimitlessReserialize
     /// The extended save data BaseLib would store for the model against what the saved object has. Its readers get a
     /// missing dictionary as an empty one (DictForType), so both count as the same.
     /// </summary>
-    private static bool SameData(ExtendedData data, object model, object saved)
+    private static bool SameData(ExtendedData data, object model, object? stored)
     {
-        object? stored = data.Stored(saved);
         if (stored == null)
         {
             return false;
+        }
+        if (data.KnownWithoutBuilding(out Type? onlyKey, out object? emptyList))
+        {
+            // The same answer as the comparison below with that expected data, without building it.
+            KnownData++;
+            bool found = onlyKey == null;
+            foreach ((Type type, IDictionary dictionary) in data.Dictionaries(stored))
+            {
+                if (dictionary.Count == 0)
+                {
+                    continue;
+                }
+                if (type != onlyKey || dictionary.Count != 1 || !dictionary.Contains(ExtendedData.KnownEmptyId)
+                    || !SameValue(emptyList, dictionary[ExtendedData.KnownEmptyId]))
+                {
+                    return false;
+                }
+                found = true;
+            }
+            return found;
         }
         Dictionary<Type, IDictionary> expected = data.Dictionaries(data.Expected(model));
         Dictionary<Type, IDictionary> actual = data.Dictionaries(stored);
