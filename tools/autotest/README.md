@@ -29,7 +29,8 @@ One command per line, `#` comments, `{hash:NAME}` replaced by the hash of `bigde
 - `enemyhp <hp>` (next combats), `state [label]` (creatures, powers, piles), `speed normal|fast|instant` (default fast)
 - `deckview [s] [shot]`, `deckscroll <steps>`, `screenshot <name>`, `modsscreen <shot>`, `baselibmenu <shot>` (this mod's page in BaseLib's settings)
 - `pilescroll draw|discard|exhaust <frames> [px]` (opens a combat pile view and moves its scroll target every frame like a held mouse wheel: open time, ms per frame, median/95th/worst; 3000 px steps redraw the whole grid like dragging the scrollbar)
-- `language <code>` (game language for the session only, e.g. `fra`, `zhs`, `zht`; logs this mod's menu texts as `LANG` lines), `menuback` (closes the current main-menu submenu)
+- `language <code>` (game language for the session only, e.g. `fra`, `zhs`, `zht`; logs this mod's menu texts as `LANG` lines), `menuback` (closes the current main-menu submenu), `menutext <SLUG>` (logs an option's tooltip text, e.g. `HOOK_FILTER`, as `MENUTEXT`)
+- `fakeconflict <Type:Method>` (a no-op postfix under another Harmony id, as another mod would patch that method: the optimization using it backs off and names it; `conflict-check`)
 - `gcstat [label]` (wall time, GC pause time and collections since the previous gcstat), `gcfull [label]` (live heap after a full collection)
 - `fpsstat [label]` (frames since the previous fpsstat: average fps, 1% low, worst frame, frames over 33/50/100 ms)
 - `checksum [label] [vanilla]` (full combat state checksum, as co-op peers compare), `immortal [off]` (enemies never drop below 1 HP)
@@ -42,4 +43,6 @@ Card choices are answered with the first options, identically on every peer. The
 command's clock-based encounter seed (peers would desync) and skips Fur Coat when no map point exists yet.
 
 Useful `bdperf` commands inside scenarios: `probe reset|log` (per-method times + long frames), `combatstart`,
-`checks off` (no Debug-only vanilla re-checks: release-like timings), `pile [verify n]`, `verify`.
+`checks off` (no Debug-only vanilla re-checks: release-like timings), `pile [verify n]`, `verify`, `plaque [n]` (BaseLib's card type line, TypePlaqueSkip off vs on: same text object).
+
+Version check protocol (CLAUDE.md): `python -I tools/check_versions.py [--log <log>] [--accept]` compares the installed game/BaseLib/Limitless with `tools/versions.json` and lists what a session left vanilla.
