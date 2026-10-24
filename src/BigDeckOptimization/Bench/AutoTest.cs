@@ -169,11 +169,20 @@ public static class AutoTest
     private static bool StayForeground() => false;
 
     private static bool _immortal;
+    /// <summary>With <c>immortal until &lt;round&gt;</c>: immortal before that combat round only (0 = always).</summary>
+    private static int _immortalUntilRound;
 
-    /// <summary>Script <c>immortal [off]</c>: enemies never drop below 1 HP from a hit (long benches, huge decks).</summary>
+    /// <summary>
+    /// Script <c>immortal [off | until &lt;round&gt;]</c>: enemies never drop below 1 HP from a hit (long benches, huge
+    /// decks). "until" ties the end to the game state (the combat round), so co-op peers running the same script stay
+    /// identical, and the combat ends by itself once the enemies can die again.
+    /// </summary>
+    private static bool Immortal(Creature creature) =>
+        _immortal && creature.IsEnemy && (_immortalUntilRound == 0 || (creature.CombatState?.RoundNumber ?? 0) < _immortalUntilRound);
+
     private static void ImmortalPrefix(Creature __instance, ref decimal amount)
     {
-        if (_immortal && __instance.IsEnemy && __instance.CurrentHp > 1)
+        if (Immortal(__instance) && __instance.CurrentHp > 1)
         {
             amount = Math.Min(amount, __instance.CurrentHp - 1);
         }
@@ -182,7 +191,7 @@ public static class AutoTest
     /// <summary>...and are healed back to full below half, so the next hits land the same way.</summary>
     private static void ImmortalPostfix(Creature __instance)
     {
-        if (_immortal && __instance.IsEnemy && __instance.CurrentHp < __instance.MaxHp / 2)
+        if (Immortal(__instance) && __instance.CurrentHp < __instance.MaxHp / 2)
         {
             __instance.SetCurrentHpInternal(__instance.MaxHp);
         }
@@ -277,8 +286,10 @@ public static class AutoTest
                     _enemyHp = int.Parse(arg);
                     break;
                 case "immortal":
-                    _immortal = arg.Trim() != "off";
-                    Say($"  enemies immortal: {_immortal}");
+                    string[] immortalArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    _immortal = immortalArgs.FirstOrDefault() != "off";
+                    _immortalUntilRound = immortalArgs.Length > 1 && immortalArgs[0] == "until" ? int.Parse(immortalArgs[1]) : 0;
+                    Say($"  enemies immortal: {_immortal}{(_immortalUntilRound > 0 ? $" until round {_immortalUntilRound}" : "")}");
                     break;
                 case "state":
                     LogState(arg);
@@ -290,7 +301,8 @@ public static class AutoTest
                     SetSpeed(Enum.Parse<FastModeType>(arg, ignoreCase: true));
                     break;
                 case "baselibmenu":
-                    await BaseLibMenu(tree, arg.Trim());
+                    string[] menuArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    await BaseLibMenu(tree, menuArgs[0], menuArgs.Length > 1 ? menuArgs[1] : null);
                     break;
                 case "modsscreen":
                     await ModsScreen(tree, arg.Trim());
@@ -334,8 +346,8 @@ public static class AutoTest
                     Say($"  COUNTERS {arg.Trim()}: {LimitlessReserialize.Name} kept {LimitlessReserialize.Kept}, rebuilt {LimitlessReserialize.Rebuilt}, "
                         + $"verify mismatches {LimitlessReserialize.VerifyMismatches}; {FastListeners.Name} cache mismatches {FastListeners.CacheMismatches}, "
                         + $"segments rebuilt {FastListeners.SegmentRebuilds} (versions {FastListeners.RebuiltVersions}, pile version {FastListeners.PileVersion}), "
-                        + $"hits {FastListeners.SegmentHits}, uncached walks {FastListeners.UncachedWalks}; "
-                        + $"{HookFilter.Name} walk checks {HookFilter.WalkChecks}, mismatches {HookFilter.WalkMismatches}");
+                        + $"extended {FastListeners.SegmentExtends}, snapshot catch-ups {FastListeners.SnapshotCatchUps}, hits {FastListeners.SegmentHits}, uncached walks {FastListeners.UncachedWalks}; "
+                        + $"{HookFilter.Name} walk checks {HookFilter.WalkChecks}, mismatches {HookFilter.WalkMismatches}; {RelicFlashMerge.Name} merged {RelicFlashMerge.Merged}; {PileIndex.Name} duplicate checks fast {PileIndex.FastDuplicateChecks}, slow {PileIndex.SlowDuplicateChecks}; subscriber checks {FastListeners.SubscriberChecks} in {FastListeners.SubscriberCheckTicks * 1000.0 / Stopwatch.Frequency:F1} ms");
                     break;
                 case "marker":
                     // A line the profiling scripts look for to cut traces into phases.
@@ -382,6 +394,19 @@ public static class AutoTest
                     break;
                 case "endturn":
                     EndTurn();
+                    break;
+                case "watch":
+                    Watch(tree, double.Parse(arg.Trim()));
+                    break;
+                case "nodes":
+                    LogNodes(tree, arg.Trim());
+                    break;
+                case "eventoption":
+                    string[] eventArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    await EventOption(tree, eventArgs[0], eventArgs.Length > 1 ? double.Parse(eventArgs[1]) : 600);
+                    break;
+                case "restsite":
+                    await RestSite(arg.Trim());
                     break;
                 case "quit":
                     Quit();
@@ -459,6 +484,21 @@ public static class AutoTest
             "combat" => () => CombatManager.Instance.IsInProgress,
             "nocombat" => () => !CombatManager.Instance.IsInProgress,
             "idle" => IsIdle,
+            "turn" => () => !CombatManager.Instance.IsInProgress || IsIdle(), // ready to play, or the combat is over
+            "deckcount" => () => DeckCountShown(node),
+            "restsite" => () => MegaCrit.Sts2.Core.Nodes.Rooms.NRestSiteRoom.Instance != null
+                && RunManager.Instance.RestSiteSynchronizer.GetLocalOptions() is { Count: > 0 },
+            "event" => () =>
+            {
+                try
+                {
+                    return RunManager.Instance.EventSynchronizer.GetLocalEvent() is { IsFinished: false };
+                }
+                catch (ArgumentOutOfRangeException)
+                {
+                    return false; // No event state for this player yet.
+                }
+            },
             _ => throw new ArgumentException("waitfor " + parts[0]),
         };
         return Until(node, condition, timeout, parts[0]);
@@ -682,16 +722,102 @@ public static class AutoTest
         Say($"  {(result.success ? "ok" : "FAILED")}: {result.msg}".Replace("\n", "\n    "));
     }
 
+    /// <summary>Script <c>nodes [label]</c>: scene nodes in all, card previews, cards flying to a pile and their trails.</summary>
+    private static void LogNodes(SceneTree tree, string label)
+    {
+        var ui = NRun.Instance?.GlobalUi;
+        int previews = ui == null ? 0 : ui.CardPreviewContainer.GetChildCount() + ui.MessyCardPreviewContainer.GetChildCount()
+            + ui.EventCardPreviewContainer.GetChildCount() + ui.GridCardPreviewContainer.GetChildCount();
+        int trail = ui?.TopBar.TrailContainer.GetChildCount() ?? 0;
+        int cards = FindAll<NCard>(tree.Root).Count();
+        int flying = FindAll<MegaCrit.Sts2.Core.Nodes.Vfx.NCardFlyVfx>(tree.Root).Count();
+        Say($"  NODES {label}: {Performance.GetMonitor(Performance.Monitor.ObjectNodeCount):F0} nodes, {cards} card nodes, "
+            + $"{previews} previews, {flying} flying, trail container {trail}, deck {Me()?.Deck.Cards.Count}");
+    }
+
+    /// <summary>
+    /// Script <c>watch &lt;seconds&gt;</c>: from now on, in the background, 4 lines a second with the card previews on
+    /// screen (popping up or flying to a pile) and the deck size, for that long.
+    /// </summary>
+    private static void Watch(SceneTree tree, double seconds)
+    {
+        double end = _clock.Elapsed.TotalSeconds + seconds;
+        double next = 0;
+        void Sample()
+        {
+            double now = _clock.Elapsed.TotalSeconds;
+            if (now > end)
+            {
+                tree.ProcessFrame -= Sample;
+                return;
+            }
+            if (now < next)
+            {
+                return;
+            }
+            next = now + 0.25;
+            var ui = NRun.Instance?.GlobalUi;
+            int previews = ui == null ? 0 : ui.CardPreviewContainer.GetChildCount() + ui.MessyCardPreviewContainer.GetChildCount();
+            int trail = ui?.TopBar.TrailContainer.GetChildCount() ?? 0;
+            Say($"  WATCH: {previews} previews, {trail / 2} flying, deck {Me()?.Deck.Cards.Count}");
+        }
+        tree.ProcessFrame += Sample;
+    }
+
+    /// <summary>
+    /// Script <c>eventoption &lt;text key part&gt; [timeout s]</c>: picks the current event's option whose text key
+    /// contains it (e.g. SHATTER), like a click, and waits for the event to finish, timed.
+    /// </summary>
+    private static async Task EventOption(SceneTree tree, string key, double timeout)
+    {
+        var sync = RunManager.Instance.EventSynchronizer;
+        MegaCrit.Sts2.Core.Models.EventModel? model = sync.GetLocalEvent();
+        if (model == null)
+        {
+            Say("  EVENTOPTION: no event");
+            return;
+        }
+        List<MegaCrit.Sts2.Core.Events.EventOption> options = model.CurrentOptions.ToList();
+        int index = options.FindIndex(o => o.TextKey.Contains(key, StringComparison.OrdinalIgnoreCase));
+        if (index < 0)
+        {
+            Say($"  EVENTOPTION: no {key} option ({string.Join(", ", options.Select(o => o.TextKey))})");
+            return;
+        }
+        int before = Me()!.Deck.Cards.Count;
+        double start = _clock.Elapsed.TotalSeconds;
+        sync.ChooseLocalOption(index);
+        await Until(tree, () => sync.GetLocalEvent()?.IsFinished ?? true, timeout, "event finished");
+        Say($"  EVENTOPTION {options[index].TextKey}: {(_clock.Elapsed.TotalSeconds - start) * 1000:F0} ms, deck {before} -> {Me()!.Deck.Cards.Count}");
+    }
+
+    /// <summary>Script <c>restsite &lt;option class&gt;</c> (e.g. CloneRestSiteOption): picks it like a click, timed.</summary>
+    private static async Task RestSite(string name)
+    {
+        var sync = RunManager.Instance.RestSiteSynchronizer;
+        List<MegaCrit.Sts2.Core.Entities.RestSite.RestSiteOption> options = sync.GetLocalOptions().ToList();
+        int index = options.FindIndex(o => o.GetType().Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (index < 0)
+        {
+            Say($"  RESTSITE: no {name} option ({string.Join(", ", options.Select(o => o.GetType().Name))})");
+            return;
+        }
+        int before = Me()!.Deck.Cards.Count;
+        long start = Stopwatch.GetTimestamp();
+        bool ok = await sync.ChooseLocalOption(index);
+        Say($"  RESTSITE {name}: {(ok ? "ok" : "FAILED")} in {Stopwatch.GetElapsedTime(start).TotalMilliseconds:F0} ms, deck {before} -> {Me()!.Deck.Cards.Count}");
+    }
+
     /// <summary>Plays up to n cards from hand, like clicks: each one waits for the game to be idle again.</summary>
     private static async Task Play(SceneTree node, int count)
     {
         int played = 0;
         for (int i = 0; i < count; i++)
         {
-            await Until(node, IsIdle, 120, "idle");
+            await Until(node, () => !CombatManager.Instance.IsInProgress || IsIdle(), 120, "idle"); // stops once the combat is over
             Player? me = Me();
             CombatState? combat = CombatManager.Instance.DebugOnlyGetState();
-            if (me?.PlayerCombatState == null || combat == null)
+            if (!CombatManager.Instance.IsInProgress || me?.PlayerCombatState == null || combat == null)
             {
                 break;
             }
@@ -839,7 +965,7 @@ public static class AutoTest
     /// Script <c>baselibmenu &lt;screenshot name&gt;</c>: BaseLib's mod configuration menu on this mod's settings. By
     /// reflection: this DLL must not reference BaseLib (optional).
     /// </summary>
-    private static async Task BaseLibMenu(SceneTree tree, string shot)
+    private static async Task BaseLibMenu(SceneTree tree, string shot, string? hover = null)
     {
         var menu = NGame.Instance?.MainMenu ?? throw new InvalidOperationException("not on the main menu");
         Type submenuType = AccessTools.TypeByName("BaseLib.Config.UI.NModConfigSubmenu") ?? throw new InvalidOperationException("BaseLib not loaded");
@@ -849,7 +975,60 @@ public static class AutoTest
             ?? throw new InvalidOperationException("settings not registered in BaseLib");
         AccessTools.Method(submenuType, "LoadModConfig").Invoke(submenu, new[] { config });
         await Frames(tree, 40);
+        // Each row: shown dimmed (greyed out) and whether its switch can be clicked.
+        AccessTools.FieldRef<MegaCrit.Sts2.Core.Nodes.GodotExtensions.NClickableControl, bool> isEnabled =
+            AccessTools.FieldRefAccess<MegaCrit.Sts2.Core.Nodes.GodotExtensions.NClickableControl, bool>("_isEnabled");
+        Control? hoverRow = null;
+        foreach (Control row in FindAll<Control>(tree.Root).Where(n => n.GetType().Name == "NConfigOptionRow"))
+        {
+            var control = AccessTools.Property(row.GetType(), "SettingControl").GetValue(row) as MegaCrit.Sts2.Core.Nodes.GodotExtensions.NClickableControl;
+            Say($"  MENUROW {row.Name}: alpha {row.Modulate.A:F2}, clickable {(control == null ? "-" : isEnabled(control).ToString())}");
+            if (hover != null && row.Name == hover)
+            {
+                hoverRow = row;
+            }
+        }
+        if (hoverRow != null)
+        {
+            // Scroll the page so the row is in view (its switch may be disabled, so it can't take the focus).
+            Node? scroller = hoverRow.GetParent();
+            while (scroller != null && scroller is not MegaCrit.Sts2.Core.Nodes.GodotExtensions.NScrollableContainer)
+            {
+                scroller = scroller.GetParent();
+            }
+            if (scroller is MegaCrit.Sts2.Core.Nodes.GodotExtensions.NScrollableContainer scroll
+                && AccessTools.Field(typeof(MegaCrit.Sts2.Core.Nodes.GodotExtensions.NScrollableContainer), "_content").GetValue(scroll) is Control content)
+            {
+                float limit = (float)AccessTools.Property(scroll.GetType(), "ScrollLimitBottom").GetValue(scroll)!;
+                float target = Math.Clamp(content.GlobalPosition.Y - hoverRow.GlobalPosition.Y + 300f, Math.Min(limit, 0f), 0f);
+                AccessTools.Field(typeof(MegaCrit.Sts2.Core.Nodes.GodotExtensions.NScrollableContainer), "_targetDragPosY").SetValue(scroll, target);
+                await Frames(tree, 60);
+            }
+            AccessTools.Method(hoverRow.GetType(), "OnHovered").Invoke(hoverRow, null);
+            string key = $"BIGDECKOPTIMIZATION-{MegaCrit.Sts2.Core.Helpers.StringHelper.Slugify(hoverRow.Name).ToUpperInvariant()}.hover.desc";
+            Say($"  MENUHOVER {hoverRow.Name}: {MegaCrit.Sts2.Core.Localization.LocString.GetIfExists("settings_ui", key)?.GetFormattedText() ?? "(no text)"}");
+            await Frames(tree, 20);
+        }
         await Screenshot(tree, shot);
+    }
+
+    private static AccessTools.FieldRef<MegaCrit.Sts2.Core.Nodes.TopBar.NTopBarDeckButton, MegaCrit.Sts2.addons.mega_text.MegaLabel>? _deckCountLabel;
+    private static MegaCrit.Sts2.Core.Nodes.TopBar.NTopBarDeckButton? _deckButton;
+
+    /// <summary>The top bar's deck counter shows the deck's size (it counts cards as their add animations finish).</summary>
+    private static bool DeckCountShown(SceneTree tree)
+    {
+        Player? me = Me();
+        if (_deckButton == null || !GodotObject.IsInstanceValid(_deckButton) || !_deckButton.IsInsideTree())
+        {
+            _deckButton = FindAll<MegaCrit.Sts2.Core.Nodes.TopBar.NTopBarDeckButton>(tree.Root).FirstOrDefault();
+        }
+        if (me == null || _deckButton == null)
+        {
+            return false;
+        }
+        _deckCountLabel ??= AccessTools.FieldRefAccess<MegaCrit.Sts2.Core.Nodes.TopBar.NTopBarDeckButton, MegaCrit.Sts2.addons.mega_text.MegaLabel>("_countLabel");
+        return _deckCountLabel(_deckButton).Text == me.Deck.Cards.Count.ToString();
     }
 
     private static IEnumerable<T> FindAll<T>(Node node) where T : Node

@@ -1,11 +1,15 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
+using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Runs;
 
 namespace BigDeckOptimization.Patches;
 
@@ -21,6 +25,11 @@ namespace BigDeckOptimization.Patches;
 /// <c>Piles</c> (else null, like vanilla); in no pile, null. Anything unusual (several piles, a failed clear, a
 /// shuffle hook that changed the list) falls back to the vanilla scan. One fast answer in <see cref="VerifyEvery"/> is
 /// compared with the vanilla scan; a difference disables the patch for the session.
+///
+/// Two more scans of every card, once per card added (cloning thousands of cards at a campfire: O(n²)):
+/// <c>AddInternal</c>'s duplicate check <c>Cards.Contains(card)</c> answers false at once when the index says the card
+/// was in no pile, and <c>RunState.ContainsCard</c> (<c>_allCards.Contains</c>) searches from the end, where a card
+/// just created is (same comparer, so the same answer as from the start).
 /// </summary>
 public static class PileIndex
 {
@@ -37,6 +46,8 @@ public static class PileIndex
         ("Clear", "A2B6A279CA18ABC1"),
     };
     private const string GetterFingerprint = "4EDF4A6967871E17";
+    /// <summary>v0.107.1 <c>RunState.ContainsCard</c>, mirrored by <see cref="ContainsCardPrefix"/>.</summary>
+    private const string ContainsCardFingerprint = "DC5BAC12C08BE24D";
 
     /// <summary>One fast answer in this many is checked against the vanilla scan (1 = all, for tests).</summary>
     internal static int VerifyEvery { get; set; } = 1024;
@@ -87,6 +98,102 @@ public static class PileIndex
             prefix: Method(nameof(BeforeRandomize)), postfix: Method(nameof(AfterRandomize)));
         harmony.Patch(_getter, prefix: Method(nameof(PilePrefix)));
         Applied = true;
+        try
+        {
+            MethodInfo addInternal = AccessTools.Method(typeof(CardPile), nameof(CardPile.AddInternal))!;
+            harmony.Patch(addInternal, transpiler: Method(nameof(AddInternalTranspiler)));
+            Log.Info($"[{ModEntry.Id}] {Name}: AddInternal duplicate check {(_duplicateCheckPatched ? "patched" : "left vanilla (call not found)")}");
+        }
+        catch (Exception e)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: AddInternal duplicate check left vanilla: {e.Message}");
+        }
+        try
+        {
+            _containsCard = AccessTools.Method(typeof(RunState), nameof(RunState.ContainsCard)) ?? throw new MissingMethodException("RunState.ContainsCard");
+            PatchSafety.RequireFingerprint(_containsCard, ContainsCardFingerprint);
+            _allCards = AccessTools.FieldRefAccess<RunState, List<CardModel>>("_allCards");
+            harmony.Patch(_containsCard, prefix: Method(nameof(ContainsCardPrefix)));
+        }
+        catch (Exception e)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: RunState.ContainsCard left vanilla: {e.Message}");
+        }
+    }
+
+    /// <summary>The card is in no pile (known exactly), or false when unsure.</summary>
+    internal static bool InNoPile(CardModel card)
+    {
+        if (!Enabled || !Applied)
+        {
+            return false;
+        }
+        return !_entries.TryGetValue(card, out Entry? entry) || (entry.Count == 0 && !entry.Unknown);
+    }
+
+    private static bool _duplicateCheckPatched;
+    private static System.Reflection.MethodInfo? _containsCard;
+    private static AccessTools.FieldRef<RunState, List<CardModel>>? _allCards;
+    public static long FastDuplicateChecks { get; private set; }
+
+    /// <summary>AddInternal's <c>Cards.Contains(card)</c> (Enumerable.Contains on the pile's list) goes through <see cref="ContainsBeingAdded"/>.</summary>
+    private static IEnumerable<CodeInstruction> AddInternalTranspiler(IEnumerable<CodeInstruction> instructions)
+    {
+        MethodInfo contains = typeof(Enumerable).GetMethods()
+            .Single(m => m.Name == nameof(Enumerable.Contains) && m.GetParameters().Length == 2)
+            .MakeGenericMethod(typeof(CardModel));
+        bool replaced = false; // Harmony runs transpilers again each time the method is re-patched.
+        foreach (CodeInstruction instruction in instructions)
+        {
+            if (!replaced && instruction.Calls(contains))
+            {
+                replaced = true;
+                _duplicateCheckPatched = true;
+                yield return new CodeInstruction(OpCodes.Call, AccessTools.Method(typeof(PileIndex), nameof(ContainsBeingAdded)))
+                    .WithLabels(instruction.labels).WithBlocks(instruction.blocks);
+                continue;
+            }
+            yield return instruction;
+        }
+    }
+
+    /// <summary>
+    /// Inside AddInternal, after <see cref="BeforeAdd"/> counted this add: a count of 1 means the card was in no pile
+    /// before, so it isn't in this one. Anything else: the game's scan.
+    /// </summary>
+    private static bool ContainsBeingAdded(IEnumerable<CardModel> cards, CardModel card)
+    {
+        if (Enabled && _entries.TryGetValue(card, out Entry? entry) && entry.Count == 1 && !entry.Unknown)
+        {
+            FastDuplicateChecks++;
+            if (FastDuplicateChecks % VerifyEvery == 0 && cards.Contains(card))
+            {
+                Fail($"{card} is already in the pile it is added to, the index said no pile");
+                return true;
+            }
+            return false;
+        }
+        SlowDuplicateChecks++;
+#if BENCH
+        if (SlowDuplicateChecks <= 5)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: slow duplicate check for {card}: entry {(_entries.TryGetValue(card, out Entry? e) ? $"count {e.Count}, unknown {e.Unknown}, pile {e.Pile?.Type}" : "none")}, enabled {Enabled}");
+        }
+#endif
+        return cards.Contains(card);
+    }
+
+    public static long SlowDuplicateChecks { get; private set; }
+
+    /// <summary><c>_allCards.Contains(card)</c> from the end: the same answer, found at once for cards just created.</summary>
+    private static bool ContainsCardPrefix(RunState __instance, CardModel card, ref bool __result)
+    {
+        if (!Enabled || PatchSafety.IsPatchedByOthers(_containsCard))
+        {
+            return true;
+        }
+        __result = _allCards!(__instance).LastIndexOf(card) >= 0;
+        return false;
     }
 
     private static HarmonyMethod Method(string name) => new(typeof(PileIndex), name);

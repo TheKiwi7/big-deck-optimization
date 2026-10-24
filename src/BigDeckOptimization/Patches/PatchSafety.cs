@@ -56,22 +56,17 @@ public static class PatchSafety
         {
             return true;
         }
-        // Harmony.GetPatchInfo is costly and this runs per scope (several times per frame): results are reused for
-        // a short while, so a mod patching later is still seen within RecheckAfterMs.
+        // Harmony.GetPatchInfo is costly and this runs per hook call (hundreds of thousands of times when cloning
+        // thousands of cards): results are reused for a short while, read without a lock, so a mod patching later is
+        // still seen within RecheckAfterMs.
         long now = Environment.TickCount64;
-        lock (_patchedByOthers)
+        if (_patchedByOthers.TryGetValue(method, out var cached) && now - cached.CheckedAt < RecheckAfterMs)
         {
-            if (_patchedByOthers.TryGetValue(method, out var cached) && now - cached.CheckedAt < RecheckAfterMs)
-            {
-                return cached.Patched;
-            }
+            return cached.Patched;
         }
         HarmonyLib.Patches? info = Harmony.GetPatchInfo(method);
         bool patched = info != null && info.Owners.Any(owner => owner != ModEntry.Harmony.Id);
-        lock (_patchedByOthers)
-        {
-            _patchedByOthers[method] = (patched, now);
-        }
+        _patchedByOthers[method] = (patched, now);
         return patched;
     }
 
@@ -86,26 +81,20 @@ public static class PatchSafety
             return true;
         }
         long now = Environment.TickCount64;
-        lock (_patchedBeyondAllowed)
+        if (_patchedBeyondAllowed.TryGetValue(method, out var cached) && now - cached.CheckedAt < RecheckAfterMs)
         {
-            if (_patchedBeyondAllowed.TryGetValue(method, out var cached) && now - cached.CheckedAt < RecheckAfterMs)
-            {
-                return cached.Patched;
-            }
+            return cached.Patched;
         }
         HarmonyLib.Patches? info = Harmony.GetPatchInfo(method);
         bool patched = info != null && (
             info.Prefixes.Concat(info.Transpilers).Concat(info.Finalizers).Any(p => p.owner != ModEntry.Harmony.Id)
             || info.Postfixes.Any(p => p.owner != ModEntry.Harmony.Id
                 && !allowedPostfixes.Any(a => a.MethodHandle == p.PatchMethod.MethodHandle)));
-        lock (_patchedBeyondAllowed)
-        {
-            _patchedBeyondAllowed[method] = (patched, now);
-        }
+        _patchedBeyondAllowed[method] = (patched, now);
         return patched;
     }
 
     private const long RecheckAfterMs = 2000;
-    private static readonly Dictionary<MethodBase, (bool Patched, long CheckedAt)> _patchedByOthers = new();
-    private static readonly Dictionary<MethodBase, (bool Patched, long CheckedAt)> _patchedBeyondAllowed = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<MethodBase, (bool Patched, long CheckedAt)> _patchedByOthers = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<MethodBase, (bool Patched, long CheckedAt)> _patchedBeyondAllowed = new();
 }

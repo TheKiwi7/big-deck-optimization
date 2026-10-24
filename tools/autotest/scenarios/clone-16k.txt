@@ -1,0 +1,39 @@
+# Campfire clone at ~16,800 cards (try-it deck: ~13,700 Clone enchantments, Bing Bongs): timed, Debug checks and probe off (release-like).
+timeout 3000
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+cmd room RestSite
+wait 5
+gcstat
+restsite CloneRestSiteOption
+gcstat clone
+waitfor deckcount 1800
+gcstat animations
+wait 10
+fpsstat
+wait 5
+fpsstat after clone
+counters clone
+quit

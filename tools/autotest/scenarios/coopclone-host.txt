@@ -1,0 +1,64 @@
+# Co-op check of v0.5.0 (with coopclone-client.txt, coop.ps1 -WithMods): host Necrobinder with the reference run
+# imported once (945 cards, Clone-enchanted cards, 2 Bing Bongs), client Ironclad with the reference cards. A combat
+# with enemies immortal for 3 rounds (`immortal until 4`, tied to the round so both peers agree), then won by
+# playing cards (no debug kill: the game's `kill all` command makes a checksum on the host only, which
+# misnumbers the next ones and reports a false divergence, mod on or off), Reflections' Shatter for both at Instant speed, then a campfire clone (host). Sizes keep
+# every single action well under the network timeout (a longer freeze disconnects the other player, as in vanilla).
+# Pass: the same CHECKSUM lines on both, bdperf verify mismatches 0, no divergence.
+timeout 2400
+mplobby NECROBINDER 2
+waitfor run 240
+cmd bdperf checks off
+speed instant
+wait 8
+cmd bigdeck import ref all all {hash:ref}
+enemyhp 300
+immortal until 4
+wait 30
+cmd fight CULTISTS_NORMAL
+waitfor idle 900
+state t1
+play 5
+endturn
+waitfor turn 120
+state t2
+play 5
+endturn
+waitfor turn 120
+state t3
+play 5
+endturn
+waitfor turn 120
+state t4
+play 5
+endturn
+waitfor turn 120
+state t5
+play 5
+endturn
+waitfor turn 120
+state t6
+play 5
+endturn
+waitfor turn 120
+waitfor nocombat 300
+wait 10
+checksum after combat
+cmd event REFLECTIONS
+waitfor event 300
+wait 5
+eventoption SHATTER 900
+waitfor deckcount 900
+wait 30
+checksum after shatter
+cmd room RestSite
+waitfor restsite 300
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 30
+checksum end
+counters end
+cmd bdperf verify
+wait 40
+quit

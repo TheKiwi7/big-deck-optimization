@@ -1,0 +1,41 @@
+# Control run: coopclone with this mod off on both sides (bdopt off), same scenario, to tell the game's own behavior apart.
+# Co-op check of v0.5.0, client (with coopclone-host.txt).
+timeout 2400
+mplobby IRONCLAD 2
+waitfor run 240
+cmd bdperf checks off
+cmd bdopt off
+speed instant
+wait 14
+cmd bigdeck import ref all cards {hash:ref}
+enemyhp 999999
+waitfor combat 900
+waitfor idle 900
+state t1
+play 5
+endturn
+waitfor idle 900
+state t2
+play 5
+endturn
+waitfor idle 900
+state t3
+waitfor nocombat 900
+wait 10
+checksum after combat
+waitfor event 600
+wait 5
+eventoption SHATTER 900
+waitfor deckcount 900
+wait 30
+checksum after shatter
+waitfor restsite 600
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 30
+checksum end
+counters end
+cmd bdperf verify
+wait 50
+quit

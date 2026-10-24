@@ -74,6 +74,10 @@ public class PerfConsoleCmd : AbstractConsoleCmd
                 return new CmdResult(success: true, $"PileIndex verifies 1 answer in {every}.");
             case "pile":
                 return ComparePile();
+            case "segments" when args.Length >= 3 && args[1] == "verify" && args[2] is "all" or "sample" or "off":
+                FastListeners.VerifyAll = args[2] == "all";
+                FastListeners.CacheVerifyEvery = args[2] == "off" ? int.MaxValue : 256;
+                return new CmdResult(success: true, $"{FastListeners.Name} compares {(FastListeners.VerifyAll ? "every" : "1 in " + FastListeners.CacheVerifyEvery)} cached pile walk with a fresh walk.");
             case "checks" when args.Length >= 2 && args[1] is "on" or "off":
                 ExtraScopes.BenchChecks = args[1] == "on";
                 PileIndex.VerifyEvery = ExtraScopes.BenchChecks ? 1024 : int.MaxValue;

@@ -1,0 +1,26 @@
+# ~330,000 cards for a hands-on try: ~1,880 cards (reference run imported twice), three campfire clones in a row
+# (~9,500, ~55,000, ~329,000 cards; the third takes ~6 min), then the player takes over at the campfire.
+timeout 3500
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all all
+cmd bdperf checks off
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+gcstat clone 1
+waitfor deckcount 1800
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+gcstat clone 2
+waitfor deckcount 1800
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+gcstat clone 3
+waitfor deckcount 1800
+enemyhp 999999
+handoff

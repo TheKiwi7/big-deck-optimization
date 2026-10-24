@@ -1,0 +1,49 @@
+# Control run: coopclone with this mod off on both sides (bdopt off), same scenario, to tell the game's own behavior apart.
+# Co-op check of v0.5.0 (with coopclone-client.txt, coop.ps1 -WithMods): host Necrobinder with the reference run
+# imported once (945 cards, Clone-enchanted cards, 2 Bing Bongs), client Ironclad with the reference cards. A combat
+# (plays, end of turns), Reflections' Shatter for both at Instant speed, then a campfire clone (host). Sizes keep
+# every single action well under the network timeout (a longer freeze disconnects the other player, as in vanilla).
+# Pass: the same CHECKSUM lines on both, bdperf verify mismatches 0, no divergence.
+timeout 2400
+mplobby NECROBINDER 2
+waitfor run 240
+cmd bdperf checks off
+cmd bdopt off
+speed instant
+wait 8
+cmd bigdeck import ref all all {hash:ref}
+enemyhp 999999
+wait 30
+cmd fight CULTISTS_NORMAL
+waitfor idle 900
+state t1
+play 5
+endturn
+waitfor idle 900
+state t2
+play 5
+endturn
+waitfor idle 900
+state t3
+cmd kill all
+waitfor nocombat 600
+wait 10
+checksum after combat
+cmd event REFLECTIONS
+waitfor event 300
+wait 5
+eventoption SHATTER 900
+waitfor deckcount 900
+wait 30
+checksum after shatter
+cmd room RestSite
+waitfor restsite 300
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 30
+checksum end
+counters end
+cmd bdperf verify
+wait 40
+quit

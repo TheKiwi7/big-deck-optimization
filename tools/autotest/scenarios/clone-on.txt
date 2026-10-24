@@ -1,0 +1,21 @@
+# Campfire clone A/B (on): run clone-off then clone-on; the CHECKSUM and STATE lines must match line for line.
+# ~1,870 cards (reference run imported twice: ~1,500 Clone enchantments, 4 Bing Bongs), every cached pile walk
+# compared with a fresh walk (counters: cache mismatches 0).
+timeout 1200
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all all
+cmd bdperf segments verify all
+checksum before
+state before
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+checksum after
+state after
+counters clone
+quit

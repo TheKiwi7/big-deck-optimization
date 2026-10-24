@@ -1,0 +1,29 @@
+# Reflections event, Shatter (clones every deck card one by one, with a 0.1 s (fast) / 0.2 s (normal) wait each,
+# none at Instant speed), ~1,880 cards (4 Bing Bongs: each clone copied again), speed fast; CHECKSUM to compare
+# with reflections-fast-off.
+timeout 1800
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all all
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+speed fast
+checksum before
+cmd event REFLECTIONS
+wait 5
+gcstat
+watch 3
+fpsstat
+eventoption SHATTER 1500
+fpsstat during shatter
+gcstat shatter
+waitfor deckcount 600
+fpsstat
+wait 5
+fpsstat after shatter
+checksum after
+counters shatter
+quit

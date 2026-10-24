@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.5.0
+
+Cloning thousands of cards no longer freezes or crashes the game, and turns are a bit faster.
+
+- Campfire clone (Limitless' stacked Clone enchantment) with huge decks: going from 16,840 to 85,240 cards took over a minute and a half, then often blacked out the screen or crashed the game; it now takes about 14 seconds, and the game stays smooth afterwards. From 1,880 cards: 15.7 s -> 1.7 s.
+- Reflections (the event whose Shatter choice copies your whole deck): at Instant speed, 31 s -> 5 s with 1,880 cards (11,285 afterwards); at the other speeds, the game's own pause between cards now sets the pace, with far fewer stutters.
+- Relics that trigger thousands of times at once (Bing Bong copying every cloned card) no longer pile up thousands of flash effects in the same frame: that blacked out the screen and could crash the game. A relic flashing several times in the same frame now shows one flash. New switch: Merge repeated relic flashes.
+- Turns are about 10% faster with huge decks (the 59 cards that look through your piles: 14.7 s -> 13.3 s at 8,400 cards), and every card moved to a pile (draws, discards, reshuffles) no longer scans that whole pile.
+- Settings menu (with BaseLib): a switch whose improvement can't run here (Limitless not installed, a game or Limitless update changed what it speeds up, or it turned itself off after an error) is greyed out, and its hover text says why.
+- Same results as before: combat and run checksums identical to the unmodified game in every test, singleplayer and co-op.
+
 ## v0.4.0
 
 With huge decks (8,000+ cards), a turn now takes about half as long as with v0.3.0, and much of Limitless' and BaseLib's work optimized.

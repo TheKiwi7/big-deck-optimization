@@ -24,6 +24,6 @@ cmd bigdeck import ref all cards
 cmd bigdeck import ref all cards
 cmd bigdeck import ref all cards
 cmd bdperf checks off
-enemyhp 3000
+enemyhp 999999
 speed fast
 handoff

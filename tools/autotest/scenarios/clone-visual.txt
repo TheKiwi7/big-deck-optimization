@@ -1,0 +1,63 @@
+# Campfire clone visuals: ~1,880 -> ~9,480 cards; the added cards' previews on screen, every 2 s.
+timeout 900
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all all
+cmd bdperf checks off
+cmd room RestSite
+wait 5
+nodes before
+watch 45
+restsite CloneRestSiteOption
+nodes clone done
+fpsstat
+wait 2
+nodes +2 s
+wait 2
+nodes +4 s
+screenshot clone-visual-4s
+wait 2
+nodes +6 s
+wait 2
+nodes +8 s
+wait 2
+nodes +10 s
+wait 2
+nodes +12 s
+wait 2
+nodes +14 s
+screenshot clone-visual-14s
+wait 2
+nodes +16 s
+wait 2
+nodes +18 s
+wait 2
+nodes +20 s
+wait 2
+nodes +22 s
+wait 2
+nodes +24 s
+wait 2
+nodes +26 s
+screenshot clone-visual-26s
+wait 2
+nodes +28 s
+wait 2
+nodes +30 s
+wait 2
+nodes +32 s
+wait 2
+nodes +34 s
+wait 2
+nodes +36 s
+wait 2
+nodes +38 s
+wait 2
+nodes +40 s
+fpsstat stream
+waitfor deckcount 600
+counters visual
+screenshot clone-visual-end
+quit

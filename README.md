@@ -21,6 +21,7 @@ With a huge deck, the game slows down more and more until every action freezes i
 - **Playing cards:** smooth again, even past 10,000 cards. A turn takes about half the time it did with v0.3.
 - **Limitless and BaseLib:** the mod also speeds up a good part of their work during combat. Limitless' stacked enchantments are no longer re-saved after every action when nothing changed (nor the save data BaseLib attaches to each copy), and BaseLib's card modifier checks are skipped when no mod uses them. Same results.
 - **Cards that search your piles:** cards like Hidden Gem no longer freeze the game.
+- **Copying lots of cards:** a campfire clone or Reflections' Shatter with thousands of cards takes seconds instead of minutes, and relics that trigger on every copy (Bing Bong) no longer black out the screen or crash the game.
 - **Waiting in combat:** no more constant stutter.
 - **End of combat:** no more long freeze before the rewards.
 - **Co-op:** the long pause after every action is gone. Players with big decks no longer slow down everyone else.
@@ -49,7 +50,7 @@ Everything is on by default. With [BaseLib](https://steamcommunity.com/sharedfil
 - `bdopt off` / `bdopt on` turns the whole mod off or back on, without restarting.
 - `bdopt fast_combat_start off` turns off just the faster combat start. In co-op it stays on for everyone, so all players start each combat at the same pace (`bdopt` lists the other names).
 
-The Limitless-only switches appear unticked without Limitless, and ticked once it is installed.
+A switch is greyed out when its optimization can't run: Limitless isn't installed (for the Limitless ones), a game or Limitless update changed what it speeds up, or it turned itself off after an error. Hover it to see why. The game then runs normally for that part.
 
 ## Something looks wrong?
 

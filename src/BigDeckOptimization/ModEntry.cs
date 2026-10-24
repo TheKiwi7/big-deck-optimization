@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using BigDeckOptimization.Patches;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Logging;
@@ -32,6 +33,7 @@ public static class ModEntry
         TryApply(FastListeners.Name, FastListeners.Apply);
         TryApply(HookSkip.Name, HookSkip.Apply);
         TryApply(LimitlessReserialize.Name, LimitlessReserialize.Apply);
+        TryApply(RelicFlashMerge.Name, RelicFlashMerge.Apply);
 #if BENCH
         TryApply(Bench.CombatStartTimer.Name, Bench.CombatStartTimer.Apply);
         TryApply(Bench.PerfProbe.Name, Bench.PerfProbe.Apply);
@@ -60,11 +62,18 @@ public static class ModEntry
         }
         catch (PatchSkippedException e)
         {
+            _notApplied.Add(name);
             Log.Info($"[{Id}] Patch {name} skipped: {e.Message}");
         }
         catch (Exception e)
         {
+            _notApplied.Add(name);
             Log.Error($"[{Id}] Patch {name} could not be applied and is disabled: {e}");
         }
     }
+
+    private static readonly HashSet<string> _notApplied = new();
+
+    /// <summary>Whether this patch was skipped or failed when the mod loaded.</summary>
+    internal static bool NotApplied(string name) => _notApplied.Contains(name);
 }

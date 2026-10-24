@@ -3,6 +3,6 @@ timeout 180
 wait 3
 cmd bdopt
 menuvalues absent
-baselibmenu shot-limitless-absent
+baselibmenu shot-limitless-absent LimitlessSaves
 wait 2
 quit

@@ -1,0 +1,55 @@
+# Co-op check of v0.5.0, client (with coopclone-host.txt).
+timeout 2400
+mplobby IRONCLAD 2
+waitfor run 240
+cmd bdperf checks off
+speed instant
+wait 14
+cmd bigdeck import ref all cards {hash:ref}
+enemyhp 300
+immortal until 4
+waitfor combat 900
+waitfor idle 900
+state t1
+play 3
+endturn
+waitfor turn 120
+state t2
+play 3
+endturn
+waitfor turn 120
+state t3
+play 3
+endturn
+waitfor turn 120
+state t4
+play 3
+endturn
+waitfor turn 120
+state t5
+play 3
+endturn
+waitfor turn 120
+state t6
+play 3
+endturn
+waitfor turn 120
+waitfor nocombat 300
+wait 10
+checksum after combat
+waitfor event 600
+wait 5
+eventoption SHATTER 900
+waitfor deckcount 900
+wait 30
+checksum after shatter
+waitfor restsite 600
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 30
+checksum end
+counters end
+cmd bdperf verify
+wait 50
+quit

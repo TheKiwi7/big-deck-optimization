@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using BaseLib.Config;
+using BaseLib.Config.UI;
+using Godot;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Logging;
@@ -34,6 +36,7 @@ public sealed class BaseLibSettings : SimpleModConfig
     public static bool GridSort { get => Get(nameof(GridSort)); set => Apply(nameof(GridSort), value); }
     public static bool GridPool { get => Get(nameof(GridPool)); set => Apply(nameof(GridPool), value); }
     public static bool RelicInput { get => Get(nameof(RelicInput)); set => Apply(nameof(RelicInput), value); }
+    public static bool RelicFlashes { get => Get(nameof(RelicFlashes)); set => Apply(nameof(RelicFlashes), value); }
     [ConfigIgnoreRestoreDefaults]
     public static bool LimitlessTabs { get => Shown(nameof(LimitlessTabs)); set => ApplyShown(nameof(LimitlessTabs), value); }
     public static bool FastCombatStart { get => Get(nameof(FastCombatStart)); set => Apply(nameof(FastCombatStart), value); }
@@ -87,6 +90,44 @@ public sealed class BaseLibSettings : SimpleModConfig
         }
     }
 
+    /// <summary>
+    /// Built each time the page opens: an optimization that can't run here (optional mod absent, game or mod code
+    /// changed, turned off after an error) is greyed out and can't be clicked; its hover text says why.
+    /// </summary>
+    public override void SetupConfigUI(Control optionContainer)
+    {
+        SettingsText.Add(); // Current reasons in the hover texts.
+        base.SetupConfigUI(optionContainer);
+        try
+        {
+            GreyOut(optionContainer);
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"[{ModEntry.Id}] {Name}: could not grey out the unavailable options: {e.Message}");
+        }
+    }
+
+    private static void GreyOut(Node node)
+    {
+        foreach (Node child in node.GetChildren())
+        {
+            if (child is NConfigOptionRow row)
+            {
+                if (Settings.Find(Key(row.Name)) is { } option && Settings.Why(option, french: false) != null)
+                {
+                    row.Modulate = new Color(1f, 1f, 1f, 0.45f);
+                    if (row.SettingControl is NConfigTickbox tickbox)
+                    {
+                        tickbox.Disable();
+                    }
+                }
+                continue;
+            }
+            GreyOut(child);
+        }
+    }
+
     public static void Register()
     {
         SettingsText.Install();
@@ -122,7 +163,7 @@ public sealed class BaseLibSettings : SimpleModConfig
             LocManager.Instance.SubscribeToLocaleChange(Add);
         }
 
-        private static void Add()
+        public static void Add()
         {
             try
             {
@@ -146,7 +187,10 @@ public sealed class BaseLibSettings : SimpleModConfig
                 {
                     string slug = option.Key.ToUpperInvariant();
                     texts[$"{Prefix}-{slug}.title"] = french ? option.LabelFr : option.Label;
-                    texts[$"{Prefix}-{slug}.hover.desc"] = french ? option.DescriptionFr : option.Description;
+                    string description = french ? option.DescriptionFr : option.Description;
+                    texts[$"{Prefix}-{slug}.hover.desc"] = Settings.Why(option, french) is { } why
+                        ? $"[color=#e0a040]{why}[/color]\n{description}"
+                        : description;
                 }
                 table.MergeWith(texts);
             }

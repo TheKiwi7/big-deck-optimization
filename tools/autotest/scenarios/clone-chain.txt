@@ -1,0 +1,66 @@
+# Campfire clones in a row, to find the limit: ~1,870 cards (~1,500 Clone enchantments, 4 Bing Bongs), then the
+# Clone option again and again (each clone carries Clone too, and each Bing Bong copies it: ~x5 per visit).
+timeout 3500
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all all
+cmd bdperf checks off
+cmd room RestSite
+wait 5
+gcstat
+restsite CloneRestSiteOption
+gcstat clone 1
+waitfor deckcount 1800
+gcstat animations 1
+wait 10
+fpsstat
+wait 5
+fpsstat after clone 1
+cmd room RestSite
+wait 5
+gcstat
+restsite CloneRestSiteOption
+gcstat clone 2
+waitfor deckcount 1800
+gcstat animations 2
+wait 10
+fpsstat
+wait 5
+fpsstat after clone 2
+cmd room RestSite
+wait 5
+gcstat
+restsite CloneRestSiteOption
+gcstat clone 3
+waitfor deckcount 1800
+gcstat animations 3
+wait 10
+fpsstat
+wait 5
+fpsstat after clone 3
+cmd room RestSite
+wait 5
+gcstat
+restsite CloneRestSiteOption
+gcstat clone 4
+waitfor deckcount 1800
+gcstat animations 4
+wait 10
+fpsstat
+wait 5
+fpsstat after clone 4
+cmd room RestSite
+wait 5
+gcstat
+restsite CloneRestSiteOption
+gcstat clone 5
+waitfor deckcount 1800
+gcstat animations 5
+wait 10
+fpsstat
+wait 5
+fpsstat after clone 5
+counters chain
+quit

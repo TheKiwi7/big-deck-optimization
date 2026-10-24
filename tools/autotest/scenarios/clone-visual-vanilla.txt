@@ -1,0 +1,35 @@
+# Campfire clone, near-vanilla visuals for comparison: every optimization off except merged relic flashes (without
+# it the screen goes black), ~1,880 -> ~9,480 cards; previews on screen 4 times a second.
+timeout 900
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all all
+cmd bdperf checks off
+cmd bdopt coop_checksum off
+cmd bdopt combat_refresh off
+cmd bdopt hook_filter off
+cmd bdopt relic_input off
+cmd bdopt grid_sort off
+cmd bdopt grid_pool off
+cmd bdopt pile_lookup off
+cmd bdopt card_ids off
+cmd bdopt pile_counters off
+cmd bdopt fast_combat_start off
+cmd bdopt limitless_tabs off
+cmd bdopt listeners off
+cmd bdopt hook_skip off
+cmd bdopt hover_tips off
+cmd bdopt limitless_saves off
+cmd room RestSite
+wait 5
+watch 45
+restsite CloneRestSiteOption
+wait 2
+screenshot clone-vanilla-a
+wait 4
+screenshot clone-vanilla-b
+waitfor deckcount 600
+wait 3
+quit
