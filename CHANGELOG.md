@@ -2,10 +2,10 @@
 
 ## v0.6.0
 
-Much faster turns and smooth card lists with very large decks, and a translated settings menu.
+Much smoother combat and card lists with very large decks, and a translated settings menu.
 
-- Turns are almost twice as fast with very large decks (about 32,000 cards in my test), with shorter memory pauses.
-- With BaseLib: scrolling the draw pile, discard pile or deck view with a huge deck is smooth again (dragging the scrollbar at about 32,000 cards went from about 6 to about 40 frames per second). New switch: BaseLib card type line.
+- Smoother combat with very large decks: in my tests at about 32,000 cards, playing cards ran at about 52 frames per second instead of 29, and the end of the turn at about 30 instead of 17, with shorter memory pauses (your numbers will differ on another PC).
+- With BaseLib: scrolling the draw pile, discard pile or deck view with a huge deck is smooth again, even when dragging the scrollbar, and the pile view opens faster. New switch: BaseLib card type line.
 - The faster combat start now applies from the first relic instead of from 50 relics. In solo, a new slider in the settings sets how many relics it starts from; in co-op it's always on, so every player starts at the same pace.
 - The settings menu is translated into every language the game offers and follows the game's language (English otherwise). The top of the page now says what co-op requires.
 - If another mod changes the same part of the game as one of the optimizations, that optimization's tooltip names the mod (that part keeps the normal game behavior, as before).
