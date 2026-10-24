@@ -2,14 +2,13 @@
 
 ## v0.5.0
 
-Cloning thousands of cards no longer freezes or crashes the game, and turns are a bit faster.
+Copying thousands of cards no longer freezes or crashes the game, and turns are a bit faster.
 
-- Campfire clone (Limitless' stacked Clone enchantment) with huge decks: going from 16,840 to 85,240 cards took over a minute and a half, then often blacked out the screen or crashed the game; it now takes about 14 seconds, and the game stays smooth afterwards. From 1,880 cards: 15.7 s -> 1.7 s.
-- Reflections (the event whose Shatter choice copies your whole deck): at Instant speed, 31 s -> 5 s with 1,880 cards (11,285 afterwards); at the other speeds, the game's own pause between cards now sets the pace, with far fewer stutters.
-- Relics that trigger thousands of times at once (Bing Bong copying every cloned card) no longer pile up thousands of flash effects in the same frame: that blacked out the screen and could crash the game. A relic flashing several times in the same frame now shows one flash. New switch: Merge repeated relic flashes.
-- Turns are about 10% faster with huge decks (the 59 cards that look through your piles: 14.7 s -> 13.3 s at 8,400 cards), and every card moved to a pile (draws, discards, reshuffles) no longer scans that whole pile.
-- Settings menu (with BaseLib): a switch whose improvement can't run here (Limitless not installed, a game or Limitless update changed what it speeds up, or it turned itself off after an error) is greyed out, and its hover text says why.
-- Same results as before: combat and run checksums identical to the unmodified game in every test, singleplayer and co-op.
+- Campfire clone with a huge deck: much faster. In my test (Limitless' stacked Clone enchantment, 4 Bing Bongs copying every new card), the deck went from 16,840 to 85,240 cards: over a minute and a half before, often ending in a black screen or a crash; now about 14 seconds.
+- Reflections (the event whose Shatter choice copies your whole deck): about 6 times faster at Instant speed, and much smoother at the other speeds.
+- Relics that trigger on every new card (like Bing Bong) no longer fill the screen with thousands of flashes at once, which blacked out the screen and could crash the game: a relic flashing several times at the same moment now shows one flash. New switch: Merge repeated relic flashes.
+- Turns are about 10% faster with huge decks.
+- Settings menu (with BaseLib): a switch that can't work in your setup (Limitless not installed, a game update, an error) is greyed out, and hovering it tells you why.
 
 ## v0.4.0
 

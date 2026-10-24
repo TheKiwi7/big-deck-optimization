@@ -18,7 +18,7 @@ Why: with a huge deck, the mod speeds the game up so much that a player without 
 With a huge deck, the game slows down more and more until every action freezes it. With the mod:
 
 - **Entering a combat:** with 8,000+ cards and hundreds of relics, about 4 seconds instead of half a minute.
-- **Playing cards:** smooth again, even past 10,000 cards. A turn takes about half the time it did with v0.3.
+- **Playing cards:** smooth again, even past 10,000 cards.
 - **Limitless and BaseLib:** the mod also speeds up a good part of their work during combat. Limitless' stacked enchantments are no longer re-saved after every action when nothing changed (nor the save data BaseLib attaches to each copy), and BaseLib's card modifier checks are skipped when no mod uses them. Same results.
 - **Cards that search your piles:** cards like Hidden Gem no longer freeze the game.
 - **Copying lots of cards:** a campfire clone or Reflections' Shatter with thousands of cards takes seconds instead of minutes, and relics that trigger on every copy (Bing Bong) no longer black out the screen or crash the game.
