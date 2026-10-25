@@ -75,7 +75,20 @@ public static class AutoTest
             postfix: new HarmonyMethod(typeof(AutoTest), nameof(LobbyScreenPostfix)));
         harmony.Patch(AccessTools.Method(typeof(NCharacterSelectScreen), nameof(NCharacterSelectScreen.InitializeMultiplayerAsClient)),
             postfix: new HarmonyMethod(typeof(AutoTest), nameof(LobbyScreenPostfix)));
-        if (OS.GetCmdlineArgs().Concat(OS.GetCmdlineUserArgs()).Contains("--bdhidden"))
+        string[] launchArgs = OS.GetCmdlineArgs().Concat(OS.GetCmdlineUserArgs()).ToArray();
+        int show = Array.IndexOf(launchArgs, "--bdshow");
+        if (show >= 0 && show + 1 < launchArgs.Length && int.TryParse(launchArgs[show + 1], out int showScreen))
+        {
+            // --bdshow <screen> (record.ps1): fullscreen on that screen, for a screen recording. Only the window moves.
+            _showScreen = showScreen;
+            harmony.Patch(AccessTools.Method(typeof(NGame), nameof(NGame.ApplyDisplaySettings)),
+                postfix: new HarmonyMethod(typeof(AutoTest), nameof(ShowOnScreen)));
+            // The recording keeps the game's sound while another window has the focus ("mute in background" setting).
+            harmony.Patch(AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.NMuteInBackgroundHandler), "Mute"),
+                prefix: new HarmonyMethod(typeof(AutoTest), nameof(StayForeground)));
+            Callable.From(ShowOnScreen).CallDeferred();
+        }
+        else if (launchArgs.Contains("--bdhidden"))
         {
             _hidden = true;
             harmony.Patch(AccessTools.Method(typeof(NGame), nameof(NGame.ApplyDisplaySettings)),
@@ -100,11 +113,61 @@ public static class AutoTest
 
     private static void MuteVolume(ref float __0) => __0 = 0f;
 
+    /// <summary>
+    /// Script <c>deckfilter [ID,ID...] [stacked]</c> (on the map): removes from the deck the cards with these ids and,
+    /// with <c>stacked</c>, those holding several stacked enchantments (Limitless' MultiEnchantment), e.g. to keep long
+    /// multi-hit animations out of a video.
+    /// </summary>
+    private static void DeckFilter(string[] args)
+    {
+        Player me = Me() ?? throw new InvalidOperationException("no local player");
+        var ids = new HashSet<string>(args.Where(a => a != "stacked").SelectMany(a => a.Split(',')).Select(a => a.ToUpperInvariant()));
+        bool stacked = args.Contains("stacked");
+        Type? multi = AccessTools.TypeByName("Limitless.LimitlessCode.UncappedEnchantments.MultiEnchantment");
+        MethodInfo? inner = multi == null ? null : AccessTools.Method(multi, "InnerEnchantments");
+        bool Stacked(CardModel card) => stacked && card.Enchantment != null && multi != null && multi.IsInstanceOfType(card.Enchantment)
+            && inner?.Invoke(null, new object?[] { card.Enchantment }) is System.Collections.ICollection { Count: > 1 };
+        List<CardModel> removed = me.Deck.Cards.Where(c => ids.Contains(c.Id.Entry) || Stacked(c)).ToList();
+        foreach (CardModel card in removed)
+        {
+            me.Deck.RemoveInternal(card, silent: true);
+            (me.RunState as ICardScope)?.RemoveCard(card);
+        }
+        Say($"  deckfilter: removed {removed.Count} cards ({removed.Count(c => ids.Contains(c.Id.Entry))} by id), deck {me.Deck.Cards.Count} cards");
+    }
+
     private static void NoOpPostfix()
     {
     }
 
     private static bool _hidden, _quitting;
+    private static int _showScreen = -1;
+
+    /// <summary>
+    /// <c>--bdshow &lt;screen&gt;</c>: the game fullscreen and on top on that screen (a screen recording of it). Only the
+    /// window moves; a fullscreen game saves no window position on exit.
+    /// </summary>
+    private static void ShowOnScreen()
+    {
+        if (_quitting || _showScreen < 0 || _showScreen >= DisplayServer.GetScreenCount())
+        {
+            return;
+        }
+        try
+        {
+            DisplayServer.WindowSetMode(DisplayServer.WindowMode.Windowed);
+            DisplayServer.WindowSetCurrentScreen(_showScreen);
+            DisplayServer.WindowSetMode(DisplayServer.WindowMode.Fullscreen);
+            // Stays above every window of that screen while recorded (handing the focus back raised the previous
+            // window over it).
+            DisplayServer.WindowSetFlag(DisplayServer.WindowFlags.AlwaysOnTop, true);
+            Say($"window fullscreen and on top on screen {_showScreen} at {DisplayServer.WindowGetPosition()}");
+        }
+        catch (Exception e)
+        {
+            Say("could not move the window: " + e.Message);
+        }
+    }
 
     /// <summary>
     /// <c>--bdhidden</c> (run.ps1 without -Visible): the window, windowed at 1920x1080 (the fullscreen size here, for
@@ -433,6 +496,9 @@ public static class AutoTest
                     break;
                 case "emptyhand":
                     await EmptyHand(tree);
+                    break;
+                case "deckfilter":
+                    DeckFilter(arg.Split(' ', StringSplitOptions.RemoveEmptyEntries));
                     break;
                 case "gcfull":
                     // Live memory after a full blocking collection: comparable between sessions, shows leaks.
@@ -821,6 +887,9 @@ public static class AutoTest
         _selector ??= CardSelectCmd.PushSelector(new FirstCardsSelector());
         // Fresh test profile: no tutorials (the combat one throws when combat is entered with the fight command).
         SaveManager.Instance.Progress.EnableFtues = false;
+        // The character select screen stops the menu music before starting a run; without it, it keeps playing under
+        // the act music (heard in recordings).
+        MegaCrit.Sts2.Core.Nodes.Audio.NAudioManager.Instance?.StopMusic();
         await game.StartNewSingleplayerRun(character, shouldSave: true, ActModel.GetDefaultList().ToList(),
             Array.Empty<ModifierModel>(), seed, GameMode.Standard);
         Say($"  run started: {character.Id.Entry}, seed {seed}");
@@ -1243,7 +1312,7 @@ public static class AutoTest
         Say("quitting");
         Callable.From(() =>
         {
-            if (_hidden && SaveManager.Instance.SettingsSave is { Fullscreen: false })
+            if ((_hidden || _showScreen >= 0) && SaveManager.Instance.SettingsSave is { Fullscreen: false })
             {
                 // Back where the settings put it, so a windowed game doesn't save the hidden position on exit (a
                 // fullscreen game saves no position: it closes where it is, off-screen).
