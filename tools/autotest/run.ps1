@@ -1,10 +1,14 @@
 # Unattended singleplayer session through Steam: runs scenarios/<Name>.txt with the Debug build's AutoTest runner,
 # optionally records a CPU trace, and copies the game log to results/<Name>.log.
-#   powershell -File tools/autotest/run.ps1 -Name solo-8k [-TimeoutSec 900] [-TraceSec 60 [-TraceProfile gc-verbose]] [-KeepConfig] [-Visible] [-Sound] [-Screen 1] [-Show]
+#   powershell -File tools/autotest/run.ps1 -Name solo-8k [-TimeoutSec 900] [-TraceSec 60 [-TraceProfile gc-verbose]] [-KeepConfig] [-Visible] [-Sound] [-Screen 1] [-Show] [-GameDir <copy>]
+# -GameDir: a full copy of another game version (e.g. the beta, C:\Games\StS2-beta-0.111.0) with a steam_appid.txt
+# (2868840) next to its exe, launched directly instead of through Steam (Steam must be running; Workshop mods load as
+# usual). Deploy the Debug build into it with dotnet build ... -p:ModDeployDir=<copy>\mods\BigDeckOptimization.
 # A trace must end while the game still runs (method names are written at the end): give the scenario a final wait.
 # With BaseLib, bdopt saves its changes in mod_configs/BigDeckOptimization.cfg: the file is restored byte for byte after
 # the session (a scenario stopped before its final 'bdopt on' would leave the mod off), unless -KeepConfig.
-param([Parameter(Mandatory)][string]$Name, [int]$TimeoutSec = 900, [int]$TraceSec = 0, [string]$TraceProfile = "cpu-sampling", [switch]$KeepConfig, [switch]$Visible, [switch]$Sound, [int]$Screen = 1, [switch]$Show)
+param([Parameter(Mandatory)][string]$Name, [int]$TimeoutSec = 900, [int]$TraceSec = 0, [string]$TraceProfile = "cpu-sampling", [switch]$KeepConfig, [switch]$Visible, [switch]$Sound, [int]$Screen = 1, [switch]$Show, [string]$GameDir = "")
+$copyDir = $GameDir
 . (Join-Path $PSScriptRoot "common.ps1")
 Assert-GameNotRunning
 $script = Join-Path $Scenarios "$Name.txt"
@@ -25,17 +29,24 @@ if (-not $KeepConfig) {
     Set-Content $marker $(if ($hadConfig) { "config" } else { "no config" })
 }
 try {
-    # A direct exe launch fails Steam initialization: go through Steam, which passes the extra arguments on.
+    # A direct exe launch fails Steam initialization without a steam_appid.txt: go through Steam, which passes the
+    # extra arguments on (a -GameDir copy has that file and is launched directly).
     # The game window goes off-screen and hands the focus back (AutoTest --bdhidden), unless -Visible; the game is
     # muted (--bdmute, volume settings untouched), unless -Sound.
-    $launch = @("-applaunch", $AppId, "--bdtest", "`"$script`"")
+    $launch = @("--bdtest", "`"$script`"")
     # Hidden sessions open on screen $Screen (Godot's --screen, 0 = first): the window shows there for a moment before
     # the mod moves it away.
     # -Show (record.ps1): fullscreen on screen $Screen instead, for a screen recording.
     if ($Show) { $launch += "--bdshow", $Screen, "--screen", $Screen }
     elseif (-not $Visible) { $launch += "--bdhidden", "--screen", $Screen }
     if (-not $Sound) { $launch += "--bdmute" }
-    Start-Process -FilePath $SteamExe -ArgumentList $launch
+    if ($copyDir) {
+        if (-not (Test-Path (Join-Path $copyDir "steam_appid.txt"))) { throw "No steam_appid.txt in $copyDir" }
+        Start-Process -FilePath (Join-Path $copyDir "SlayTheSpire2.exe") -WorkingDirectory $copyDir -ArgumentList $launch
+    }
+    else {
+        Start-Process -FilePath $SteamExe -ArgumentList (@("-applaunch", $AppId) + $launch)
+    }
     $t = 0
     while (-not (Get-Process -Name SlayTheSpire2 -ErrorAction SilentlyContinue) -and $t -lt 60) { Start-Sleep 2; $t += 2 }
     $trace = $null

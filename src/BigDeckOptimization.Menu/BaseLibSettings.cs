@@ -26,7 +26,12 @@ public sealed class BaseLibSettings : SimpleModConfig
     [ConfigSection("General")]
     public static bool Enabled { get => Settings.Master; set => Apply(nameof(Enabled), value); }
 
+    // Combat pace first: the opt-in instant combats, then the fast combat start and its relic threshold.
     [ConfigSection("Optimizations")]
+    public static bool InstantCombats { get => Get(nameof(InstantCombats)); set => Apply(nameof(InstantCombats), value); }
+    public static bool FastCombatStart { get => Get(nameof(FastCombatStart)); set => Apply(nameof(FastCombatStart), value); }
+    [ConfigSlider(0, 100, Settings.FastStartRelicsStep)]
+    public static int FastCombatStartRelics { get => Settings.FastStartRelics; set => ApplyRelics(value); }
     public static bool CoopChecksum { get => Get(nameof(CoopChecksum)); set => Apply(nameof(CoopChecksum), value); }
     public static bool CombatRefresh { get => Get(nameof(CombatRefresh)); set => Apply(nameof(CombatRefresh), value); }
     public static bool HookFilter { get => Get(nameof(HookFilter)); set => Apply(nameof(HookFilter), value); }
@@ -37,9 +42,6 @@ public sealed class BaseLibSettings : SimpleModConfig
     public static bool GridPool { get => Get(nameof(GridPool)); set => Apply(nameof(GridPool), value); }
     public static bool RelicInput { get => Get(nameof(RelicInput)); set => Apply(nameof(RelicInput), value); }
     public static bool RelicFlashes { get => Get(nameof(RelicFlashes)); set => Apply(nameof(RelicFlashes), value); }
-    public static bool FastCombatStart { get => Get(nameof(FastCombatStart)); set => Apply(nameof(FastCombatStart), value); }
-    [ConfigSlider(0, 100, Settings.FastStartRelicsStep)]
-    public static int FastCombatStartRelics { get => Settings.FastStartRelics; set => ApplyRelics(value); }
     public static bool Listeners { get => Get(nameof(Listeners)); set => Apply(nameof(Listeners), value); }
     public static bool HookSkip { get => Get(nameof(HookSkip)); set => Apply(nameof(HookSkip), value); }
     public static bool HoverTips { get => Get(nameof(HoverTips)); set => Apply(nameof(HoverTips), value); }

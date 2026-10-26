@@ -35,6 +35,8 @@
   "fast_combat_start.desc": "Görsel: savaş başı kalıntı efektlerini animasyon beklemeleri olmadan oynatır (oyunun Anında hızı gibi), aşağıda ayarlanan kalıntı sayısından itibaren (0 = her zaman, varsayılan). Aynı sonuçlar. Yalnızca tek oyunculu: co-op'ta her zaman açıktır, böylece tüm oyuncular savaşa aynı hızda başlar.",
   "fast_combat_start_relics.title": "Hızlı savaş başlangıcı: en az kalıntı",
   "fast_combat_start_relics.desc": "Tek oyunculu modda savaş başlangıcını yalnızca bu kalıntı sayısından itibaren hızlandırır (tüm oyuncuların kalıntıları sayılır). 0 = her zaman. Co-op'ta bu değerden bağımsız olarak her zaman açıktır.",
+  "instant_combats.title": "Anında savaş animasyonları",
+  "instant_combats.desc": "Görsel, varsayılan olarak kapalı: her savaştaki tüm animasyon beklemeleri atlanır (saldırılar, vuruşlar, düşman turları), yalnızca sizde. Oyunun geri kalanı kendi temposunu korur. Sonuçlar aynı.",
   "limitless_tabs.title": "Limitless büyü sekmeleri",
   "limitless_tabs.desc": "Limitless ile: büyü sekmelerini her kart çiziminde yeniden oluşturmak yerine yeniden kullanır.",
   "listeners.title": "Efekt dinleyici listeleri",

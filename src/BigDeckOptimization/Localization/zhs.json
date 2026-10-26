@@ -35,6 +35,8 @@
   "fast_combat_start.desc": "视觉：从下方设定的遗物数量起（0 = 始终，默认），战斗开始的遗物效果不再等待动画（如同游戏的“即时”速度）。结果相同。仅限单人：联机时始终开启，让所有玩家以相同节奏开始战斗。",
   "fast_combat_start_relics.title": "快速开始战斗：最少遗物数",
   "fast_combat_start_relics.desc": "单人模式下，仅当遗物数量达到此值时才加速战斗开始（计算所有玩家的遗物）。0 = 始终。联机时无论此值如何都始终开启。",
+  "instant_combats.title": "战斗动画瞬间完成",
+  "instant_combats.desc": "仅视觉，默认关闭：跳过每场战斗中的所有动画等待（攻击、命中、敌人回合），仅对你生效。游戏其他部分保持原有节奏。结果相同。",
   "limitless_tabs.title": "Limitless 附魔标签",
   "limitless_tabs.desc": "配合 Limitless：复用附魔标签，而不是每次显示卡牌时重新创建。",
   "listeners.title": "效果监听列表",

@@ -16,8 +16,10 @@ namespace BigDeckOptimization.Config;
 public static class Settings
 {
     public sealed class Option(string key, string label, string description, string[] faults, Action<bool> setEnabled,
-        Func<string?>? unavailable = null)
+        Func<string?>? unavailable = null, bool defaultOn = true)
     {
+        /// <summary>The state before any choice (BaseLib's "restore defaults" goes back to it).</summary>
+        public bool DefaultOn { get; } = defaultOn;
         public string Key { get; } = key;
         public string Label { get; } = label;
         public string Description { get; } = description;
@@ -26,7 +28,7 @@ public static class Settings
         public Action<bool> SetEnabled { get; } = setEnabled;
         /// <summary>Why the patch isn't applied here (optional mod absent, code changed), or null when it is.</summary>
         public Func<string?> Unavailable { get; } = unavailable ?? (() => faults.Any(ModEntry.NotApplied) ? GameChanged : null);
-        public bool Wanted { get; internal set; } = true;
+        public bool Wanted { get; internal set; } = defaultOn;
         public string? Fault => Faults.FirstOrDefault(PatchSafety.IsFaulted);
         public bool Effective => Master && Wanted && Fault == null;
     }
@@ -110,6 +112,13 @@ public static class Settings
 
     public static IReadOnlyList<Option> Options { get; } = new Option[]
     {
+        // Combat pace first (same order as the menu).
+        new("instant_combats", "Instant combat animations",
+            "Visual, off by default: every animation wait of every combat is skipped (attacks, hits, enemy turns), only for you. The rest of the game keeps its pace. Same results.",
+            new[] { FastCombatStart.Name }, on => FastCombatStart.InstantCombats = on, defaultOn: false),
+        new("fast_combat_start", "Fast combat start",
+            "Visual: plays the combat-start relic effects without their animation waits (like the game's Instant speed), from the number of relics set below (0 = always, the default). Same results. Solo only: always on in co-op, so every player starts the combat at the same pace.",
+            new[] { FastCombatStart.Name }, on => FastCombatStart.Enabled = on),
         new("coop_checksum", "Co-op state check",
             "Faster state check after every action in co-op (the biggest co-op lag with huge decks).",
             new[] { ListenerCache.Name, ListenerCache.SnapshotFault }, on => ListenerCache.SnapshotEnabled = on),
@@ -144,9 +153,6 @@ public static class Settings
             "Updates the draw/discard/exhaust counters once when piles are emptied, instead of once per card.",
             new[] { PileCounterBatch.Name }, on => PileCounterBatch.Enabled = on,
             () => PileCounterBatch.Applied ? null : GameChanged),
-        new("fast_combat_start", "Fast combat start",
-            "Visual: plays the combat-start relic effects without their animation waits (like the game's Instant speed), from the number of relics set below (0 = always, the default). Same results. Solo only: always on in co-op, so every player starts the combat at the same pace.",
-            new[] { FastCombatStart.Name }, on => FastCombatStart.Enabled = on),
         new("listeners", "Effect listener lists",
             "Builds the list of cards, relics and powers that each triggered effect asks with less copying and memory churn, and keeps it between effects while nothing changed (cloning thousands of cards: seconds instead of minutes). Same list, same order.",
             new[] { FastListeners.Name }, on => FastListeners.Enabled = on,

@@ -19,10 +19,15 @@ namespace BigDeckOptimization.Patches;
 /// Visual concession. With hundreds of relics, entering a combat plays every relic's effect one after the other, each
 /// with its own animation waits (Vulnerable, Weak, Block...): minutes before the first turn.
 ///
-/// From entering a combat room until the local player can play cards, the game's animation waits
-/// (<c>Cmd.Wait</c>, <c>Cmd.CustomScaledWait</c>) return at once, exactly like the game's own Instant fast mode does.
+/// While a combat loads, from entering the combat room until its first turn starts (room entry and "start of combat"
+/// effects), the game's animation waits (<c>Cmd.Wait</c>, <c>Cmd.CustomScaledWait</c>) return at once, exactly like
+/// the game's own Instant fast mode does. The first turn (its start-of-turn effects, the draw) and everything after
+/// keep the game's pace: the mod removes lag, it doesn't speed the game up. (Before v0.6.2 the window only closed on a
+/// wait during the player's play phase, which in solo often never came: whole combats ran without waits.)
 /// Waits never change game state (each player already picks their own animation speed), so results stay identical.
 /// In solo, only when the players have at least <see cref="RelicThreshold"/> relics in total (setting, 0 = always).
+///
+/// <see cref="InstantCombats"/> (option, off by default): every wait of every combat instant, this player only.
 ///
 /// Always on in co-op, whatever the relics (its own option and threshold then ignored; the master switch and faults
 /// still apply): the game drops combat
@@ -42,6 +47,9 @@ public static class FastCombatStart
     /// <summary>Total relics across players from which the combat start is sped up in solo (setting, 0 = always).</summary>
     public static int RelicThreshold { get; set; }
 
+    /// <summary>Option, off by default: the animation waits of whole combats are instant (a visual choice of this player).</summary>
+    public static bool InstantCombats { get; set; }
+
     public static long SkippedWaits { get; private set; }
     public static double SkippedSeconds { get; private set; }
 
@@ -51,6 +59,9 @@ public static class FastCombatStart
     {
         harmony.Patch(AccessTools.Method(typeof(CombatRoom), nameof(CombatRoom.EnterInternal)) ?? throw new MissingMethodException("CombatRoom.EnterInternal"),
             prefix: new HarmonyMethod(typeof(FastCombatStart), nameof(OpenWindow)));
+        // The first turn starting ends the loading (by name: game v0.111 added a parameter).
+        harmony.Patch(AccessTools.Method(typeof(CombatManager), "StartTurn") ?? throw new MissingMethodException("CombatManager.StartTurn"),
+            prefix: new HarmonyMethod(typeof(FastCombatStart), nameof(TurnStarting)));
         harmony.Patch(AccessTools.Method(typeof(Cmd), nameof(Cmd.Wait), new[] { typeof(float), typeof(CancellationToken), typeof(bool) })
                 ?? throw new MissingMethodException("Cmd.Wait"),
             prefix: new HarmonyMethod(typeof(FastCombatStart), nameof(WaitPrefix)));
@@ -74,8 +85,30 @@ public static class FastCombatStart
         }
     }
 
-    /// <summary>True while entering a combat, until the local player's first play phase (or the combat ends).</summary>
-    private static bool Active()
+    /// <summary>The combat's first turn starts: the loading is over (later turns find the window closed).</summary>
+    private static void TurnStarting()
+    {
+        try
+        {
+            if (_window)
+            {
+                CloseWindow();
+            }
+        }
+        catch (Exception e)
+        {
+            Fail(e);
+        }
+    }
+
+    private static void CloseWindow()
+    {
+        _window = false;
+        Log.Info($"[{ModEntry.Id}] {Name}: combat start skipped {SkippedWaits} animation waits ({SkippedSeconds:F1} s)");
+    }
+
+    /// <summary>True while a combat loads (until its first turn starts or it ends).</summary>
+    private static bool Loading()
     {
         if (!_window)
         {
@@ -87,29 +120,34 @@ public static class FastCombatStart
             return false;
         }
         CombatManager combat = CombatManager.Instance;
-        if (combat.IsInProgress)
+        if (combat.IsInProgress && combat.IsOverOrEnding)
         {
-            Player? me = RunManager.Instance.DebugOnlyGetState() is { } state ? LocalContext.GetMe(state) : null;
-            if (combat.IsOverOrEnding || me?.PlayerCombatState?.Phase == PlayerTurnPhase.Play)
-            {
-                _window = false;
-                Log.Info($"[{ModEntry.Id}] {Name}: combat start skipped {SkippedWaits} animation waits ({SkippedSeconds:F1} s)");
-                return false;
-            }
+            CloseWindow();
+            return false;
         }
         return true;
+    }
+
+    /// <summary>Whether this wait returns at once: combat loading (counted), or any combat wait with <see cref="InstantCombats"/>.</summary>
+    private static bool Skip(Func<double> seconds)
+    {
+        if (Loading())
+        {
+            SkippedWaits++;
+            SkippedSeconds += Math.Max(0, seconds());
+            return true;
+        }
+        return InstantCombats && CombatManager.Instance.IsInProgress;
     }
 
     private static bool WaitPrefix(float seconds, ref Task __result)
     {
         try
         {
-            if (!Active())
+            if (!Skip(() => seconds))
             {
                 return true;
             }
-            SkippedWaits++;
-            SkippedSeconds += Math.Max(0, seconds);
             __result = Task.CompletedTask;
             return false;
         }
@@ -124,12 +162,10 @@ public static class FastCombatStart
     {
         try
         {
-            if (!Active())
+            if (!Skip(() => SaveManager.Instance.PrefsSave.FastMode == FastModeType.Normal ? standardSeconds : fastSeconds))
             {
                 return true;
             }
-            SkippedWaits++;
-            SkippedSeconds += SaveManager.Instance.PrefsSave.FastMode == FastModeType.Normal ? standardSeconds : fastSeconds;
             __result = Task.CompletedTask;
             return false;
         }
@@ -143,6 +179,7 @@ public static class FastCombatStart
     private static void Fail(Exception e)
     {
         Enabled = false;
+        InstantCombats = false;
         _window = false;
         PatchSafety.Fault(Name);
         Log.Error($"[{ModEntry.Id}] {Name} disabled after exception: {e}");

@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.6.2
+
+- Fixed: the fast combat start kept skipping animations for the whole fight in solo, so attacks and enemy turns played almost instantly. It now only speeds up the combat loading (entering the fight and the relics that trigger at the start of combat); your turns and the enemies' turns play at the game's normal pace again.
+- New option, off by default: instant combat animations, for players who want every fight to play without animation waits (only for you; the rest of the game keeps its pace).
+
 ## v0.6.1
 
 - Fixed: on the game's beta branch, combat broke from the first fight (cards not loading, shown as error cards), even with the mod's switches turned off. A part of the mod that doesn't fit your game version is now skipped when the game starts, and that part keeps the normal game behavior.

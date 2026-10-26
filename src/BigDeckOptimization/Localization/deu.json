@@ -35,6 +35,8 @@
   "fast_combat_start.desc": "Visuell: spielt die Relikteffekte zu Kampfbeginn ohne ihre Animationspausen ab (wie die Spielgeschwindigkeit „Sofort“), ab der unten eingestellten Reliktanzahl (0 = immer, Standard). Gleiche Ergebnisse. Nur solo: im Koop immer aktiv, damit alle Spieler den Kampf im gleichen Tempo beginnen.",
   "fast_combat_start_relics.title": "Schneller Kampfbeginn: Mindestanzahl Relikte",
   "fast_combat_start_relics.desc": "Solo: beschleunigt den Kampfbeginn erst ab dieser Anzahl Relikte (die aller Spieler zählen). 0 = immer. Im Koop immer aktiv, unabhängig von diesem Wert.",
+  "instant_combats.title": "Sofortige Kampfanimationen",
+  "instant_combats.desc": "Visuell, standardmäßig aus: Jede Animationspause in jedem Kampf wird übersprungen (Angriffe, Treffer, Gegnerzüge), nur für dich. Der Rest des Spiels behält sein Tempo. Gleiche Ergebnisse.",
   "limitless_tabs.title": "Limitless-Verzauberungsreiter",
   "limitless_tabs.desc": "Mit Limitless: verwendet die Verzauberungsreiter wieder, statt sie bei jeder Kartendarstellung neu zu bauen.",
   "listeners.title": "Effekt-Empfängerlisten",

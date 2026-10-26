@@ -1,0 +1,11 @@
+# v0.6.2 option 'Instant combat animations': menu texts (eng, fra), BaseLib value off by default, bdopt line, menu order (shot: instant combats first, then the fast combat start and its slider).
+timeout 120
+wait 2
+menutext INSTANT_COMBATS
+language fra
+menutext INSTANT_COMBATS
+language eng
+menuvalues default
+cmd bdopt
+baselibmenu shot-menu-instant InstantCombats
+quit
