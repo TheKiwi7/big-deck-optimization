@@ -1,0 +1,18 @@
+# Run with the saved setting "Enabled": "False" in mod_configs/BigDeckOptimization.cfg (BaseLib installed): no patch
+# is applied ("not applied: the mod was turned off when the game started", only the test tooling), bdopt says
+# inactive, the menu greys every option with the "restart" reason, and a fight plays normally.
+timeout 300
+cmd bdopt
+menutext HOOK_FILTER
+menutext ENABLED
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd fight CULTISTS_NORMAL
+waitfor idle 120
+play 2
+waitfor idle 60
+checksum started-off
+cmd bdopt on
+cmd bdopt
+quit

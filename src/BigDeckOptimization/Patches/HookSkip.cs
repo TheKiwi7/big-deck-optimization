@@ -259,6 +259,7 @@ public static partial class HookSkip
                     _filters[method] = new PileFilter(iface.IsAssignableFrom, keepSubscribed: false);
                     _harmony!.Patch(method, prefix: new HarmonyMethod(typeof(BaseLibHooks), nameof(Prefix)),
                         finalizer: new HarmonyMethod(typeof(BaseLibHooks), nameof(Finalizer)));
+                    PatchGuard.Watch(method);
                     Log.Info($"[{ModEntry.Id}] {Name}: BaseLib {name} applied");
                 }
                 catch (Exception e)

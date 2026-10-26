@@ -112,6 +112,70 @@ public static class MethodFingerprint
         return sb.ToString();
     }
 
+    /// <summary>
+    /// The types and members the method's code uses (locals, catch types, instruction operands). Enumerating throws
+    /// (MissingMethodException, MissingFieldException, TypeLoadException...) when the loaded assemblies lack one.
+    /// </summary>
+    public static IEnumerable<MemberInfo> UsedMembers(MethodBase method)
+    {
+        MethodBody? body = method.GetMethodBody();
+        if (body == null)
+        {
+            yield break;
+        }
+        foreach (LocalVariableInfo local in body.LocalVariables)
+        {
+            yield return local.LocalType;
+        }
+        foreach (ExceptionHandlingClause clause in body.ExceptionHandlingClauses)
+        {
+            if (clause.Flags == ExceptionHandlingClauseOptions.Clause)
+            {
+                yield return clause.CatchType!;
+            }
+        }
+        byte[] il = body.GetILAsByteArray() ?? Array.Empty<byte>();
+        Type[]? typeArgs = method.DeclaringType is { IsGenericType: true } t ? t.GetGenericArguments() : null;
+        Type[]? methodArgs = method.IsGenericMethod ? method.GetGenericArguments() : null;
+        int pos = 0;
+        while (pos < il.Length)
+        {
+            short value = il[pos++];
+            if (value == 0xFE)
+            {
+                value = (short)(0xFE00 | il[pos++]);
+            }
+            OpCode op = _opCodes[value];
+            switch (op.OperandType)
+            {
+                case OperandType.InlineField:
+                case OperandType.InlineMethod:
+                case OperandType.InlineType:
+                case OperandType.InlineTok:
+                    MemberInfo? member = method.Module.ResolveMember(BitConverter.ToInt32(il, pos), typeArgs, methodArgs);
+                    if (member != null)
+                    {
+                        yield return member;
+                    }
+                    pos += 4;
+                    break;
+                case OperandType.InlineSwitch:
+                    pos += 4 + 4 * BitConverter.ToInt32(il, pos);
+                    break;
+                default:
+                    pos += op.OperandType switch
+                    {
+                        OperandType.InlineNone => 0,
+                        OperandType.ShortInlineBrTarget or OperandType.ShortInlineI or OperandType.ShortInlineVar => 1,
+                        OperandType.InlineVar => 2,
+                        OperandType.InlineI8 or OperandType.InlineR => 8,
+                        _ => 4,
+                    };
+                    break;
+            }
+        }
+    }
+
     private static string MemberName(MemberInfo? member) => member switch
     {
         null => "?",

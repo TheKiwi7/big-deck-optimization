@@ -233,7 +233,7 @@ public sealed class BaseLibSettings : SimpleModConfig
                     [$"{Prefix}-OPTIMIZATIONS.title"] = Translations.Get(language, "optimizations", "Optimizations"),
                     [$"{Prefix}-ENABLED.title"] = Translations.Get(language, "enabled.title", "Optimizations enabled"),
                     [$"{Prefix}-ENABLED.hover.desc"] = Translations.Get(language, "enabled.desc",
-                        "Turns the whole mod on or off (off = unmodified game), no restart needed."),
+                        "Turns the whole mod on or off (off = unmodified game), no restart needed. If it's off when the game starts, none of the mod is loaded: turning it back on then takes effect at the next start."),
                     [$"{Prefix}-{Settings.FastStartRelicsKey.ToUpperInvariant()}.title"] =
                         Translations.Get(language, Settings.FastStartRelicsKey + ".title", Settings.FastStartRelicsLabel),
                     [$"{Prefix}-{Settings.FastStartRelicsKey.ToUpperInvariant()}.hover.desc"] =

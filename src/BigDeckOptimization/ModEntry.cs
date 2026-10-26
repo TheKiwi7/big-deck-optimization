@@ -1,5 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text.Json;
 using BigDeckOptimization.Patches;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Logging;
@@ -48,27 +51,73 @@ public static class ModEntry
         {
             Log.Warn($"[{Id}] {Config.SettingsMenu.Name}: settings menu unavailable (bdopt still works): {e}");
         }
-        Log.Info($"[{Id}] Initialized v{typeof(ModEntry).Assembly.GetName().Version?.ToString(3)}");
+        Log.Info($"[{Id}] Initialized v{typeof(ModEntry).Assembly.GetName().Version?.ToString(3)}"
+            + (StartedOff ? ": turned off in the settings, nothing applied (turn it on, then restart the game)" : ""));
     }
 
     /// <summary>
-    /// Applies one patch in isolation: if the game changed and the target is gone, only that patch is lost.
+    /// True when the saved settings had the whole mod off when the game started: no patch is applied this session, so
+    /// none of this mod's code runs inside the game's (turning it back on takes effect at the next start). Only with
+    /// BaseLib, which saves the settings and can turn the mod back on.
     /// </summary>
-    internal static void TryApply(string name, Action<Harmony> apply)
+    public static bool StartedOff { get; } = SavedOff();
+
+    private static bool SavedOff()
     {
         try
         {
+            if (!ModManager.Mods.Any(m => m.manifest?.id == Config.SettingsMenu.BaseLibId && m.state is ModLoadState.None or ModLoadState.Loaded))
+            {
+                return false;
+            }
+            string path = Path.Combine(Godot.OS.GetUserDataDir(), "mod_configs", Id + ".cfg");
+            if (!File.Exists(path))
+            {
+                return false;
+            }
+            using JsonDocument saved = JsonDocument.Parse(File.ReadAllText(path));
+            return saved.RootElement.TryGetProperty("Enabled", out JsonElement enabled)
+                && string.Equals(enabled.ToString(), "false", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"[{Id}] Could not read the saved on/off setting (mod on): {e.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Applies one patch in isolation: if the game changed and the target is gone, only that patch is lost, and
+    /// nothing of it stays installed.
+    /// </summary>
+    internal static void TryApply(string name, Action<Harmony> apply)
+    {
+        Type patchClass = apply.Method.DeclaringType!;
+        bool testTooling = patchClass.Namespace == typeof(ModEntry).Namespace + ".Bench";
+        if (StartedOff && !testTooling)
+        {
+            _notApplied.Add(name);
+            Log.Info($"[{Id}] Patch {name} not applied: the mod was turned off when the game started");
+            return;
+        }
+        HashSet<PatchGuard.Installed> before = PatchGuard.Snapshot();
+        try
+        {
+            PatchSafety.RequireResolvable(patchClass);
             apply(Harmony);
+            PatchGuard.Register(name, patchClass, PatchGuard.Diff(before));
             Log.Info($"[{Id}] Patch {name} applied");
         }
         catch (PatchSkippedException e)
         {
             _notApplied.Add(name);
+            PatchGuard.Remove(PatchGuard.Diff(before));
             Log.Info($"[{Id}] Patch {name} skipped: {e.Message}");
         }
         catch (Exception e)
         {
             _notApplied.Add(name);
+            PatchGuard.Remove(PatchGuard.Diff(before));
             Log.Error($"[{Id}] Patch {name} could not be applied and is disabled: {e}");
         }
     }

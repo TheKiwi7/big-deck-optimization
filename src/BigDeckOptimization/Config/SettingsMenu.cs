@@ -17,7 +17,7 @@ namespace BigDeckOptimization.Config;
 public static class SettingsMenu
 {
     public const string Name = "SettingsMenu";
-    private const string BaseLibId = "BaseLib";
+    internal const string BaseLibId = "BaseLib";
     private const string MenuAssembly = "BigDeckOptimization.Menu";
     private const string MenuType = "BigDeckOptimization.Config.BaseLibSettings";
 

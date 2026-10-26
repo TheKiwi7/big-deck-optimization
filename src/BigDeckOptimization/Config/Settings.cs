@@ -36,16 +36,23 @@ public static class Settings
     /// <summary><see cref="Option.Unavailable"/> answers (bdopt shows them as is, the menu explains them).</summary>
     public const string GameChanged = "not applied (game code changed)";
     public const string LimitlessMissing = "not applied (Limitless absent or changed)";
+    public const string LimitlessChanged = "not applied (game or Limitless code changed)";
+
+    /// <summary>Why a Limitless optimization isn't applied: Limitless absent, or present but the code it relies on changed.</summary>
+    private static string LimitlessReason() =>
+        AppDomain.CurrentDomain.GetAssemblies().Any(a => a.GetName().Name == "Limitless") ? LimitlessChanged : LimitlessMissing;
     public const string BaseLibMissing = "not applied (BaseLib absent or changed)";
 
     /// <summary>
     /// Why the menu shows this optimization greyed out, in a sentence in this game language code (English when it has
     /// no translation); null when it can be switched.
     /// </summary>
-    public static string? Why(Option option, string? language) => option.Unavailable() switch
+    public static string? Why(Option option, string? language) => ModEntry.StartedOff ? StartedOffWhy(language) : option.Unavailable() switch
     {
         LimitlessMissing => Translations.Get(language, "why.limitless",
             "Unavailable: Limitless isn't installed, or a Limitless update changed what this optimization speeds up."),
+        LimitlessChanged => Translations.Get(language, "why.limitless_changed",
+            "Unavailable: a game or Limitless update changed what this optimization speeds up. It stays off (normal game) until the mod is updated."),
         BaseLibMissing => Translations.Get(language, "why.baselib",
             "Unavailable: a BaseLib update changed what this optimization speeds up. It stays off (normal game) until the mod is updated."),
         { } => Translations.Get(language, "why.game",
@@ -54,6 +61,11 @@ public static class Settings
             "Turned off for this session after an error (normal game instead, details in the log). Back on next time you start the game."),
         null => null,
     };
+
+    public const string StartedOffText =
+        "Inactive: the mod was turned off when the game started, so none of it is loaded. Turn the mod on, then restart the game.";
+
+    public static string StartedOffWhy(string? language) => Translations.Get(language, "why.started_off", StartedOffText);
 
     /// <summary>
     /// The mods whose patches currently keep part of this optimization vanilla (it backs off from methods another mod
@@ -150,11 +162,11 @@ public static class Settings
         new("limitless_tabs", "Limitless enchantment tabs",
             "With Limitless: reuses enchantment tabs instead of rebuilding them on every card render.",
             new[] { EnchantmentTabReuse.Name }, on => EnchantmentTabReuse.Enabled = on,
-            () => EnchantmentTabReuse.Applied ? null : LimitlessMissing),
+            () => EnchantmentTabReuse.Applied ? null : LimitlessReason()),
         new("limitless_saves", "Limitless enchantment copies",
             "With Limitless: keeps the saved copy of stacked enchantments when rebuilding it would give the same content, instead of rebuilding it after every action.",
             new[] { LimitlessReserialize.Name }, on => LimitlessReserialize.Enabled = on,
-            () => LimitlessReserialize.Applied ? null : LimitlessMissing),
+            () => LimitlessReserialize.Applied ? null : LimitlessReason()),
         new("card_type_line", "BaseLib card type line",
             "With BaseLib: shows each card's type line without searching every card in combat for mods that change it, while no installed mod does (scrolling the draw pile, refreshing the hand). Same text.",
             new[] { TypePlaqueSkip.Name }, on => TypePlaqueSkip.Enabled = on,
@@ -205,6 +217,11 @@ public static class Settings
     /// <summary>One line per optimization, for bdopt.</summary>
     public static string Status()
     {
+        if (ModEntry.StartedOff)
+        {
+            return $"BigDeckOptimization: inactive this session (turned off when the game started, nothing applied: unmodified game). "
+                + (Master ? "Turned on: takes effect when you restart the game." : "To use it: bdopt on, then restart the game.");
+        }
         StringBuilder sb = new($"BigDeckOptimization: {(Master ? "on" : "OFF (vanilla)")}\n");
         foreach (Option option in Options)
         {

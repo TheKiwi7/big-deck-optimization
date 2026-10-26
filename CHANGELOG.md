@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.6.1
+
+- Fixed: on the game's beta branch, combat broke from the first fight (cards not loading, shown as error cards), even with the mod's switches turned off. A part of the mod that doesn't fit your game version is now skipped when the game starts, and that part keeps the normal game behavior.
+- If a part of the mod ever causes an error during the game, it turns itself off for the session and the normal game takes over.
+- With BaseLib: if the mod is switched off when you start the game, none of it is loaded at all. Switching it off still takes effect right away; switching it back on then applies the next time you start the game.
+
 ## v0.6.0
 
 Much smoother combat and card lists with very large decks, and a translated settings menu.

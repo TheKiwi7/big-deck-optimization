@@ -1,0 +1,17 @@
+# PatchGuard (v0.6.1): an Apply failing halfway leaves nothing installed; a patch whose code throws into the game is
+# turned off and removed, then the game method runs unmodified. FAULTPROBE line: both checks OK. Then a fight with
+# every optimization on (each patched method has the guard finalizer): no "turned off and removed" line, bdopt all on.
+timeout 300
+faultprobe
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd fight CULTISTS_NORMAL
+waitfor idle 120
+play 2
+waitfor idle 60
+play 1
+waitfor idle 60
+checksum guard
+cmd bdopt
+quit

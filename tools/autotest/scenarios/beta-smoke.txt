@@ -1,0 +1,13 @@
+# Beta smoke test: start a run and a fight.
+timeout 180
+wait 3
+newrun NECROBINDER
+waitfor run 60
+wait 2
+cmd fight CULTISTS_NORMAL
+waitfor idle 60
+play 1
+waitfor idle 60
+checksum smoke
+cmd bdopt
+quit

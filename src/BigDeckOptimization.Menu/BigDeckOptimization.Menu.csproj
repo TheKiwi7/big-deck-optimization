@@ -29,7 +29,7 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <GameDataDir>$(GameDir)\data_sts2_windows_x86_64</GameDataDir>
+    <GameDataDir Condition="'$(GameDataDir)' == ''">$(GameDir)\data_sts2_windows_x86_64</GameDataDir>
     <BaseLibDll Condition="'$(BaseLibDll)' == ''">$(GameDir)\..\..\workshop\content\2868840\3737335127\BaseLib\BaseLib.dll</BaseLibDll>
   </PropertyGroup>
 

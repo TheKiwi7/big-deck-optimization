@@ -278,9 +278,23 @@ public static class AutoTest
 
     private static bool FixedEncounterRng(EncounterModel __instance)
     {
-        AccessTools.Field(typeof(EncounterModel), "_rng").SetValue(__instance, new MegaCrit.Sts2.Core.Random.Rng(12345u));
+        AccessTools.Field(typeof(EncounterModel), "_rng").SetValue(__instance, SeededRng(12345u));
         return false;
     }
+
+    // Game v0.111 (beta) changed Rng's seed constructor (uint, int) to (ulong) and StartRunLobby.Players' element type:
+    // reached through reflection so this test tooling runs on both versions.
+    private static MegaCrit.Sts2.Core.Random.Rng SeededRng(uint seed)
+    {
+        ConstructorInfo ctor = typeof(MegaCrit.Sts2.Core.Random.Rng).GetConstructors()
+            .First(c => c.GetParameters() is { Length: > 0 } p && (p[0].ParameterType == typeof(uint) || p[0].ParameterType == typeof(ulong))
+                && p.Skip(1).All(q => q.HasDefaultValue));
+        object?[] args = ctor.GetParameters().Select((p, i) => i == 0 ? Convert.ChangeType(seed, p.ParameterType) : p.DefaultValue).ToArray();
+        return (MegaCrit.Sts2.Core.Random.Rng)ctor.Invoke(args);
+    }
+
+    private static int LobbyPlayerCount(object lobby) =>
+        ((System.Collections.ICollection)AccessTools.Property(lobby.GetType(), "Players").GetValue(lobby)!).Count;
 
     private static void LobbyScreenPostfix(NCharacterSelectScreen __instance)
     {
@@ -293,18 +307,29 @@ public static class AutoTest
     {
         string[] parts = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         int players = parts.Length > 1 ? int.Parse(parts[1]) : 2;
-        await Until(tree, () => _lobbyScreen?.Lobby is { } lobby && lobby.Players.Count >= players, 300, $"lobby with {players} players");
+        await Until(tree, () => _lobbyScreen?.Lobby is { } lobby && LobbyPlayerCount(lobby) >= players, 300, $"lobby with {players} players");
         CharacterModel character = ModelDb.GetById<CharacterModel>(new ModelId(ModelId.SlugifyCategory<CharacterModel>(), parts[0].ToUpperInvariant()));
         var startLobby = _lobbyScreen!.Lobby;
         startLobby.SetLocalCharacter(character);
         await Frames(tree, 30);
         startLobby.SetReady(true);
-        Say($"  ready as {character.Id.Entry} ({startLobby.Players.Count} players)");
-        _selector ??= CardSelectCmd.PushSelector(new FirstCardsSelector());
+        Say($"  ready as {character.Id.Entry} ({LobbyPlayerCount(startLobby)} players)");
+        _selector ??= PushSelector(new FirstCardsSelector());
         SaveManager.Instance.Progress.EnableFtues = false;
     }
 
     private static IDisposable? _selector;
+
+    /// <summary>
+    /// CardSelectCmd.PushSelector through reflection: game v0.111 added an optional parameter (localOnly), which changes
+    /// the method's signature; called with its default values on any version.
+    /// </summary>
+    private static IDisposable PushSelector(MegaCrit.Sts2.Core.TestSupport.ICardSelector selector)
+    {
+        MethodInfo push = typeof(CardSelectCmd).GetMethods().Single(m => m.Name == nameof(CardSelectCmd.PushSelector));
+        object?[] args = push.GetParameters().Select((p, i) => i == 0 ? selector : p.DefaultValue).ToArray();
+        return (IDisposable)push.Invoke(null, args)!;
+    }
 
     /// <summary>Answers every card choice (choose a card, discard/exhaust prompts, rewards) with the first options.</summary>
     private sealed class FirstCardsSelector : MegaCrit.Sts2.Core.TestSupport.ICardSelector
@@ -472,6 +497,9 @@ public static class AutoTest
                     MethodInfo conflictTarget = AccessTools.Method(arg.Trim()) ?? throw new InvalidOperationException("no method " + arg.Trim());
                     new Harmony("bdtest.fakeconflict").Patch(conflictTarget, postfix: new HarmonyMethod(typeof(AutoTest), nameof(NoOpPostfix)));
                     Say($"  patched {conflictTarget.DeclaringType?.Name}.{conflictTarget.Name} as bdtest.fakeconflict");
+                    break;
+                case "faultprobe":
+                    Say("  FAULTPROBE " + await FaultProbe.Run(() => Frames(tree, 3)));
                     break;
                 case "menutext":
                     string menuKey = $"BIGDECKOPTIMIZATION-{arg.Trim().ToUpperInvariant()}.hover.desc";
@@ -884,7 +912,7 @@ public static class AutoTest
         string[] parts = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         CharacterModel character = ModelDb.GetById<CharacterModel>(new ModelId(ModelId.SlugifyCategory<CharacterModel>(), parts[0].ToUpperInvariant()));
         string seed = parts.Length > 1 ? parts[1] : "BDTEST";
-        _selector ??= CardSelectCmd.PushSelector(new FirstCardsSelector());
+        _selector ??= PushSelector(new FirstCardsSelector());
         // Fresh test profile: no tutorials (the combat one throws when combat is entered with the fight command).
         SaveManager.Instance.Progress.EnableFtues = false;
         // The character select screen stops the menu music before starting a run; without it, it keeps playing under

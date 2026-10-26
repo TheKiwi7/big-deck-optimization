@@ -1,0 +1,9 @@
+# Menu reasons of greyed-out options (e.g. on a game version where some optimizations are left vanilla).
+timeout 120
+wait 2
+menutext LIMITLESS_SAVES
+menutext HOOK_FILTER
+language fra
+menutext LIMITLESS_SAVES
+language eng
+quit

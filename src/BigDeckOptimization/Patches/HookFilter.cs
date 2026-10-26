@@ -95,7 +95,11 @@ public static class HookFilter
     public static long CostColorMismatches { get; private set; }
 #endif
 
-    /// <summary>v0.107.1 <c>Hook.ShouldAllowHitting</c>, mirrored by <see cref="ShouldAllowHittingPrefix"/>.</summary>
+    /// <summary>v0.107.1 hooks mirrored by the prefixes below; a changed hook is left vanilla.</summary>
+    private const string ModifyEnergyCostFingerprint = "081395225799F6BD";
+    private const string ModifyKeywordsFingerprint = "ABD6C412D3CBF743";
+    private const string ShouldPlayFingerprint = "AB809B7EE9837D5F";
+    private const string ModifyDamageInternalFingerprint = "A4F307EAF0B5E7B1";
     private const string ShouldAllowHittingFingerprint = "C4F317D182865D23";
 
     /// <summary>
@@ -138,19 +142,12 @@ public static class HookFilter
             new FilteredHook(nameof(AbstractModel.ShouldAllowHitting), hittingHook),
             new FilteredHook(nameof(AbstractModel.TryModifyStarCost), starColor ?? hittingHook),
         };
-        harmony.Patch(energyHook, prefix: Method(nameof(ModifyEnergyCostPrefix)));
-        harmony.Patch(keywordsHook, prefix: Method(nameof(ModifyKeywordsPrefix)));
-        harmony.Patch(shouldPlayHook, prefix: Method(nameof(ShouldPlayPrefix)));
-        harmony.Patch(damageHook, prefix: Method(nameof(ModifyDamageInternalPrefix)));
+        PatchIfUnchanged(harmony, energyHook, ModifyEnergyCostFingerprint, nameof(ModifyEnergyCostPrefix));
+        PatchIfUnchanged(harmony, keywordsHook, ModifyKeywordsFingerprint, nameof(ModifyKeywordsPrefix));
+        PatchIfUnchanged(harmony, shouldPlayHook, ShouldPlayFingerprint, nameof(ShouldPlayPrefix));
+        PatchIfUnchanged(harmony, damageHook, ModifyDamageInternalFingerprint, nameof(ModifyDamageInternalPrefix));
         // Read by Creature.IsHittable, e.g. BetterSpire2's damage preview several times a second.
-        if (MethodFingerprint.Of(hittingHook) == ShouldAllowHittingFingerprint)
-        {
-            harmony.Patch(hittingHook, prefix: Method(nameof(ShouldAllowHittingPrefix)));
-        }
-        else
-        {
-            Log.Info($"[{ModEntry.Id}] {Name}: Hook.ShouldAllowHitting changed (fingerprint {MethodFingerprint.Of(hittingHook)}): left vanilla");
-        }
+        PatchIfUnchanged(harmony, hittingHook, ShouldAllowHittingFingerprint, nameof(ShouldAllowHittingPrefix));
         if (energyColor != null && MethodFingerprint.Of(energyColor) == EnergyCostColorFingerprint)
         {
             _energyCostColor = energyColor;
@@ -181,6 +178,19 @@ public static class HookFilter
                 _filteredWith = null;
             }
         };
+    }
+
+    private static void PatchIfUnchanged(Harmony harmony, MethodInfo hook, string fingerprint, string prefix)
+    {
+        string actual = MethodFingerprint.Of(hook);
+        if (actual == fingerprint)
+        {
+            harmony.Patch(hook, prefix: Method(prefix));
+        }
+        else
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: Hook.{hook.Name} changed (fingerprint {actual}): left vanilla");
+        }
     }
 
     private static MethodInfo Require(MethodInfo? method) =>

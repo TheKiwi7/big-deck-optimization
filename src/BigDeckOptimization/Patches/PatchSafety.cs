@@ -48,6 +48,104 @@ public static class PatchSafety
     }
 
     /// <summary>
+    /// Throws <see cref="PatchSkippedException"/> when the patch class (with its nested types: lambdas, state machines)
+    /// uses a game member or type this game version doesn't have, e.g. a method whose signature an update changed, or
+    /// doesn't compile against it. Else the patch would apply and the JIT would only fail on a prefix's first call,
+    /// before its Enabled check and its try/catch run: the patched game method would then throw on every call, even with
+    /// the patch turned off. Calls into other classes of this mod fail at the call instead, inside the caller's
+    /// try/catch (and <see cref="PatchGuard"/> removes a patch whose code throws into the game).
+    /// </summary>
+    public static void RequireResolvable(Type patchClass)
+    {
+        while (patchClass.DeclaringType != null)
+        {
+            patchClass = patchClass.DeclaringType;
+        }
+        MethodBase? current = null;
+        try
+        {
+            foreach (MethodBase method in DeclaredMethods(patchClass))
+            {
+                current = method;
+                // Resolving each member throws when it is missing; the JIT would also refuse a member that became
+                // inaccessible. (Compiling the methods here instead, RuntimeHelpers.PrepareMethod, made turns ~2% slower:
+                // methods compiled that way skip tiered compilation.)
+                foreach (MemberInfo member in MethodFingerprint.UsedMembers(method))
+                {
+                    if (!Accessible(member, patchClass.Assembly))
+                    {
+                        throw new MemberAccessException($"{member.DeclaringType?.Name}.{member.Name} is not accessible");
+                    }
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            string where = current == null ? patchClass.Name : $"{current.DeclaringType?.Name}.{current.Name}";
+            throw new PatchSkippedException($"{where} uses something this game version doesn't have (game update?), left vanilla: {e.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Whether code of this mod may use the member directly: its own members, or public ones (protected for overrides
+    /// and base calls) of public types. This mod reaches non-public game members through reflection only.
+    /// </summary>
+    private static bool Accessible(MemberInfo member, Assembly own)
+    {
+        Type? owner = member as Type ?? member.DeclaringType;
+        if (owner == null || owner.Assembly == own || owner.IsGenericParameter)
+        {
+            return true;
+        }
+        bool visible = member is Type type ? IsVisible(type, own) : IsVisible(owner, own);
+        return visible && member switch
+        {
+            MethodBase m => m.IsPublic || m.IsFamily || m.IsFamilyOrAssembly,
+            FieldInfo f => f.IsPublic || f.IsFamily || f.IsFamilyOrAssembly,
+            _ => true,
+        };
+    }
+
+    /// <summary>Public all the way out (nested types included); array, pointer and generic arguments checked too.</summary>
+    private static bool IsVisible(Type type, Assembly own)
+    {
+        if (type.HasElementType)
+        {
+            return IsVisible(type.GetElementType()!, own);
+        }
+        if (type.IsGenericParameter || type.Assembly == own)
+        {
+            return true;
+        }
+        if (type.IsGenericType && !type.IsGenericTypeDefinition && !type.GetGenericArguments().All(t => IsVisible(t, own)))
+        {
+            return false;
+        }
+        Type definition = type.IsGenericType ? type.GetGenericTypeDefinition() : type;
+        return definition.IsNested ? (definition.IsNestedPublic || definition.IsNestedFamily || definition.IsNestedFamORAssem) && IsVisible(definition.DeclaringType!, own) : definition.IsPublic;
+    }
+
+    private static IEnumerable<MethodBase> DeclaredMethods(Type type)
+    {
+        const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
+        foreach (MethodInfo method in type.GetMethods(all))
+        {
+            yield return method;
+        }
+        foreach (ConstructorInfo constructor in type.GetConstructors(all))
+        {
+            yield return constructor;
+        }
+        foreach (Type nested in type.GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic))
+        {
+            foreach (MethodBase method in DeclaredMethods(nested))
+            {
+                yield return method;
+            }
+        }
+    }
+
+    /// <summary>
     /// True when a mod other than us has Harmony patches on the method. Our replacements mirror vanilla bodies, so
     /// they would silently drop another mod's transpiler or double-apply its postfix: we back off instead. Each
     /// back-off is recorded for the calling patch (its source file name, e.g. HookFilter) with the other mods' names,
@@ -128,7 +226,7 @@ public static class PatchSafety
         {
             foreach (MegaCrit.Sts2.Core.Modding.Mod mod in MegaCrit.Sts2.Core.Modding.ModManager.Mods)
             {
-                if (mod.assembly == assembly)
+                if (ModAssemblies(mod).Contains(assembly))
                 {
                     return mod.manifest?.name ?? mod.manifest?.id ?? patch.owner;
                 }
@@ -136,6 +234,14 @@ public static class PatchSafety
         }
         return patch.owner;
     }
+
+    // Game v0.107: Mod.assembly; v0.111 (beta): Mod.assemblies. Read by reflection so both work.
+    private static readonly FieldInfo? _modAssembly = AccessTools.Field(typeof(MegaCrit.Sts2.Core.Modding.Mod), "assembly");
+    private static readonly FieldInfo? _modAssemblies = AccessTools.Field(typeof(MegaCrit.Sts2.Core.Modding.Mod), "assemblies");
+
+    private static IEnumerable<Assembly> ModAssemblies(MegaCrit.Sts2.Core.Modding.Mod mod) =>
+        _modAssembly?.GetValue(mod) is Assembly single ? new[] { single }
+        : _modAssemblies?.GetValue(mod) as IEnumerable<Assembly> ?? Enumerable.Empty<Assembly>();
 
     /// <summary>The mods other patches come from, for the methods these patches currently back off from.</summary>
     public static IReadOnlyList<string> ConflictingMods(IEnumerable<string> patches)
