@@ -3,7 +3,7 @@
 ## v0.6.2
 
 - Fixed: the fast combat start kept skipping animations for the whole fight in solo, so attacks and enemy turns played almost instantly. It now only speeds up the combat loading (entering the fight and the relics that trigger at the start of combat); your turns and the enemies' turns play at the game's normal pace again.
-- New option, off by default: instant combat animations, for players who want every fight to play without animation waits (only for you; the rest of the game keeps its pace).
+- New option, off by default: instant combat animations. Every fight plays without animation waits. Outside of fights, nothing changes. In co-op it only affects your own screen: the other players still see the normal animations.
 
 ## v0.6.1
 
