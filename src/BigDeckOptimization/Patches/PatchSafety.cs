@@ -10,7 +10,7 @@ namespace BigDeckOptimization.Patches;
 /// <summary>Thrown by an Apply method when the patch doesn't apply here (optional mod absent, mirrored code changed).</summary>
 public class PatchSkippedException(string reason) : Exception(reason);
 
-public static class PatchSafety
+public static partial class PatchSafety
 {
     private static readonly HashSet<string> _faults = new();
 
@@ -35,12 +35,21 @@ public static class PatchSafety
     }
 
     /// <summary>
-    /// Throws <see cref="PatchSkippedException"/> unless <paramref name="method"/> still has the code a patch mirrors.
+    /// Whether code with fingerprint <paramref name="actual"/> is what a patch expecting <paramref name="expected"/>
+    /// relies on: the same code, or another game version's code checked to behave the same
+    /// (<c>EquivalentFingerprints.cs</c>), so one DLL keeps the patch on both versions.
+    /// </summary>
+    public static bool FingerprintMatches(string actual, string expected) =>
+        actual == expected || (EquivalentFingerprints.TryGetValue(expected, out string[]? equivalent) && equivalent.Contains(actual));
+
+    /// <summary>
+    /// Throws <see cref="PatchSkippedException"/> unless <paramref name="method"/> still has the code a patch mirrors
+    /// (see <see cref="FingerprintMatches"/>).
     /// </summary>
     public static void RequireFingerprint(MethodBase method, string expected)
     {
         string actual = MethodFingerprint.Of(method);
-        if (actual != expected)
+        if (!FingerprintMatches(actual, expected))
         {
             throw new PatchSkippedException(
                 $"{method.DeclaringType?.Name}.{method.Name} changed (fingerprint {actual}, expected {expected}): left vanilla");

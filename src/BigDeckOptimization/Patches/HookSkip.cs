@@ -92,7 +92,7 @@ public static partial class HookSkip
                     ? AccessTools.AsyncMoveNext(hook)
                     : hook;
                 string actual = MethodFingerprint.Of(body);
-                if (actual != entry.Fingerprint)
+                if (!PatchSafety.FingerprintMatches(actual, entry.Fingerprint))
                 {
                     LeftVanilla++;
                     Log.Info($"[{ModEntry.Id}] {Name}: {entry.Hook} changed (fingerprint {actual}, expected {entry.Fingerprint}): left vanilla");

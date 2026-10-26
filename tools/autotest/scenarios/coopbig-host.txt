@@ -1,0 +1,27 @@
+# Co-op timing with big decks (host): ~3,700 cards per player (~7,500 in combat), 2 turns, idle times logged per
+# play and end of turn. Compare the beta and public copies (STS2_GAME_DIR). No 'kill all' (host-only, false divergence).
+# See coopbig-client.txt.
+timeout 2400
+mplobby NECROBINDER 2
+waitfor run 240
+cmd bdperf checks off
+wait 8
+cmd bigdeck import ref all all {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+enemyhp 999999
+wait 25
+cmd fight CULTISTS_NORMAL
+waitfor idle 1800
+state t1
+play 4
+endturn
+waitfor idle 1800
+state t2
+play 4
+endturn
+waitfor idle 1800
+state t3
+wait 20
+quit

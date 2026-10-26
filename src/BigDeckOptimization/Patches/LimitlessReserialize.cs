@@ -105,6 +105,7 @@ public static class LimitlessReserialize
         _savedPropertiesFrom = AccessTools.Method(typeof(SavedProperties), nameof(SavedProperties.From));
         PatchSafety.RequireFingerprint(_savedPropertiesFrom, SavedPropertiesFromFingerprint);
         PatchSafety.RequireFingerprint(AccessTools.Method(typeof(SavedProperties), nameof(SavedProperties.FromInternal)), SavedPropertiesFromInternalFingerprint);
+        _jsonProperties = JsonPropertiesLookup();
         Type handlers = AccessTools.TypeByName(HandlersType) ?? throw new PatchSkippedException("BaseLib has no " + HandlersType);
         _cardData = new ExtendedData(handlers, typeof(CardModel), typeof(SerializableCard),
             "BaseLib.Patches.Saves.ExtendedSavePatches+PrepExtendedCardData:ExtendedDataForCard", ExtendedDataForCardFingerprint);
@@ -471,7 +472,25 @@ public static class LimitlessReserialize
 
     /// <summary><c>SavedProperties.From</c>, which returns null without reading anything when the type has no saved property.</summary>
     private static SavedProperties? PropsOf(AbstractModel model) =>
-        SavedPropertiesTypeCache.GetJsonPropertiesForType(model.GetType()) == null ? null : SavedProperties.From(model);
+        _jsonProperties!(model.GetType()) == null ? null : SavedProperties.From(model);
+
+    /// <summary>
+    /// The game's saved-property lookup that <c>SavedProperties.FromInternal</c> uses: SavedPropertiesTypeCache's in
+    /// v0.107, ModelIdSerializationCache's in v0.111 (beta: the caches merged, same lookup). Found by name for both.
+    /// </summary>
+    private static Func<Type, List<System.Reflection.PropertyInfo>?>? _jsonProperties;
+
+    private static Func<Type, List<System.Reflection.PropertyInfo>?> JsonPropertiesLookup()
+    {
+        foreach (string type in new[] { "MegaCrit.Sts2.Core.Saves.Runs.SavedPropertiesTypeCache", "MegaCrit.Sts2.Core.Multiplayer.Serialization.ModelIdSerializationCache" })
+        {
+            if (AccessTools.TypeByName(type) is { } cache && AccessTools.Method(cache, "GetJsonPropertiesForType", new[] { typeof(Type) }) is { } lookup)
+            {
+                return AccessTools.MethodDelegate<Func<Type, List<System.Reflection.PropertyInfo>?>>(lookup);
+            }
+        }
+        throw new PatchSkippedException("the game has no GetJsonPropertiesForType");
+    }
 
     /// <summary>
     /// The extended save data BaseLib would store for the model against what the saved object has. Its readers get a

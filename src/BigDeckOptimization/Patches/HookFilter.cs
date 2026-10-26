@@ -85,7 +85,7 @@ public static class HookFilter
 
     // Hook indexes. The first group filters combat listeners, the second run listeners (deck + combat).
     private const int EnergyCost = 0, EnergyCostLate = 1, Keywords = 2, ShouldPlay = 3;
-    private const int DamageAdditive = 4, DamageMultiplicative = 5, DamageCap = 6;
+    internal const int DamageAdditive = 4, DamageMultiplicative = 5, DamageCap = 6;
     private const int AllowHitting = 7, StarCost = 8;
 
 #if BENCH
@@ -142,12 +142,23 @@ public static class HookFilter
             new FilteredHook(nameof(AbstractModel.ShouldAllowHitting), hittingHook),
             new FilteredHook(nameof(AbstractModel.TryModifyStarCost), starColor ?? hittingHook),
         };
-        PatchIfUnchanged(harmony, energyHook, ModifyEnergyCostFingerprint, nameof(ModifyEnergyCostPrefix));
-        PatchIfUnchanged(harmony, keywordsHook, ModifyKeywordsFingerprint, nameof(ModifyKeywordsPrefix));
-        PatchIfUnchanged(harmony, shouldPlayHook, ShouldPlayFingerprint, nameof(ShouldPlayPrefix));
-        PatchIfUnchanged(harmony, damageHook, ModifyDamageInternalFingerprint, nameof(ModifyDamageInternalPrefix));
+        PatchIfUnchanged(harmony, energyHook, ModifyEnergyCostFingerprint, Method(nameof(ModifyEnergyCostPrefix)));
+        PatchIfUnchanged(harmony, keywordsHook, ModifyKeywordsFingerprint, Method(nameof(ModifyKeywordsPrefix)));
+        PatchIfUnchanged(harmony, shouldPlayHook, ShouldPlayFingerprint, Method(nameof(ShouldPlayPrefix)));
+        // The damage mirror calls AbstractModel's damage methods, whose signatures game v0.111 (beta) changed (a CardPlay
+        // parameter): it lives in its own class, so there the load check leaves only this hook vanilla.
+        try
+        {
+            PatchSafety.RequireResolvable(typeof(HookFilterDamage));
+            PatchGuard.Register(Name, typeof(HookFilterDamage), Array.Empty<PatchGuard.Installed>());
+            PatchIfUnchanged(harmony, damageHook, ModifyDamageInternalFingerprint, new HarmonyMethod(typeof(HookFilterDamage), nameof(HookFilterDamage.Prefix)));
+        }
+        catch (PatchSkippedException e)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: Hook.ModifyDamageInternal left vanilla: {e.Message}");
+        }
         // Read by Creature.IsHittable, e.g. BetterSpire2's damage preview several times a second.
-        PatchIfUnchanged(harmony, hittingHook, ShouldAllowHittingFingerprint, nameof(ShouldAllowHittingPrefix));
+        PatchIfUnchanged(harmony, hittingHook, ShouldAllowHittingFingerprint, Method(nameof(ShouldAllowHittingPrefix)));
         if (energyColor != null && MethodFingerprint.Of(energyColor) == EnergyCostColorFingerprint)
         {
             _energyCostColor = energyColor;
@@ -180,12 +191,12 @@ public static class HookFilter
         };
     }
 
-    private static void PatchIfUnchanged(Harmony harmony, MethodInfo hook, string fingerprint, string prefix)
+    private static void PatchIfUnchanged(Harmony harmony, MethodInfo hook, string fingerprint, HarmonyMethod prefix)
     {
         string actual = MethodFingerprint.Of(hook);
-        if (actual == fingerprint)
+        if (PatchSafety.FingerprintMatches(actual, fingerprint))
         {
-            harmony.Patch(hook, prefix: Method(prefix));
+            harmony.Patch(hook, prefix: prefix);
         }
         else
         {
@@ -198,7 +209,7 @@ public static class HookFilter
 
     private static HarmonyMethod Method(string name) => new(typeof(HookFilter), name);
 
-    private static bool Active => Enabled && ListenerCache.IsCaching;
+    internal static bool Active => Enabled && ListenerCache.IsCaching;
 
     /// <summary>Filtered listeners for one hook, or null when filtering that hook isn't safe right now.</summary>
     private static List<AbstractModel>? Get(IReadOnlyList<AbstractModel> listeners, int hook)
@@ -278,7 +289,7 @@ public static class HookFilter
             : Get(ListenerCache.GetListeners(state), hook);
 
     /// <summary>The run listeners (deck + child combat) of one hook, as <see cref="ForCombat"/>.</summary>
-    private static List<AbstractModel>? ForRun(RunState run, ICombatState? child, int hook) =>
+    internal static List<AbstractModel>? ForRun(RunState run, ICombatState? child, int hook) =>
         CanWalk && (child == null || child is CombatState)
             ? Walked((run, child), hook, filter => FastListeners.Filtered(run, child, filter), () => ListenerCache.GetRunListeners(run, child))
             : Get(ListenerCache.GetRunListeners(run, child), hook);
@@ -597,20 +608,36 @@ public static class HookFilter
         }
     }
 
+    internal static void Disable(Exception e)
+    {
+        Enabled = false;
+        PatchSafety.Fault(Name);
+        Log.Error($"[{ModEntry.Id}] {Name} disabled after exception, falling back to vanilla: {e}");
+    }
+}
+
+/// <summary>
+/// <see cref="HookFilter"/>'s mirror of <c>Hook.ModifyDamageInternal</c>, in its own class: it calls the
+/// <see cref="AbstractModel"/> damage methods, whose signatures game v0.111 (beta) changed, so the load check
+/// (<see cref="PatchSafety.RequireResolvable"/>) can leave only this hook vanilla there, not all of HookFilter. Same file,
+/// so conflicts with other mods are still recorded under HookFilter.
+/// </summary>
+internal static class HookFilterDamage
+{
     /// <summary>Mirrors <c>Hook.ModifyDamageInternal</c> over the filtered run listeners.</summary>
-    private static bool ModifyDamageInternalPrefix(IRunState runState, ICombatState? combatState, Creature? target, Creature? dealer,
+    internal static bool Prefix(IRunState runState, ICombatState? combatState, Creature? target, Creature? dealer,
         decimal damage, ValueProp props, CardModel? cardSource, ModifyDamageHookType modifyDamageHookType,
         ref List<AbstractModel> modifiers, ref decimal __result)
     {
-        if (!Active || runState is not RunState run)
+        if (!HookFilter.Active || runState is not RunState run)
         {
             return true;
         }
         try
         {
-            List<AbstractModel>? additive = ForRun(run, combatState, DamageAdditive);
-            List<AbstractModel>? multiplicative = ForRun(run, combatState, DamageMultiplicative);
-            List<AbstractModel>? cap = ForRun(run, combatState, DamageCap);
+            List<AbstractModel>? additive = HookFilter.ForRun(run, combatState, HookFilter.DamageAdditive);
+            List<AbstractModel>? multiplicative = HookFilter.ForRun(run, combatState, HookFilter.DamageMultiplicative);
+            List<AbstractModel>? cap = HookFilter.ForRun(run, combatState, HookFilter.DamageCap);
             if (additive == null || multiplicative == null || cap == null)
             {
                 return true;
@@ -664,15 +691,8 @@ public static class HookFilter
         }
         catch (Exception e)
         {
-            Disable(e);
+            HookFilter.Disable(e);
             return true;
         }
-    }
-
-    private static void Disable(Exception e)
-    {
-        Enabled = false;
-        PatchSafety.Fault(Name);
-        Log.Error($"[{ModEntry.Id}] {Name} disabled after exception, falling back to vanilla: {e}");
     }
 }

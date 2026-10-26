@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.6.4
+
+- Game beta branch: most optimizations that were off there work again, including the most important ones for huge decks (skipping the cards that don't react to each effect, finding which pile a card is in, and with Limitless, saving stacked enchantments). Still off on the beta for now: the faster damage calculation, a handful of effects, and a small first-turn speedup.
+
 ## v0.6.3
 
 - Clearer description of the instant combat animations option in the settings menu: outside of fights nothing changes, and in co-op it only affects your own screen.
