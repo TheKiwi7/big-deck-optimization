@@ -36,7 +36,7 @@
   "fast_combat_start_relics.title": "Início de combate rápido: mínimo de relíquias",
   "fast_combat_start_relics.desc": "No solo, só acelera o início do combate a partir deste número de relíquias (contam as de todos os jogadores). 0 = sempre. No co-op fica sempre ativo, seja qual for este valor.",
   "instant_combats.title": "Animações de combate instantâneas",
-  "instant_combats.desc": "Visual, desligado por padrão: toda espera de animação de cada combate é pulada (ataques, golpes, turnos inimigos), só para você. O resto do jogo mantém o ritmo. Mesmos resultados.",
+  "instant_combats.desc": "Visual, desligado por padrão: todo combate acontece sem esperas de animação (ataques, golpes, turnos inimigos). Fora dos combates, nada muda. No cooperativo, só afeta a sua tela: os outros jogadores veem as animações normais. Mesmos resultados.",
   "limitless_tabs.title": "Abas de encantamento do Limitless",
   "limitless_tabs.desc": "Com o Limitless: reutiliza as abas de encantamento em vez de reconstruí-las a cada exibição de carta.",
   "listeners.title": "Listas de escuta de efeitos",

@@ -36,7 +36,7 @@
   "fast_combat_start_relics.title": "빠른 전투 시작: 최소 유물 개수",
   "fast_combat_start_relics.desc": "솔로에서는 유물이 이 개수 이상일 때만 전투 시작을 빠르게 합니다(모든 플레이어의 유물 합계). 0 = 항상. 협동에서는 이 값과 관계없이 항상 켜집니다.",
   "instant_combats.title": "전투 애니메이션 즉시 처리",
-  "instant_combats.desc": "시각 효과, 기본값 꺼짐: 모든 전투의 애니메이션 대기 시간(공격, 타격, 적 턴)을 건너뜁니다(나에게만 적용). 전투 외에는 원래 속도를 유지합니다. 결과는 같습니다.",
+  "instant_combats.desc": "시각 효과, 기본값 꺼짐: 모든 전투가 애니메이션 대기 없이 진행됩니다(공격, 타격, 적 턴). 전투 밖에서는 아무것도 바뀌지 않습니다. 협동 플레이에서는 내 화면에만 적용되며, 다른 플레이어는 일반 애니메이션을 봅니다. 결과는 같습니다.",
   "limitless_tabs.title": "Limitless 인챈트 탭",
   "limitless_tabs.desc": "Limitless 사용 시: 카드를 그릴 때마다 인챈트 탭을 다시 만드는 대신 재사용합니다.",
   "listeners.title": "효과 리스너 목록",

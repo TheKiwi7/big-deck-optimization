@@ -36,7 +36,7 @@
   "fast_combat_start_relics.title": "Début de combat rapide : reliques minimum",
   "fast_combat_start_relics.desc": "En solo, n'accélère le début de combat qu'à partir de ce nombre de reliques (celles de tous les joueurs comptent). 0 = toujours. En co-op, toujours actif quelle que soit cette valeur.",
   "instant_combats.title": "Animations de combat instantanées",
-  "instant_combats.desc": "Visuel, désactivé par défaut : toutes les attentes d'animation de chaque combat sont sautées (attaques, coups, tours ennemis), pour toi seulement. Le reste du jeu garde son rythme. Mêmes résultats.",
+  "instant_combats.desc": "Visuel, désactivé par défaut : chaque combat se joue sans attente d'animation (attaques, coups, tours ennemis). Hors combat, rien ne change. En co-op, seul ton écran est concerné : les autres joueurs voient les animations normales. Mêmes résultats.",
   "limitless_tabs.title": "Onglets d'enchantement Limitless",
   "limitless_tabs.desc": "Avec Limitless : réutilise les onglets d'enchantement au lieu de les reconstruire à chaque affichage de carte.",
   "listeners.title": "Listes d'écoute des effets",

@@ -36,7 +36,7 @@
   "fast_combat_start_relics.title": "Inizio combattimento rapido: reliquie minime",
   "fast_combat_start_relics.desc": "In singolo, accelera l'inizio del combattimento solo da questo numero di reliquie in su (contano quelle di tutti i giocatori). 0 = sempre. In co-op è sempre attivo, qualunque sia questo valore.",
   "instant_combats.title": "Animazioni di combattimento istantanee",
-  "instant_combats.desc": "Visivo, disattivato per impostazione predefinita: ogni attesa di animazione di ogni combattimento viene saltata (attacchi, colpi, turni nemici), solo per te. Il resto del gioco mantiene il suo ritmo. Stessi risultati.",
+  "instant_combats.desc": "Visivo, disattivato per impostazione predefinita: ogni combattimento si svolge senza attese di animazione (attacchi, colpi, turni nemici). Fuori dai combattimenti non cambia nulla. In co-op riguarda solo il tuo schermo: gli altri giocatori vedono le animazioni normali. Stessi risultati.",
   "limitless_tabs.title": "Schede di incantamento di Limitless",
   "limitless_tabs.desc": "Con Limitless: riutilizza le schede di incantamento invece di ricostruirle a ogni visualizzazione di una carta.",
   "listeners.title": "Liste di ascolto degli effetti",

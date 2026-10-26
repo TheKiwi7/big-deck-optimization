@@ -36,7 +36,7 @@
   "fast_combat_start_relics.title": "Inicio de combate rápido: reliquias mínimas",
   "fast_combat_start_relics.desc": "En individual, solo acelera el inicio del combate a partir de este número de reliquias (cuentan las de todos los jugadores). 0 = siempre. En cooperativo siempre está activo, sea cual sea este valor.",
   "instant_combats.title": "Animaciones de combate instantáneas",
-  "instant_combats.desc": "Visual, desactivada por defecto: se omiten todas las esperas de animación de cada combate (ataques, golpes, turnos enemigos), solo para ti. El resto del juego mantiene su ritmo. Mismos resultados.",
+  "instant_combats.desc": "Visual, desactivada por defecto: cada combate se juega sin esperas de animación (ataques, golpes, turnos enemigos). Fuera de los combates no cambia nada. En cooperativo solo afecta a tu pantalla: los demás jugadores ven las animaciones normales. Mismos resultados.",
   "limitless_tabs.title": "Pestañas de encantamiento de Limitless",
   "limitless_tabs.desc": "Con Limitless: reutiliza las pestañas de encantamiento en lugar de reconstruirlas cada vez que se muestra una carta.",
   "listeners.title": "Listas de escucha de efectos",

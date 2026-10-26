@@ -36,7 +36,7 @@
   "fast_combat_start_relics.title": "Szybki początek walki: minimum reliktów",
   "fast_combat_start_relics.desc": "W grze solo przyspiesza początek walki dopiero od tej liczby reliktów (liczą się relikty wszystkich graczy). 0 = zawsze. W co-opie zawsze włączone, niezależnie od tej wartości.",
   "instant_combats.title": "Natychmiastowe animacje walki",
-  "instant_combats.desc": "Wizualne, domyślnie wyłączone: każde oczekiwanie na animację w każdej walce jest pomijane (ataki, trafienia, tury wrogów), tylko u ciebie. Reszta gry zachowuje swoje tempo. Te same wyniki.",
+  "instant_combats.desc": "Wizualne, domyślnie wyłączone: każda walka toczy się bez oczekiwania na animacje (ataki, trafienia, tury wrogów). Poza walkami nic się nie zmienia. W trybie co-op dotyczy tylko twojego ekranu: pozostali gracze widzą zwykłe animacje. Te same wyniki.",
   "limitless_tabs.title": "Zakładki zaklęć Limitless",
   "limitless_tabs.desc": "Z Limitless: ponownie używa zakładek zaklęć zamiast budować je od nowa przy każdym wyświetleniu karty.",
   "listeners.title": "Listy nasłuchujących efektów",

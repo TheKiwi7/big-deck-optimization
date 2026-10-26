@@ -114,7 +114,7 @@ public static class Settings
     {
         // Combat pace first (same order as the menu).
         new("instant_combats", "Instant combat animations",
-            "Visual, off by default: every animation wait of every combat is skipped (attacks, hits, enemy turns), only for you. The rest of the game keeps its pace. Same results.",
+            "Visual, off by default: every fight plays without animation waits (attacks, hits, enemy turns). Outside of fights, nothing changes. In co-op it only affects your own screen: the other players still see the normal animations. Same results.",
             new[] { FastCombatStart.Name }, on => FastCombatStart.InstantCombats = on, defaultOn: false),
         new("fast_combat_start", "Fast combat start",
             "Visual: plays the combat-start relic effects without their animation waits (like the game's Instant speed), from the number of relics set below (0 = always, the default). Same results. Solo only: always on in co-op, so every player starts the combat at the same pace.",
