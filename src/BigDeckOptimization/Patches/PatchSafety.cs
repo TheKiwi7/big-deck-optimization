@@ -57,6 +57,29 @@ public static partial class PatchSafety
     }
 
     /// <summary>
+    /// Throws <see cref="PatchSkippedException"/> when code other than <paramref name="known"/> may change a private field a
+    /// patch tracks through the methods it watches (e.g. a new game method changing <c>CardPile._cards</c>, which no
+    /// fingerprint would catch). Writers per <see cref="MethodFingerprint.FieldUsers"/>: assignments, mutating calls, the
+    /// collection passed to a method taking a mutable collection; new readers don't matter.
+    /// </summary>
+    public static void RequireFieldWriters(Type type, string field, params string[] known)
+    {
+        string[] unknown = MethodFingerprint.FieldUsers(type, field, writersOnly: true).Where(user => !known.Contains(user)).ToArray();
+        if (unknown.Length > 0)
+        {
+            throw new PatchSkippedException($"{type.Name}.{field} may now also be changed by {string.Join(", ", unknown)} (game update?): left vanilla");
+        }
+    }
+
+    /// <summary>The code that changes <c>CardPile._cards</c> (game v0.107.1 and v0.111): the constructor and its fingerprinted list methods.</summary>
+    public static readonly string[] CardListWriters =
+        { ".ctor", "AddInternal", "Clear", "MoveToBottomInternal", "MoveToTopInternal", "RandomizeOrderInternal", "RemoveInternal" };
+
+    /// <summary>The code that changes <c>Player._relics</c> / <c>Player._potionSlots</c> (ListenerCache invalidates on these or their callers).</summary>
+    public static readonly string[] RelicListWriters = { ".ctor", "AddRelicInternal", "RemoveRelicInternal" };
+    public static readonly string[] PotionSlotWriters = { ".ctor", "AddPotionInternal", "RemovePotionInternal", "SetMaxPotionCountInternal" };
+
+    /// <summary>
     /// Throws <see cref="PatchSkippedException"/> when the patch class (with its nested types: lambdas, state machines)
     /// uses a game member or type this game version doesn't have, e.g. a method whose signature an update changed, or
     /// doesn't compile against it. Else the patch would apply and the JIT would only fail on a prefix's first call,
@@ -176,17 +199,17 @@ public static partial class PatchSafety
         }
         HarmonyLib.Patches? info = Harmony.GetPatchInfo(method);
         IEnumerable<Patch> others = info == null ? Enumerable.Empty<Patch>()
-            : info.Prefixes.Concat(info.Postfixes).Concat(info.Transpilers).Concat(info.Finalizers).Where(p => p.owner != ModEntry.Harmony.Id);
+            : info.Prefixes.Concat(info.Postfixes).Concat(info.Transpilers).Concat(info.Finalizers).Where(p => !PatchGuard.IsOurs(p.owner));
         bool patched = Record(caller, method, others);
         _patchedByOthers[method] = (patched, now);
         return patched;
     }
 
     /// <summary>
-    /// Like <see cref="IsPatchedByOthers(MethodBase?, string)"/>, except for these other mods' postfixes, whose effect
-    /// the caller reproduces (checked by fingerprint).
+    /// Like <see cref="IsPatchedByOthers(MethodBase?, string)"/>, except for these patch methods of other mods (postfixes
+    /// whose effect the caller reproduces, transpilers known not to touch what it changes; checked by fingerprint).
     /// </summary>
-    public static bool IsPatchedByOthers(MethodBase? method, MethodInfo[] allowedPostfixes, [CallerFilePath] string caller = "")
+    public static bool IsPatchedByOthers(MethodBase? method, MethodInfo[] allowedPatches, [CallerFilePath] string caller = "")
     {
         if (method == null)
         {
@@ -199,9 +222,8 @@ public static partial class PatchSafety
         }
         HarmonyLib.Patches? info = Harmony.GetPatchInfo(method);
         IEnumerable<Patch> others = info == null ? Enumerable.Empty<Patch>()
-            : info.Prefixes.Concat(info.Transpilers).Concat(info.Finalizers).Where(p => p.owner != ModEntry.Harmony.Id)
-                .Concat(info.Postfixes.Where(p => p.owner != ModEntry.Harmony.Id
-                    && !allowedPostfixes.Any(a => a.MethodHandle == p.PatchMethod.MethodHandle)));
+            : info.Prefixes.Concat(info.Postfixes).Concat(info.Transpilers).Concat(info.Finalizers)
+                .Where(p => !PatchGuard.IsOurs(p.owner) && !allowedPatches.Any(a => a.MethodHandle == p.PatchMethod.MethodHandle));
         bool patched = Record(caller, method, others);
         _patchedBeyondAllowed[method] = (patched, now);
         return patched;

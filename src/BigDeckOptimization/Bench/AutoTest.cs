@@ -55,25 +55,25 @@ public static class AutoTest
         {
             throw new PatchSkippedException("no --bdtest argument");
         }
-        harmony.Patch(AccessTools.Method(typeof(SaveManager), nameof(SaveManager.InitProfileId)),
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(SaveManager), nameof(SaveManager.InitProfileId)),
             postfix: new HarmonyMethod(typeof(AutoTest), nameof(InitProfilePostfix)));
-        harmony.Patch(AccessTools.Method(typeof(CombatManager), nameof(CombatManager.SetUpCombat)),
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(CombatManager), nameof(CombatManager.SetUpCombat)),
             postfix: new HarmonyMethod(typeof(AutoTest), nameof(SetUpCombatPostfix)));
-        harmony.Patch(AccessTools.Method(typeof(Creature), nameof(Creature.LoseHpInternal)),
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(Creature), nameof(Creature.LoseHpInternal)),
             prefix: new HarmonyMethod(typeof(AutoTest), nameof(ImmortalPrefix)),
             postfix: new HarmonyMethod(typeof(AutoTest), nameof(ImmortalPostfix)));
         // Timings must not depend on which window has focus: no 30 fps cap while the game is in the background.
-        harmony.Patch(AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.NBackgroundModeHandler), "EnterBackgroundMode"),
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.NBackgroundModeHandler), "EnterBackgroundMode"),
             prefix: new HarmonyMethod(typeof(AutoTest), nameof(StayForeground)));
         // Fur Coat reads the current map point, which is null when the fight command runs before visiting the map.
-        harmony.Patch(AccessTools.Method(typeof(MegaCrit.Sts2.Core.Models.Relics.FurCoat), nameof(MegaCrit.Sts2.Core.Models.Relics.FurCoat.BeforeCombatStart)),
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Models.Relics.FurCoat), nameof(MegaCrit.Sts2.Core.Models.Relics.FurCoat.BeforeCombatStart)),
             prefix: new HarmonyMethod(typeof(AutoTest), nameof(SkipFurCoatWithoutMapPoint)));
         // The fight command seeds the encounter from the clock (seconds): peers running it in different seconds desync.
-        harmony.Patch(AccessTools.Method(typeof(EncounterModel), nameof(EncounterModel.DebugRandomizeRng)),
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(EncounterModel), nameof(EncounterModel.DebugRandomizeRng)),
             prefix: new HarmonyMethod(typeof(AutoTest), nameof(FixedEncounterRng)));
-        harmony.Patch(AccessTools.Method(typeof(NCharacterSelectScreen), nameof(NCharacterSelectScreen.InitializeMultiplayerAsHost)),
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(NCharacterSelectScreen), nameof(NCharacterSelectScreen.InitializeMultiplayerAsHost)),
             postfix: new HarmonyMethod(typeof(AutoTest), nameof(LobbyScreenPostfix)));
-        harmony.Patch(AccessTools.Method(typeof(NCharacterSelectScreen), nameof(NCharacterSelectScreen.InitializeMultiplayerAsClient)),
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(NCharacterSelectScreen), nameof(NCharacterSelectScreen.InitializeMultiplayerAsClient)),
             postfix: new HarmonyMethod(typeof(AutoTest), nameof(LobbyScreenPostfix)));
         string[] launchArgs = OS.GetCmdlineArgs().Concat(OS.GetCmdlineUserArgs()).ToArray();
         int show = Array.IndexOf(launchArgs, "--bdshow");
@@ -81,17 +81,17 @@ public static class AutoTest
         {
             // --bdshow <screen>: fullscreen on that screen, for watching a session. Only the window moves.
             _showScreen = showScreen;
-            harmony.Patch(AccessTools.Method(typeof(NGame), nameof(NGame.ApplyDisplaySettings)),
+            PatchGuard.Patch(harmony, AccessTools.Method(typeof(NGame), nameof(NGame.ApplyDisplaySettings)),
                 postfix: new HarmonyMethod(typeof(AutoTest), nameof(ShowOnScreen)));
             // The game keeps its sound while another window has the focus ("mute in background" setting).
-            harmony.Patch(AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.NMuteInBackgroundHandler), "Mute"),
+            PatchGuard.Patch(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.NMuteInBackgroundHandler), "Mute"),
                 prefix: new HarmonyMethod(typeof(AutoTest), nameof(StayForeground)));
             Callable.From(ShowOnScreen).CallDeferred();
         }
         else if (launchArgs.Contains("--bdhidden"))
         {
             _hidden = true;
-            harmony.Patch(AccessTools.Method(typeof(NGame), nameof(NGame.ApplyDisplaySettings)),
+            PatchGuard.Patch(harmony, AccessTools.Method(typeof(NGame), nameof(NGame.ApplyDisplaySettings)),
                 postfix: new HarmonyMethod(typeof(AutoTest), nameof(HideWindow)));
             Callable.From(HideWindow).CallDeferred();
         }
@@ -100,8 +100,8 @@ public static class AutoTest
             // --bdmute (run.ps1 without -Sound): every master volume the game sets (startup, mute in background) is 0.
             // The volume settings themselves are untouched.
             var mute = new HarmonyMethod(typeof(AutoTest), nameof(MuteVolume));
-            harmony.Patch(AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Audio.NAudioManager), "SetMasterVol"), prefix: mute);
-            harmony.Patch(AccessTools.Method(typeof(MegaCrit.Sts2.Core.Audio.Debug.NDebugAudioManager), "SetMasterAudioVolume"), prefix: mute);
+            PatchGuard.Patch(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Audio.NAudioManager), "SetMasterVol"), prefix: mute);
+            PatchGuard.Patch(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Audio.Debug.NDebugAudioManager), "SetMasterAudioVolume"), prefix: mute);
             Callable.From(() =>
             {
                 NGame.Instance?.AudioManager?.SetMasterVol(0f);
@@ -130,7 +130,8 @@ public static class AutoTest
         List<CardModel> removed = me.Deck.Cards.Where(c => ids.Contains(c.Id.Entry) || Stacked(c)).ToList();
         foreach (CardModel card in removed)
         {
-            me.Deck.RemoveInternal(card, silent: true);
+            // Through reflection: test tooling must keep working on game versions where this method changed.
+            AccessTools.Method(typeof(CardPile), "RemoveInternal")!.Invoke(me.Deck, new object[] { card, true });
             (me.RunState as ICardScope)?.RemoveCard(card);
         }
         Say($"  deckfilter: removed {removed.Count} cards ({removed.Count(c => ids.Contains(c.Id.Entry))} by id), deck {me.Deck.Cards.Count} cards");
@@ -1083,7 +1084,10 @@ public static class AutoTest
             Say($"  {id} not in hand: use 'cmd card {id}' first");
             return;
         }
-        if (free && !card.EnergyCost.CostsX)
+        // Through reflection: test tooling must keep loading on game versions where this member changed.
+        object? energyCost = AccessTools.Property(typeof(CardModel), "EnergyCost")?.GetValue(card);
+        bool costsX = energyCost != null && AccessTools.Property(energyCost.GetType(), "CostsX")?.GetValue(energyCost) is true;
+        if (free && !costsX)
         {
             card.SetToFreeThisTurn();
         }

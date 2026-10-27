@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.7.0
+
+- Game beta branch: every optimization now works there too, including the faster damage calculation, the remaining effects and the first-turn speedup that were still off.
+- Better at surviving game and mod updates: when an update changes the game, only the optimizations that depend on the changed code switch back to the normal game. Before, an update that only shuffled some internal names could switch off far more than needed.
+- More robust: if an error ever happened inside the optimizations while the game resolves an effect, that effect now finishes normally and the optimization turns itself off for the session.
+- Faster game start: in my tests the mod now loads in about 0.3 s instead of almost 1 s (your numbers will differ on another PC).
+
 ## v0.6.4
 
 - Game beta branch: most optimizations that were off there work again, including the most important ones for huge decks (skipping the cards that don't react to each effect, finding which pile a card is in, and with Limitless, saving stacked enchantments). Still off on the beta for now: the faster damage calculation, a handful of effects, and a small first-turn speedup.

@@ -112,7 +112,15 @@ public sealed class BaseLibSettings : SimpleModConfig
     /// </summary>
     public override void SetupConfigUI(Control optionContainer)
     {
-        SettingsText.Add(); // Current reasons in the hover texts.
+        try
+        {
+            SettingsText.Add(); // Current reasons in the hover texts.
+        }
+        catch (Exception e)
+        {
+            // Runs inside BaseLib's settings screen: never break it (the texts then keep their previous values).
+            Log.Warn($"[{ModEntry.Id}] {Name}: could not update the menu texts: {e.Message}");
+        }
         base.SetupConfigUI(optionContainer);
         try
         {

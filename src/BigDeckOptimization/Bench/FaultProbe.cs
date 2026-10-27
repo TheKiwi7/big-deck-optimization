@@ -33,7 +33,7 @@ public static class FaultProbe
     {
         ModEntry.TryApply(Name + ".Apply", harmony =>
         {
-            harmony.Patch(_target, prefix: new HarmonyMethod(typeof(FaultProbe), nameof(Prefix)));
+            PatchGuard.Patch(harmony, _target, prefix: new HarmonyMethod(typeof(FaultProbe), nameof(Prefix)));
             throw new InvalidOperationException("simulated failure after patching");
         });
         return OurPatches() == 0 && ModEntry.NotApplied(Name + ".Apply") ? "OK: nothing left installed" : $"FAILED: {OurPatches()} patch(es) left";
@@ -41,7 +41,7 @@ public static class FaultProbe
 
     private static async Task<string> CheckThrowingPrefix(Func<Task> nextFrames)
     {
-        ModEntry.TryApply(Name, harmony => harmony.Patch(_target, prefix: new HarmonyMethod(typeof(FaultProbe), nameof(Prefix))));
+        ModEntry.TryApply(Name, harmony => PatchGuard.Patch(harmony, _target, prefix: new HarmonyMethod(typeof(FaultProbe), nameof(Prefix))));
         if (OurPatches() != 2)
         {
             return $"FAILED: expected prefix + guard, found {OurPatches()} patch(es)";
@@ -89,7 +89,7 @@ public static class FaultProbe
     {
         HarmonyLib.Patches? info = Harmony.GetPatchInfo(_target);
         return info == null ? 0 : info.Prefixes.Concat(info.Postfixes).Concat(info.Transpilers).Concat(info.Finalizers)
-            .Count(p => p.owner == ModEntry.Harmony.Id);
+            .Count(p => PatchGuard.IsOurs(p.owner));
     }
 
     private static void Prefix()

@@ -79,48 +79,61 @@ public static class ListenerCache
     /// <summary>Raised when the outermost scope ends, so dependent caches can drop their state.</summary>
     public static event Action? ScopeEnded;
 
+    /// <summary><c>OrbQueue.TryEnqueue</c> (v0.107.1, v0.111): adds the orb before its first await.</summary>
+    private const string TryEnqueueFingerprint = "DC22B902D9BCF8AA";
+
     public static void Apply(Harmony harmony)
     {
         // Order matters: if any of these throws, nothing below is patched and the cache never turns on.
         // 1. Invalidation.
         MethodBase?[] invalidators =
         {
-            AccessTools.Method(typeof(CombatStateTracker), "NotifyCombatStateChanged"),
-            AccessTools.Method(typeof(CardPile), nameof(CardPile.AddInternal)),
-            AccessTools.Method(typeof(CardPile), nameof(CardPile.RemoveInternal)),
-            AccessTools.Method(typeof(CardPile), nameof(CardPile.MoveToBottomInternal)),
-            AccessTools.Method(typeof(CardPile), nameof(CardPile.MoveToTopInternal)),
-            AccessTools.Method(typeof(CardPile), nameof(CardPile.RandomizeOrderInternal)),
-            AccessTools.Method(typeof(CardPile), nameof(CardPile.Clear)),
-            AccessTools.Method(typeof(Player), nameof(Player.AddRelicInternal)),
-            AccessTools.Method(typeof(Player), nameof(Player.RemoveRelicInternal)),
+            Watched(AccessTools.Method(typeof(CombatStateTracker), "NotifyCombatStateChanged"), typeof(CombatStateTracker), "NotifyCombatStateChanged"),
+            Watched(AccessTools.Method(typeof(CardPile), nameof(CardPile.AddInternal)), typeof(CardPile), nameof(CardPile.AddInternal)),
+            Watched(AccessTools.Method(typeof(CardPile), nameof(CardPile.RemoveInternal)), typeof(CardPile), nameof(CardPile.RemoveInternal)),
+            Watched(AccessTools.Method(typeof(CardPile), nameof(CardPile.MoveToBottomInternal)), typeof(CardPile), nameof(CardPile.MoveToBottomInternal)),
+            Watched(AccessTools.Method(typeof(CardPile), nameof(CardPile.MoveToTopInternal)), typeof(CardPile), nameof(CardPile.MoveToTopInternal)),
+            Watched(AccessTools.Method(typeof(CardPile), nameof(CardPile.RandomizeOrderInternal)), typeof(CardPile), nameof(CardPile.RandomizeOrderInternal)),
+            Watched(AccessTools.Method(typeof(CardPile), nameof(CardPile.Clear)), typeof(CardPile), nameof(CardPile.Clear)),
+            Watched(AccessTools.Method(typeof(Player), nameof(Player.AddRelicInternal)), typeof(Player), nameof(Player.AddRelicInternal)),
+            Watched(AccessTools.Method(typeof(Player), nameof(Player.RemoveRelicInternal)), typeof(Player), nameof(Player.RemoveRelicInternal)),
             // Both filter what IterateHookListeners yields (melted relics, dead players' models).
-            AccessTools.PropertySetter(typeof(RelicModel), nameof(RelicModel.IsMelted)),
-            AccessTools.PropertySetter(typeof(Player), nameof(Player.IsActiveForHooks)),
-            AccessTools.Method(typeof(Player), nameof(Player.AddPotionInternal)),
-            AccessTools.Method(typeof(Player), nameof(Player.DiscardPotionInternal)),
-            AccessTools.Method(typeof(Player), nameof(Player.RemoveUsedPotionInternal)),
-            AccessTools.Method(typeof(Player), nameof(Player.SubtractFromMaxPotionCount)),
-            AccessTools.Method(typeof(OrbQueue), nameof(OrbQueue.TryEnqueue)),
-            AccessTools.Method(typeof(OrbQueue), nameof(OrbQueue.Remove)),
-            AccessTools.Method(typeof(OrbQueue), nameof(OrbQueue.Insert)),
-            AccessTools.Method(typeof(OrbQueue), nameof(OrbQueue.Clear)),
+            Watched(AccessTools.PropertySetter(typeof(RelicModel), nameof(RelicModel.IsMelted)), typeof(RelicModel), nameof(RelicModel.IsMelted)),
+            Watched(AccessTools.PropertySetter(typeof(Player), nameof(Player.IsActiveForHooks)), typeof(Player), nameof(Player.IsActiveForHooks)),
+            Watched(AccessTools.Method(typeof(Player), nameof(Player.AddPotionInternal)), typeof(Player), nameof(Player.AddPotionInternal)),
+            Watched(AccessTools.Method(typeof(Player), nameof(Player.DiscardPotionInternal)), typeof(Player), nameof(Player.DiscardPotionInternal)),
+            Watched(AccessTools.Method(typeof(Player), nameof(Player.RemoveUsedPotionInternal)), typeof(Player), nameof(Player.RemoveUsedPotionInternal)),
+            Watched(AccessTools.Method(typeof(Player), nameof(Player.SubtractFromMaxPotionCount)), typeof(Player), nameof(Player.SubtractFromMaxPotionCount)),
+            Watched(AccessTools.Method(typeof(OrbQueue), nameof(OrbQueue.TryEnqueue)), typeof(OrbQueue), nameof(OrbQueue.TryEnqueue)),
+            Watched(AccessTools.Method(typeof(OrbQueue), nameof(OrbQueue.Remove)), typeof(OrbQueue), nameof(OrbQueue.Remove)),
+            Watched(AccessTools.Method(typeof(OrbQueue), nameof(OrbQueue.Insert)), typeof(OrbQueue), nameof(OrbQueue.Insert)),
+            Watched(AccessTools.Method(typeof(OrbQueue), nameof(OrbQueue.Clear)), typeof(OrbQueue), nameof(OrbQueue.Clear)),
         };
+        // The methods above (or the ones they call) are the only code changing the piles, relics and potion slots: a new
+        // one would leave cached lists stale.
+        PatchSafety.RequireFieldWriters(typeof(CardPile), "_cards", PatchSafety.CardListWriters);
+        PatchSafety.RequireFieldWriters(typeof(Player), "_relics", PatchSafety.RelicListWriters);
+        PatchSafety.RequireFieldWriters(typeof(Player), "_potionSlots", PatchSafety.PotionSlotWriters);
+        PatchSafety.RequireFieldWriters(typeof(OrbQueue), "_orbs", ".ctor", "<TryEnqueue>d__#+MoveNext", "Clear", "Insert", "Remove");
+        // TryEnqueue is async: its postfix runs at its first await, which comes after the orb is added (pinned: same in v0.111).
+        PatchSafety.RequireFingerprint(AccessTools.Method(typeof(OrbQueue), nameof(OrbQueue.TryEnqueue)), TryEnqueueFingerprint);
         foreach (MethodBase? target in invalidators)
         {
-            harmony.Patch(Require(target), postfix: Method(nameof(Invalidate)));
+            PatchGuard.Patch(harmony, Require(target), postfix: Method(nameof(Invalidate)));
         }
         // A card's enchantment/affliction is only listed through a pile, and only owned cards sit in piles. Ownerless
         // cards are detached models, e.g. Limitless' enchantment storage cards rebuilt while rendering every card.
+        PatchSafety.RequireFieldWriters(typeof(CardModel), "<Enchantment>k__BackingField", "set_Enchantment");
+        PatchSafety.RequireFieldWriters(typeof(CardModel), "<Affliction>k__BackingField", "set_Affliction");
         _cardOwner = AccessTools.FieldRefAccess<CardModel, Player?>("_owner");
-        harmony.Patch(Require(AccessTools.PropertySetter(typeof(CardModel), nameof(CardModel.Enchantment))), postfix: Method(nameof(InvalidateIfOwned)));
-        harmony.Patch(Require(AccessTools.PropertySetter(typeof(CardModel), nameof(CardModel.Affliction))), postfix: Method(nameof(InvalidateIfOwned)));
+        PatchGuard.Patch(harmony, Require(AccessTools.PropertySetter(typeof(CardModel), nameof(CardModel.Enchantment))), postfix: Method(nameof(InvalidateIfOwned)));
+        PatchGuard.Patch(harmony, Require(AccessTools.PropertySetter(typeof(CardModel), nameof(CardModel.Affliction))), postfix: Method(nameof(InvalidateIfOwned)));
 
         // 2. The caches themselves.
         _combatIterate = Require(AccessTools.Method(typeof(CombatState), nameof(CombatState.IterateHookListeners)));
         _runIterate = Require(AccessTools.Method(typeof(RunState), nameof(RunState.IterateHookListeners), new[] { typeof(ICombatState) }));
-        harmony.Patch(_combatIterate, prefix: Method(nameof(CombatIteratePrefix)));
-        harmony.Patch(_runIterate, prefix: Method(nameof(RunIteratePrefix)));
+        PatchGuard.Patch(harmony, _combatIterate, prefix: Method(nameof(CombatIteratePrefix)));
+        PatchGuard.Patch(harmony, _runIterate, prefix: Method(nameof(RunIteratePrefix)));
 
         // 3. Scopes. Each one is independent: a missing target only loses that scope.
         TryScope(harmony, AccessTools.Method(typeof(NetFullCombatState), nameof(NetFullCombatState.FromRun)), nameof(EnterSnapshot), nameof(ExitSnapshot));
@@ -133,6 +146,10 @@ public static class ListenerCache
         TryScope(harmony, AccessTools.Method(typeof(NCard), nameof(NCard.UpdateVisuals)), nameof(EnterDisplayRefresh), nameof(ExitRefresh));
     }
 
+    /// <summary>A method the cache must watch to stay up to date: missing, the whole patch is skipped (named in the log).</summary>
+    private static MethodBase Watched(MethodBase? method, Type type, string name) =>
+        method ?? throw new PatchSkippedException($"{type.Name}.{name}, which it watches to keep its cache up to date, is missing (game update?): left vanilla");
+
     private static MethodBase Require(MethodBase? method) =>
         method ?? throw new MissingMethodException("ListenerCache target not found (game update?)");
 
@@ -143,7 +160,7 @@ public static class ListenerCache
     {
         try
         {
-            harmony.Patch(Require(target), prefix: Method(enter), finalizer: Method(exit));
+            PatchGuard.Patch(harmony, Require(target), prefix: Method(enter), finalizer: Method(exit));
         }
         catch (Exception e)
         {
@@ -162,7 +179,7 @@ public static class ListenerCache
             MethodInfo dispatch = Require(AccessTools.Method(typeof(CombatStateTracker), "CallCombatStateChangedDeferred"));
             MethodInfo moveNext = Require(AccessTools.AsyncMoveNext(dispatch));
             _invokeInScope = Require(AccessTools.Method(typeof(ListenerCache), nameof(InvokeStateChangedInScope)));
-            harmony.Patch(moveNext, transpiler: Method(nameof(DispatchTranspiler)));
+            PatchGuard.Patch(harmony, moveNext, transpiler: Method(nameof(DispatchTranspiler)));
         }
         catch (Exception e)
         {

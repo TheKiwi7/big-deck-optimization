@@ -1,5 +1,7 @@
 # Co-op, both players with the mod (host), the client's fast combat start switched off: in co-op it must still apply
-# (client log: 'combat start skipped N animation waits'), no divergence. See coopfast-client.txt.
+# (client log: 'combat start skipped N animation waits'), no divergence; two combat starts. Fights end by playing
+# cards (enemies at 300 HP, immortal for 3 rounds: same rule on both peers), never by the debug 'kill all', which
+# makes a checksum on the host only and reports a false divergence. See coopfast-client.txt.
 timeout 2400
 mplobby NECROBINDER 2
 waitfor run 240
@@ -9,33 +11,66 @@ cmd bigdeck import ref all all {hash:ref}
 cmd bigdeck import ref all cards {hash:ref}
 cmd bigdeck import ref all cards {hash:ref}
 cmd bigdeck import ref all cards {hash:ref}
-enemyhp 999999
+enemyhp 300
+immortal until 4
 wait 25
 cmd fight CULTISTS_NORMAL
 waitfor idle 900
 cmd bdperf combatstart
 state t1
-play 4
+play 5
 endturn
-waitfor idle 900
+waitfor turn 300
 state t2
-play 4
+play 5
 endturn
-waitfor idle 900
+waitfor turn 300
 state t3
-cmd bdperf verify
-cmd kill all
+play 5
+endturn
+waitfor turn 300
+state t4
+play 5
+endturn
+waitfor turn 300
+state t5
+play 5
+endturn
+waitfor turn 300
+state t6
+play 5
+endturn
+waitfor turn 300
 waitfor nocombat 600
+cmd bdperf verify
 wait 8
 cmd fight CULTISTS_NORMAL
 waitfor idle 900
 state f2t1
-play 3
+play 5
 endturn
-waitfor idle 900
+waitfor turn 300
 state f2t2
-cmd bdperf verify
-cmd kill all
+play 5
+endturn
+waitfor turn 300
+state f2t3
+play 5
+endturn
+waitfor turn 300
+state f2t4
+play 5
+endturn
+waitfor turn 300
+state f2t5
+play 5
+endturn
+waitfor turn 300
+state f2t6
+play 5
+endturn
+waitfor turn 300
 waitfor nocombat 600
+cmd bdperf verify
 wait 20
 quit

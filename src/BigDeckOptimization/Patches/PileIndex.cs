@@ -45,7 +45,7 @@ public static class PileIndex
         ("RandomizeOrderInternal", "FF906423481AC743"),
         ("Clear", "A2B6A279CA18ABC1"),
     };
-    private const string GetterFingerprint = "4EDF4A6967871E17";
+    private const string GetterFingerprint = "6A1FE5E50F9ECAC2";
     /// <summary>v0.107.1 <c>RunState.ContainsCard</c>, mirrored by <see cref="ContainsCardPrefix"/>.</summary>
     private const string ContainsCardFingerprint = "DC5BAC12C08BE24D";
 
@@ -82,26 +82,28 @@ public static class PileIndex
         {
             PatchSafety.RequireFingerprint(AccessTools.Method(typeof(CardPile), method) ?? throw new MissingMethodException("CardPile." + method), fingerprint);
         }
+        // ...and no other code changes the pile lists.
+        PatchSafety.RequireFieldWriters(typeof(CardPile), "_cards", PatchSafety.CardListWriters);
         _owner = AccessTools.FieldRefAccess<CardModel, Player?>("_owner");
 
         // Tracking first, so the getter never answers from an index that missed changes.
         // Updated before the original runs: it fires CardAdded/ContentsChanged (whose listeners read card.Pile) right
         // after changing the list. Last prefix, so it sees whether another mod skips the original; undone if it throws.
-        harmony.Patch(AccessTools.Method(typeof(CardPile), nameof(CardPile.AddInternal)),
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), nameof(CardPile.AddInternal)),
             prefix: new HarmonyMethod(typeof(PileIndex), nameof(BeforeAdd)) { priority = Priority.Last },
             finalizer: Method(nameof(UndoIfThrown)));
-        harmony.Patch(AccessTools.Method(typeof(CardPile), nameof(CardPile.RemoveInternal)),
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), nameof(CardPile.RemoveInternal)),
             prefix: new HarmonyMethod(typeof(PileIndex), nameof(BeforeRemove)) { priority = Priority.Last },
             finalizer: Method(nameof(UndoIfThrown)));
-        harmony.Patch(AccessTools.Method(typeof(CardPile), nameof(CardPile.Clear)), finalizer: Method(nameof(ClearFinalizer)));
-        harmony.Patch(AccessTools.Method(typeof(CardPile), nameof(CardPile.RandomizeOrderInternal)),
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), nameof(CardPile.Clear)), finalizer: Method(nameof(ClearFinalizer)));
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), nameof(CardPile.RandomizeOrderInternal)),
             prefix: Method(nameof(BeforeRandomize)), postfix: Method(nameof(AfterRandomize)));
-        harmony.Patch(_getter, prefix: Method(nameof(PilePrefix)));
+        PatchGuard.Patch(harmony, _getter, prefix: Method(nameof(PilePrefix)));
         Applied = true;
         try
         {
             MethodInfo addInternal = AccessTools.Method(typeof(CardPile), nameof(CardPile.AddInternal))!;
-            harmony.Patch(addInternal, transpiler: Method(nameof(AddInternalTranspiler)));
+            PatchGuard.Patch(harmony, addInternal, transpiler: Method(nameof(AddInternalTranspiler)));
             Log.Info($"[{ModEntry.Id}] {Name}: AddInternal duplicate check {(_duplicateCheckPatched ? "patched" : "left vanilla (call not found)")}");
         }
         catch (Exception e)
@@ -113,7 +115,7 @@ public static class PileIndex
             _containsCard = AccessTools.Method(typeof(RunState), nameof(RunState.ContainsCard)) ?? throw new MissingMethodException("RunState.ContainsCard");
             PatchSafety.RequireFingerprint(_containsCard, ContainsCardFingerprint);
             _allCards = AccessTools.FieldRefAccess<RunState, List<CardModel>>("_allCards");
-            harmony.Patch(_containsCard, prefix: Method(nameof(ContainsCardPrefix)));
+            PatchGuard.Patch(harmony, _containsCard, prefix: Method(nameof(ContainsCardPrefix)));
         }
         catch (Exception e)
         {
@@ -221,10 +223,18 @@ public static class PileIndex
         {
             return;
         }
-        Entry entry = _entries.GetOrCreateValue(card);
-        __state = Saved.Of(entry);
-        entry.Count++;
-        entry.Pile = entry.Count == 1 ? __instance : null;
+        try
+        {
+            Entry entry = _entries.GetOrCreateValue(card);
+            __state = Saved.Of(entry);
+            entry.Count++;
+            entry.Pile = entry.Count == 1 ? __instance : null;
+        }
+        catch (Exception e)
+        {
+            // Runs on every card move: never let it break the game's own add; the index can't be trusted any more.
+            Fail("index update failed: " + e);
+        }
     }
 
     /// <summary>AddInternal throws on duplicates or canonical cards, RemoveInternal on a card not in the pile.</summary>
@@ -244,20 +254,27 @@ public static class PileIndex
         {
             return;
         }
-        Entry entry = _entries.GetOrCreateValue(card);
-        __state = Saved.Of(entry);
-        entry.Count--;
-        if (entry.Count <= 0)
+        try
         {
-            entry.Count = 0;
-            entry.Pile = null;
-            entry.Unknown = false;
+            Entry entry = _entries.GetOrCreateValue(card);
+            __state = Saved.Of(entry);
+            entry.Count--;
+            if (entry.Count <= 0)
+            {
+                entry.Count = 0;
+                entry.Pile = null;
+                entry.Unknown = false;
+            }
+            else if (entry.Pile != __instance)
+            {
+                // It was in several piles and is still in at least one: which one isn't tracked.
+                entry.Pile = null;
+                entry.Unknown = true;
+            }
         }
-        else if (entry.Pile != __instance)
+        catch (Exception e)
         {
-            // It was in several piles and is still in at least one: which one isn't tracked.
-            entry.Pile = null;
-            entry.Unknown = true;
+            Fail("index update failed: " + e);
         }
     }
 

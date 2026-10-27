@@ -48,17 +48,86 @@ public static partial class HookSkip
         public readonly string Hook;
         public readonly string Fingerprint;
         public readonly bool Subscribed;
+        /// <summary>Index in <see cref="HelperProfiles"/> of the version this entry was classified on, -1 when it uses no helper.</summary>
+        public readonly int Profile;
         public readonly string[] Methods;
+        /// <summary>Fingerprint of each method's AbstractModel default in that version (the no-op the classification relied on).</summary>
+        public readonly string[] Defaults;
         public MethodInfo? Method;
+        /// <summary>The code transpiled: the hook itself or its state machine's MoveNext (another mod may patch either).</summary>
+        public MethodBase? Body;
         public PileFilter? Filter;
 
-        public Entry(string hook, string fingerprint, bool subscribed, params string[] methods)
+        public Entry(string hook, string fingerprint, bool subscribed, int profile, params string[] methods)
         {
             Hook = hook;
             Fingerprint = fingerprint;
             Subscribed = subscribed;
-            Methods = methods;
+            Profile = profile;
+            Methods = methods.Select(m => m[..m.IndexOf('=')]).ToArray();
+            Defaults = methods.Select(m => m[(m.IndexOf('=') + 1)..]).ToArray();
         }
+    }
+
+    /// <summary>
+    /// Why an entry doesn't hold in this game, or null when it does: the hook's code, a default it calls, or a helper of the
+    /// version it was classified on changed.
+    /// </summary>
+    private static string? Mismatch(Entry entry, string actual)
+    {
+        if (!PatchSafety.FingerprintMatches(actual, entry.Fingerprint))
+        {
+            return $"code changed (fingerprint {actual})";
+        }
+        for (int i = 0; i < entry.Methods.Length; i++)
+        {
+            string found = DefaultFingerprint(entry.Methods[i]);
+            if (found != entry.Defaults[i])
+            {
+                return $"AbstractModel.{entry.Methods[i]} default changed ({found})";
+            }
+        }
+        if (entry.Profile >= 0 && !HelperProfileHolds(entry.Profile))
+        {
+            return "choice context helpers changed";
+        }
+        return null;
+    }
+
+    private static Dictionary<string, string>? _defaults;
+
+    /// <summary>Fingerprint of the AbstractModel method of that name (load time only, cached).</summary>
+    private static string DefaultFingerprint(string name)
+    {
+        if (_defaults == null)
+        {
+            _defaults = new Dictionary<string, string>();
+            foreach (IGrouping<string, MethodInfo> methods in typeof(AbstractModel)
+                .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly).GroupBy(m => m.Name))
+            {
+                MethodInfo first = methods.First();
+                _defaults[methods.Key] = methods.Count() > 1 ? "overloaded" : first.GetMethodBody() == null ? "abstract" : MethodFingerprint.Of(first);
+            }
+        }
+        return _defaults.TryGetValue(name, out string? fingerprint) ? fingerprint : "missing";
+    }
+
+    private static bool?[]? _profiles;
+
+    /// <summary>Whether this game's helpers (choice contexts, ExecutionFinished) have the code of that classified version.</summary>
+    private static bool HelperProfileHolds(int profile)
+    {
+        _profiles ??= new bool?[HelperProfiles.Length];
+        return _profiles[profile] ??= HelperProfiles[profile].All(helper =>
+        {
+            MethodBase? method = MethodFingerprint.Resolve(typeof(AbstractModel).Assembly, helper.Key);
+            string actual = method?.GetMethodBody() == null ? "-" : MethodFingerprint.Of(method);
+            if (actual != helper.Value)
+            {
+                Log.Info($"[{ModEntry.Id}] {Name}: helper {helper.Key} is {actual}, profile {profile} expects {helper.Value}");
+            }
+            return actual == helper.Value;
+        });
     }
 
     private static MethodInfo? _runWalk, _combatWalk, _combatHookWalk;
@@ -81,48 +150,144 @@ public static partial class HookSkip
         _redirectCombatHook = AccessTools.Method(typeof(HookSkip), nameof(CombatHookWalk));
         PatchSafety.RequireFingerprint(AccessTools.EnumeratorMoveNext(_combatHookWalk), CombatHookWalkFingerprint);
 
-        for (int i = 0; i < Hooks.Length; i++)
+        // Entries of every classified game version: per hook, the first one whose code, defaults and helpers all match.
+        int absent = 0;
+        foreach (IGrouping<string, int> hookEntries in Enumerable.Range(0, Hooks.Length).GroupBy(i => Hooks[i].Hook))
         {
-            Entry entry = Hooks[i];
+            string hookName = hookEntries.Key;
             try
             {
-                MethodInfo hook = AccessTools.Method(typeof(Hook), entry.Hook) ?? throw new MissingMethodException(nameof(Hook), entry.Hook);
+                MethodInfo? hook = AccessTools.Method(typeof(Hook), hookName);
+                if (hook == null)
+                {
+                    absent++; // A hook of another game version.
+                    continue;
+                }
                 // Async hooks run their code (and their walks) in the state machine's MoveNext.
                 MethodBase body = hook.GetCustomAttribute<System.Runtime.CompilerServices.AsyncStateMachineAttribute>() != null
                     ? AccessTools.AsyncMoveNext(hook)
                     : hook;
                 string actual = MethodFingerprint.Of(body);
-                if (!PatchSafety.FingerprintMatches(actual, entry.Fingerprint))
+                int match = -1;
+                string? why = null;
+                foreach (int i in hookEntries)
+                {
+                    string? mismatch = Mismatch(Hooks[i], actual);
+                    if (mismatch == null)
+                    {
+                        match = i;
+                        break;
+                    }
+                    // Report the most telling reason: a version whose hook code matches but something it relies on changed.
+                    if (why == null || !mismatch.StartsWith("code changed", StringComparison.Ordinal))
+                    {
+                        why = mismatch;
+                    }
+                }
+                if (match < 0)
                 {
                     LeftVanilla++;
-                    Log.Info($"[{ModEntry.Id}] {Name}: {entry.Hook} changed (fingerprint {actual}, expected {entry.Fingerprint}): left vanilla");
+                    Log.Info($"[{ModEntry.Id}] {Name}: {hookName} {why}: left vanilla");
                     continue;
                 }
+                Entry entry = Hooks[match];
                 entry.Method = hook;
+                entry.Body = body;
                 entry.Filter = PileFilter.Overriding(entry.Subscribed, entry.Methods);
-                _indexByBody[body] = i;
-                harmony.Patch(body, transpiler: new HarmonyMethod(typeof(HookSkip), nameof(Transpiler)));
+                _indexByBody[body] = match;
+                _toPatch.Enqueue((hookName, body));
+            }
+            catch (Exception e)
+            {
+                LeftVanilla++;
+                Log.Info($"[{ModEntry.Id}] {Name}: {hookName} left vanilla: {e.Message}");
+            }
+        }
+        if (_toPatch.Count == 0)
+        {
+            throw new PatchSkippedException("no hook matched");
+        }
+        Applied = true;
+        _absent = absent;
+        BaseLibHooks.Init(harmony);
+        PatchOverFrames(harmony);
+    }
+
+    /// <summary>Hooks checked at load, patched by <see cref="PatchOverFrames"/>.</summary>
+    private static readonly Queue<(string Hook, MethodBase Body)> _toPatch = new();
+    private static int _absent;
+    private const int HooksPerFrame = 8;
+
+    /// <summary>
+    /// Transpiles the checked hooks a few per frame (~1.5 ms each: ~140 of them took ~200 ms of the game's start). Hooks only
+    /// run in a run, seconds later; one not patched yet just runs vanilla. Main thread, like every patch of this mod.
+    /// Falls back to patching them all now when frames can't be awaited.
+    /// </summary>
+    private static async void PatchOverFrames(Harmony harmony)
+    {
+        try
+        {
+            if (Godot.Engine.GetMainLoop() is not Godot.SceneTree tree)
+            {
+                PatchBatch(harmony, int.MaxValue);
+                return;
+            }
+            while (_toPatch.Count > 0)
+            {
+                await tree.ToSignal(tree, Godot.SceneTree.SignalName.ProcessFrame);
+                PatchBatch(harmony, HooksPerFrame);
+            }
+        }
+        catch (Exception e)
+        {
+            // async void: nothing may escape. Hooks left unpatched just run vanilla.
+            Log.Error($"[{ModEntry.Id}] {Name}: patching hooks stopped ({_toPatch.Count} left vanilla): {e}");
+            LeftVanilla += _toPatch.Count;
+            _toPatch.Clear();
+        }
+    }
+
+    private static void PatchBatch(Harmony harmony, int count)
+    {
+        for (int n = 0; n < count && _toPatch.Count > 0; n++)
+        {
+            (string hookName, MethodBase body) = _toPatch.Dequeue();
+            if (PatchSafety.IsFaulted(Name))
+            {
+                LeftVanilla += _toPatch.Count + 1;
+                _toPatch.Clear();
+                break;
+            }
+            try
+            {
+                PatchGuard.Patch(harmony, body, transpiler: new HarmonyMethod(typeof(HookSkip), nameof(Transpiler)));
                 Active++;
             }
             catch (Exception e)
             {
                 LeftVanilla++;
-                Log.Info($"[{ModEntry.Id}] {Name}: {entry.Hook} left vanilla: {e.Message}");
+                Log.Info($"[{ModEntry.Id}] {Name}: {hookName} left vanilla: {e.Message}");
             }
         }
-        Applied = Active > 0;
-        Log.Info($"[{ModEntry.Id}] {Name}: {Active} hooks filtered, {LeftVanilla} left vanilla");
-        BaseLibHooks.Init(harmony);
-        if (!Applied)
+        if (_toPatch.Count == 0)
         {
-            throw new PatchSkippedException("no hook matched");
+            Log.Info($"[{ModEntry.Id}] {Name}: {Active} hooks filtered, {LeftVanilla} left vanilla ({_absent} classified hooks not in this game version)");
         }
     }
 
     /// <summary>Redirects the walk calls of one hook (its index is pushed as an extra argument).</summary>
     private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions, MethodBase __originalMethod)
     {
-        int index = _indexByBody[__originalMethod];
+        // Harmony runs this again whenever another mod patches the hook later: it must never throw there (that mod's
+        // patch would fail). Unknown body: unchanged.
+        if (!_indexByBody.TryGetValue(__originalMethod, out int index))
+        {
+            foreach (CodeInstruction code in instructions)
+            {
+                yield return code;
+            }
+            yield break;
+        }
         foreach (CodeInstruction code in instructions)
         {
             MethodInfo? redirect = code.Calls(_runWalk!) ? _redirectRun
@@ -148,19 +313,79 @@ public static partial class HookSkip
     {
         Entry entry = Hooks[index];
         // RunVanilla (snapshot verifier, bench comparisons) is the vanilla reference: no filtering there.
-        if (!Enabled || ListenerCache.IsSuspended || PatchSafety.IsPatchedByOthers(entry.Method))
+        if (!Enabled || ListenerCache.IsSuspended)
         {
             return null;
         }
-        foreach (MethodInfo baseMethod in entry.Filter!.BaseMethods!)
+        // Runs inside the hooks, most of them async: an exception here would only fault the hook's task (PatchGuard
+        // never sees it), so it turns HookSkip off and this walk runs vanilla.
+        try
         {
-            if (PatchSafety.IsPatchedByOthers(baseMethod))
+            if (PatchSafety.IsPatchedByOthers(entry.Method) || (entry.Body != entry.Method && PatchSafety.IsPatchedByOthers(entry.Body, AllowedBodyPatches())))
             {
                 return null;
             }
+            foreach (MethodInfo baseMethod in entry.Filter!.BaseMethods!)
+            {
+                if (PatchSafety.IsPatchedByOthers(baseMethod))
+                {
+                    return null;
+                }
+            }
+            return entry.Filter;
         }
-        return entry.Filter;
+        catch (Exception e)
+        {
+            Enabled = false;
+            PatchSafety.Fault(Name);
+            Log.Error($"[{ModEntry.Id}] {Name} disabled after exception, falling back to vanilla: {e}");
+            return null;
+        }
     }
+
+    /// <summary>
+    /// Other mods' patches on a hook's state machine that leave it filtered: they must not add listener walks to the code
+    /// this transpiler redirects. BaseLib 3.4.7 makes AfterEnergyReset and AfterCardPlayed first await a method of its own
+    /// (its resource reset, its pre-play hooks) through <c>AsyncMethodCall.Create</c>: no walk added. Transpilers and the
+    /// injector fingerprinted.
+    /// </summary>
+    private static MethodInfo[] AllowedBodyPatches()
+    {
+        if (_allowedBodyPatches != null)
+        {
+            return _allowedBodyPatches;
+        }
+        var allowed = new List<MethodInfo>();
+        try
+        {
+            MethodInfo? injector = AccessTools.Method("BaseLib.Utils.Patching.AsyncMethodCall:Create");
+            if (injector != null && PatchSafety.FingerprintMatches(MethodFingerprint.Of(injector), BaseLibAsyncInjectorFingerprint))
+            {
+                foreach ((string name, string fingerprint) in BaseLibAwaitTranspilers)
+                {
+                    MethodInfo? transpiler = AccessTools.Method(name);
+                    if (transpiler != null && PatchSafety.FingerprintMatches(MethodFingerprint.Of(transpiler), fingerprint))
+                    {
+                        allowed.Add(transpiler);
+                    }
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: BaseLib's hook transpilers not checked ({e.Message}): those hooks stay vanilla with BaseLib");
+        }
+        // BaseLib loads before any combat, when this first runs: no need to look again.
+        return _allowedBodyPatches = allowed.ToArray();
+    }
+
+    private static MethodInfo[]? _allowedBodyPatches;
+    private const string BaseLibAsyncInjectorFingerprint = "DF3A98C4301D8FE8";
+    private static readonly (string Method, string Fingerprint)[] BaseLibAwaitTranspilers =
+    {
+        ("BaseLib.Abstracts.CustomResourcePatches:AfterPlay", "A55CDC6F853C8854"),
+        ("BaseLib.Patches.Hooks.AfterCardPlayedPatch:AfterPlay", "B1ED9060E4BBD70B"),
+    };
 
     /// <summary>Replaces <c>runState.IterateHookListeners(combatState)</c> in a hook.</summary>
     public static IEnumerable<AbstractModel> RunWalk(IRunState runState, ICombatState? combatState, int index)
@@ -181,7 +406,7 @@ public static partial class HookSkip
     }
 
     /// <summary>v0.107.1 <c>Hook.IterateCombatHookListeners</c> (nothing while combat is ending), mirrored below.</summary>
-    private const string CombatHookWalkFingerprint = "3BECCBC0C9F3A25A";
+    private const string CombatHookWalkFingerprint = "B3B83A82B69E17FC";
 
     /// <summary>Replaces <c>Hook.IterateCombatHookListeners(combatState)</c> in a hook.</summary>
     public static IEnumerable<AbstractModel> CombatHookWalk(ICombatState combatState, int index)
@@ -257,7 +482,7 @@ public static partial class HookSkip
                     PatchSafety.RequireFingerprint(method, fingerprint);
                     Type iface = AccessTools.TypeByName(interfaceName) ?? throw new TypeLoadException(interfaceName);
                     _filters[method] = new PileFilter(iface.IsAssignableFrom, keepSubscribed: false);
-                    _harmony!.Patch(method, prefix: new HarmonyMethod(typeof(BaseLibHooks), nameof(Prefix)),
+                    PatchGuard.Patch(_harmony!, method, prefix: new HarmonyMethod(typeof(BaseLibHooks), nameof(Prefix)),
                         finalizer: new HarmonyMethod(typeof(BaseLibHooks), nameof(Finalizer)));
                     PatchGuard.Watch(method);
                     Log.Info($"[{ModEntry.Id}] {Name}: BaseLib {name} applied");

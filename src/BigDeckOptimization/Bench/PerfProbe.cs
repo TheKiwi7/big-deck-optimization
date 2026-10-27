@@ -107,7 +107,7 @@ public static class PerfProbe
         }
         _labels[target] = label;
         Type returnType = target is MethodInfo info ? info.ReturnType : typeof(void);
-        harmony.Patch(target,
+        Patches.PatchGuard.Patch(harmony, target,
             prefix: new HarmonyMethod(typeof(PerfProbe), nameof(Prefix)),
             postfix: new HarmonyMethod(typeof(PerfProbe), typeof(Task).IsAssignableFrom(returnType) ? nameof(AsyncPostfix) : nameof(SyncPostfix)));
     }

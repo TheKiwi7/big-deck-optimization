@@ -8,7 +8,8 @@
 # With BaseLib, bdopt saves its changes in mod_configs/BigDeckOptimization.cfg: the file is restored byte for byte after
 # the session (a scenario stopped before its final 'bdopt on' would leave the mod off), unless -KeepConfig.
 param([Parameter(Mandatory)][string]$Name, [int]$TimeoutSec = 900, [int]$TraceSec = 0, [string]$TraceProfile = "cpu-sampling", [switch]$KeepConfig, [switch]$Visible, [switch]$Sound, [int]$Screen = 1, [switch]$Show, [string]$GameDir = "")
-$copyDir = $GameDir
+# -GameDir, else STS2_GAME_DIR (scripts calling run.ps1, e.g. settings.ps1, then test that copy too).
+$copyDir = if ($GameDir) { $GameDir } else { "$env:STS2_GAME_DIR" }
 . (Join-Path $PSScriptRoot "common.ps1")
 Assert-GameNotRunning
 $script = Join-Path $Scenarios "$Name.txt"
@@ -57,7 +58,18 @@ try {
             "--profile", $TraceProfile, "--duration", $span, "-o", "`"$Results\$Name.nettrace`""
     }
     $t = 0
-    while ((Get-Process -Name SlayTheSpire2 -ErrorAction SilentlyContinue) -and $t -lt $TimeoutSec) { Start-Sleep 5; $t += 5 }
+    $waitStart = Get-Date
+    while ((Get-Process -Name SlayTheSpire2 -ErrorAction SilentlyContinue) -and $t -lt $TimeoutSec) {
+        Start-Sleep 5; $t += 5
+        # The test runner couldn't load (e.g. a modified game in tools/autotest/mutations.ps1): nothing would run and the
+        # window would stay on screen until the timeout.
+        if ($t -le 120 -and (Test-Path $log) -and (Get-Item $log).LastWriteTime -gt $waitStart.AddSeconds(-30) -and (Select-String -Path $log -Pattern "Patch AutoTest (skipped|could not)" -Quiet)) {
+            Write-Output "the test runner (AutoTest) did not load: closing the game"
+            Stop-Process -Name SlayTheSpire2 -Force -ErrorAction SilentlyContinue
+            Start-Sleep 3
+            break
+        }
+    }
     if (Get-Process -Name SlayTheSpire2 -ErrorAction SilentlyContinue) {
         Write-Output "TIMEOUT after $t s: closing the game"
         Stop-Process -Name SlayTheSpire2 -Force

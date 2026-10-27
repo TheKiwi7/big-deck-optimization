@@ -62,7 +62,7 @@ public static class HoverTipReuse
         var field = AccessTools.Field(typeof(NHoverTipSet), "_activeHoverTips") ?? throw new MissingFieldException("NHoverTipSet._activeHoverTips");
         var active = (Dictionary<Control, NHoverTipSet>)field.GetValue(null)!;
         _activeHoverTips = () => active;
-        harmony.Patch(handler, prefix: new HarmonyMethod(typeof(HoverTipReuse), nameof(Prefix)));
+        PatchGuard.Patch(harmony, handler, prefix: new HarmonyMethod(typeof(HoverTipReuse), nameof(Prefix)));
         Applied = true;
     }
 

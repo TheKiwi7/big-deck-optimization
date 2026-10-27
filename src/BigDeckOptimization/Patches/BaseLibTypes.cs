@@ -23,7 +23,17 @@ internal static class BaseLibTypes
         {
             AppDomain.CurrentDomain.AssemblyLoad += (_, args) =>
             {
-                if (!MayDefine(args.LoadedAssembly))
+                // Runs inside another assembly's load: never throw there. Can't tell = a type may exist.
+                bool may;
+                try
+                {
+                    may = MayDefine(args.LoadedAssembly);
+                }
+                catch
+                {
+                    may = true;
+                }
+                if (!may)
                 {
                     return;
                 }
@@ -40,33 +50,54 @@ internal static class BaseLibTypes
     }
 
     /// <summary>True when some loaded assembly defines one, or the BaseLib type is missing (can't tell).</summary>
-    public static bool AnyDefined(string baseTypeName) =>
-        AccessTools.TypeByName(baseTypeName) == null
-        || AppDomain.CurrentDomain.GetAssemblies().Any(a => MayDefine(a) && Defines(a, baseTypeName));
-
-    public static bool MayDefine(Assembly assembly) =>
-        !assembly.IsDynamic && (assembly.GetName().Name == "BaseLib" || assembly.GetReferencedAssemblies().Any(r => r.Name == "BaseLib"));
-
-    public static bool Defines(Assembly assembly, string baseTypeName)
+    public static bool AnyDefined(string baseTypeName)
     {
-        Type? baseType = AccessTools.TypeByName(baseTypeName);
-        if (baseType == null)
-        {
-            return true;
-        }
-        Type[] types;
         try
         {
-            types = assembly.GetTypes();
-        }
-        catch (ReflectionTypeLoadException e)
-        {
-            types = e.Types.Where(t => t != null).ToArray()!;
+            return AccessTools.TypeByName(baseTypeName) == null
+                || AppDomain.CurrentDomain.GetAssemblies().Any(a => MayDefine(a) && Defines(a, baseTypeName));
         }
         catch
         {
             return true; // Can't tell: don't skip.
         }
-        return types.Any(t => !t.IsAbstract && !t.IsInterface && baseType.IsAssignableFrom(t));
+    }
+
+    public static bool MayDefine(Assembly assembly)
+    {
+        try
+        {
+            return !assembly.IsDynamic && (assembly.GetName().Name == "BaseLib" || assembly.GetReferencedAssemblies().Any(r => r.Name == "BaseLib"));
+        }
+        catch
+        {
+            return !assembly.IsDynamic; // Can't tell: it may.
+        }
+    }
+
+    public static bool Defines(Assembly assembly, string baseTypeName)
+    {
+        try
+        {
+            Type? baseType = AccessTools.TypeByName(baseTypeName);
+            if (baseType == null)
+            {
+                return true;
+            }
+            Type[] types;
+            try
+            {
+                types = assembly.GetTypes();
+            }
+            catch (ReflectionTypeLoadException e)
+            {
+                types = e.Types.Where(t => t != null).ToArray()!;
+            }
+            return types.Any(t => !t.IsAbstract && !t.IsInterface && baseType.IsAssignableFrom(t));
+        }
+        catch
+        {
+            return true; // Can't tell: don't skip.
+        }
     }
 }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Entities.Cards;
@@ -15,8 +16,9 @@ namespace BigDeckOptimization.Patches;
 /// change, walks the whole pile to ID cards that have none yet. With thousands of cards that is a full pile walk per
 /// moved card: O(n²) when the draw pile is reshuffled or the piles are emptied at combat end.
 ///
-/// A card can only enter a pile through <c>CardPile.AddInternal</c>, and IDs are never removed during a combat. So we
-/// track, per combat pile, the cards added since its last walk: when all of them already have an ID, the walk would
+/// A card can only enter a pile through <c>CardPile.AddInternal</c> (no other code changes the pile lists: checked), and
+/// IDs are never removed during a combat. So we track, per pile the database walks (the piles it IDed at combat start or
+/// walked since, never assumed from the pile's type), the cards added since its last walk: when all of them already have an ID, the walk would
 /// ID nothing and is skipped; otherwise the vanilla walk runs (same cards, same order, same IDs). One skipped walk in
 /// <see cref="VerifyEvery"/> is checked against the full pile; any card without an ID disables the patch.
 /// </summary>
@@ -24,8 +26,10 @@ public static class CardDbScan
 {
     public const string Name = "CardDbScan";
 
-    /// <summary>v0.107.1 code this relies on: the pile walk, the ID assignment and the only way into a pile.</summary>
+    /// <summary>v0.107.1 code this relies on: the pile walk, the ID assignment, the only way into a pile, and the combat
+    /// start that IDs every card already in a pile (same code in v0.111).</summary>
     private const string WalkFingerprint = "207017C48274E22C";
+    private const string StartCombatFingerprint = "01491A6EA42EBCE2";
     private const string IdFingerprint = "DEC87C0A856497A5";
     private const string AddFingerprint = "0A80C8EF3B697A4E";
 
@@ -59,13 +63,17 @@ public static class CardDbScan
         PatchSafety.RequireFingerprint(walk, WalkFingerprint);
         PatchSafety.RequireFingerprint(id, IdFingerprint);
         PatchSafety.RequireFingerprint(add, AddFingerprint);
+        MethodInfo startCombat = AccessTools.Method(typeof(NetCombatCardDb), nameof(NetCombatCardDb.StartCombat))
+            ?? throw new MissingMethodException("NetCombatCardDb.StartCombat");
+        PatchSafety.RequireFingerprint(startCombat, StartCombatFingerprint);
+        PatchSafety.RequireFieldWriters(typeof(CardPile), "_cards", PatchSafety.CardListWriters);
         _cardToId = AccessTools.FieldRefAccess<NetCombatCardDb, Dictionary<CardModel, uint>>("_cardToId");
 
         // Tracking first: it must see every add before the walk can be skipped.
-        harmony.Patch(add, prefix: new HarmonyMethod(typeof(CardDbScan), nameof(RecordAdd)));
-        harmony.Patch(AccessTools.Method(typeof(NetCombatCardDb), nameof(NetCombatCardDb.StartCombat)),
+        PatchGuard.Patch(harmony, add, prefix: new HarmonyMethod(typeof(CardDbScan), nameof(RecordAdd)));
+        PatchGuard.Patch(harmony, startCombat,
             postfix: new HarmonyMethod(typeof(CardDbScan), nameof(AfterStartCombat)));
-        harmony.Patch(walk,
+        PatchGuard.Patch(harmony, walk,
             prefix: new HarmonyMethod(typeof(CardDbScan), nameof(WalkPrefix)),
             postfix: new HarmonyMethod(typeof(CardDbScan), nameof(WalkPostfix)));
         Applied = true;
@@ -74,22 +82,26 @@ public static class CardDbScan
     /// <summary>Recorded whatever <see cref="Enabled"/> says, so turning the patch on mid-combat stays exact.</summary>
     private static void RecordAdd(CardPile __instance, CardModel card)
     {
-        if (!__instance.IsCombatPile)
+        try
         {
-            return;
+            // Only piles the database walks are tracked; a pile not tracked yet gets a vanilla walk first.
+            if (!_pending.TryGetValue(__instance, out Pending? pending) || pending.Overflow)
+            {
+                return;
+            }
+            if (pending.Cards.Count >= MaxPending)
+            {
+                pending.Overflow = true;
+                pending.Cards.Clear();
+                return;
+            }
+            pending.Cards.Add(card);
         }
-        Pending pending = _pending.GetOrCreateValue(__instance);
-        if (pending.Overflow)
+        catch (Exception e)
         {
-            return;
+            // Runs on every card move: a missed record can't be trusted, so stop skipping walks.
+            Fail(e.ToString());
         }
-        if (pending.Cards.Count >= MaxPending)
-        {
-            pending.Overflow = true;
-            pending.Cards.Clear();
-            return;
-        }
-        pending.Cards.Add(card);
     }
 
     /// <summary>StartCombat IDs every card already in a pile (vanilla refuses ownerless ones: keep those pending).</summary>
@@ -107,11 +119,12 @@ public static class CardDbScan
                 }
                 foreach (CardPile pile in player.PlayerCombatState.AllPiles)
                 {
+                    Pending pending = _pending.GetOrCreateValue(pile);
                     foreach (CardModel card in pile.Cards)
                     {
                         if (!ids.ContainsKey(card))
                         {
-                            _pending.GetOrCreateValue(pile).Cards.Add(card);
+                            pending.Cards.Add(card);
                         }
                     }
                 }
@@ -133,11 +146,8 @@ public static class CardDbScan
         try
         {
             Dictionary<CardModel, uint> ids = _cardToId!(__instance);
-            if (!_pending.TryGetValue(pile, out Pending? pending))
-            {
-                pending = _pending.GetOrCreateValue(pile);
-            }
-            if (pending.Overflow)
+            // A pile this hasn't tracked since combat start: vanilla walk (its postfix starts tracking it).
+            if (!_pending.TryGetValue(pile, out Pending? pending) || pending.Overflow)
             {
                 return true;
             }

@@ -34,7 +34,7 @@ public static class LimitlessReserialize
     private const string HandlersType = "BaseLib.Patches.Saves.ExtendedSaveHandlers`2";
 
     /// <summary>Limitless v1.1.7 <c>MultiEnchantment.SetSerializableCards</c>: the list it builds is what this compares with.</summary>
-    private const string SetSerializableCardsFingerprint = "3C0315F6F71E02A5";
+    private const string SetSerializableCardsFingerprint = "916B119C60C89D96";
     /// <summary>v0.107.1 <c>CardModel.ToSerializable</c> and <c>EnchantmentModel.ToSerializable</c>, mirrored by the comparison.</summary>
     private const string CardToSerializableFingerprint = "BBD751B8837741A9";
     private const string EnchantmentToSerializableFingerprint = "9AD225E2780EB1EA";
@@ -46,7 +46,7 @@ public static class LimitlessReserialize
     private const string DictForTypeFingerprint = "3FAE5C0C641C9839";
     /// <summary>v0.107.1 <c>SavedProperties.From</c> / <c>FromInternal</c>: null when the type has no saved property.</summary>
     private const string SavedPropertiesFromFingerprint = "AABDC7CD9516404E";
-    private const string SavedPropertiesFromInternalFingerprint = "34B1A98D9F811477";
+    private const string SavedPropertiesFromInternalFingerprint = "F73EEC2208D6E517";
 
     public static bool Enabled { get; set; } = true;
 
@@ -114,7 +114,7 @@ public static class LimitlessReserialize
         _stored = AccessTools.FieldRefAccess<List<SerializableCard>?>(multi, "<SerializableEnchantmentsOnCards>k__BackingField");
         _original = original;
         _mainThread = Environment.CurrentManagedThreadId;
-        harmony.Patch(original, prefix: new HarmonyMethod(typeof(LimitlessReserialize), nameof(Prefix)));
+        PatchGuard.Patch(harmony, original, prefix: new HarmonyMethod(typeof(LimitlessReserialize), nameof(Prefix)));
         Applied = true;
     }
 
@@ -188,8 +188,8 @@ public static class LimitlessReserialize
         /// CardModifier type loaded it is always empty. ~40% of the memory allocated during turns at 32,000 cards.
         /// </summary>
         private const string EmptyModifiersId = "BaseLibCardModifiers";
-        private const string EmptyModifiersGetterFingerprint = "E5675060A42DD1BB";
-        private const string RegisterSaveWrapperFingerprint = "495404B55F222A0D";
+        private const string EmptyModifiersGetterFingerprint = "ECF7781B0BEE495D";
+        private const string RegisterSaveWrapperFingerprint = "5DADC802999BB796";
         private const string CardModifierType = "BaseLib.Abstracts.CardModifier";
 
         private IDictionary? _emptyListDictionary;

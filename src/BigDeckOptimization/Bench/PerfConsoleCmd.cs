@@ -87,6 +87,9 @@ public class PerfConsoleCmd : AbstractConsoleCmd
                 ExtraScopes.BenchChecks = args[1] == "on";
                 PileIndex.VerifyEvery = ExtraScopes.BenchChecks ? 1024 : int.MaxValue;
                 return new CmdResult(success: true, $"Bench re-checks {args[1]} (first-turn filter, ShouldAllowHitting, PileIndex 1/1024).");
+            case "fault" when args.Length >= 2 && args[1] == "piles":
+                FastListeners.FailNextPileWalk = true;
+                return new CmdResult(success: true, "The next filtered pile walk throws inside FastListeners' cache (test of its fallback).");
             case "opt":
                 return SetOptimizations(args.Length >= 2 ? args[1] : null);
             case "listeners":

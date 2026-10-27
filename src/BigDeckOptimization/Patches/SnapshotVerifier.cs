@@ -64,7 +64,7 @@ public static class SnapshotVerifier
 
     public static void Apply(Harmony harmony)
     {
-        harmony.Patch(
+        PatchGuard.Patch(harmony, 
             AccessTools.Method(typeof(NetFullCombatState), nameof(NetFullCombatState.FromRun)),
             postfix: new HarmonyMethod(typeof(SnapshotVerifier), nameof(FromRunPostfix)));
     }

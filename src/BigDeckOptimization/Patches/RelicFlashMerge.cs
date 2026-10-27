@@ -59,8 +59,8 @@ public static class RelicFlashMerge
             ?? throw new MissingMethodException(nameof(NRelicInventoryHolder), "DoFlash"), HolderDoFlashFingerprint);
         PatchSafety.RequireFingerprint(_playerFlash, PlayerFlashFingerprint);
         _mainThread = Thread.CurrentThread.ManagedThreadId;
-        harmony.Patch(_holderFlash, prefix: new HarmonyMethod(typeof(RelicFlashMerge), nameof(HolderPrefix)));
-        harmony.Patch(_playerFlash, prefix: new HarmonyMethod(typeof(RelicFlashMerge), nameof(PlayerPrefix)));
+        PatchGuard.Patch(harmony, _holderFlash, prefix: new HarmonyMethod(typeof(RelicFlashMerge), nameof(HolderPrefix)));
+        PatchGuard.Patch(harmony, _playerFlash, prefix: new HarmonyMethod(typeof(RelicFlashMerge), nameof(PlayerPrefix)));
         Applied = true;
     }
 

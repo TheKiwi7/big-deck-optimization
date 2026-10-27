@@ -88,7 +88,7 @@ public static class PoolSignalScan
         PatchSafety.RequireFingerprint(PublicFree(typeof(NodePool<>)), PoolFreeFingerprint);
         PatchSafety.RequireFingerprint(AccessTools.Method(typeof(NodePool<>), "DisconnectIncomingAndOutgoingSignals"), WalkFingerprint);
         _pools = AccessTools.StaticFieldRefAccess<Dictionary<Type, INodePool>>(AccessTools.Field(typeof(NodePool), "_pools"));
-        harmony.Patch(_staticFree, prefix: new HarmonyMethod(typeof(PoolSignalScan), nameof(Prefix)));
+        PatchGuard.Patch(harmony, _staticFree, prefix: new HarmonyMethod(typeof(PoolSignalScan), nameof(Prefix)));
         Applied = true;
     }
 

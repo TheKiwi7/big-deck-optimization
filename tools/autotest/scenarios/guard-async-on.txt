@@ -1,0 +1,27 @@
+# FastListeners' fallback (v0.7.0): the pile entry cache throws once during a filtered walk (bdperf fault piles,
+# guard-async-on only), typically inside an async hook. The walk must complete like vanilla, FastListeners and HookSkip
+# turn off (bdopt), and every CHECKSUM/STATE line must match guard-async-ref (same script without the fault).
+timeout 1200
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+cmd bdperf fault piles
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 3
+waitfor idle 120
+checksum t2 plays
+state t2
+cmd bdopt
+quit

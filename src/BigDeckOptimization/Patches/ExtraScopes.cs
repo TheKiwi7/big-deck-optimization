@@ -25,7 +25,7 @@ public static class ExtraScopes
     public const string Name = "ExtraScopes";
 
     /// <summary>v0.107.1 <c>CombatManager.SetupPlayerTurn</c> state machine, whose two ToList calls are replaced.</summary>
-    private const string SetupPlayerTurnFingerprint = "2EC813A838AA03BF";
+    private const string SetupPlayerTurnFingerprint = "98A103A1D8204ED3";
 
     private const string BetterSpireAssembly = "BetterSpire2";
 
@@ -61,7 +61,7 @@ public static class ExtraScopes
         MethodInfo setup = AccessTools.Method(typeof(CombatManager), "SetupPlayerTurn") ?? throw new MissingMethodException("CombatManager.SetupPlayerTurn");
         MethodInfo moveNext = AccessTools.AsyncMoveNext(setup) ?? throw new MissingMethodException("SetupPlayerTurn state machine");
         PatchSafety.RequireFingerprint(moveNext, SetupPlayerTurnFingerprint);
-        harmony.Patch(moveNext, transpiler: new HarmonyMethod(typeof(ExtraScopes), nameof(FirstTurnTranspiler)));
+        PatchGuard.Patch(harmony, moveNext, transpiler: new HarmonyMethod(typeof(ExtraScopes), nameof(FirstTurnTranspiler)));
     }
 
     private static IEnumerable<CodeInstruction> FirstTurnTranspiler(IEnumerable<CodeInstruction> instructions)
@@ -119,7 +119,7 @@ public static class ExtraScopes
     {
         Type tracker = AccessTools.TypeByName("BetterSpire2.DamageTracker") ?? throw new PatchSkippedException("BetterSpire2 has no DamageTracker");
         MethodInfo recalculate = AccessTools.Method(tracker, "Recalculate", Type.EmptyTypes) ?? throw new PatchSkippedException("BetterSpire2 has no DamageTracker.Recalculate()");
-        harmony.Patch(recalculate,
+        PatchGuard.Patch(harmony, recalculate,
             prefix: new HarmonyMethod(typeof(ListenerCache), nameof(ListenerCache.EnterDisplayRefresh)),
             finalizer: new HarmonyMethod(typeof(ListenerCache), nameof(ListenerCache.ExitRefresh)));
     }

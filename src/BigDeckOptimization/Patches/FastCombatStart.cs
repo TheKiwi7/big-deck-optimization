@@ -57,15 +57,15 @@ public static class FastCombatStart
 
     public static void Apply(Harmony harmony)
     {
-        harmony.Patch(AccessTools.Method(typeof(CombatRoom), nameof(CombatRoom.EnterInternal)) ?? throw new MissingMethodException("CombatRoom.EnterInternal"),
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(CombatRoom), nameof(CombatRoom.EnterInternal)) ?? throw new MissingMethodException("CombatRoom.EnterInternal"),
             prefix: new HarmonyMethod(typeof(FastCombatStart), nameof(OpenWindow)));
         // The first turn starting ends the loading (by name: game v0.111 added a parameter).
-        harmony.Patch(AccessTools.Method(typeof(CombatManager), "StartTurn") ?? throw new MissingMethodException("CombatManager.StartTurn"),
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(CombatManager), "StartTurn") ?? throw new MissingMethodException("CombatManager.StartTurn"),
             prefix: new HarmonyMethod(typeof(FastCombatStart), nameof(TurnStarting)));
-        harmony.Patch(AccessTools.Method(typeof(Cmd), nameof(Cmd.Wait), new[] { typeof(float), typeof(CancellationToken), typeof(bool) })
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(Cmd), nameof(Cmd.Wait), new[] { typeof(float), typeof(CancellationToken), typeof(bool) })
                 ?? throw new MissingMethodException("Cmd.Wait"),
             prefix: new HarmonyMethod(typeof(FastCombatStart), nameof(WaitPrefix)));
-        harmony.Patch(AccessTools.Method(typeof(Cmd), nameof(Cmd.CustomScaledWait)) ?? throw new MissingMethodException("Cmd.CustomScaledWait"),
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(Cmd), nameof(Cmd.CustomScaledWait)) ?? throw new MissingMethodException("Cmd.CustomScaledWait"),
             prefix: new HarmonyMethod(typeof(FastCombatStart), nameof(ScaledWaitPrefix)));
     }
 

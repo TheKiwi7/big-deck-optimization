@@ -49,7 +49,7 @@ public static class GridSortCache
     private static AccessTools.FieldRef<NCardGrid, List<CardModel>>? _cards;
 
     /// <summary>Per-card values for the SetCards call in progress (main thread only).</summary>
-    private sealed class Scope(NCardGrid grid)
+    internal sealed class Scope(NCardGrid grid)
     {
         public readonly NCardGrid Grid = grid;
         public Dictionary<CardModel, int>? Index;
@@ -60,12 +60,17 @@ public static class GridSortCache
 
     [ThreadStatic] private static Scope? _scope;
 
+    /// <summary>Per kind, whether its value code loads on this game (its own class: a changed member only loses those orders).</summary>
+    private static bool _costLoads, _titleLoads;
+
     public static void Apply(Harmony harmony)
     {
+        _costLoads = Loads(typeof(GridSortCost));
+        _titleLoads = Loads(typeof(GridSortTitle));
         _cards = AccessTools.FieldRefAccess<NCardGrid, List<CardModel>>("_cards");
-        harmony.Patch(AccessTools.PropertyGetter(typeof(NCardGrid), "SortingAlgorithms"),
+        PatchGuard.Patch(harmony, AccessTools.PropertyGetter(typeof(NCardGrid), "SortingAlgorithms"),
             postfix: new HarmonyMethod(typeof(GridSortCache), nameof(SortingAlgorithmsPostfix)));
-        harmony.Patch(AccessTools.Method(typeof(NCardGrid), nameof(NCardGrid.SetCards)),
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(NCardGrid), nameof(NCardGrid.SetCards)),
             prefix: new HarmonyMethod(typeof(GridSortCache), nameof(SetCardsPrefix)),
             finalizer: new HarmonyMethod(typeof(GridSortCache), nameof(SetCardsFinalizer)));
     }
@@ -124,12 +129,28 @@ public static class GridSortCache
         }
     }
 
+    private static bool Loads(Type values)
+    {
+        try
+        {
+            PatchSafety.RequireResolvable(values);
+            PatchGuard.Register(Name, values, Array.Empty<PatchGuard.Installed>());
+            return true;
+        }
+        catch (PatchSkippedException e)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: {values.Name} left vanilla: {e.Message}");
+            return false;
+        }
+    }
+
     private static bool IsMirrored(SortingOrders order, Func<CardModel, CardModel, int> original, Mirrored mirrored)
     {
         if (!_fingerprintOk.TryGetValue(order, out bool ok))
         {
             string actual = MethodFingerprint.Of(original.Method);
-            ok = actual == mirrored.Fingerprint;
+            ok = mirrored.Kind switch { Kind.Cost => _costLoads, Kind.Title => _titleLoads, _ => true }
+                && PatchSafety.FingerprintMatches(actual, mirrored.Fingerprint);
             _fingerprintOk[order] = ok;
             if (!ok)
             {
@@ -161,10 +182,10 @@ public static class GridSortCache
                     result = IndexOf(index, a).CompareTo(IndexOf(index, b));
                     break;
                 case Kind.Cost:
-                    result = Cost(scope, a).CompareTo(Cost(scope, b));
+                    result = GridSortCost.Of(scope, a).CompareTo(GridSortCost.Of(scope, b));
                     break;
                 default:
-                    SortKey? ka = TitleKey(scope, a), kb = TitleKey(scope, b);
+                    SortKey? ka = GridSortTitle.Of(scope, a), kb = GridSortTitle.Of(scope, b);
                     if (ka == null || kb == null)
                     {
                         return original(a, b);
@@ -197,7 +218,18 @@ public static class GridSortCache
 
     private static int IndexOf(Dictionary<CardModel, int> index, CardModel card) => index.TryGetValue(card, out int i) ? i : -1;
 
-    private static int Cost(Scope scope, CardModel card)
+    private static void Disable(Exception e)
+    {
+        Enabled = false;
+        PatchSafety.Fault(Name);
+        Log.Error($"[{ModEntry.Id}] {Name} disabled after exception: {e}");
+    }
+}
+
+/// <summary><see cref="GridSortCache"/>'s cost per card, in its own class: a changed cost API only leaves the cost orders vanilla.</summary>
+internal static class GridSortCost
+{
+    internal static int Of(GridSortCache.Scope scope, CardModel card)
     {
         if (!scope.Cost.TryGetValue(card, out int cost))
         {
@@ -206,9 +238,15 @@ public static class GridSortCache
         }
         return cost;
     }
+}
 
-    /// <summary>Sort key with the options vanilla compares with (None); null for a null title (vanilla handles it).</summary>
-    private static SortKey? TitleKey(Scope scope, CardModel card)
+/// <summary>
+/// <see cref="GridSortCache"/>'s title sort key per card, with the options vanilla compares with (None); null for a null
+/// title (vanilla handles it). Own class, as <see cref="GridSortCost"/>.
+/// </summary>
+internal static class GridSortTitle
+{
+    internal static SortKey? Of(GridSortCache.Scope scope, CardModel card)
     {
         if (!scope.Title.TryGetValue(card, out SortKey? key))
         {
@@ -218,12 +256,5 @@ public static class GridSortCache
             scope.Title[card] = key;
         }
         return key;
-    }
-
-    private static void Disable(Exception e)
-    {
-        Enabled = false;
-        PatchSafety.Fault(Name);
-        Log.Error($"[{ModEntry.Id}] {Name} disabled after exception: {e}");
     }
 }

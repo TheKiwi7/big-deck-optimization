@@ -37,29 +37,99 @@ public static class PatchGuard
     private static readonly HashSet<MethodBase> _guarded = new();
     private static readonly HashSet<Type> _removed = new();
 
-    /// <summary>This mod's patches (guards excluded), to diff before and after an Apply.</summary>
+    /// <summary>
+    /// Whether a Harmony owner id is this mod's: each patch applies with its own id (<c>thekiwi7.BigDeckOptimization.&lt;patch&gt;</c>,
+    /// see <see cref="ModEntry.TryApply"/>), so what one Apply installed is just what its id owns.
+    /// </summary>
+    public static bool IsOurs(string owner) =>
+        owner == ModEntry.Harmony.Id || owner.StartsWith(ModEntry.Harmony.Id + ".", StringComparison.Ordinal);
+
+    /// <summary>This mod's patches (guards excluded), every patch id.</summary>
     public static HashSet<Installed> Snapshot()
     {
         var installed = new HashSet<Installed>();
-        foreach (MethodBase original in ModEntry.Harmony.GetPatchedMethods())
+        foreach (MethodBase original in Harmony.GetAllPatchedMethods())
         {
-            HarmonyLib.Patches? info = Harmony.GetPatchInfo(original);
-            if (info == null)
-            {
-                continue;
-            }
-            foreach (Patch patch in info.Prefixes.Concat(info.Postfixes).Concat(info.Transpilers).Concat(info.Finalizers))
-            {
-                if (patch.owner == ModEntry.Harmony.Id && patch.PatchMethod != _guard)
-                {
-                    installed.Add(new Installed(original, patch.PatchMethod));
-                }
-            }
+            AddOwned(installed, original, IsOurs);
         }
         return installed;
     }
 
-    public static List<Installed> Diff(HashSet<Installed> before) => Snapshot().Where(p => !before.Contains(p)).ToList();
+    /// <summary>The patches (guards excluded) of one patch's Harmony instance: what its Apply installed.</summary>
+    public static List<Installed> Owned(Harmony harmony)
+    {
+        var installed = new HashSet<Installed>();
+        foreach (MethodBase original in harmony.GetPatchedMethods())
+        {
+            AddOwned(installed, original, owner => owner == harmony.Id);
+        }
+        return installed.ToList();
+    }
+
+    private static void AddOwned(HashSet<Installed> installed, MethodBase original, Func<string, bool> owned)
+    {
+        HarmonyLib.Patches? info = Harmony.GetPatchInfo(original);
+        if (info == null)
+        {
+            return;
+        }
+        foreach (Patch patch in info.Prefixes.Concat(info.Postfixes).Concat(info.Transpilers).Concat(info.Finalizers))
+        {
+            if (owned(patch.owner) && patch.PatchMethod != _guard)
+            {
+                installed.Add(new Installed(original, patch.PatchMethod));
+            }
+        }
+    }
+
+    /// <summary>
+    /// <c>harmony.Patch</c>, with the guard finalizer added in the same call when the method isn't guarded yet: one rebuild
+    /// of the method instead of two (each costs ~1 ms at load).
+    /// </summary>
+    public static MethodInfo Patch(Harmony harmony, MethodBase original, HarmonyMethod? prefix = null, HarmonyMethod? postfix = null,
+        HarmonyMethod? transpiler = null, HarmonyMethod? finalizer = null)
+    {
+        PatchProcessor processor = harmony.CreateProcessor(original);
+        if (prefix != null) processor.AddPrefix(prefix);
+        if (postfix != null) processor.AddPostfix(postfix);
+        if (transpiler != null) processor.AddTranspiler(transpiler);
+        if (finalizer != null) processor.AddFinalizer(finalizer);
+        bool guard = NeedsGuard(original);
+        if (guard)
+        {
+            lock (_lock)
+            {
+                guard = _guarded.Add(original);
+            }
+        }
+        if (guard)
+        {
+            processor.AddFinalizer(new HarmonyMethod(_guard));
+        }
+        try
+        {
+            return processor.Patch();
+        }
+        catch
+        {
+            if (guard)
+            {
+                lock (_lock)
+                {
+                    _guarded.Remove(original);
+                }
+            }
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// An async state machine's MoveNext never lets an exception out (it goes into the task): a finalizer there could
+    /// never fire. The code of this mod running there falls back by itself (HookSkip.FilterFor, FastListeners.Guarded).
+    /// </summary>
+    private static bool NeedsGuard(MethodBase original) =>
+        !(original.Name == "MoveNext" && original.DeclaringType != null
+            && typeof(System.Runtime.CompilerServices.IAsyncStateMachine).IsAssignableFrom(original.DeclaringType));
 
     /// <summary>After a successful Apply: the patch class's code is watched on every method it patched.</summary>
     public static void Register(string name, Type patchClass, IEnumerable<Installed> installed)
@@ -82,6 +152,11 @@ public static class PatchGuard
     /// <summary>Adds the guard to a method this mod patched (for patches installed later than their Apply).</summary>
     public static void Watch(MethodBase original)
     {
+        // HookSkip transpiles ~140 async state machines: no guard there (see NeedsGuard), each would cost a rebuild.
+        if (!NeedsGuard(original))
+        {
+            return;
+        }
         lock (_lock)
         {
             if (!_guarded.Add(original))

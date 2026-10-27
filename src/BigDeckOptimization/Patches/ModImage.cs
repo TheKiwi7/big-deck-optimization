@@ -25,7 +25,7 @@ public static class ModImage
     public static void Apply(Harmony harmony)
     {
         _image = AccessTools.FieldRefAccess<NModInfoContainer, TextureRect>("_image");
-        harmony.Patch(AccessTools.Method(typeof(NModInfoContainer), nameof(NModInfoContainer.Fill)) ?? throw new MissingMethodException("NModInfoContainer.Fill"),
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(NModInfoContainer), nameof(NModInfoContainer.Fill)) ?? throw new MissingMethodException("NModInfoContainer.Fill"),
             postfix: new HarmonyMethod(typeof(ModImage), nameof(FillPostfix)));
     }
 

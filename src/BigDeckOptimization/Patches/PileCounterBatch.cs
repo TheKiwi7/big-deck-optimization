@@ -41,10 +41,10 @@ public static class PileCounterBatch
         _currentCount = AccessTools.FieldRefAccess<NCombatCardPile, int>("_currentCount");
         _countLabel = AccessTools.FieldRefAccess<NCombatCardPile, MegaCrit.Sts2.addons.mega_text.MegaLabel>("_countLabel");
         var clear = AccessTools.Method(typeof(CardPile), nameof(CardPile.Clear)) ?? throw new MissingMethodException("CardPile.Clear");
-        harmony.Patch(clear,
+        PatchGuard.Patch(harmony, clear,
             prefix: new HarmonyMethod(typeof(PileCounterBatch), nameof(ClearPrefix)),
             finalizer: new HarmonyMethod(typeof(PileCounterBatch), nameof(ClearFinalizer)));
-        harmony.Patch(removeCard, prefix: new HarmonyMethod(typeof(PileCounterBatch), nameof(RemoveCardPrefix)));
+        PatchGuard.Patch(harmony, removeCard, prefix: new HarmonyMethod(typeof(PileCounterBatch), nameof(RemoveCardPrefix)));
         Applied = true;
     }
 

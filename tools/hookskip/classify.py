@@ -7,21 +7,40 @@ return false, PushModel/PopModel, ExecutionFinished (listeners with subscribers 
 HookPlayerChoiceContext (no game action unless the listener asks for a choice), "changed value" bookkeeping. Anything
 else leaves the hook out. Each entry carries the fingerprint of the hook's code (async: its state machine).
 
-Usage (repo root, after decompiling the game into decompiled/sts2):
-  dotnet run --project tools/fingerprint -- <game>/data_sts2_windows_x86_64/sts2.dll MegaCrit.Sts2.Core.Hooks.Hook * body > hook_fps.txt
-  python -I tools/hookskip/classify.py decompiled/sts2 hook_fps.txt
+Every supported game version is classified on its own code: an entry is kept for a version only when that version's
+hook passes, and carries what it relies on in that version: the hook's code fingerprint, the fingerprint of each
+AbstractModel default it calls ("Name=FP"), and, for hooks using choice contexts / PushModel / ExecutionFinished, the
+helpers' fingerprints of that version (HelperProfiles, reviewed by hand: tools/fpdiff review flags them when they change).
+HookSkip turns a hook on only when all of these match the running game.
+
+Usage (repo root), per version: decompile the game (ilspycmd -p) and dump the fingerprints, then classify all at once:
+  dotnet run --project tools/fpdiff -c Release -- hookfps <game>/data_sts2_windows_x86_64 > fps-<version>.txt
+  python -I tools/hookskip/classify.py v0.107.1 decompiled/sts2 fps-v0.107.1.txt v0.111.0 decompiled/sts2-beta fps-v0.111.0.txt
 """
 import re
 import sys
 
-ROOT, FPS = sys.argv[1], sys.argv[2]
 TABLE = 'src/BigDeckOptimization/Patches/HookSkipTable.cs'
-abstract = open(ROOT + '/MegaCrit.Sts2.Core.Models/AbstractModel.cs', encoding='utf-8').read()
-fps = {}
-for line in open(FPS, encoding='utf-8-sig'):
-    m = re.match(r'Hook\.(\w+): ([0-9A-F]{16})', line.strip())
-    if m:
-        fps.setdefault(m.group(1), []).append(m.group(2))
+VERSIONS = [sys.argv[i:i + 3] for i in range(1, len(sys.argv), 3)]
+ROOT = abstract = None
+fps, default_fps, helpers, defaults = {}, {}, {}, {}
+
+
+def load(root, fps_path):
+    global ROOT, abstract, fps, default_fps, helpers
+    ROOT = root
+    abstract = open(ROOT + '/MegaCrit.Sts2.Core.Models/AbstractModel.cs', encoding='utf-8').read()
+    fps, default_fps, helpers = {}, {}, {}
+    for line in open(fps_path, encoding='utf-8-sig'):
+        m = re.match(r'(Hook|AbstractModel|Helper)\.(.+): ([0-9A-F]{16}|-)$', line.strip())
+        if not m:
+            continue
+        if m.group(1) == 'Hook':
+            fps.setdefault(m.group(2), []).append(m.group(3))
+        elif m.group(1) == 'AbstractModel':
+            default_fps.setdefault(m.group(2), []).append(m.group(3))
+        else:
+            helpers[m.group(2)] = m.group(3)
 
 
 def extract_hooks():
@@ -47,8 +66,6 @@ def extract_hooks():
         i += 1
     return found
 
-
-hooks = extract_hooks()
 
 
 def block(text, start):
@@ -82,37 +99,39 @@ def split_args(s):
     return out
 
 
-# AbstractModel virtual defaults: name -> (params, kind)
-defaults = {}
-for m in re.finditer(r'public virtual ([\w<>?\[\], ]+?) (\w+)\(([^)]*)\)\s*\{', abstract):
-    name = m.group(2)
-    body, _ = block(abstract, m.end() - 1)
-    params = [p.split()[-1] for p in split_args(m.group(3))] if m.group(3).strip() else []
-    b = ' '.join(body.split())
-    if b == 'return Task.CompletedTask;':
-        kind = ('task',)
-    elif b == 'return true;':
-        kind = ('true',)
-    elif b == 'return false;':
-        kind = ('false',)
-    elif b == '':
-        kind = ('void',)
-    elif b in ('return 0m;', 'return 1m;', 'return decimal.MaxValue;', 'return 0;', 'return 1;'):
-        kind = ('const', b[len('return '):-1])
-    elif re.fullmatch(r'(\w+) = (\w+); return false;', b) and re.fullmatch(r'(\w+) = (\w+); return false;', b).group(2) in params:
-        mm = re.fullmatch(r'(\w+) = (\w+); return false;', b)
-        kind = ('tryout', params.index(mm.group(2)), mm.group(1))
-    elif re.fullmatch(r'((\w+) = (null|false|0m|0); )+return false;', b) and all(
-            a in params for a in re.findall(r'(\w+) = (?:null|false|0m|0);', b)):
-        kind = ('falsy',)
-    elif re.fullmatch(r'return (\w+);', b) and re.fullmatch(r'return (\w+);', b).group(1) in params:
-        kind = ('identity', params.index(re.fullmatch(r'return (\w+);', b).group(1)))
-    else:
-        kind = ('other', b[:80])
-    if name in defaults:
-        defaults[name] = (params, ('overloaded',))
-    else:
-        defaults[name] = (params, kind)
+def parse_defaults():
+    """AbstractModel virtual defaults: name -> (params, kind)."""
+    defaults = {}
+    for m in re.finditer(r'public virtual ([\w<>?\[\], ]+?) (\w+)\(([^)]*)\)\s*\{', abstract):
+        name = m.group(2)
+        body, _ = block(abstract, m.end() - 1)
+        params = [p.split()[-1] for p in split_args(m.group(3))] if m.group(3).strip() else []
+        b = ' '.join(body.split())
+        if b == 'return Task.CompletedTask;':
+            kind = ('task',)
+        elif b == 'return true;':
+            kind = ('true',)
+        elif b == 'return false;':
+            kind = ('false',)
+        elif b == '':
+            kind = ('void',)
+        elif b in ('return 0m;', 'return 1m;', 'return decimal.MaxValue;', 'return 0;', 'return 1;'):
+            kind = ('const', b[len('return '):-1])
+        elif re.fullmatch(r'(\w+) = (\w+); return false;', b) and re.fullmatch(r'(\w+) = (\w+); return false;', b).group(2) in params:
+            mm = re.fullmatch(r'(\w+) = (\w+); return false;', b)
+            kind = ('tryout', params.index(mm.group(2)), mm.group(1))
+        elif re.fullmatch(r'((\w+) = (null|false|0m|0); )+return false;', b) and all(
+                a in params for a in re.findall(r'(\w+) = (?:null|false|0m|0);', b)):
+            kind = ('falsy',)
+        elif re.fullmatch(r'return (\w+);', b) and re.fullmatch(r'return (\w+);', b).group(1) in params:
+            kind = ('identity', params.index(re.fullmatch(r'return (\w+);', b).group(1)))
+        else:
+            kind = ('other', b[:80])
+        if name in defaults:
+            defaults[name] = (params, ('overloaded',))
+        else:
+            defaults[name] = (params, kind)
+    return defaults
 
 
 def call(stmt, var):
@@ -175,14 +194,16 @@ def check_loop(var, body, used, neutral=None):
             if re.fullmatch(rf'\w+\.(PushModel|PopModel)\({var}\)', s) or s == f'{var}.InvokeExecutionFinished()':
                 if s.endswith('InvokeExecutionFinished()'):
                     used['subscribed'] = True
+                used['contexts'] = True
                 k += 1
                 continue
             # A choice context per listener: for a default listener the task is already complete, so it only
             # signals ExecutionFinished (kept listeners: those with subscribers) - no game action unless a choice.
-            m = re.fullmatch(rf'HookPlayerChoiceContext (\w+) = new HookPlayerChoiceContext\({var}, netId\.Value, [\w.]+, GameActionType\.Combat\)', s)
+            m = re.fullmatch(rf'HookPlayerChoiceContext (\w+) = new HookPlayerChoiceContext\({var}, netId\.Value, [\w.]+, (?:GameActionType\.Combat|\(combatState != null\) \? GameActionType\.Combat : GameActionType\.NonCombat)\)', s)
             if m:
                 neutral['ctx:' + m.group(1)] = True
                 used['subscribed'] = True
+                used['contexts'] = True
                 k += 1
                 continue
             m = re.fullmatch(rf'Task (\w+) = {var}\.(\w+)\((\w+)(, .*)?\)', s)
@@ -317,61 +338,89 @@ def need(meth, kinds, used):
     used['methods'].add(meth)
 
 
-safe, unsafe = [], []
-for name, text in hooks.items():
-    try:
-        if len(fps.get(name, [])) != 1:
-            raise Unsafe('overloaded or no fingerprint')
-        sig, rest = text.split('\n', 1)
-        used = {'methods': set(), 'subscribed': False}
-        loops = 0
-        for m in re.finditer(r'foreach \(AbstractModel (\w+) in ([^\n]*)\)\s*\n', text):
-            header = m.group(2)
-            if 'IterateHookListeners' not in header and 'IterateCombatHookListeners' not in header:
-                continue
-            if not re.fullmatch(r'(runState\.IterateHookListeners\((combatState|null)\)|IterateCombatHookListeners\(combatState\)|[\w.]+\.IterateHookListeners\(\))', header.strip()):
-                raise Unsafe('walk: ' + header)
-            body, _ = block(text, m.end() - 1)
-            var = m.group(1)
-            check_loop(var, body, used)
-            # the loop variable must not escape the loop
-            loops += 1
-        m = re.search(r'if \((runState\.IterateHookListeners\(combatState\)|IterateCombatHookListeners\(combatState\))\.Contains\((\w+)\)\)\s*\n', text)
-        if m and loops == 0:
-            inner, _ = block(text, m.end() - 1)
-            p_ = m.group(2)
-            inner_s = ' '.join(inner.split())
-            mm = re.fullmatch(rf'await {p_}\.(\w+)\((.*)\); {p_}\.InvokeExecutionFinished\(\);', inner_s)
-            if not mm or kind_of(mm.group(1))[0] != 'task':
-                raise Unsafe('contains: ' + inner_s[:80])
-            # Only P's membership matters: P is kept if it overrides M or has ExecutionFinished subscribers;
-            # otherwise vanilla would call the no-op default and signal nobody.
-            used['methods'].add(mm.group(1))
-            used['subscribed'] = True
-            loops += 1
-        walks = len(re.findall(r'IterateHookListeners|IterateCombatHookListeners\(', text))
-        if walks != loops:
-            raise Unsafe(f'{walks} walks, {loops} checked loops')
-        if not used['methods']:
-            raise Unsafe('no listener method')
-        kind = 'iterator' if 'yield' in text else ('async' if ' async ' in sig else 'plain')
-        safe.append((name, fps[name][0], kind, sorted(used['methods']), used['subscribed']))
-    except Unsafe as e:
-        unsafe.append((name, str(e)))
-    except Exception as e:  # parse problems: unsafe
-        unsafe.append((name, 'parse: ' + repr(e)))
+def classify():
+    hooks = extract_hooks()
+    safe, unsafe = [], []
+    for name, text in hooks.items():
+        try:
+            if len(fps.get(name, [])) != 1:
+                raise Unsafe('overloaded or no fingerprint')
+            sig, rest = text.split('\n', 1)
+            used = {'methods': set(), 'subscribed': False, 'contexts': False}
+            loops = 0
+            for m in re.finditer(r'foreach \(AbstractModel (\w+) in ([^\n]*)\)\s*\n', text):
+                header = m.group(2)
+                if 'IterateHookListeners' not in header and 'IterateCombatHookListeners' not in header:
+                    continue
+                if not re.fullmatch(r'(runState\.IterateHookListeners\((combatState|null)\)|IterateCombatHookListeners\(combatState\)|[\w.]+\.IterateHookListeners\(\))', header.strip()):
+                    raise Unsafe('walk: ' + header)
+                body, _ = block(text, m.end() - 1)
+                var = m.group(1)
+                check_loop(var, body, used)
+                # the loop variable must not escape the loop
+                loops += 1
+            m = re.search(r'if \((runState\.IterateHookListeners\(combatState\)|IterateCombatHookListeners\(combatState\))\.Contains\((\w+)\)\)\s*\n', text)
+            if m and loops == 0:
+                inner, _ = block(text, m.end() - 1)
+                p_ = m.group(2)
+                inner_s = ' '.join(inner.split())
+                mm = re.fullmatch(rf'await {p_}\.(\w+)\((.*)\); {p_}\.InvokeExecutionFinished\(\);', inner_s)
+                if not mm or kind_of(mm.group(1))[0] != 'task':
+                    raise Unsafe('contains: ' + inner_s[:80])
+                # Only P's membership matters: P is kept if it overrides M or has ExecutionFinished subscribers;
+                # otherwise vanilla would call the no-op default and signal nobody.
+                used['methods'].add(mm.group(1))
+                used['subscribed'] = True
+                loops += 1
+            walks = len(re.findall(r'IterateHookListeners|IterateCombatHookListeners\(', text))
+            if walks != loops:
+                raise Unsafe(f'{walks} walks, {loops} checked loops')
+            if not used['methods']:
+                raise Unsafe('no listener method')
+            kind = 'iterator' if 'yield' in text else ('async' if ' async ' in sig else 'plain')
+            safe.append((name, fps[name][0], kind, sorted(used['methods']), used['subscribed'], used['contexts'] or used['subscribed']))
+        except Unsafe as e:
+            unsafe.append((name, str(e)))
+        except Exception as e:  # parse problems: unsafe
+            unsafe.append((name, 'parse: ' + repr(e)))
+    return safe, unsafe
 
-print(f'SAFE {len(safe)}  UNSAFE {len(unsafe)}')
-for n, why in unsafe:
-    print('  -', n, ':', why[:110])
-rows = []
-for name, fp, kind, methods, subscribed in safe:
-    args = ', '.join(f'"{m}"' for m in methods)
-    rows.append(f'        new("{name}", "{fp}", {"true" if subscribed else "false"}, {args}),')
+
+rows, profiles, labels = [], [], []
+for label, root, fps_path in VERSIONS:
+    load(root, fps_path)
+    defaults = parse_defaults()
+    safe, unsafe = classify()
+    labels.append(label)
+    profiles.append(dict(helpers))
+    print(f'{label}: SAFE {len(safe)}  UNSAFE {len(unsafe)}')
+    for n, why in unsafe:
+        print('  -', n, ':', why[:110])
+    for name, fp, kind, methods, subscribed, contexts in safe:
+        pins = []
+        for meth in methods:
+            if len(default_fps.get(meth, [])) != 1:
+                raise SystemExit(f'{label}: {meth} has no single AbstractModel default fingerprint')
+            pins.append(f'"{meth}={default_fps[meth][0]}"')
+        profile = len(profiles) - 1 if contexts else -1
+        row = f'        new("{name}", "{fp}", {"true" if subscribed else "false"}, {profile}, {", ".join(pins)}),'
+        if row not in rows:
+            rows.append(row)
+keys = sorted(set().union(*profiles))
+profile_rows = []
+for label, profile in zip(labels, profiles):
+    items = ', '.join(f'["{k}"] = "{profile.get(k, "-")}"' for k in keys)
+    profile_rows.append(f'        // {label}\n        new() {{ {items} }},')
 open(TABLE, 'w', encoding='utf-8', newline='\n').write(
-    '// Generated by tools/hookskip/classify.py from the decompiled game (v0.107.1): do not edit by hand.\n'
+    f'// Generated by tools/hookskip/classify.py from the decompiled game ({", ".join(labels)}): do not edit by hand.\n'
+    'using System.Collections.Generic;\n\n'
     'namespace BigDeckOptimization.Patches;\n\n'
     'public static partial class HookSkip\n{\n'
-    '    /// <summary>Hooks whose listener loops only do no-ops for a listener keeping the defaults of these methods.</summary>\n'
+    '    /// <summary>Per classified game version: fingerprints of the helpers the hooks using choice contexts rely on ("-": absent).</summary>\n'
+    '    private static readonly Dictionary<string, string>[] HelperProfiles =\n    {\n' + '\n'.join(profile_rows) + '\n    };\n\n'
+    '    /// <summary>\n'
+    '    /// Hooks whose listener loops only do no-ops for a listener keeping the defaults of these methods, per classified\n'
+    '    /// version: hook code fingerprint, ExecutionFinished kept, helper profile (-1: none used), "Method=default fingerprint".\n'
+    '    /// </summary>\n'
     '    private static readonly Entry[] Hooks =\n    {\n' + '\n'.join(rows) + '\n    };\n}\n')
-print('wrote', TABLE)
+print('wrote', TABLE, len(rows), 'entries')

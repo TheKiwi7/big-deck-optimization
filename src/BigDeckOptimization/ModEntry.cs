@@ -19,6 +19,7 @@ public static class ModEntry
 
     public static void Init()
     {
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
         TryApply(ListenerCache.Name, ListenerCache.Apply);
         TryApply(HookFilter.Name, HookFilter.Apply);
         TryApply(ExtraScopes.Name, ExtraScopes.Apply);
@@ -51,7 +52,7 @@ public static class ModEntry
         {
             Log.Warn($"[{Id}] {Config.SettingsMenu.Name}: settings menu unavailable (bdopt still works): {e}");
         }
-        Log.Info($"[{Id}] Initialized v{typeof(ModEntry).Assembly.GetName().Version?.ToString(3)}"
+        Log.Info($"[{Id}] Initialized v{typeof(ModEntry).Assembly.GetName().Version?.ToString(3)} in {System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds:F0} ms"
             + (StartedOff ? ": turned off in the settings, nothing applied (turn it on, then restart the game)" : ""));
     }
 
@@ -88,7 +89,8 @@ public static class ModEntry
 
     /// <summary>
     /// Applies one patch in isolation: if the game changed and the target is gone, only that patch is lost, and
-    /// nothing of it stays installed.
+    /// nothing of it stays installed. Each patch gets its own Harmony id (this mod's id + "." + its name), so what it
+    /// installed is just what that id owns: no need to compare every patch of the mod before and after.
     /// </summary>
     internal static void TryApply(string name, Action<Harmony> apply)
     {
@@ -100,24 +102,33 @@ public static class ModEntry
             Log.Info($"[{Id}] Patch {name} not applied: the mod was turned off when the game started");
             return;
         }
-        HashSet<PatchGuard.Installed> before = PatchGuard.Snapshot();
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        Harmony harmony = new(Harmony.Id + "." + name);
         try
         {
             PatchSafety.RequireResolvable(patchClass);
-            apply(Harmony);
-            PatchGuard.Register(name, patchClass, PatchGuard.Diff(before));
-            Log.Info($"[{Id}] Patch {name} applied");
+            apply(harmony);
+            PatchGuard.Register(name, patchClass, PatchGuard.Owned(harmony));
+            _notApplied.Remove(name); // Skipped earlier, applied now (an optional mod that loaded after this one).
+            Log.Info($"[{Id}] Patch {name} applied ({System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds:F0} ms)");
         }
         catch (PatchSkippedException e)
         {
             _notApplied.Add(name);
-            PatchGuard.Remove(PatchGuard.Diff(before));
+            PatchGuard.Remove(PatchGuard.Owned(harmony));
             Log.Info($"[{Id}] Patch {name} skipped: {e.Message}");
+        }
+        catch (Exception e) when (e is MissingMemberException or TypeLoadException)
+        {
+            // A method, field or type it needs is gone or renamed: an update, not a bug of this mod.
+            _notApplied.Add(name);
+            PatchGuard.Remove(PatchGuard.Owned(harmony));
+            Log.Info($"[{Id}] Patch {name} skipped: {e.Message} (missing: game or mod update?), left vanilla");
         }
         catch (Exception e)
         {
             _notApplied.Add(name);
-            PatchGuard.Remove(PatchGuard.Diff(before));
+            PatchGuard.Remove(PatchGuard.Owned(harmony));
             Log.Error($"[{Id}] Patch {name} could not be applied and is disabled: {e}");
         }
     }

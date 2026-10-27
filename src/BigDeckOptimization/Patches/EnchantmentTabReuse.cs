@@ -95,7 +95,7 @@ public static class EnchantmentTabReuse
         _defaultEnchantmentPosition = AccessTools.FieldRefAccess<NCard, Vector2>("_defaultEnchantmentPosition");
 
         _original = original;
-        harmony.Patch(original, prefix: new HarmonyMethod(typeof(EnchantmentTabReuse), nameof(Prefix)));
+        PatchGuard.Patch(harmony, original, prefix: new HarmonyMethod(typeof(EnchantmentTabReuse), nameof(Prefix)));
         Applied = true;
     }
 

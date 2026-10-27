@@ -29,7 +29,7 @@ public static class TypePlaqueSkip
     private const string CustomTextInterface = "BaseLib.Abstracts.ICustomTypeTextCard";
 
     /// <summary>BaseLib 3.4.7 <c>AddSubtypesToTypePlaquePatch.TryModifyPlaqueText</c>.</summary>
-    private const string Fingerprint = "585F44E2DA8B770C";
+    private const string Fingerprint = "2D24047BA6035BAF";
 
     public static bool Enabled { get; set; } = true;
 
@@ -76,7 +76,7 @@ public static class TypePlaqueSkip
             throw new PatchSkippedException("BaseLib has no " + ModifierInterface);
         }
         _original = original;
-        harmony.Patch(original, prefix: new HarmonyMethod(typeof(TypePlaqueSkip), nameof(Prefix)));
+        PatchGuard.Patch(harmony, original, prefix: new HarmonyMethod(typeof(TypePlaqueSkip), nameof(Prefix)));
         Applied = true;
     }
 

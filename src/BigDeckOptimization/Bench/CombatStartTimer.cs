@@ -54,7 +54,7 @@ public static class CombatStartTimer
         {
             throw new MissingMethodException(Name + " target not found");
         }
-        harmony.Patch(target,
+        Patches.PatchGuard.Patch(harmony, target,
             prefix: prefix == null ? null : new HarmonyMethod(typeof(CombatStartTimer), prefix),
             postfix: postfix == null ? null : new HarmonyMethod(typeof(CombatStartTimer), postfix));
     }

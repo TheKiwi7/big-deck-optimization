@@ -159,7 +159,7 @@ public static class Settings
             () => FastListeners.Applied ? null : GameChanged),
         new("hook_skip", "Skip non-reacting cards",
             "Each time the game processes an effect (card played, damage, turn end...), only asks the cards and enchantments whose type reacts to it (same results).",
-            new[] { HookSkip.Name }, on => HookSkip.Enabled = on,
+            new[] { HookSkip.Name, FastListeners.Name }, on => HookSkip.Enabled = on,
             () => HookSkip.Applied ? null : GameChanged),
         new("hover_tips", "Creature hover tips",
             "While the mouse is on a creature, rebuilds its tooltips after an action only when their content changed (they stay live).",

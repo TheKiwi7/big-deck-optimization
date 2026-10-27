@@ -30,16 +30,16 @@ public static class IdleButtonInput
     {
         _isPressed = AccessTools.FieldRefAccess<NClickableControl, bool>("_isPressed");
         _isEnabled = AccessTools.FieldRefAccess<NClickableControl, bool>("_isEnabled");
-        harmony.Patch(AccessTools.Method(typeof(Node), nameof(Node.SetProcessInput)),
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(Node), nameof(Node.SetProcessInput)),
             prefix: new HarmonyMethod(typeof(IdleButtonInput), nameof(SetProcessInputPrefix)));
         // Subclasses never call base._Ready() but always reach NClickableControl.ConnectSignals() from it.
-        harmony.Patch(AccessTools.DeclaredMethod(typeof(NClickableControl), "ConnectSignals"),
+        PatchGuard.Patch(harmony, AccessTools.DeclaredMethod(typeof(NClickableControl), "ConnectSignals"),
             postfix: new HarmonyMethod(typeof(IdleButtonInput), nameof(SyncPostfix)));
-        harmony.Patch(AccessTools.Method(typeof(NClickableControl), "OnPressHandler"),
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(NClickableControl), "OnPressHandler"),
             postfix: new HarmonyMethod(typeof(IdleButtonInput), nameof(SyncPostfix)));
-        harmony.Patch(AccessTools.Method(typeof(NClickableControl), "OnReleaseHandler"),
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(NClickableControl), "OnReleaseHandler"),
             postfix: new HarmonyMethod(typeof(IdleButtonInput), nameof(SyncPostfix)));
-        harmony.Patch(AccessTools.Method(typeof(NClickableControl), "CheckMouseDragThreshold"),
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(NClickableControl), "CheckMouseDragThreshold"),
             postfix: new HarmonyMethod(typeof(IdleButtonInput), nameof(SyncPostfix)));
     }
 

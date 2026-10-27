@@ -35,8 +35,8 @@ public static class FastListeners
     public const string Name = "FastListeners";
 
     /// <summary>v0.107.1 code mirrored: both iterators (their state machines) and both Contains.</summary>
-    private const string CombatIterateFingerprint = "297497BEE6AC98A8";
-    private const string RunIterateFingerprint = "787F879A9B4B17D4";
+    private const string CombatIterateFingerprint = "58F9C719E3433DE5";
+    private const string RunIterateFingerprint = "3E3597C01EA54DE8";
     private const string CombatContainsFingerprint = "210F9D7CC594C500";
     private const string RunContainsFingerprint = "78124E08E9E87556";
 
@@ -713,7 +713,7 @@ public static class FastListeners
     }
 
     /// <summary>v0.107.1 <c>ModHelper.IterateAllCombatStateSubscribers</c> (state machine), mirrored by <see cref="Subscribers"/>.</summary>
-    private const string SubscribersFingerprint = "99CA5CFD9D21F34D";
+    private const string SubscribersFingerprint = "B70A116760A4FE08";
 
     /// <summary>
     /// BaseLib 3.4.7's "BaseLibCardModifiers" subscriber: for every card in every combat pile, the card's CardModifier
@@ -721,7 +721,7 @@ public static class FastListeners
     /// subclass can be in those lists, so with no such type loaded it can only return an empty list.
     /// </summary>
     private const string CardModifiersId = "BaseLibCardModifiers";
-    private const string CardModifiersFingerprint = "6B671EFF3A900922";
+    private const string CardModifiersFingerprint = "8AB473DDA1E8065B";
     private const string CardModifierType = "BaseLib.Abstracts.CardModifier";
 
     private static System.Collections.IList? _combatSubscribers;
@@ -758,24 +758,30 @@ public static class FastListeners
             PatchSafety.RequireFingerprint(target, fingerprint);
             if (method == nameof(CardPile.AddInternal))
             {
-                harmony.Patch(target, prefix: new HarmonyMethod(typeof(FastListeners), nameof(BeforeAdd)),
+                PatchGuard.Patch(harmony, target, prefix: new HarmonyMethod(typeof(FastListeners), nameof(BeforeAdd)),
                     finalizer: new HarmonyMethod(typeof(FastListeners), nameof(AfterAdd)));
             }
             else
             {
-                harmony.Patch(target, prefix: bumpBefore, finalizer: bumpAfter);
+                PatchGuard.Patch(harmony, target, prefix: bumpBefore, finalizer: bumpAfter);
             }
         }
-        harmony.Patch(AccessTools.Method(typeof(CardPile), "RandomizeOrderInternal"),
+        // The pile cache is bumped by those methods only: no other code may change the pile lists.
+        PatchSafety.RequireFieldWriters(typeof(CardPile), "_cards", PatchSafety.CardListWriters);
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), "RandomizeOrderInternal"),
             prefix: new HarmonyMethod(typeof(FastListeners), nameof(EnterShuffle)), finalizer: new HarmonyMethod(typeof(FastListeners), nameof(ExitShuffle)));
         foreach (string property in new[] { nameof(CardModel.Enchantment), nameof(CardModel.Affliction) })
         {
-            harmony.Patch(AccessTools.PropertySetter(typeof(CardModel), property) ?? throw new MissingMethodException(nameof(CardModel), property),
+            // The setter is the only code changing it (auto-property backing field), so bumping around it is enough.
+            PatchSafety.RequireFieldWriters(typeof(CardModel), $"<{property}>k__BackingField", "set_" + property);
+            PatchGuard.Patch(harmony, AccessTools.PropertySetter(typeof(CardModel), property) ?? throw new MissingMethodException(nameof(CardModel), property),
                 prefix: new HarmonyMethod(typeof(FastListeners), nameof(BumpIfPiled)),
                 finalizer: new HarmonyMethod(typeof(FastListeners), nameof(BumpIfPiledFinally)));
         }
         try
         {
+            // Only these change a model's ExecutionFinished subscribers (AfterCloned clears a clone's copy).
+            PatchSafety.RequireFieldWriters(typeof(AbstractModel), "ExecutionFinished", "AfterCloned", "add_ExecutionFinished", "remove_ExecutionFinished");
             foreach ((string method, string fingerprint) in SubscriptionMethods)
             {
                 PatchSafety.RequireFingerprint(AccessTools.Method(typeof(AbstractModel), method)
@@ -783,7 +789,7 @@ public static class FastListeners
             }
             foreach (string accessor in new[] { "add_ExecutionFinished", "remove_ExecutionFinished" })
             {
-                harmony.Patch(AccessTools.Method(typeof(AbstractModel), accessor),
+                PatchGuard.Patch(harmony, AccessTools.Method(typeof(AbstractModel), accessor),
                     prefix: new HarmonyMethod(typeof(FastListeners), nameof(BumpSubscriptions)),
                     finalizer: new HarmonyMethod(typeof(FastListeners), nameof(BumpSubscriptionsFinally)));
             }
@@ -791,7 +797,7 @@ public static class FastListeners
             // the JIT did with the accessors there.
             foreach (string method in new[] { "AfterCardsSelected", "OnSelectModeSourceFinished" })
             {
-                harmony.Patch(AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand), method)
+                PatchGuard.Patch(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand), method)
                         ?? throw new MissingMethodException("NPlayerHand", method),
                     prefix: new HarmonyMethod(typeof(FastListeners), nameof(BumpSubscriptions)),
                     finalizer: new HarmonyMethod(typeof(FastListeners), nameof(BumpSubscriptionsFinally)));
@@ -805,12 +811,17 @@ public static class FastListeners
         try
         {
             PatchSafety.RequireFingerprint(AccessTools.EnumeratorMoveNext(AccessTools.Method(typeof(ModHelper), nameof(ModHelper.IterateAllCombatStateSubscribers))), SubscribersFingerprint);
-            _combatSubscribers = (System.Collections.IList)AccessTools.Field(typeof(ModHelper), "_combatHookSubscribers").GetValue(null)!;
-            Type subscriber = AccessTools.Inner(typeof(ModHelper), "ModCombatHookSubscriber");
-            _subscriberId = AccessTools.Field(subscriber, "id");
-            _subscriberDelegate = AccessTools.Field(subscriber, "del");
+            // Everything resolved and typed before use: AccessTools returns null for a renamed member, which would only
+            // fail later, inside every walk.
+            var subscribers = AccessTools.Field(typeof(ModHelper), "_combatHookSubscribers")?.GetValue(null) as System.Collections.IList
+                ?? throw new MissingFieldException(nameof(ModHelper), "_combatHookSubscribers");
+            Type subscriber = AccessTools.Inner(typeof(ModHelper), "ModCombatHookSubscriber") ?? throw new TypeLoadException("ModHelper.ModCombatHookSubscriber");
+            FieldInfo id = AccessTools.Field(subscriber, "id") is { FieldType: var idType } f1 && idType == typeof(string) ? f1
+                : throw new MissingFieldException("ModCombatHookSubscriber", "id");
+            FieldInfo del = AccessTools.Field(subscriber, "del") is { FieldType: var delType } f2 && delType == typeof(CombatHookSubscriptionDelegate) ? f2
+                : throw new MissingFieldException("ModCombatHookSubscriber", "del");
             // A mod loading later may define CardModifier types: check just that assembly (dynamic ones, e.g. Harmony's,
-            // and assemblies not referencing BaseLib can't).
+            // and assemblies not referencing BaseLib can't). Runs inside that assembly's load: never throws.
             AppDomain.CurrentDomain.AssemblyLoad += (_, args) =>
             {
                 if (_noCardModifierTypes == true && BaseLibTypes.MayDefine(args.LoadedAssembly) && BaseLibTypes.Defines(args.LoadedAssembly, CardModifierType))
@@ -818,6 +829,7 @@ public static class FastListeners
                     _noCardModifierTypes = false;
                 }
             };
+            (_subscriberId, _subscriberDelegate, _combatSubscribers) = (id, del, subscribers);
         }
         catch (Exception e)
         {
@@ -825,8 +837,8 @@ public static class FastListeners
             Log.Info($"[{ModEntry.Id}] {Name}: mod subscriber walk left vanilla: {e.Message}");
         }
         // After ListenerCache: inside its scopes it answers from its cache and this does nothing.
-        harmony.Patch(combatIterate, prefix: new HarmonyMethod(typeof(FastListeners), nameof(CombatPrefix)) { priority = Priority.Last });
-        harmony.Patch(runIterate, prefix: new HarmonyMethod(typeof(FastListeners), nameof(RunPrefix)) { priority = Priority.Last });
+        PatchGuard.Patch(harmony, combatIterate, prefix: new HarmonyMethod(typeof(FastListeners), nameof(CombatPrefix)) { priority = Priority.Last });
+        PatchGuard.Patch(harmony, runIterate, prefix: new HarmonyMethod(typeof(FastListeners), nameof(RunPrefix)) { priority = Priority.Last });
         Applied = true;
     }
 
@@ -926,9 +938,8 @@ public static class FastListeners
                 }
                 list.AddRange(player.PlayerCombatState.OrbQueue.Orbs);
                 IReadOnlyList<CardPile> allPiles = player.PlayerCombatState.AllPiles;
-                if (filter != null)
+                if (filter != null && Guarded(list, () => filter.AddPiles(list, player.PlayerCombatState, allPiles)))
                 {
-                    filter.AddPiles(list, player.PlayerCombatState, allPiles);
                     continue;
                 }
                 for (int l = 0; l < allPiles.Count; l++)
@@ -985,24 +996,14 @@ public static class FastListeners
     /// </summary>
     private static IEnumerable<AbstractModel> Subscribers(CombatState state)
     {
-        if (_combatSubscribers == null)
+        var snapshot = _combatSubscribers == null ? null : SubscriberSnapshot();
+        if (snapshot == null)
         {
             foreach (AbstractModel item in ModHelper.IterateAllCombatStateSubscribers(state))
             {
                 yield return item;
             }
             yield break;
-        }
-        var snapshot = _subscriberSnapshot;
-        if (snapshot.Length != _combatSubscribers.Count)
-        {
-            snapshot = new (string, CombatHookSubscriptionDelegate)[_combatSubscribers.Count];
-            for (int i = 0; i < snapshot.Length; i++)
-            {
-                object subscriber = _combatSubscribers[i]!;
-                snapshot[i] = ((string)_subscriberId!.GetValue(subscriber)!, (CombatHookSubscriptionDelegate)_subscriberDelegate!.GetValue(subscriber)!);
-            }
-            _subscriberSnapshot = snapshot;
         }
         foreach ((string id, CombatHookSubscriptionDelegate del) in snapshot)
         {
@@ -1026,13 +1027,45 @@ public static class FastListeners
         }
     }
 
+    /// <summary>
+    /// The (id, delegate) of each mod subscriber, rebuilt when the list grows; null when it can't be read (ModHelper's own
+    /// walk then, for the rest of the session: this runs inside walks, often in async hooks, where an exception would
+    /// only fault the hook's task).
+    /// </summary>
+    private static (string Id, CombatHookSubscriptionDelegate Del)[]? SubscriberSnapshot()
+    {
+        try
+        {
+            var snapshot = _subscriberSnapshot;
+            System.Collections.IList subscribers = _combatSubscribers!;
+            if (snapshot.Length != subscribers.Count)
+            {
+                snapshot = new (string, CombatHookSubscriptionDelegate)[subscribers.Count];
+                for (int i = 0; i < snapshot.Length; i++)
+                {
+                    object subscriber = subscribers[i]!;
+                    snapshot[i] = ((string)_subscriberId!.GetValue(subscriber)!, (CombatHookSubscriptionDelegate)_subscriberDelegate!.GetValue(subscriber)!);
+                }
+                _subscriberSnapshot = snapshot;
+            }
+            return snapshot;
+        }
+        catch (Exception e)
+        {
+            _combatSubscribers = null;
+            Log.Error($"[{ModEntry.Id}] {Name}: mod subscribers unreadable, ModHelper's own walk from now on: {e}");
+            return null;
+        }
+    }
+
     private static bool CardModifiersEmpty(string id, Delegate del)
     {
         if (id != CardModifiersId || !Enabled)
         {
             return false;
         }
-        if (!_emptyModifierLists.GetOrAdd(del.Method, m => MethodFingerprint.Of(m) == CardModifiersFingerprint))
+        // Inside walks (often in async hooks): a method that can't be fingerprinted is simply not known as empty.
+        if (!_emptyModifierLists.GetOrAdd(del.Method, m => { try { return MethodFingerprint.Of(m) == CardModifiersFingerprint; } catch { return false; } }))
         {
             return false;
         }
@@ -1052,9 +1085,8 @@ public static class FastListeners
                 {
                     continue;
                 }
-                if (filter != null)
+                if (filter != null && Guarded(list, () => filter.AddDeck(list, player.Deck)))
                 {
-                    filter.AddDeck(list, player.Deck);
                     continue;
                 }
                 foreach (CardModel card in player.Deck.Cards)
@@ -1116,6 +1148,40 @@ public static class FastListeners
         }
     }
 
+    /// <summary>
+    /// Runs this mod's own part of a filtered walk (the pile entry cache): on an exception, FastListeners turns off (and
+    /// HookSkip with it) and the walk adds every pile entry instead, as vanilla: a superset of the filtered entries whose
+    /// extra ones keep the no-op defaults. So even a hook running in an async state machine, where an exception would
+    /// only fault the hook's task and never reach <see cref="PatchGuard"/>, completes like vanilla and later hooks run vanilla.
+    /// </summary>
+#if BENCH
+    /// <summary>Test: the next guarded add throws after adding its entries (bdperf fault piles).</summary>
+    internal static bool FailNextPileWalk;
+#endif
+
+    private static bool Guarded(List<AbstractModel> list, Action add)
+    {
+        int count = list.Count;
+        try
+        {
+            add();
+#if BENCH
+            if (FailNextPileWalk)
+            {
+                FailNextPileWalk = false;
+                throw new InvalidOperationException("simulated error in the pile entry cache (bdperf fault piles)");
+            }
+#endif
+            return true;
+        }
+        catch (Exception e)
+        {
+            list.RemoveRange(count, list.Count - count);
+            Disable(e);
+            return false;
+        }
+    }
+
     /// <summary><c>CombatState.Contains</c>: the model types are disjoint, so testing cards first gives the same answer.</summary>
     private static bool CombatContains(AbstractModel model) => model switch
     {
@@ -1147,5 +1213,7 @@ public static class FastListeners
         Enabled = false;
         PatchSafety.Fault(Name);
         Log.Error($"[{ModEntry.Id}] {Name} disabled after exception, falling back to vanilla: {e}");
+        // HookSkip walks through FastListeners: its option lists this fault too.
+        Config.Settings.ApplyAll();
     }
 }

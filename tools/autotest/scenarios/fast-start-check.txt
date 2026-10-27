@@ -1,4 +1,6 @@
-# Fast combat start must not change results: the same combat with fast start, normal waits and the mod off.
+# Fast combat start, normal waits and the mod off, in three successive fights of one run (waits skipped, PileIndex
+# verified on every answer). The STATE lines differ by design (each fight changes HP and relic counters): the results
+# equivalence is the A/B ab-2k-off vs ab-2k-on (separate sessions, same seed, fast start on by default).
 timeout 1500
 newrun NECROBINDER
 waitfor run 120

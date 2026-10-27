@@ -7,7 +7,8 @@
 # Without Steam only <game>/mods and <game>/mods_STEAMTEST load. -WithMods copies the Workshop mods enabled in your
 # settings into mods_STEAMTEST for the test and always deletes it afterwards (a normal Steam launch reads that folder
 # too and would load the mods twice). Copies, never links, so the cleanup can't touch the Workshop folders.
-param([Parameter(Mandatory)][string]$Name, [int]$TimeoutSec = 1500, [switch]$WithMods, [int]$TraceSec = 0, [switch]$Visible, [switch]$Sound, [int]$Screen = 1, [switch]$HostVisible)
+# -StopWhen <regex>: ends the test as soon as the client log matches it (a client without this mod can't hide its window).
+param([Parameter(Mandatory)][string]$Name, [int]$TimeoutSec = 1500, [switch]$WithMods, [int]$TraceSec = 0, [switch]$Visible, [switch]$Sound, [int]$Screen = 1, [switch]$HostVisible, [string]$StopWhen = "")
 . (Join-Path $PSScriptRoot "common.ps1")
 Assert-GameNotRunning
 $hostScript = Join-Path $Scenarios "$Name-host.txt"
@@ -74,7 +75,10 @@ try {
     $clientArgs = @("--force-steam", "off", "--fastmp", "join", "--clientId", "1001", "--log-file", "`"$clientLog`"", "--bdtest", "`"$clientScript`"") + $extra
     $c = Start-Process -FilePath $GameExe -WorkingDirectory $GameDir -PassThru -ArgumentList $clientArgs
     $t = 0
-    while ((-not $h.HasExited -or -not $c.HasExited) -and $t -lt $TimeoutSec -and -not ($HostVisible -and $h.HasExited)) { Start-Sleep 5; $t += 5 }
+    while ((-not $h.HasExited -or -not $c.HasExited) -and $t -lt $TimeoutSec -and -not ($HostVisible -and $h.HasExited)) {
+        Start-Sleep 5; $t += 5
+        if ($StopWhen -and (Test-Path $clientLog) -and (Select-String -Path $clientLog -Pattern $StopWhen -Quiet)) { Write-Output "client log matched '$StopWhen': closing"; break }
+    }
     if ($trace) { $trace.WaitForExit(60000) | Out-Null }
     Write-Output "done in $t s: $hostLog, $clientLog"
 }
