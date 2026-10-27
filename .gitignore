@@ -24,3 +24,8 @@ CLAUDE.md
 
 # Game reference assemblies per version (MegaCrit copyright): build against one while another is installed
 /refs/
+
+# Video tooling for the Workshop page (screen + game-only audio recording): kept locally, not part of the mod
+/tools/audiocapture/
+/tools/autotest/record.ps1
+/tools/autotest/scenarios/video-*.txt

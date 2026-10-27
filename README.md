@@ -69,4 +69,4 @@ If the problem is still there with the mod off, it doesn't come from this mod. O
 
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE), for the code and documentation. The images (`src/BigDeckOptimization/mod_image.jpg`, `docs/workshop_preview.jpg`) contain card art from Slay the Spire 2 © Mega Crit, which the MIT license doesn't cover.
