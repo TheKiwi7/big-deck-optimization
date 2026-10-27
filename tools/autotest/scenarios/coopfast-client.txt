@@ -8,9 +8,6 @@ cmd bdopt
 cmd bdperf checks off
 wait 14
 cmd bigdeck import ref all cards {hash:ref}
-cmd bigdeck import ref all cards {hash:ref}
-cmd bigdeck import ref all cards {hash:ref}
-cmd bigdeck import ref all cards {hash:ref}
 enemyhp 300
 immortal until 4
 waitfor combat 900
