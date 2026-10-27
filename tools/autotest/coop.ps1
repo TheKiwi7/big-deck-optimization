@@ -1,11 +1,13 @@
 # Local co-op: two game instances without Steam (ENet on 127.0.0.1), each running its own scenario:
 # scenarios/<Name>-host.txt and scenarios/<Name>-client.txt. Logs go to results/<Name>-host.log / -client.log.
-#   powershell -File tools/autotest/coop.ps1 -Name coop [-TimeoutSec 1500] [-WithMods] [-TraceSec 120] [-Visible] [-Sound] [-Screen 1]
+#   powershell -File tools/autotest/coop.ps1 -Name coop [-TimeoutSec 1500] [-WithMods] [-TraceSec 120] [-Visible] [-Sound] [-Screen 1] [-HostVisible]
+# -HostVisible: hands-on co-op (scenario cooptry): the host window stays on screen with sound for you to play, the
+# client (a scripted fake player) stays hidden and is closed when you close the host.
 # -TraceSec records a CPU trace of the host (results/<Name>-host.nettrace); keep the host alive until it ends.
 # Without Steam only <game>/mods and <game>/mods_STEAMTEST load. -WithMods copies the Workshop mods enabled in your
 # settings into mods_STEAMTEST for the test and always deletes it afterwards (a normal Steam launch reads that folder
 # too and would load the mods twice). Copies, never links, so the cleanup can't touch the Workshop folders.
-param([Parameter(Mandatory)][string]$Name, [int]$TimeoutSec = 1500, [switch]$WithMods, [int]$TraceSec = 0, [switch]$Visible, [switch]$Sound, [int]$Screen = 1)
+param([Parameter(Mandatory)][string]$Name, [int]$TimeoutSec = 1500, [switch]$WithMods, [int]$TraceSec = 0, [switch]$Visible, [switch]$Sound, [int]$Screen = 1, [switch]$HostVisible)
 . (Join-Path $PSScriptRoot "common.ps1")
 Assert-GameNotRunning
 $hostScript = Join-Path $Scenarios "$Name-host.txt"
@@ -59,7 +61,7 @@ if (-not $Sound) { $extra += "--bdmute" }
 try {
     $hostLog = Join-Path $Results "$Name-host.log"; $clientLog = Join-Path $Results "$Name-client.log"
     Remove-Item $hostLog, $clientLog -ErrorAction SilentlyContinue
-    $hostArgs = @("--force-steam", "off", "--fastmp", "host_standard", "--log-file", "`"$hostLog`"", "--bdtest", "`"$hostScript`"") + $extra
+    $hostArgs = @("--force-steam", "off", "--fastmp", "host_standard", "--log-file", "`"$hostLog`"", "--bdtest", "`"$hostScript`"") + $(if ($HostVisible) { @() } else { $extra })
     $h = Start-Process -FilePath $GameExe -WorkingDirectory $GameDir -PassThru -ArgumentList $hostArgs
     $trace = $null
     if ($TraceSec -gt 0) {
@@ -72,7 +74,7 @@ try {
     $clientArgs = @("--force-steam", "off", "--fastmp", "join", "--clientId", "1001", "--log-file", "`"$clientLog`"", "--bdtest", "`"$clientScript`"") + $extra
     $c = Start-Process -FilePath $GameExe -WorkingDirectory $GameDir -PassThru -ArgumentList $clientArgs
     $t = 0
-    while ((-not $h.HasExited -or -not $c.HasExited) -and $t -lt $TimeoutSec) { Start-Sleep 5; $t += 5 }
+    while ((-not $h.HasExited -or -not $c.HasExited) -and $t -lt $TimeoutSec -and -not ($HostVisible -and $h.HasExited)) { Start-Sleep 5; $t += 5 }
     if ($trace) { $trace.WaitForExit(60000) | Out-Null }
     Write-Output "done in $t s: $hostLog, $clientLog"
 }

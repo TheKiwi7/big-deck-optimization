@@ -1,0 +1,13 @@
+# Hands-on co-op (host = you): coop.ps1 -Name cooptry -HostVisible -WithMods (with STS2_GAME_DIR for a game copy).
+# Both players get ~3,700 cards, then the game is yours: start fights from the console (fight CULTISTS_NORMAL, ...),
+# the fake player (cooptry-client) can't vote on the map; `bigdeck tank [hp]` raises the enemies' HP. Close the game when done: the fake player closes too.
+timeout 36000
+mplobby NECROBINDER 2
+waitfor run 240
+cmd bdperf checks off
+wait 8
+cmd bigdeck import ref all all {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+handoff

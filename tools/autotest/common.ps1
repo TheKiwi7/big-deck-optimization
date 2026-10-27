@@ -4,6 +4,8 @@ $GameExe = Join-Path $GameDir "SlayTheSpire2.exe"
 $AppId = "2868840"
 $SteamExe = (Get-ItemProperty "HKCU:\Software\Valve\Steam" -ErrorAction SilentlyContinue).SteamExe
 $Workshop = Join-Path (Split-Path -Parent (Split-Path -Parent $GameDir)) "workshop\content\$AppId"
+# A game copy outside Steam's library (STS2_GAME_DIR, e.g. C:\Games\StS2-beta-0.111.0): Steam's own Workshop folder.
+if (-not (Test-Path $Workshop) -and $SteamExe) { $Workshop = Join-Path (Split-Path -Parent $SteamExe) "steamapps\workshop\content\$AppId" }
 $UserData = Join-Path $env:APPDATA "SlayTheSpire2"
 $Scenarios = Join-Path $PSScriptRoot "scenarios"
 $Results = Join-Path $PSScriptRoot "results"

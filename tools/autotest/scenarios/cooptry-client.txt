@@ -1,0 +1,1211 @@
+# Hands-on co-op (fake player, local-only card selector so it never answers the human host's choices; game v0.111+): joins, gets ~3,700 cards, then in every combat plays 3 cards and ends its turn. See cooptry-host.txt.
+timeout 36000
+selector local
+mplobby IRONCLAD 2
+waitfor run 240
+cmd bdperf checks off
+wait 14
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
+waitfor combat 36000
+waitfor turn 36000
+play 3
+endturn
