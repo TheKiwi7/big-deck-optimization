@@ -36,7 +36,7 @@ try {
     $launch = @("--bdtest", "`"$script`"")
     # Hidden sessions open on screen $Screen (Godot's --screen, 0 = first): the window shows there for a moment before
     # the mod moves it away.
-    # -Show (record.ps1): fullscreen on screen $Screen instead, for a screen recording.
+    # -Show: fullscreen on screen $Screen instead, to watch the session.
     if ($Show) { $launch += "--bdshow", $Screen, "--screen", $Screen }
     elseif (-not $Visible) { $launch += "--bdhidden", "--screen", $Screen }
     if (-not $Sound) { $launch += "--bdmute" }

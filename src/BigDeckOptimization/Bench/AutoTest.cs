@@ -79,11 +79,11 @@ public static class AutoTest
         int show = Array.IndexOf(launchArgs, "--bdshow");
         if (show >= 0 && show + 1 < launchArgs.Length && int.TryParse(launchArgs[show + 1], out int showScreen))
         {
-            // --bdshow <screen> (record.ps1): fullscreen on that screen, for a screen recording. Only the window moves.
+            // --bdshow <screen>: fullscreen on that screen, for watching a session. Only the window moves.
             _showScreen = showScreen;
             harmony.Patch(AccessTools.Method(typeof(NGame), nameof(NGame.ApplyDisplaySettings)),
                 postfix: new HarmonyMethod(typeof(AutoTest), nameof(ShowOnScreen)));
-            // The recording keeps the game's sound while another window has the focus ("mute in background" setting).
+            // The game keeps its sound while another window has the focus ("mute in background" setting).
             harmony.Patch(AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.NMuteInBackgroundHandler), "Mute"),
                 prefix: new HarmonyMethod(typeof(AutoTest), nameof(StayForeground)));
             Callable.From(ShowOnScreen).CallDeferred();
@@ -116,7 +116,7 @@ public static class AutoTest
     /// <summary>
     /// Script <c>deckfilter [ID,ID...] [stacked]</c> (on the map): removes from the deck the cards with these ids and,
     /// with <c>stacked</c>, those holding several stacked enchantments (Limitless' MultiEnchantment), e.g. to keep long
-    /// multi-hit animations out of a video.
+    /// multi-hit animations out of a session.
     /// </summary>
     private static void DeckFilter(string[] args)
     {
@@ -144,7 +144,7 @@ public static class AutoTest
     private static int _showScreen = -1;
 
     /// <summary>
-    /// <c>--bdshow &lt;screen&gt;</c>: the game fullscreen and on top on that screen (a screen recording of it). Only the
+    /// <c>--bdshow &lt;screen&gt;</c>: the game fullscreen and on top on that screen (to watch a session). Only the
     /// window moves; a fullscreen game saves no window position on exit.
     /// </summary>
     private static void ShowOnScreen()
@@ -327,9 +327,17 @@ public static class AutoTest
     private static IDisposable PushSelector(MegaCrit.Sts2.Core.TestSupport.ICardSelector selector)
     {
         MethodInfo push = typeof(CardSelectCmd).GetMethods().Single(m => m.Name == nameof(CardSelectCmd.PushSelector));
-        object?[] args = push.GetParameters().Select((p, i) => i == 0 ? selector : p.DefaultValue).ToArray();
+        object?[] args = push.GetParameters().Select((p, i) => i == 0 ? selector : p.Name == "localOnly" ? _localSelector : p.DefaultValue).ToArray();
         return (IDisposable)push.Invoke(null, args)!;
     }
+
+    /// <summary>
+    /// Script <c>selector local</c> (before newrun/mplobby): the automatic card selector only answers this player's
+    /// own choices, synchronized like a human's (game v0.111's localOnly selector). The default, global selector also
+    /// answers the other players' choices locally: fine when every peer runs a script (they all pick the same cards),
+    /// a divergence when a human plays the other side (hands-on co-op, cooptry).
+    /// </summary>
+    private static bool _localSelector;
 
     /// <summary>Answers every card choice (choose a card, discard/exhaust prompts, rewards) with the first options.</summary>
     private sealed class FirstCardsSelector : MegaCrit.Sts2.Core.TestSupport.ICardSelector
@@ -497,6 +505,11 @@ public static class AutoTest
                     MethodInfo conflictTarget = AccessTools.Method(arg.Trim()) ?? throw new InvalidOperationException("no method " + arg.Trim());
                     new Harmony("bdtest.fakeconflict").Patch(conflictTarget, postfix: new HarmonyMethod(typeof(AutoTest), nameof(NoOpPostfix)));
                     Say($"  patched {conflictTarget.DeclaringType?.Name}.{conflictTarget.Name} as bdtest.fakeconflict");
+                    break;
+                case "selector":
+                    _localSelector = arg.Trim() == "local";
+                    bool supported = typeof(CardSelectCmd).GetMethods().Any(m => m.Name == nameof(CardSelectCmd.PushSelector) && m.GetParameters().Any(p => p.Name == "localOnly"));
+                    Say(_localSelector && !supported ? "  FAILED: this game version has no local-only card selector" : $"  card selector: {(_localSelector ? "local player only" : "global")}");
                     break;
                 case "faultprobe":
                     Say("  FAULTPROBE " + await FaultProbe.Run(() => Frames(tree, 3)));
@@ -916,7 +929,7 @@ public static class AutoTest
         // Fresh test profile: no tutorials (the combat one throws when combat is entered with the fight command).
         SaveManager.Instance.Progress.EnableFtues = false;
         // The character select screen stops the menu music before starting a run; without it, it keeps playing under
-        // the act music (heard in recordings).
+        // the act music.
         MegaCrit.Sts2.Core.Nodes.Audio.NAudioManager.Instance?.StopMusic();
         await game.StartNewSingleplayerRun(character, shouldSave: true, ActModel.GetDefaultList().ToList(),
             Array.Empty<ModifierModel>(), seed, GameMode.Standard);
