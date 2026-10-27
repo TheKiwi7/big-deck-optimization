@@ -37,6 +37,14 @@ With a huge deck, the game slows down more and more until every action freezes i
 
 Co-op with very big decks is much better, but not instant: going from one turn to the next can still take a few seconds.
 
+## Why this mod exists
+
+Slay the Spire 2 isn't made for thousands of cards and hundreds of relics, but a run can get there:
+
+- **In vanilla:** **Pael's Growth** (start of act 2) lets you clone a card at every rest site, copies included, so their number doubles each time. Add **Bing Bong**, **Dolly's Mirror** or the **Reflections** event and a good run ends with thousands of cards.
+- **With other mods:** many mods give you more cards and relics, or more time to collect them. **Limitless**, for example, adds infinite acts, so you can keep cloning forever.
+- **In co-op:** the lag comes from the cards and relics of all players together. 4 players with 2,000 cards each lag about as much as one player with 8,000, so a laggy amount comes much sooner.
+
 ## Install
 
 - **Steam Workshop:** [subscribe](https://steamcommunity.com/sharedfiles/filedetails/?id=3824717727).
