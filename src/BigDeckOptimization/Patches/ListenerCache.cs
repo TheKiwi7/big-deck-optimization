@@ -260,7 +260,7 @@ public static class ListenerCache
             ReadOnlyCollection<AbstractModel>? kept = Kept((combatState, null));
             ReadOnlyCollection<AbstractModel> listeners = kept != null && !VerifyThisReuse()
                 ? kept
-                : CheckedAgainstKept(kept, combatState.IterateHookListeners().ToList().AsReadOnly());
+                : CheckedAgainstKept(kept, Materialize(combatState.IterateHookListeners(), entry.Listeners?.Count ?? kept?.Count ?? 0));
             _cache[(combatState, null)] = (_version, listeners);
             return listeners;
         }
@@ -286,7 +286,7 @@ public static class ListenerCache
             ReadOnlyCollection<AbstractModel>? kept = Kept((runState, child));
             ReadOnlyCollection<AbstractModel> listeners = kept != null && !VerifyThisReuse()
                 ? kept
-                : CheckedAgainstKept(kept, runState.IterateHookListeners(child).ToList().AsReadOnly());
+                : CheckedAgainstKept(kept, Materialize(runState.IterateHookListeners(child), entry.Listeners?.Count ?? kept?.Count ?? 0));
             _cache[(runState, child)] = (_version, listeners);
             return listeners;
         }
@@ -294,6 +294,20 @@ public static class ListenerCache
         {
             _materializingRun = false;
         }
+    }
+
+    /// <summary>
+    /// <c>listeners.ToList().AsReadOnly()</c>, sized from the previous count: thousands of entries grown by doubling
+    /// would allocate twice that, the last arrays on the large object heap.
+    /// </summary>
+    private static ReadOnlyCollection<AbstractModel> Materialize(IEnumerable<AbstractModel> listeners, int sizeHint)
+    {
+        var list = new List<AbstractModel>(sizeHint);
+        foreach (AbstractModel listener in listeners)
+        {
+            list.Add(listener);
+        }
+        return list.AsReadOnly();
     }
 
     private static void Invalidate()

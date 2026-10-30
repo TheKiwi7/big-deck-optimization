@@ -30,7 +30,7 @@ public static class LimitlessReserialize
     public const string Name = "LimitlessReserialize";
 
     private const string LimitlessAssembly = "Limitless";
-    private const string MultiEnchantmentType = "Limitless.LimitlessCode.UncappedEnchantments.MultiEnchantment";
+    internal const string MultiEnchantmentType = "Limitless.LimitlessCode.UncappedEnchantments.MultiEnchantment";
     private const string HandlersType = "BaseLib.Patches.Saves.ExtendedSaveHandlers`2";
 
     /// <summary>Limitless v1.1.7 <c>MultiEnchantment.SetSerializableCards</c>: the list it builds is what this compares with.</summary>
@@ -67,7 +67,8 @@ public static class LimitlessReserialize
     private static MethodInfo? _cardToSerializable;
     private static MethodInfo? _enchantmentToSerializable;
     private static MethodInfo? _savedPropertiesFrom;
-    private static AccessTools.FieldRef<object, List<SerializableCard>?>? _stored;
+    /// <summary>A MultiEnchantment's stored list (<c>SerializableEnchantmentsOnCards</c>).</summary>
+    internal static AccessTools.FieldRef<object, List<SerializableCard>?>? Stored;
     private static ExtendedData? _cardData;
     private static ExtendedData? _enchantmentData;
 
@@ -89,6 +90,8 @@ public static class LimitlessReserialize
         {
             AppDomain.CurrentDomain.AssemblyLoad -= OnAssemblyLoad;
             ModEntry.TryApply(Name, ApplyNow);
+            ModEntry.TryApply(LimitlessRecalcSkip.Name, LimitlessRecalcSkip.Apply);
+            ModEntry.TryApply(SnapshotCardReuse.Name, SnapshotCardReuse.Apply);
         }
     }
 
@@ -111,7 +114,7 @@ public static class LimitlessReserialize
             "BaseLib.Patches.Saves.ExtendedSavePatches+PrepExtendedCardData:ExtendedDataForCard", ExtendedDataForCardFingerprint);
         _enchantmentData = new ExtendedData(handlers, typeof(EnchantmentModel), typeof(SerializableEnchantment),
             "BaseLib.Patches.Saves.ExtendedSavePatches+PrepExtendedEnchantmentData:ExtendedDataForEnchantment", ExtendedDataForEnchantmentFingerprint);
-        _stored = AccessTools.FieldRefAccess<List<SerializableCard>?>(multi, "<SerializableEnchantmentsOnCards>k__BackingField");
+        Stored = AccessTools.FieldRefAccess<List<SerializableCard>?>(multi, "<SerializableEnchantmentsOnCards>k__BackingField");
         _original = original;
         _mainThread = Environment.CurrentManagedThreadId;
         PatchGuard.Patch(harmony, original, prefix: new HarmonyMethod(typeof(LimitlessReserialize), nameof(Prefix)));
@@ -122,11 +125,14 @@ public static class LimitlessReserialize
     /// BaseLib's <c>ExtendedSaveHandlers&lt;TModel, TSerializable&gt;</c> by reflection (this DLL must not reference
     /// BaseLib): the data its postfix would store for a model, and the data an object already has, read without adding.
     /// </summary>
-    private sealed class ExtendedData
+    internal sealed class ExtendedData
     {
         public readonly MethodInfo Postfix;
         public readonly Func<object, object?> Stored;
         public readonly Func<object, Dictionary<Type, IDictionary>> Dictionaries;
+
+        /// <summary>The registered saves (BaseLib only ever adds to that list): what <see cref="KnownWithoutBuilding"/> depends on, with the CardModifier types.</summary>
+        public int SavesCount => _registeredSaves().Count;
 
         /// <summary>
         /// What <c>new ExtendedSaveData(model)</c> holds, built without allocating a new one: a reused data object whose
@@ -308,7 +314,7 @@ public static class LimitlessReserialize
     /// Another mod's patch on the methods this reproduces (BaseLib's known postfixes aside). Runs millions of times per
     /// combat: rechecked every 2 s, as <see cref="PatchSafety.IsPatchedByOthers(MethodBase?)"/> caches it.
     /// </summary>
-    private static bool PatchedByOthers()
+    internal static bool PatchedByOthers()
     {
         long now = Environment.TickCount64;
         if (now - _patchesCheckedAt >= 2000)
@@ -345,12 +351,15 @@ public static class LimitlessReserialize
                     Verify(__instance, cards);
                 }
 #endif
+                LimitlessRecalcSkip.Remember(__instance, cards, _cardData!, _enchantmentData!);
                 return false;
             }
+            LimitlessRecalcSkip.Forget(__instance);
         }
         catch (Exception e)
         {
             Enabled = false;
+            Faulted = true;
             PatchSafety.Fault(Name);
             Log.Error($"[{ModEntry.Id}] {Name} disabled after exception, falling back to Limitless: {e}");
         }
@@ -365,6 +374,51 @@ public static class LimitlessReserialize
     private static bool _comparing;
     private static int _mainThread;
 
+    /// <summary>The comparison threw: <see cref="SnapshotCardReuse"/> stops using it too.</summary>
+    internal static bool Faulted { get; private set; }
+
+    /// <summary>BaseLib's card and enchantment extended data, as the comparison reads them (once applied).</summary>
+    internal static (ExtendedData Card, ExtendedData Enchantment) Data() =>
+        (_cardData ?? throw new InvalidOperationException(Name + " not applied"), _enchantmentData!);
+
+    /// <summary>
+    /// For <see cref="SnapshotCardReuse"/>: whether <c>card.ToSerializable()</c> (with BaseLib's postfixes) would hold
+    /// what <paramref name="saved"/>, an earlier result for that card, holds. <paramref name="data"/> caches the BaseLib
+    /// data of <paramref name="saved"/> (one per saved object). Call only when <see cref="CanCompareHere"/>.
+    /// </summary>
+    internal static bool SameSerialized(CardModel card, SerializableCard saved, StoredData data)
+    {
+        _comparing = true;
+        try
+        {
+            return SameCard(card, saved, data, 0);
+        }
+        finally
+        {
+            _comparing = false;
+        }
+    }
+
+    /// <summary>Main thread, outside a comparison: where <see cref="LimitlessRecalcSkip"/> may skip or verify.</summary>
+    internal static bool CanCompareHere => !_comparing && Environment.CurrentManagedThreadId == _mainThread;
+
+    /// <summary>
+    /// The comparison <see cref="Prefix"/> makes, for <see cref="LimitlessRecalcSkip"/>'s sampled checks: whether
+    /// SetSerializableCards would keep the list in place now. Call only when <see cref="CanCompareHere"/>.
+    /// </summary>
+    internal static bool WouldKeep(EnchantmentModel multi, List<CardModel>? cards)
+    {
+        _comparing = true;
+        try
+        {
+            return Unchanged(multi, cards);
+        }
+        finally
+        {
+            _comparing = false;
+        }
+    }
+
 #if BENCH
     /// <summary>One kept list in this many is compared with what Limitless would have built (Debug builds).</summary>
     private const int VerifyEvery = 4096;
@@ -378,7 +432,7 @@ public static class LimitlessReserialize
         _freshWriter ??= new() { WarnOnGrow = false };
         _keptWriter.Reset();
         _freshWriter.Reset();
-        foreach (SerializableCard card in _stored!(multi)!)
+        foreach (SerializableCard card in Stored!(multi)!)
         {
             card.Serialize(_keptWriter);
         }
@@ -401,7 +455,7 @@ public static class LimitlessReserialize
     /// postfix creates that object (ToSerializable), so a found entry stays that object's; the contents are compared
     /// every time.
     /// </summary>
-    private sealed class StoredData
+    internal sealed class StoredData
     {
         public object?[] Saved = Array.Empty<object?>();
         public object?[] Data = Array.Empty<object?>();
@@ -428,7 +482,7 @@ public static class LimitlessReserialize
     /// <summary>Whether <c>cards.Select(c => c.ToSerializable()).ToList()</c> would hold what the stored list holds.</summary>
     private static bool Unchanged(EnchantmentModel multi, List<CardModel>? cards)
     {
-        List<SerializableCard>? stored = _stored!(multi);
+        List<SerializableCard>? stored = Stored!(multi);
         if (cards == null || stored == null || stored.Count != cards.Count)
         {
             return false;
@@ -473,6 +527,9 @@ public static class LimitlessReserialize
     /// <summary><c>SavedProperties.From</c>, which returns null without reading anything when the type has no saved property.</summary>
     private static SavedProperties? PropsOf(AbstractModel model) =>
         _jsonProperties!(model.GetType()) == null ? null : SavedProperties.From(model);
+
+    /// <summary>Whether models of this type save no property: <see cref="PropsOf"/> is then null without reading the model.</summary>
+    internal static bool SavesNoProperty(Type type) => _jsonProperties!(type) == null;
 
     /// <summary>
     /// The game's saved-property lookup that <c>SavedProperties.FromInternal</c> uses: SavedPropertiesTypeCache's in

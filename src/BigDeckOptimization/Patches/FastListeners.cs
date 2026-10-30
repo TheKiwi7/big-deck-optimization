@@ -92,6 +92,8 @@ public static class FastListeners
         {
             public long Version = -1;
             public long Subscriptions = -1;
+            /// <summary><see cref="AfflictionVersion"/> when built (combat piles only).</summary>
+            public long Afflictions = -1;
             /// <summary>The snapshot generation and entry count <see cref="Items"/> was built from.</summary>
             public long Generation;
             public int Consumed;
@@ -135,7 +137,9 @@ public static class FastListeners
             }
             Segment segment = _segments.GetValue(key, _ => new Segment());
             bool subscriptionsSame = !_keepSubscribed || segment.Subscriptions == SubscriptionVersion;
-            if (segment.Version != PileVersion || !subscriptionsSame)
+            // Affliction changes only matter to filters keeping some affliction type (see AfflictionFree).
+            bool afflictionsSame = !withAfflictions || segment.Afflictions == AfflictionVersion || AfflictionFree();
+            if (segment.Version != PileVersion || !subscriptionsSame || !afflictionsSame)
             {
                 PileSnapshot snapshot = PileSnapshot.Of(key, piles, withAfflictions);
                 if (subscriptionsSame && segment.Generation == snapshot.Generation && segment.Consumed <= snapshot.Count)
@@ -162,6 +166,7 @@ public static class FastListeners
                 segment.Consumed = snapshot.Count;
                 segment.Version = PileVersion;
                 segment.Subscriptions = SubscriptionVersion;
+                segment.Afflictions = AfflictionVersion;
             }
             else if (_keepSubscribed && Environment.TickCount64 >= _nextSubscriberCheck)
             {
@@ -203,6 +208,39 @@ public static class FastListeners
             segment.Items.AddRange(fresh);
             segment.Version = -1;
             Log.Error($"[{ModEntry.Id}] {Name}: an ExecutionFinished subscription changed unseen, hooks keeping subscribers no longer cached");
+        }
+
+        private int _afflictionFreeAt = -1;
+        private bool _afflictionFree;
+
+        /// <summary>
+        /// Whether this filter keeps no affliction: not keeping subscribers, and reacting to none of the affliction types
+        /// known (<see cref="KnownAffliction"/>). Then an affliction change of a known type leaves its entries as they were;
+        /// a change involving a type not known yet bumps <see cref="PileVersion"/> instead. The known types only grow, so
+        /// a filter free of them now was free of every type changed since its segment was built.
+        /// </summary>
+        private bool AfflictionFree()
+        {
+            if (_keepSubscribed)
+            {
+                return false;
+            }
+            int known = _afflictionTypesVersion;
+            if (_afflictionFreeAt != known)
+            {
+                bool free = true;
+                foreach (Type type in _afflictionTypes.Keys)
+                {
+                    if (_byType.GetOrAdd(type, _reacts))
+                    {
+                        free = false;
+                        break;
+                    }
+                }
+                _afflictionFree = free;
+                _afflictionFreeAt = known;
+            }
+            return _afflictionFree;
         }
 
         private void AddNow(List<AbstractModel> list, IReadOnlyList<CardPile> piles, bool withAfflictions)
@@ -404,6 +442,8 @@ public static class FastListeners
     private sealed class PileSnapshot
     {
         public long Version = -1;
+        /// <summary><see cref="AfflictionVersion"/> of the entries (combat piles; the deck's hold no affliction).</summary>
+        public long Afflictions = -1;
         /// <summary>Bumped on each full rebuild: within a generation, entries are only ever appended.</summary>
         public long Generation;
         public AbstractModel[] Entries = new AbstractModel[1024];
@@ -419,11 +459,12 @@ public static class FastListeners
         public static PileSnapshot Of(object key, IReadOnlyList<CardPile> piles, bool withAfflictions)
         {
             PileSnapshot snapshot = _snapshots.GetValue(key, _ => new PileSnapshot());
-            if (snapshot.Version == PileVersion)
+            bool afflictionsSame = !withAfflictions || snapshot.Afflictions == AfflictionVersion;
+            if (snapshot.Version == PileVersion && afflictionsSame)
             {
                 return snapshot;
             }
-            if (snapshot.CatchUp(piles, withAfflictions))
+            if (afflictionsSame && snapshot.CatchUp(piles, withAfflictions))
             {
 #if BENCH
                 SnapshotCatchUps++;
@@ -446,6 +487,7 @@ public static class FastListeners
                 Array.Clear(snapshot.Entries, snapshot.Count, previous - snapshot.Count);
             }
             snapshot.Version = PileVersion;
+            snapshot.Afflictions = AfflictionVersion;
             snapshot.Generation++;
             return snapshot;
         }
@@ -495,6 +537,7 @@ public static class FastListeners
             Add(card);
             if (withAfflictions && card.Affliction != null)
             {
+                KnownAffliction(card.Affliction); // e.g. on a clone, set without the setter
                 Add(card.Affliction);
             }
             if (card.Enchantment != null)
@@ -532,6 +575,35 @@ public static class FastListeners
     /// card in a pile (a card in none, like a fresh clone, is in no snapshot).
     /// </summary>
     internal static long PileVersion;
+
+    /// <summary>
+    /// Bumped before and after every affliction change of a card in a pile, when the old and new afflictions' types are
+    /// both known (<see cref="KnownAffliction"/>; else <see cref="PileVersion"/> is bumped). Pile entries of combat
+    /// piles depend on it, but only the filters keeping some affliction type do (Hex afflicting a whole deck no longer
+    /// rebuilds every hook's entries for each card).
+    /// </summary>
+    internal static long AfflictionVersion;
+
+    /// <summary>Changes when either version does: for caches built from pile entries without knowing their filters.</summary>
+    internal static long EntriesVersion => PileVersion + AfflictionVersion;
+
+    /// <summary>Affliction types seen on cards so far (any thread), and a counter bumped when one is added.</summary>
+    private static readonly ConcurrentDictionary<Type, byte> _afflictionTypes = new();
+    private static int _afflictionTypesVersion;
+
+    /// <summary>Whether this affliction's type was already known (null: yes); records it if not.</summary>
+    private static bool KnownAffliction(AbstractModel? affliction)
+    {
+        if (affliction == null || _afflictionTypes.ContainsKey(affliction.GetType()))
+        {
+            return true;
+        }
+        if (_afflictionTypes.TryAdd(affliction.GetType(), 0))
+        {
+            Interlocked.Increment(ref _afflictionTypesVersion);
+        }
+        return false;
+    }
 
     /// <summary>Bumped before and after every ExecutionFinished subscription change (see <see cref="_subscriptionsTracked"/>).</summary>
     internal static long SubscriptionVersion;
@@ -674,6 +746,44 @@ public static class FastListeners
         return __exception;
     }
 
+    /// <summary>
+    /// Around the Affliction setter of a card in a pile: <see cref="AfflictionVersion"/> when the old and new affliction
+    /// types are known, else <see cref="PileVersion"/> (every cache rebuilt, as for any other change). 0: in no pile.
+    /// </summary>
+    private static void BeforeAfflictionSet(CardModel __instance, AfflictionModel? value, out byte __state)
+    {
+        if (PileIndex.InNoPile(__instance))
+        {
+            __state = 0;
+            return;
+        }
+        // Both checked: each records its type when new.
+        bool known = KnownAffliction(__instance.Affliction) & KnownAffliction(value);
+        if (known)
+        {
+            __state = 1;
+            AfflictionVersion++;
+        }
+        else
+        {
+            __state = 2;
+            BumpPileVersion();
+        }
+    }
+
+    private static Exception? AfterAfflictionSet(Exception? __exception, byte __state)
+    {
+        if (__state == 1)
+        {
+            AfflictionVersion++;
+        }
+        else if (__state == 2)
+        {
+            PileVersion++;
+        }
+        return __exception;
+    }
+
     private static void BumpSubscriptions() => SubscriptionVersion++;
 
     private static Exception? BumpSubscriptionsFinally(Exception? __exception)
@@ -774,9 +884,10 @@ public static class FastListeners
         {
             // The setter is the only code changing it (auto-property backing field), so bumping around it is enough.
             PatchSafety.RequireFieldWriters(typeof(CardModel), $"<{property}>k__BackingField", "set_" + property);
+            bool affliction = property == nameof(CardModel.Affliction);
             PatchGuard.Patch(harmony, AccessTools.PropertySetter(typeof(CardModel), property) ?? throw new MissingMethodException(nameof(CardModel), property),
-                prefix: new HarmonyMethod(typeof(FastListeners), nameof(BumpIfPiled)),
-                finalizer: new HarmonyMethod(typeof(FastListeners), nameof(BumpIfPiledFinally)));
+                prefix: new HarmonyMethod(typeof(FastListeners), affliction ? nameof(BeforeAfflictionSet) : nameof(BumpIfPiled)),
+                finalizer: new HarmonyMethod(typeof(FastListeners), affliction ? nameof(AfterAfflictionSet) : nameof(BumpIfPiledFinally)));
         }
         try
         {

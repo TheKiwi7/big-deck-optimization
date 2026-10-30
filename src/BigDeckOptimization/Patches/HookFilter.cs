@@ -322,14 +322,24 @@ public static class HookFilter
     /// </summary>
     internal static List<AbstractModel>? ForCombat(CombatState state, int hook) =>
         CanWalk
-            ? Walked((state, null), hook, filter => FastListeners.Filtered(state, filter), () => ListenerCache.GetListeners(state))
+            ? Cached((state, null), hook) ?? Walked((state, null), hook, filter => FastListeners.Filtered(state, filter), () => ListenerCache.GetListeners(state))
             : Get(ListenerCache.GetListeners(state), hook);
 
     /// <summary>The run listeners (deck + child combat) of one hook, as <see cref="ForCombat"/>.</summary>
     internal static List<AbstractModel>? ForRun(RunState run, ICombatState? child, int hook) =>
         CanWalk && (child == null || child is CombatState)
-            ? Walked((run, child), hook, filter => FastListeners.Filtered(run, child, filter), () => ListenerCache.GetRunListeners(run, child))
+            ? Cached((run, child), hook) ?? Walked((run, child), hook, filter => FastListeners.Filtered(run, child, filter), () => ListenerCache.GetRunListeners(run, child))
             : Get(ListenerCache.GetRunListeners(run, child), hook);
+
+    /// <summary>
+    /// The list <see cref="Walked"/> built for this key and hook, while still current; null otherwise (then
+    /// <see cref="Walked"/> decides). Checked first so a cache hit allocates nothing (the walk lambdas capture state).
+    /// </summary>
+    private static List<AbstractModel>? Cached((object, object?) key, int hook) =>
+        _safe != null && _safe[hook] && _walked != null && _walked.TryGetValue(key, out var entry)
+        && entry.Version == ListenerCache.Version && entry.PileVersion == FastListeners.EntriesVersion
+            ? entry.PerHook[hook]
+            : null;
 
     private static bool CanWalk
     {
@@ -354,9 +364,9 @@ public static class HookFilter
             return null;
         }
         _walked ??= new Dictionary<(object, object?), (int, long, List<AbstractModel>?[])>();
-        if (!_walked.TryGetValue(key, out var entry) || entry.Version != ListenerCache.Version || entry.PileVersion != FastListeners.PileVersion)
+        if (!_walked.TryGetValue(key, out var entry) || entry.Version != ListenerCache.Version || entry.PileVersion != FastListeners.EntriesVersion)
         {
-            entry = (ListenerCache.Version, FastListeners.PileVersion, new List<AbstractModel>?[_hooks.Length]);
+            entry = (ListenerCache.Version, FastListeners.EntriesVersion, new List<AbstractModel>?[_hooks.Length]);
             _walked[key] = entry;
         }
         List<AbstractModel>? list = entry.PerHook[hook];

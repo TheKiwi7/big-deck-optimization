@@ -70,6 +70,10 @@ public static class PileIndex
 
     private static readonly ConditionalWeakTable<CardModel, Entry> _entries = new();
     private static AccessTools.FieldRef<CardModel, Player?>? _owner;
+    /// <summary><c>Player._runPiles</c>, null when <see cref="Player.Piles"/> isn't the code <see cref="OwnsPile"/> mirrors.</summary>
+    private static AccessTools.FieldRef<Player, CardPile[]?>? _runPiles;
+    /// <summary>v0.107.1 and v0.111 <c>Player.Piles</c>: <c>(PlayerCombatState?.AllPiles ?? []).Concat(_runPiles)</c>, _runPiles = [Deck] made on first call.</summary>
+    private const string PlayerPilesFingerprint = "1C4E1C85C62DCE1D";
     private static System.Reflection.MethodInfo? _getter;
     /// <summary>Set by the verification and the bench to get the vanilla answer.</summary>
     [ThreadStatic] private static bool _vanilla;
@@ -85,6 +89,18 @@ public static class PileIndex
         // ...and no other code changes the pile lists.
         PatchSafety.RequireFieldWriters(typeof(CardPile), "_cards", PatchSafety.CardListWriters);
         _owner = AccessTools.FieldRefAccess<CardModel, Player?>("_owner");
+        try
+        {
+            // Player.Piles builds a Concat iterator on every call: read the same piles without it while its code is known.
+            PatchSafety.RequireFingerprint(AccessTools.PropertyGetter(typeof(Player), nameof(Player.Piles))
+                ?? throw new MissingMethodException("Player.Piles"), PlayerPilesFingerprint);
+            _runPiles = AccessTools.FieldRefAccess<Player, CardPile[]?>("_runPiles");
+        }
+        catch (Exception e)
+        {
+            _runPiles = null;
+            Log.Info($"[{ModEntry.Id}] {Name}: owner's piles read through Player.Piles ({e.Message})");
+        }
 
         // Tracking first, so the getter never answers from an index that missed changes.
         // Updated before the original runs: it fires CardAdded/ContentsChanged (whose listeners read card.Pile) right
@@ -340,15 +356,7 @@ public static class PileIndex
             }
             else
             {
-                answer = null;
-                foreach (CardPile pile in owner.Piles)
-                {
-                    if (pile == entry.Pile)
-                    {
-                        answer = pile;
-                        break;
-                    }
-                }
+                answer = OwnsPile(owner, entry.Pile) ? entry.Pile : null;
             }
             Fast++;
             if (Fast % VerifyEvery == 0)
@@ -370,6 +378,43 @@ public static class PileIndex
             Fail(e.ToString());
             return true;
         }
+    }
+
+    /// <summary>Whether <c>owner.Piles</c> holds the pile, read without allocating when that getter's code is known.</summary>
+    private static bool OwnsPile(Player owner, CardPile pile)
+    {
+        CardPile[]? run = _runPiles?.Invoke(owner);
+        if (run == null)
+        {
+            // Not known, or not made yet (the getter makes it).
+            foreach (CardPile candidate in owner.Piles)
+            {
+                if (candidate == pile)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+        IReadOnlyList<CardPile>? combat = owner.PlayerCombatState?.AllPiles;
+        if (combat != null)
+        {
+            for (int i = 0; i < combat.Count; i++)
+            {
+                if (combat[i] == pile)
+                {
+                    return true;
+                }
+            }
+        }
+        for (int i = 0; i < run.Length; i++)
+        {
+            if (run[i] == pile)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>The game's own answer (the getter with this patch bypassed).</summary>

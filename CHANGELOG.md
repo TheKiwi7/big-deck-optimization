@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.8.0
+
+- Much shorter freeze when an enemy afflicts your whole deck (the Spectral Knight's Hex in the Knights elite) with Limitless stacked enchantments: in my tests with a 4,100-card deck, about 2 seconds instead of 10 (the unmodified game freezes for about 5 minutes there; your numbers will differ on another PC).
+- Co-op with huge decks: the state check after every action produces far less garbage, so the short freezes while everyone plays cards are mostly gone. In my tests with a 4,100-card deck, the slowest moments while playing cards went from about 10 fps to about 25 fps (your numbers will differ on another PC).
+- Card texts (descriptions, and Limitless's stacked enchantment lines) are built with much less memory churn, so the hand refreshes more smoothly after each action.
+
 ## v0.7.0
 
 - Game beta branch: every optimization now works there too, including the faster damage calculation, the remaining effects and the first-turn speedup that were still off.

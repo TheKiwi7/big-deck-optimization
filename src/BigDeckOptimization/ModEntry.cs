@@ -37,6 +37,9 @@ public static class ModEntry
         TryApply(FastListeners.Name, FastListeners.Apply);
         TryApply(HookSkip.Name, HookSkip.Apply);
         TryApply(LimitlessReserialize.Name, LimitlessReserialize.Apply);
+        TryApply(LimitlessRecalcSkip.Name, LimitlessRecalcSkip.Apply);
+        TryApply(SnapshotCardReuse.Name, SnapshotCardReuse.Apply);
+        TryApply(TextPoolReuse.Name, TextPoolReuse.Apply);
         TryApply(RelicFlashMerge.Name, RelicFlashMerge.Apply);
         TryApply(TypePlaqueSkip.Name, TypePlaqueSkip.Apply);
 #if BENCH

@@ -13,6 +13,10 @@ internal static class BaseLibTypes
 {
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _none = new();
     private static int _watching;
+    private static long _changes;
+
+    /// <summary>Bumped each time a <see cref="NoneDefined"/> answer turns false (an assembly defining such a type loaded).</summary>
+    public static long Changes => System.Threading.Interlocked.Read(ref _changes);
 
     /// <summary>
     /// Whether no loaded assembly defines one (cached; an assembly loading later that defines one turns it false).
@@ -42,6 +46,7 @@ internal static class BaseLibTypes
                     if (_none.TryGetValue(name, out bool none) && none && Defines(args.LoadedAssembly, name))
                     {
                         _none[name] = false;
+                        System.Threading.Interlocked.Increment(ref _changes);
                     }
                 }
             };

@@ -121,10 +121,12 @@ public static class Settings
             new[] { FastCombatStart.Name }, on => FastCombatStart.Enabled = on),
         new("coop_checksum", "Co-op state check",
             "Faster state check after every action in co-op (the biggest co-op lag with huge decks).",
-            new[] { ListenerCache.Name, ListenerCache.SnapshotFault }, on => ListenerCache.SnapshotEnabled = on),
+            new[] { ListenerCache.Name, ListenerCache.SnapshotFault }, on => { ListenerCache.SnapshotEnabled = on; SnapshotCardReuse.Enabled = Part(on, SnapshotCardReuse.Name); },
+            () => ModEntry.NotApplied(ListenerCache.Name) ? GameChanged : null),
         new("combat_refresh", "Combat refresh",
             "Faster card and UI refresh after every action in combat.",
-            new[] { ListenerCache.Name }, on => ListenerCache.RefreshEnabled = on),
+            new[] { ListenerCache.Name }, on => { ListenerCache.RefreshEnabled = on; TextPoolReuse.Enabled = on; },
+            () => ModEntry.NotApplied(ListenerCache.Name) ? GameChanged : null),
         new("hook_filter", "Skip empty hooks",
             "Inside the two optimizations above, only asks the cards and relics that actually react to each check.",
             new[] { HookFilter.Name }, on => HookFilter.Enabled = on),
@@ -171,13 +173,19 @@ public static class Settings
             () => EnchantmentTabReuse.Applied ? null : LimitlessReason()),
         new("limitless_saves", "Limitless enchantment copies",
             "With Limitless: keeps the saved copy of stacked enchantments when rebuilding it would give the same content, instead of rebuilding it after every action.",
-            new[] { LimitlessReserialize.Name }, on => LimitlessReserialize.Enabled = on,
+            new[] { LimitlessReserialize.Name }, on => { LimitlessReserialize.Enabled = on; LimitlessRecalcSkip.Enabled = Part(on, LimitlessRecalcSkip.Name); },
             () => LimitlessReserialize.Applied ? null : LimitlessReason()),
         new("card_type_line", "BaseLib card type line",
             "With BaseLib: shows each card's type line without searching every card in combat for mods that change it, while no installed mod does (scrolling the draw pile, refreshing the hand). Same text.",
             new[] { TypePlaqueSkip.Name }, on => TypePlaqueSkip.Enabled = on,
             () => TypePlaqueSkip.Applied ? null : BaseLibMissing),
     };
+
+    /// <summary>
+    /// A part of an optimization that turns itself off alone after an error (the rest of the option keeps working):
+    /// on with its option unless it faulted this session.
+    /// </summary>
+    private static bool Part(bool on, string name) => on && !PatchSafety.IsFaulted(name);
 
     /// <summary>Raised after a choice changed through bdopt (not from the menu or when loading), so the menu saves it.</summary>
     public static event Action<string, bool>? Changed;
