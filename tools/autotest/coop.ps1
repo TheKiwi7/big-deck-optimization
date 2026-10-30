@@ -1,6 +1,6 @@
 # Local co-op: two game instances without Steam (ENet on 127.0.0.1), each running its own scenario:
 # scenarios/<Name>-host.txt and scenarios/<Name>-client.txt. Logs go to results/<Name>-host.log / -client.log.
-#   powershell -File tools/autotest/coop.ps1 -Name coop [-TimeoutSec 1500] [-WithMods] [-TraceSec 120] [-Visible] [-Sound] [-Screen 1] [-HostVisible]
+#   powershell -File tools/autotest/coop.ps1 -Name coop [-TimeoutSec 1500] [-WithMods] [-TraceSec 120 [-TraceProfile gc-verbose]] [-Visible] [-Sound] [-Screen 1] [-HostVisible]
 # -HostVisible: hands-on co-op (scenario cooptry): the host window stays on screen with sound for you to play, the
 # client (a scripted fake player) stays hidden and is closed when you close the host.
 # -TraceSec records a CPU trace of the host (results/<Name>-host.nettrace); keep the host alive until it ends.
@@ -8,7 +8,7 @@
 # settings into mods_STEAMTEST for the test and always deletes it afterwards (a normal Steam launch reads that folder
 # too and would load the mods twice). Copies, never links, so the cleanup can't touch the Workshop folders.
 # -StopWhen <regex>: ends the test as soon as the client log matches it (a client without this mod can't hide its window).
-param([Parameter(Mandatory)][string]$Name, [int]$TimeoutSec = 1500, [switch]$WithMods, [int]$TraceSec = 0, [switch]$Visible, [switch]$Sound, [int]$Screen = 1, [switch]$HostVisible, [string]$StopWhen = "")
+param([Parameter(Mandatory)][string]$Name, [int]$TimeoutSec = 1500, [switch]$WithMods, [int]$TraceSec = 0, [string]$TraceProfile = "cpu-sampling", [switch]$Visible, [switch]$Sound, [int]$Screen = 1, [switch]$HostVisible, [string]$StopWhen = "")
 . (Join-Path $PSScriptRoot "common.ps1")
 Assert-GameNotRunning
 $hostScript = Join-Path $Scenarios "$Name-host.txt"
@@ -69,7 +69,7 @@ try {
         Start-Sleep 5  # the runtime only accepts diagnostics once started
         $span = [TimeSpan]::FromSeconds($TraceSec).ToString("dd\:hh\:mm\:ss")
         $trace = Start-Process -FilePath "dotnet-trace" -PassThru -WindowStyle Hidden -ArgumentList "collect", "-p", $h.Id,
-            "--profile", "cpu-sampling", "--duration", $span, "-o", "`"$Results\$Name-host.nettrace`""
+            "--profile", $TraceProfile, "--duration", $span, "-o", "`"$Results\$Name-host.nettrace`""
     }
     Start-Sleep 12
     $clientArgs = @("--force-steam", "off", "--fastmp", "join", "--clientId", "1001", "--log-file", "`"$clientLog`"", "--bdtest", "`"$clientScript`"") + $extra

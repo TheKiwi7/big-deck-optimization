@@ -1,0 +1,64 @@
+# 5-player run of 2026-10-29, end state (mod on): the big Necrobinder's 4,112 cards + every player's relics (~480).
+# The run's last combats without Hex: Soul Nexus elite (floor 40), Aeonglass boss (floor 45): plays, ends of turn, hitches.
+timeout 1500
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import party5 2 all
+cmd bigdeck import party5 0,1,3,4 relics
+enemyhp 999999
+immortal
+cmd fight SOUL_NEXUS_ELITE
+waitfor idle 600
+wait 1
+fpsstat
+gcstat
+marker nexus t1 plays
+play 60
+waitfor idle 120
+fpsstat nexus plays t1
+gcstat nexus plays t1
+endturn
+waitfor idle 600
+fpsstat nexus end of turn t1
+gcstat nexus turn t1
+marker nexus t2 plays
+play 60
+waitfor idle 120
+fpsstat nexus plays t2
+gcstat nexus plays t2
+endturn
+waitfor idle 600
+fpsstat nexus end of turn t2
+gcstat nexus turn t2
+immortal off
+cmd kill all
+waitfor nocombat 300
+wait 2
+fpsstat after nexus
+immortal
+cmd fight AEONGLASS_BOSS
+waitfor idle 600
+wait 1
+fpsstat aeonglass start
+gcstat aeonglass start
+marker aeon t1 plays
+play 60
+waitfor idle 120
+fpsstat aeon plays t1
+gcstat aeon plays t1
+endturn
+waitfor idle 600
+fpsstat aeon end of turn t1
+gcstat aeon turn t1
+marker aeon t2 plays
+play 60
+waitfor idle 120
+fpsstat aeon plays t2
+gcstat aeon plays t2
+endturn
+waitfor idle 600
+fpsstat aeon end of turn t2
+gcstat aeon turn t2
+wait 1
+quit

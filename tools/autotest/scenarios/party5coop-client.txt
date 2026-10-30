@@ -1,0 +1,38 @@
+# Co-op, client (with party5coop-host.txt).
+timeout 2400
+mplobby IRONCLAD 2
+waitfor run 240
+cmd bdperf checks off
+wait 14
+cmd bigdeck import party5 0,1,3,4 relics {hash:party5}
+enemyhp 999999
+immortal until 3
+waitfor combat 900
+waitfor idle 900
+wait 2
+fpsstat
+gcstat
+marker t1 plays
+play 5
+waitfor idle 300
+fpsstat plays t1
+gcstat plays t1
+state t1
+endturn
+waitfor turn 900
+fpsstat end of turn t1
+gcstat turn t1
+marker t2 plays
+play 5
+waitfor idle 300
+fpsstat plays t2
+gcstat plays t2
+state t2
+endturn
+waitfor turn 900
+fpsstat end of turn t2
+gcstat turn t2
+state t3
+counters end
+wait 5
+quit

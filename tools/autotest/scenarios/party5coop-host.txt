@@ -1,0 +1,40 @@
+# Co-op, host (with party5coop-client.txt): the 5-player run of 2026-10-29 at its end, the big Necrobinder (4,112 cards,
+# 78 relics) here, the other players' 400 relics on the client. Soul Nexus elite: rapid Oblivion plays on both sides, fps per phase.
+timeout 2400
+mplobby NECROBINDER 2
+waitfor run 240
+cmd bdperf checks off
+wait 8
+cmd bigdeck import party5 2 all {hash:party5}
+enemyhp 999999
+wait 30
+immortal until 3
+cmd fight SOUL_NEXUS_ELITE
+waitfor idle 900
+wait 2
+fpsstat
+gcstat
+marker t1 plays
+play 40
+waitfor idle 300
+fpsstat plays t1
+gcstat plays t1
+state t1
+endturn
+waitfor turn 900
+fpsstat end of turn t1
+gcstat turn t1
+marker t2 plays
+play 40
+waitfor idle 300
+fpsstat plays t2
+gcstat plays t2
+state t2
+endturn
+waitfor turn 900
+fpsstat end of turn t2
+gcstat turn t2
+state t3
+counters end
+wait 5
+quit

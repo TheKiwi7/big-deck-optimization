@@ -76,6 +76,8 @@ public class PerfConsoleCmd : AbstractConsoleCmd
                 return new CmdResult(success: true, $"PileIndex verifies 1 answer in {every}.");
             case "pile":
                 return ComparePile();
+            case "text":
+                return CompareText();
             case "plaque":
                 int plaqueCards = args.Length >= 2 && int.TryParse(args[1], out int pc) && pc > 0 ? pc : 200;
                 return CompareTypePlaque(plaqueCards);
@@ -267,6 +269,45 @@ public class PerfConsoleCmd : AbstractConsoleCmd
             + $"  vanilla: {vanilla.Elapsed.TotalMilliseconds:F1} ms ({vanilla.Elapsed.TotalMilliseconds * 1000 / Math.Max(1, cards.Count):F2} us/card)\n"
             + $"  index  : {fast.Elapsed.TotalMilliseconds:F1} ms ({fast.Elapsed.TotalMilliseconds * 1000 / Math.Max(1, cards.Count):F2} us/card)\n"
             + $"  fast {PileIndex.Fast}, fallbacks {PileIndex.Fallbacks}, verified {PileIndex.Verified}\n  {verdict}");
+    }
+
+    /// <summary>
+    /// Every card's description (with its enchantment and affliction texts) formatted with TextPoolReuse on and off:
+    /// identical texts, time and bytes allocated each way.
+    /// </summary>
+    private static CmdResult CompareText()
+    {
+        RunState? state = RunManager.Instance.DebugOnlyGetState();
+        if (state == null)
+        {
+            return new CmdResult(success: false, "Start a run first.");
+        }
+        System.Collections.Generic.List<MegaCrit.Sts2.Core.Models.CardModel> cards = state.Players
+            .SelectMany(p => p.Piles).SelectMany(p => p.Cards).ToList();
+        bool was = TextPoolReuse.Enabled;
+        try
+        {
+            (System.Collections.Generic.List<string> texts, double ms, long bytes) Format(bool reuse)
+            {
+                TextPoolReuse.Enabled = reuse;
+                long before = GC.GetAllocatedBytesForCurrentThread();
+                Stopwatch watch = Stopwatch.StartNew();
+                var texts = cards.Select(c => c.GetDescriptionForPile(c.Pile?.Type ?? PileType.Deck)).ToList();
+                return (texts, watch.Elapsed.TotalMilliseconds, GC.GetAllocatedBytesForCurrentThread() - before);
+            }
+            var vanilla = Format(false);
+            var reused = Format(true);
+            int mismatches = vanilla.texts.Zip(reused.texts).Count(pair => !string.Equals(pair.First, pair.Second, StringComparison.Ordinal));
+            string verdict = mismatches == 0 ? "OK: identical texts" : $"MISMATCH: {mismatches} texts differ";
+            return new CmdResult(mismatches == 0,
+                $"card texts — {cards.Count} cards, {TextPoolReuse.Name} {(TextPoolReuse.Applied ? "applied" : "NOT applied")}\n"
+                + $"  vanilla: {vanilla.ms:F1} ms, {vanilla.bytes / 1048576.0:F1} MB allocated\n"
+                + $"  shared : {reused.ms:F1} ms, {reused.bytes / 1048576.0:F1} MB allocated\n  {verdict}");
+        }
+        finally
+        {
+            TextPoolReuse.Enabled = was;
+        }
     }
 
     private static CmdResult ProbeCmd(string[] args)

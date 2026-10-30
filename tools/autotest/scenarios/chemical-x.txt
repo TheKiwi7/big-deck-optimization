@@ -1,0 +1,59 @@
+# Chemical X (+2 to X): Whirlwind with 3 energy must hit 5 times with the relic, mod on and off, and 3 times without it.
+# Small Ironclad deck, then the same with the reference run imported (~900 cards + relics). Compare enemy HP in STATE lines.
+timeout 900
+newrun IRONCLAD
+waitfor run 120
+wait 2
+cmd relic add CHEMICAL_X
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+emptyhand
+state small start
+cmd card WHIRLWIND hand
+playcard WHIRLWIND
+waitfor idle 60
+state small on relic
+setenergy 3
+cmd bdopt off
+cmd card WHIRLWIND hand
+playcard WHIRLWIND
+waitfor idle 60
+state small off relic
+setenergy 3
+cmd relic remove CHEMICAL_X
+cmd card WHIRLWIND hand
+playcard WHIRLWIND
+waitfor idle 60
+state small off norelic
+setenergy 3
+cmd bdopt on
+cmd card WHIRLWIND hand
+playcard WHIRLWIND
+waitfor idle 60
+state small on norelic
+cmd kill all
+waitfor nocombat 300
+wait 2
+cmd bigdeck import ref all all
+cmd relic add CHEMICAL_X
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+emptyhand
+setenergy 3
+state big start
+cmd card WHIRLWIND hand
+playcard WHIRLWIND
+waitfor idle 60
+state big on relic
+setenergy 3
+cmd bdopt off
+cmd card WHIRLWIND hand
+playcard WHIRLWIND
+waitfor idle 60
+state big off relic
+cmd bdopt on
+wait 1
+quit

@@ -1,0 +1,37 @@
+# Chemical X A/B with the reference run imported (~945 cards + 369 relics), off: compare with chemical-x-big-on;
+# CHECKSUM and STATE lines must match line for line (Whirlwind with the relic twice, then without it).
+timeout 900
+newrun IRONCLAD
+waitfor run 120
+wait 2
+cmd bdopt off
+cmd bigdeck import ref all all
+cmd relic add CHEMICAL_X
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+emptyhand
+state start
+checksum start
+cmd card WHIRLWIND hand
+playcard WHIRLWIND
+waitfor idle 60
+state relic 1
+checksum relic 1
+setenergy 3
+cmd card WHIRLWIND hand
+playcard WHIRLWIND
+waitfor idle 60
+state relic 2
+checksum relic 2
+setenergy 3
+cmd relic remove CHEMICAL_X
+cmd card WHIRLWIND hand
+playcard WHIRLWIND
+waitfor idle 60
+state norelic
+checksum norelic
+cmd bdopt on
+wait 1
+quit

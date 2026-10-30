@@ -1,0 +1,56 @@
+# party5-on with every cached FastListeners walk compared to a fresh walk (CacheMismatches must stay 0; slow).
+# Same CHECKSUM/STATE lines as party5-on and party5-off.
+timeout 1500
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bdopt on
+cmd bdperf segments verify all
+cmd bigdeck import party5 2 all
+cmd bigdeck import party5 0,1,3,4 relics
+enemyhp 999999
+immortal
+cmd fight KNIGHTS_ELITE
+waitfor idle 600
+wait 1
+checksum start
+state start
+fpsstat
+gcstat
+marker plays t1 start
+play 80
+waitfor idle 120
+marker plays t1 end
+fpsstat plays t1
+gcstat plays t1
+checksum t1 plays
+state t1 plays
+fpsstat
+endturn
+waitfor idle 600
+fpsstat end of turn t1
+gcstat turn t1
+checksum t1 end
+state t1 end
+fpsstat
+gcstat
+marker plays t2 start
+play 80
+waitfor idle 120
+marker plays t2 end
+fpsstat plays t2
+gcstat plays t2
+checksum t2 plays
+state t2 plays
+fpsstat
+endturn
+waitfor idle 600
+fpsstat end of turn t2
+gcstat turn t2
+checksum t2 end
+state t2 end
+counters end
+cmd bdopt on
+cmd bdperf segments verify all
+wait 1
+quit
