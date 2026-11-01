@@ -33,6 +33,8 @@ public static class TextPoolReuse
 
     public static void Apply(Harmony harmony)
     {
+        // Loaded on first use, often after this mod: without this the patch depended on the mods' load order.
+        Assembly.Load(new AssemblyName("SmartFormat"));
         Type placeholder = AccessTools.TypeByName(PlaceholderType) ?? throw new PatchSkippedException("no " + PlaceholderType);
         MethodInfo getter = AccessTools.PropertyGetter(placeholder, "FormatterOptions") ?? throw new MissingMethodException(PlaceholderType, "get_FormatterOptions");
         PatchSafety.RequireFingerprint(getter, FormatterOptionsFingerprint);
@@ -62,6 +64,16 @@ public static class TextPoolReuse
     }
 
     /// <summary>In place of <c>ArrayPool&lt;char&gt;.Create(maxArrayLength, maxArraysPerBucket)</c>.</summary>
-    private static ArrayPool<char> Pool(int maxArrayLength, int maxArraysPerBucket) =>
-        Enabled ? ArrayPool<char>.Shared : ArrayPool<char>.Create(maxArrayLength, maxArraysPerBucket);
+    private static ArrayPool<char> Pool(int maxArrayLength, int maxArraysPerBucket)
+    {
+#if BENCH
+        Served++;
+#endif
+        return Enabled ? ArrayPool<char>.Shared : ArrayPool<char>.Create(maxArrayLength, maxArraysPerBucket);
+    }
+
+#if BENCH
+    /// <summary>Calls of <see cref="Pool"/> (the effects check).</summary>
+    public static long Served { get; private set; }
+#endif
 }

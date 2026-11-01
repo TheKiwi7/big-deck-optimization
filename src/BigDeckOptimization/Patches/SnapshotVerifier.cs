@@ -116,8 +116,10 @@ public static class SnapshotVerifier
                 __result = vanilla;
                 ListenerCache.SnapshotEnabled = false;
                 HookFilter.Enabled = false;
+                SnapshotCardReuse.Enabled = false;
                 PatchSafety.Fault(ListenerCache.SnapshotFault);
                 PatchSafety.Fault(HookFilter.Name);
+                PatchSafety.Fault(SnapshotCardReuse.Name);
                 Log.Error($"[{ModEntry.Id}] {Name}: optimized snapshot differs from vanilla at byte {diffAt} "
                     + $"(lengths {optimizedLength} vs {vanillaLength}, action {justFinishedAction}). "
                     + "Using vanilla snapshot; snapshot optimizations disabled for this session. Please report this log.");
@@ -147,11 +149,6 @@ public static class SnapshotVerifier
             }
         }
         return cards;
-    }
-
-    public static void ResetStats()
-    {
-        Snapshots = Verified = Mismatches = 0;
     }
 
     /// <summary>Index of the first differing byte between both serializations, or -1 when identical.</summary>

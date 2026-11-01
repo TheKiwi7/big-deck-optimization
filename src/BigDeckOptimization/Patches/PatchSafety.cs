@@ -10,6 +10,16 @@ namespace BigDeckOptimization.Patches;
 /// <summary>Thrown by an Apply method when the patch doesn't apply here (optional mod absent, mirrored code changed).</summary>
 public class PatchSkippedException(string reason) : Exception(reason);
 
+/// <summary>
+/// A method of a patch class only one part of the patch runs: its load check is that part's
+/// (<see cref="PatchSafety.RequirePartResolvable"/>), so a game member it needs going away only takes that part away.
+/// </summary>
+[AttributeUsage(AttributeTargets.Method)]
+public sealed class PatchPartAttribute(string part) : Attribute
+{
+    public string Part { get; } = part;
+}
+
 public static partial class PatchSafety
 {
     private static readonly HashSet<string> _faults = new();
@@ -64,7 +74,13 @@ public static partial class PatchSafety
     /// </summary>
     public static void RequireFieldWriters(Type type, string field, params string[] known)
     {
+#if BENCH
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+#endif
         string[] unknown = MethodFingerprint.FieldUsers(type, field, writersOnly: true).Where(user => !known.Contains(user)).ToArray();
+#if BENCH
+        MethodFingerprint.LoadTicks[1] += System.Diagnostics.Stopwatch.GetTimestamp() - start;
+#endif
         if (unknown.Length > 0)
         {
             throw new PatchSkippedException($"{type.Name}.{field} may now also be changed by {string.Join(", ", unknown)} (game update?): left vanilla");
@@ -89,6 +105,23 @@ public static partial class PatchSafety
     /// </summary>
     public static void RequireResolvable(Type patchClass)
     {
+#if BENCH
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        try
+        {
+            CheckResolvable(patchClass);
+        }
+        finally
+        {
+            MethodFingerprint.LoadTicks[2] += System.Diagnostics.Stopwatch.GetTimestamp() - start;
+        }
+#else
+        CheckResolvable(patchClass);
+#endif
+    }
+
+    private static void CheckResolvable(Type patchClass)
+    {
         while (patchClass.DeclaringType != null)
         {
             patchClass = patchClass.DeclaringType;
@@ -98,6 +131,10 @@ public static partial class PatchSafety
         {
             foreach (MethodBase method in DeclaredMethods(patchClass))
             {
+                if (method.IsDefined(typeof(PatchPartAttribute), false))
+                {
+                    continue;
+                }
                 current = method;
                 // Resolving each member throws when it is missing; the JIT would also refuse a member that became
                 // inaccessible. (Compiling the methods here instead, RuntimeHelpers.PrepareMethod, made turns ~2% slower:
@@ -115,6 +152,34 @@ public static partial class PatchSafety
         {
             string where = current == null ? patchClass.Name : $"{current.DeclaringType?.Name}.{current.Name}";
             throw new PatchSkippedException($"{where} uses something this game version doesn't have (game update?), left vanilla: {e.Message}");
+        }
+    }
+
+    /// <summary>
+    /// <see cref="RequireResolvable"/> for the methods marked as this part of a patch class, before that part is patched.
+    /// </summary>
+    public static void RequirePartResolvable(Type patchClass, string part)
+    {
+        foreach (MethodBase method in DeclaredMethods(patchClass))
+        {
+            if (method.GetCustomAttribute<PatchPartAttribute>()?.Part != part)
+            {
+                continue;
+            }
+            try
+            {
+                foreach (MemberInfo member in MethodFingerprint.UsedMembers(method))
+                {
+                    if (!Accessible(member, patchClass.Assembly))
+                    {
+                        throw new MemberAccessException($"{member.DeclaringType?.Name}.{member.Name} is not accessible");
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                throw new PatchSkippedException($"{method.DeclaringType?.Name}.{method.Name} uses something this game version doesn't have (game update?), left vanilla: {e.Message}");
+            }
         }
     }
 

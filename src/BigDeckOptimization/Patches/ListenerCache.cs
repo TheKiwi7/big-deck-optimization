@@ -453,6 +453,13 @@ public static class ListenerCache
         return __exception;
     }
 
+#if BENCH
+    /// <summary>Walks answered from a materialized list (the effects check).</summary>
+    public static long Served { get; private set; }
+    /// <summary>Scopes open on this thread: 0 when nothing runs (the effects check; a lost finalizer leaves them open).</summary>
+    public static int OpenScopes => _snapshotDepth + _refreshDepth;
+#endif
+
     private static bool CombatIteratePrefix(CombatState __instance, ref IEnumerable<AbstractModel> __result)
     {
         if (!IsCaching || _materializingCombat)
@@ -462,6 +469,9 @@ public static class ListenerCache
         try
         {
             __result = GetListeners(__instance);
+#if BENCH
+            Served++;
+#endif
             return false;
         }
         catch (Exception e)
@@ -473,13 +483,17 @@ public static class ListenerCache
 
     private static bool RunIteratePrefix(RunState __instance, ICombatState? childCombatState, ref IEnumerable<AbstractModel> __result)
     {
-        if (!IsCaching || _materializingRun)
+        // HookSkip asked for a filtered walk (BaseLib's hand size): no need for every listener.
+        if (!IsCaching || _materializingRun || FastListeners.PendingRunFilter != null)
         {
             return true;
         }
         try
         {
             __result = GetRunListeners(__instance, childCombatState);
+#if BENCH
+            Served++;
+#endif
             return false;
         }
         catch (Exception e)

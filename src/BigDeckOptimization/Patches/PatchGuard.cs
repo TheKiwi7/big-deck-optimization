@@ -55,11 +55,23 @@ public static class PatchGuard
         return installed;
     }
 
+    /// <summary>Methods patched per Harmony id: asking Harmony would read every method patched so far, for each patch of this mod.</summary>
+    private static readonly Dictionary<string, List<MethodBase>> _patchedBy = new();
+
     /// <summary>The patches (guards excluded) of one patch's Harmony instance: what its Apply installed.</summary>
     public static List<Installed> Owned(Harmony harmony)
     {
         var installed = new HashSet<Installed>();
-        foreach (MethodBase original in harmony.GetPatchedMethods())
+        List<MethodBase>? patched;
+        lock (_lock)
+        {
+            if (!_patchedBy.TryGetValue(harmony.Id, out patched))
+            {
+                return new List<Installed>();
+            }
+            patched = patched.ToList();
+        }
+        foreach (MethodBase original in patched)
         {
             AddOwned(installed, original, owner => owner == harmony.Id);
         }
@@ -84,11 +96,13 @@ public static class PatchGuard
 
     /// <summary>
     /// <c>harmony.Patch</c>, with the guard finalizer added in the same call when the method isn't guarded yet: one rebuild
-    /// of the method instead of two (each costs ~1 ms at load).
+    /// of the method instead of two (each costs ~1 ms at load). A processor holds one finalizer: a patch bringing its own
+    /// has the guard added by a second call.
     /// </summary>
     public static MethodInfo Patch(Harmony harmony, MethodBase original, HarmonyMethod? prefix = null, HarmonyMethod? postfix = null,
         HarmonyMethod? transpiler = null, HarmonyMethod? finalizer = null)
     {
+        InlineGuard.Protect(original);
         PatchProcessor processor = harmony.CreateProcessor(original);
         if (prefix != null) processor.AddPrefix(prefix);
         if (postfix != null) processor.AddPostfix(postfix);
@@ -102,13 +116,32 @@ public static class PatchGuard
                 guard = _guarded.Add(original);
             }
         }
-        if (guard)
+        if (guard && finalizer == null)
         {
             processor.AddFinalizer(new HarmonyMethod(_guard));
         }
+        lock (_lock)
+        {
+            if (!_patchedBy.TryGetValue(harmony.Id, out List<MethodBase>? patched))
+            {
+                _patchedBy[harmony.Id] = patched = new List<MethodBase>();
+            }
+            patched.Add(original);
+        }
+#if BENCH
+        long start = Stopwatch.GetTimestamp();
+#endif
         try
         {
-            return processor.Patch();
+            MethodInfo replacement = processor.Patch();
+            if (guard && finalizer != null)
+            {
+                replacement = harmony.CreateProcessor(original).AddFinalizer(new HarmonyMethod(_guard)).Patch();
+            }
+#if BENCH
+            CheckInstalled(original, prefix, postfix, transpiler, finalizer);
+#endif
+            return replacement;
         }
         catch
         {
@@ -121,7 +154,36 @@ public static class PatchGuard
             }
             throw;
         }
+#if BENCH
+        finally
+        {
+            MethodFingerprint.LoadTicks[3] += Stopwatch.GetTimestamp() - start;
+        }
+#endif
     }
+
+#if BENCH
+    /// <summary>Test builds: every patch method passed really is on the method (and its guard when one was asked).</summary>
+    private static void CheckInstalled(MethodBase original, HarmonyMethod? prefix, HarmonyMethod? postfix, HarmonyMethod? transpiler, HarmonyMethod? finalizer)
+    {
+        HarmonyLib.Patches? info = Harmony.GetPatchInfo(original);
+        void Check(HarmonyMethod? wanted, IEnumerable<Patch>? installed, string kind)
+        {
+            if (wanted != null && installed?.Any(p => p.PatchMethod == wanted.method) != true)
+            {
+                Log.Error($"[{ModEntry.Id}] {Name}: MISMATCH {kind} {wanted.method.DeclaringType?.Name}.{wanted.method.Name} is not on {original.DeclaringType?.Name}.{original.Name}");
+            }
+        }
+        Check(prefix, info?.Prefixes, "prefix");
+        Check(postfix, info?.Postfixes, "postfix");
+        Check(transpiler, info?.Transpilers, "transpiler");
+        Check(finalizer, info?.Finalizers, "finalizer");
+        if (NeedsGuard(original) && info?.Finalizers.Any(p => p.PatchMethod == _guard) != true)
+        {
+            Log.Error($"[{ModEntry.Id}] {Name}: MISMATCH no guard on {original.DeclaringType?.Name}.{original.Name}");
+        }
+    }
+#endif
 
     /// <summary>
     /// An async state machine's MoveNext never lets an exception out (it goes into the task): a finalizer there could
@@ -145,6 +207,7 @@ public static class PatchGuard
         }
         foreach (MethodBase original in installed.Select(p => p.Original).Distinct())
         {
+            InlineGuard.Protect(original);
             Watch(original);
         }
     }

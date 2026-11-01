@@ -75,6 +75,7 @@ public static class GridSortCache
             finalizer: new HarmonyMethod(typeof(GridSortCache), nameof(SetCardsFinalizer)));
     }
 
+#if BENCH
     /// <summary>Bench: runs <paramref name="action"/> as if inside <c>SetCards</c> on <paramref name="grid"/>.</summary>
     internal static void RunInScope(NCardGrid grid, Action action)
     {
@@ -89,6 +90,7 @@ public static class GridSortCache
             _scope = previous;
         }
     }
+#endif
 
     private static void SetCardsPrefix(NCardGrid __instance, out Scope? __state)
     {

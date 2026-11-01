@@ -26,6 +26,11 @@ namespace BigDeckOptimization.Patches;
 /// shuffle hook that changed the list) falls back to the vanilla scan. One fast answer in <see cref="VerifyEvery"/> is
 /// compared with the vanilla scan; a difference disables the patch for the session.
 ///
+/// When the code of one of those CardPile methods changed, the index holds as long as they still do what it counts on, so
+/// instead of leaving (a freeze of seconds on the first turn) it checks that after every call, at no cost: an add adds one
+/// card, a remove removes one, a move keeps the count, a clear goes through the removes. Not doing so disables the patch
+/// for the session; a change that keeps the counts but not the membership is left to the sampled comparison.
+///
 /// Two more scans of every card, once per card added (cloning thousands of cards at a campfire: O(n²)):
 /// <c>AddInternal</c>'s duplicate check <c>Cards.Contains(card)</c> answers false at once when the index says the card
 /// was in no pile, and <c>RunState.ContainsCard</c> (<c>_allCards.Contains</c>) searches from the end, where a card
@@ -35,7 +40,7 @@ public static class PileIndex
 {
     public const string Name = "PileIndex";
 
-    /// <summary>v0.107.1 code this relies on: the mirrored getter and every CardPile method that touches the list.</summary>
+    /// <summary>v0.107.1 code of every CardPile method that touches the list: another one is checked as it runs (<see cref="_selfCheck"/>).</summary>
     private static readonly (string Method, string Fingerprint)[] Fingerprints =
     {
         ("AddInternal", "0A80C8EF3B697A4E"),
@@ -45,6 +50,7 @@ public static class PileIndex
         ("RandomizeOrderInternal", "FF906423481AC743"),
         ("Clear", "A2B6A279CA18ABC1"),
     };
+    /// <summary>The mirrored getter.</summary>
     private const string GetterFingerprint = "6A1FE5E50F9ECAC2";
     /// <summary>v0.107.1 <c>RunState.ContainsCard</c>, mirrored by <see cref="ContainsCardPrefix"/>.</summary>
     private const string ContainsCardFingerprint = "DC5BAC12C08BE24D";
@@ -68,6 +74,10 @@ public static class PileIndex
         public bool Unknown;
     }
 
+    /// <summary>A method of <see cref="Fingerprints"/> changed: each call is checked by its effect.</summary>
+    private static bool _selfCheck;
+    private static long _removes;
+
     private static readonly ConditionalWeakTable<CardModel, Entry> _entries = new();
     private static AccessTools.FieldRef<CardModel, Player?>? _owner;
     /// <summary><c>Player._runPiles</c>, null when <see cref="Player.Piles"/> isn't the code <see cref="OwnsPile"/> mirrors.</summary>
@@ -84,9 +94,14 @@ public static class PileIndex
         PatchSafety.RequireFingerprint(_getter, GetterFingerprint);
         foreach ((string method, string fingerprint) in Fingerprints)
         {
-            PatchSafety.RequireFingerprint(AccessTools.Method(typeof(CardPile), method) ?? throw new MissingMethodException("CardPile." + method), fingerprint);
+            string actual = MethodFingerprint.Of(AccessTools.Method(typeof(CardPile), method) ?? throw new MissingMethodException("CardPile." + method));
+            if (!PatchSafety.FingerprintMatches(actual, fingerprint))
+            {
+                _selfCheck = true;
+                Log.Info($"[{ModEntry.Id}] {Name}: CardPile.{method} changed (fingerprint {actual}, expected {fingerprint}): every call checked by its effect");
+            }
         }
-        // ...and no other code changes the pile lists.
+        // No other code changes the pile lists.
         PatchSafety.RequireFieldWriters(typeof(CardPile), "_cards", PatchSafety.CardListWriters);
         _owner = AccessTools.FieldRefAccess<CardModel, Player?>("_owner");
         try
@@ -107,11 +122,18 @@ public static class PileIndex
         // after changing the list. Last prefix, so it sees whether another mod skips the original; undone if it throws.
         PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), nameof(CardPile.AddInternal)),
             prefix: new HarmonyMethod(typeof(PileIndex), nameof(BeforeAdd)) { priority = Priority.Last },
-            finalizer: Method(nameof(UndoIfThrown)));
+            finalizer: Method(nameof(AfterAdd)));
         PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), nameof(CardPile.RemoveInternal)),
             prefix: new HarmonyMethod(typeof(PileIndex), nameof(BeforeRemove)) { priority = Priority.Last },
-            finalizer: Method(nameof(UndoIfThrown)));
-        PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), nameof(CardPile.Clear)), finalizer: Method(nameof(ClearFinalizer)));
+            finalizer: Method(nameof(AfterRemove)));
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), nameof(CardPile.Clear)), prefix: Method(nameof(BeforeClear)), finalizer: Method(nameof(ClearFinalizer)));
+        if (_selfCheck)
+        {
+            foreach (string reorder in new[] { nameof(CardPile.MoveToBottomInternal), nameof(CardPile.MoveToTopInternal) })
+            {
+                PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), reorder), prefix: Method(nameof(BeforeReorder)), finalizer: Method(nameof(AfterReorder)));
+            }
+        }
         PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), nameof(CardPile.RandomizeOrderInternal)),
             prefix: Method(nameof(BeforeRandomize)), postfix: Method(nameof(AfterRandomize)));
         PatchGuard.Patch(harmony, _getter, prefix: Method(nameof(PilePrefix)));
@@ -217,8 +239,12 @@ public static class PileIndex
     private static HarmonyMethod Method(string name) => new(typeof(PileIndex), name);
 
     /// <summary>The entry as it was before an add/remove, restored if the original throws.</summary>
-    private readonly struct Saved(Entry? entry, int count, CardPile? pile, bool unknown)
+    private readonly struct Saved(Entry? entry, int count, CardPile? pile, bool unknown, int pileCount)
     {
+        /// <summary>The pile's card count before the call.</summary>
+        public int PileCount => pileCount;
+        public bool Set => entry != null;
+
         public void Restore()
         {
             if (entry != null)
@@ -229,7 +255,7 @@ public static class PileIndex
             }
         }
 
-        public static Saved Of(Entry entry) => new(entry, entry.Count, entry.Pile, entry.Unknown);
+        public static Saved Of(Entry entry, CardPile pile) => new(entry, entry.Count, entry.Pile, entry.Unknown, _selfCheck ? pile.Cards.Count : 0);
     }
 
     private static void BeforeAdd(CardPile __instance, CardModel card, bool __runOriginal, out Saved __state)
@@ -242,7 +268,7 @@ public static class PileIndex
         try
         {
             Entry entry = _entries.GetOrCreateValue(card);
-            __state = Saved.Of(entry);
+            __state = Saved.Of(entry, __instance);
             entry.Count++;
             entry.Pile = entry.Count == 1 ? __instance : null;
         }
@@ -253,12 +279,41 @@ public static class PileIndex
         }
     }
 
-    /// <summary>AddInternal throws on duplicates or canonical cards, RemoveInternal on a card not in the pile.</summary>
-    private static Exception? UndoIfThrown(Exception? __exception, Saved __state)
+    /// <summary>AddInternal throws on duplicates or canonical cards: undone.</summary>
+    private static Exception? AfterAdd(Exception? __exception, CardPile __instance, Saved __state)
     {
         if (__exception != null)
         {
             __state.Restore();
+        }
+        else if (_selfCheck && __state.Set && Enabled && __instance.Cards.Count != __state.PileCount + 1)
+        {
+            Fail($"an add left the {__instance.Type} pile with {__instance.Cards.Count} cards, it had {__state.PileCount}");
+        }
+        return __exception;
+    }
+
+    /// <summary>RemoveInternal throws on a card not in the pile: undone.</summary>
+    private static Exception? AfterRemove(Exception? __exception, CardPile __instance, Saved __state)
+    {
+        if (__exception != null)
+        {
+            __state.Restore();
+        }
+        else if (_selfCheck && __state.Set && Enabled && __instance.Cards.Count != __state.PileCount - 1)
+        {
+            Fail($"a remove left the {__instance.Type} pile with {__instance.Cards.Count} cards, it had {__state.PileCount}");
+        }
+        return __exception;
+    }
+
+    private static void BeforeReorder(CardPile __instance, out int __state) => __state = __instance.Cards.Count;
+
+    private static Exception? AfterReorder(Exception? __exception, CardPile __instance, int __state)
+    {
+        if (__exception == null && Enabled && __instance.Cards.Count != __state)
+        {
+            Fail($"a move inside the {__instance.Type} pile changed its card count");
         }
         return __exception;
     }
@@ -273,7 +328,8 @@ public static class PileIndex
         try
         {
             Entry entry = _entries.GetOrCreateValue(card);
-            __state = Saved.Of(entry);
+            __state = Saved.Of(entry, __instance);
+            _removes++;
             entry.Count--;
             if (entry.Count <= 0)
             {
@@ -294,12 +350,21 @@ public static class PileIndex
         }
     }
 
+    private readonly record struct ClearState(long Removes, int Cards);
+
+    private static void BeforeClear(CardPile __instance, out ClearState __state) =>
+        __state = new ClearState(_removes, _selfCheck ? __instance.Cards.Count : 0);
+
     /// <summary>A clear that throws midway empties the list without RemoveInternal for the rest: stop trusting the index.</summary>
-    private static Exception? ClearFinalizer(Exception? __exception)
+    private static Exception? ClearFinalizer(Exception? __exception, ClearState __state)
     {
         if (__exception != null && Enabled)
         {
             Fail("CardPile.Clear threw, the index may be stale: " + __exception.Message);
+        }
+        else if (_selfCheck && Enabled && _removes - __state.Removes != __state.Cards)
+        {
+            Fail($"a clear of {__state.Cards} cards made {_removes - __state.Removes} removes");
         }
         return __exception;
     }

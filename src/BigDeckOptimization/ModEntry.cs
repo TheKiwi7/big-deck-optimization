@@ -17,34 +17,48 @@ public static class ModEntry
 
     public static Harmony Harmony { get; } = new("thekiwi7." + Id);
 
+    /// <summary>What applies at the mod's start, in this order (an Apply may rely on the ones before it).</summary>
+    private static readonly Queue<(string Name, Action<Harmony> Apply)> _toApply = new(new (string, Action<Harmony>)[]
+    {
+        (ListenerCache.Name, ListenerCache.Apply),
+        (HookFilter.Name, HookFilter.Apply),
+        (ExtraScopes.Name, ExtraScopes.Apply),
+        (SnapshotVerifier.Name, SnapshotVerifier.Apply),
+        (IdleButtonInput.Name, IdleButtonInput.Apply),
+        (GridSortCache.Name, GridSortCache.Apply),
+        (EnchantmentTabReuse.Name, EnchantmentTabReuse.Apply),
+        (PoolSignalScan.Name, PoolSignalScan.Apply),
+        (CardDbScan.Name, CardDbScan.Apply),
+        (PileIndex.Name, PileIndex.Apply),
+        (PileCounterBatch.Name, PileCounterBatch.Apply),
+        (FastCombatStart.Name, FastCombatStart.Apply),
+        (ModImage.Name, ModImage.Apply),
+        (HoverTipReuse.Name, HoverTipReuse.Apply),
+        (FastListeners.Name, FastListeners.Apply),
+        (HookSkip.Name, HookSkip.Apply),
+        (LimitlessReserialize.Name, LimitlessReserialize.Apply),
+        (LimitlessRecalcSkip.Name, LimitlessRecalcSkip.Apply),
+        (SnapshotCardReuse.Name, SnapshotCardReuse.Apply),
+        (LimitlessHookSkip.Name, LimitlessHookSkip.Apply),
+        (TextPoolReuse.Name, TextPoolReuse.Apply),
+        (ThemeColorSkip.Name, ThemeColorSkip.Apply),
+        (ReplayStateSkip.Name, ReplayStateSkip.Apply),
+        (GcPacing.Name, GcPacing.Apply),
+        (RelicFlashMerge.Name, RelicFlashMerge.Apply),
+        (CardFlightLimit.Name, CardFlightLimit.Apply),
+        (TypePlaqueSkip.Name, TypePlaqueSkip.Apply),
+    });
+
+    /// <summary>Time given to patching per frame: each patched method takes ~1.5 ms, ~400 ms in all.</summary>
+    private const double ApplyBudgetMs = 4;
+    private const double ApplyFrameShare = 0.25;
+
     public static void Init()
     {
         long start = System.Diagnostics.Stopwatch.GetTimestamp();
-        TryApply(ListenerCache.Name, ListenerCache.Apply);
-        TryApply(HookFilter.Name, HookFilter.Apply);
-        TryApply(ExtraScopes.Name, ExtraScopes.Apply);
-        TryApply(SnapshotVerifier.Name, SnapshotVerifier.Apply);
-        TryApply(IdleButtonInput.Name, IdleButtonInput.Apply);
-        TryApply(GridSortCache.Name, GridSortCache.Apply);
-        TryApply(EnchantmentTabReuse.Name, EnchantmentTabReuse.Apply);
-        TryApply(PoolSignalScan.Name, PoolSignalScan.Apply);
-        TryApply(CardDbScan.Name, CardDbScan.Apply);
-        TryApply(PileIndex.Name, PileIndex.Apply);
-        TryApply(PileCounterBatch.Name, PileCounterBatch.Apply);
-        TryApply(FastCombatStart.Name, FastCombatStart.Apply);
-        TryApply(ModImage.Name, ModImage.Apply);
-        TryApply(HoverTipReuse.Name, HoverTipReuse.Apply);
-        TryApply(FastListeners.Name, FastListeners.Apply);
-        TryApply(HookSkip.Name, HookSkip.Apply);
-        TryApply(LimitlessReserialize.Name, LimitlessReserialize.Apply);
-        TryApply(LimitlessRecalcSkip.Name, LimitlessRecalcSkip.Apply);
-        TryApply(SnapshotCardReuse.Name, SnapshotCardReuse.Apply);
-        TryApply(TextPoolReuse.Name, TextPoolReuse.Apply);
-        TryApply(RelicFlashMerge.Name, RelicFlashMerge.Apply);
-        TryApply(TypePlaqueSkip.Name, TypePlaqueSkip.Apply);
 #if BENCH
+        // Before the game's own start goes further: the test runner sets the window and the sound up.
         TryApply(Bench.CombatStartTimer.Name, Bench.CombatStartTimer.Apply);
-        TryApply(Bench.PerfProbe.Name, Bench.PerfProbe.Apply);
         TryApply(Bench.AutoTest.Name, Bench.AutoTest.Apply);
 #endif
         try
@@ -55,9 +69,84 @@ public static class ModEntry
         {
             Log.Warn($"[{Id}] {Config.SettingsMenu.Name}: settings menu unavailable (bdopt still works): {e}");
         }
+        ApplyOverFrames();
         Log.Info($"[{Id}] Initialized v{typeof(ModEntry).Assembly.GetName().Version?.ToString(3)} in {System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds:F0} ms"
             + (StartedOff ? ": turned off in the settings, nothing applied (turn it on, then restart the game)" : ""));
     }
+
+    /// <summary>
+    /// The patches, a few per frame while the game loads, so the mod adds no pause to the game's start. Nothing they touch
+    /// runs before a run starts, and a run starts from the main menu: as soon as that shows, whatever is left applies at
+    /// once. All of them then come after every other mod's, whatever the load order. Falls back to applying them all now
+    /// when frames can't be awaited.
+    /// </summary>
+    private static async void ApplyOverFrames()
+    {
+        long started = System.Diagnostics.Stopwatch.GetTimestamp();
+        double spent = 0;
+        int frames = 0;
+        try
+        {
+            if (Godot.Engine.GetMainLoop() is not Godot.SceneTree tree)
+            {
+                ApplySome(double.MaxValue);
+                return;
+            }
+            long last = started;
+            while (_toApply.Count > 0)
+            {
+                await tree.ToSignal(tree, Godot.SceneTree.SignalName.ProcessFrame);
+                frames++;
+                // The game's frames while it loads last hundreds of ms: a share of that adds no visible pause, and leaves
+                // less for the menu's first frame.
+                double frameMs = System.Diagnostics.Stopwatch.GetElapsedTime(last).TotalMilliseconds;
+                spent += ApplySome(CanRunStart() ? double.MaxValue : Math.Max(ApplyBudgetMs, frameMs * ApplyFrameShare));
+                last = System.Diagnostics.Stopwatch.GetTimestamp();
+            }
+        }
+        catch (Exception e)
+        {
+            // async void: nothing may escape. Each patch catches its own errors, so this is about the frames.
+            Log.Warn($"[{Id}] Applying over frames stopped, the rest applies now: {e}");
+            spent += ApplySome(double.MaxValue);
+        }
+        Log.Info($"[{Id}] Patches applied: {spent:F0} ms of work over {frames} frames, {System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds:F0} ms after the start");
+#if BENCH
+        Log.Info($"[{Id}] Load time: {MethodFingerprint.LoadBreakdown()}");
+#endif
+    }
+
+    /// <summary>Applies patches until the budget is spent: the time it took.</summary>
+    private static double ApplySome(double budgetMs)
+    {
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        double elapsed = 0;
+        while (_toApply.Count > 0 && elapsed < budgetMs)
+        {
+            (string name, Action<Harmony> apply) = _toApply.Dequeue();
+            TryApply(name, apply);
+            elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        }
+        return elapsed;
+    }
+
+    /// <summary>The main menu shows, or a run already exists (a mod starting one, a game that changed): no more waiting.</summary>
+    private static bool CanRunStart()
+    {
+        try
+        {
+            return MegaCrit.Sts2.Core.Nodes.NGame.Instance?.MainMenu != null || MegaCrit.Sts2.Core.Runs.RunManager.Instance.IsInProgress;
+        }
+        catch (Exception e) when (e is MissingMemberException or TypeLoadException or NullReferenceException)
+        {
+            return true;
+        }
+    }
+
+#if BENCH
+    /// <summary>Every patch of the start is applied (the test runner waits for it).</summary>
+    internal static bool AllApplied => _toApply.Count == 0;
+#endif
 
     /// <summary>
     /// True when the saved settings had the whole mod off when the game started: no patch is applied this session, so

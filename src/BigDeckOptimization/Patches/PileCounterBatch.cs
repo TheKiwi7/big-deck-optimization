@@ -28,6 +28,12 @@ public static class PileCounterBatch
 
     [ThreadStatic] private static int _clearDepth;
     [ThreadStatic] private static List<NCombatCardPile>? _dirty;
+#if BENCH
+    /// <summary>Label fits left for the end of a clear (the effects check).</summary>
+    public static long Batched { get; private set; }
+    /// <summary>Clears in progress on this thread: 0 when nothing runs (the effects check).</summary>
+    public static int OpenClears => _clearDepth;
+#endif
 
     private static AccessTools.FieldRef<NCombatCardPile, CardPile?>? _pile;
     private static AccessTools.FieldRef<NCombatCardPile, int>? _currentCount;
@@ -98,6 +104,9 @@ public static class PileCounterBatch
             {
                 _dirty.Add(__instance);
             }
+#if BENCH
+            Batched++;
+#endif
             return false;
         }
         catch (Exception e)

@@ -48,6 +48,8 @@ public class OptimizationsCmd : AbstractConsoleCmd
         return new CmdResult(success: false, "Usage: bdopt " + Args + "\n" + Settings.Status());
     }
 
+#if BENCH
     /// <summary>Master switch, used by the benches for A/B runs.</summary>
     public static void SetAll(bool on) => Settings.SetMaster(on);
+#endif
 }

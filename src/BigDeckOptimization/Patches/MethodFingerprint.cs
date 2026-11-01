@@ -33,9 +33,22 @@ public static class MethodFingerprint
     /// <summary>First 16 hex digits of the SHA-256 of <see cref="Describe"/>.</summary>
     public static string Of(MethodBase method)
     {
+#if BENCH
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+#endif
         byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(Describe(method)));
+#if BENCH
+        LoadTicks[0] += System.Diagnostics.Stopwatch.GetTimestamp() - start;
+#endif
         return Convert.ToHexString(hash)[..16];
     }
+
+#if BENCH
+    /// <summary>Load time spent in: fingerprints, field writer scans, load checks of patch classes, Harmony patching.</summary>
+    internal static readonly long[] LoadTicks = new long[4];
+    internal static string LoadBreakdown() => string.Join(", ", new[] { "fingerprints", "field writers", "load checks", "Harmony" }
+        .Select((name, i) => $"{name} {LoadTicks[i] * 1000.0 / System.Diagnostics.Stopwatch.Frequency:F0} ms"));
+#endif
 
     /// <summary>
     /// The method's own code (<see cref="DescribeOne"/>), then, after a <c>== name</c> line each, the code of every

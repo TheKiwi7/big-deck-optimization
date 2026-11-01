@@ -42,6 +42,8 @@ public sealed class BaseLibSettings : SimpleModConfig
     public static bool GridPool { get => Get(nameof(GridPool)); set => Apply(nameof(GridPool), value); }
     public static bool RelicInput { get => Get(nameof(RelicInput)); set => Apply(nameof(RelicInput), value); }
     public static bool RelicFlashes { get => Get(nameof(RelicFlashes)); set => Apply(nameof(RelicFlashes), value); }
+    public static bool CardFlights { get => Get(nameof(CardFlights)); set => Apply(nameof(CardFlights), value); }
+    public static bool GcPacing { get => Get(nameof(GcPacing)); set => Apply(nameof(GcPacing), value); }
     public static bool Listeners { get => Get(nameof(Listeners)); set => Apply(nameof(Listeners), value); }
     public static bool HookSkip { get => Get(nameof(HookSkip)); set => Apply(nameof(HookSkip), value); }
     public static bool HoverTips { get => Get(nameof(HoverTips)); set => Apply(nameof(HoverTips), value); }

@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.9.0
+
+- Much smoother combat with huge decks. In my tests with about 32,000 cards, playing cards now runs at about 170 fps instead of 65, and the slowest moments of an end of turn at about 120 fps instead of 17 (your numbers will differ on another PC).
+- Fewer short freezes while cards are played: the game's memory cleanups now wait for a moment when nothing is animating. New option, on by default: it uses a few hundred MB more memory in combats with 1,000 cards or more.
+- Co-op with huge decks and Limitless: in my tests with 10,000 cards, the longest freezes when ending a turn are now about 0.1 s instead of 0.35 s, and most turns no longer have any freeze of 0.1 s while cards are played.
+- Reshuffling thousands of cards no longer freezes the game for minutes: a steady stream of cards flies to the pile instead of one per card. Small piles look the same. New option, on by default.
+- No more freeze when Dampen weakens a whole deck (the Knights elite): in my tests with 8,400 cards, the longest freeze at the end of that turn is under 0.1 s instead of 1.3 s.
+- Apotheosis on a huge deck: about 0.3 s instead of 1 s with 32,000 cards in my tests.
+- Fixed: since v0.7.0, some optimizations weren't really running, the fast deck view sorting among them.
+- Fixed: with Limitless, the mod kept your last run in memory after you went back to the main menu.
+- The game starts more smoothly: the mod installs its optimizations over a few frames instead of all at once.
+- Better at surviving game updates: when an update changes the game, even fewer optimizations switch back to the normal game, and only the part relying on the changed code.
+
 ## v0.8.0
 
 - Much shorter freeze when an enemy afflicts your whole deck (the Spectral Knight's Hex in the Knights elite) with Limitless stacked enchantments: in my tests with a 4,100-card deck, about 2 seconds instead of 10 (the unmodified game freezes for about 5 minutes there; your numbers will differ on another PC).

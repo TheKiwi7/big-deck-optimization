@@ -38,7 +38,7 @@ namespace BigDeckOptimization.Bench;
 ///   cmd &lt;console command&gt;      play &lt;n&gt;   endturn   timeout &lt;s&gt;   log &lt;text&gt;   quit
 ///   {hash:NAME} anywhere = hash of the shared run file NAME   speed normal|fast|instant (default fast)   enemyhp &lt;hp&gt; (enemies of the next combats)   marker &lt;text&gt; (phase marks for trace analysis)
 /// </summary>
-public static class AutoTest
+public static partial class AutoTest
 {
     public const string Name = "AutoTest";
     public const int TestProfile = 3;
@@ -443,13 +443,22 @@ public static class AutoTest
 
     private static void Say(string text) => Log.Info($"[{ModEntry.Id}] {Name} {_clock.Elapsed.TotalSeconds,7:F1}s {text}");
 
+    private static bool _continueOnFail, _turnLoopDied;
+
     private static async Task Run(SceneTree tree)
     {
+        // Logged when a combat's turn loop throws: the combat stays stuck, no wait on it can end.
+        Log.LogCallback += (_, text, _) => _turnLoopDied |= text.Contains("turn loop died");
         string[] lines = File.ReadAllLines(_script!);
         Say($"script {_script} ({lines.Length} lines)");
-        await Until(tree, () => NGame.Instance?.MainMenu != null, 300, "menu");
+        await Until(tree, () => NGame.Instance?.MainMenu != null && ModEntry.AllApplied, 300, "menu");
         await Frames(tree, 60);
         NGame game = NGame.Instance!;
+        if (DisplayServer.GetName() == "headless")
+        {
+            // Nothing to show: only the game's own fps setting would slow the session.
+            Engine.MaxFps = 0;
+        }
         tree.ProcessFrame += RecordFrame;
         Say($"  display: max fps {Engine.MaxFps} (0 = uncapped), vsync {DisplayServer.WindowGetVsyncMode()}");
         // Test profiles start at Normal speed; players with huge decks play in Fast.
@@ -542,12 +551,47 @@ public static class AutoTest
                 case "deckfilter":
                     DeckFilter(arg.Split(' ', StringSplitOptions.RemoveEmptyEntries));
                     break;
+                case "gcpacing":
+                    GcPacing.Enabled = arg.Trim() != "off";
+                    break;
+                case "uncap":
+                    // Frame times above the screen's refresh rate: what a 120+ fps target needs to see.
+                    Engine.MaxFps = 0;
+                    DisplayServer.WindowSetVsyncMode(DisplayServer.VSyncMode.Disabled);
+                    Say($"  display: max fps {Engine.MaxFps}, vsync {DisplayServer.WindowGetVsyncMode()}");
+                    break;
+                case "sweep":
+                    await Sweep(tree, arg);
+                    break;
+                case "sweeptimeout":
+                    SweepItemTimeout = double.Parse(arg);
+                    break;
+                case "pilemove":
+                    string[] moveArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    PileMove(moveArgs[0], moveArgs[1], moveArgs.Length > 2 ? int.Parse(moveArgs[2]) : 0);
+                    break;
                 case "gcfull":
                     // Live memory after a full blocking collection: comparable between sessions, shows leaks.
                     GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
                     GC.WaitForPendingFinalizers();
                     GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
-                    Say($"  GCFULL {arg.Trim()}: live heap {GC.GetTotalMemory(false) / (1024.0 * 1024):F1} MB");
+                    Say($"  GCFULL {arg.Trim()}: live heap {GC.GetTotalMemory(false) / (1024.0 * 1024):F1} MB"
+                        + (_leftRuns.Count == 0 ? "" : $", left runs alive {_leftRuns.Count(r => r.IsAlive)}/{_leftRuns.Count}"));
+                    break;
+                case "autoslay":
+                    // The game's own auto player: a whole seeded run from the main menu, then it closes the game. Replaces newrun.
+                    new MegaCrit.Sts2.Core.AutoSlay.AutoSlayer().Start(arg.Trim());
+                    break;
+                case "tomenu":
+                    // Leaves the run as the game does; the next gcfull says how many of the left runs something still holds.
+                    _leftRuns.Add(new WeakReference(RunManager.Instance.DebugOnlyGetState()));
+                    await game.ReturnToMainMenu();
+                    // CleanUp emptied the game's selector stack: newrun must push ours again, or the next card choice waits forever.
+                    _selector = null;
+                    Say("  on the main menu");
+                    break;
+                case "leakcheck":
+                    LeakCheck(arg.Trim());
                     break;
                 case "fpsstat":
                     FpsStat(arg.Trim());
@@ -566,10 +610,45 @@ public static class AutoTest
                     break;
                 case "counters":
                     Say($"  COUNTERS {arg.Trim()}: {LimitlessReserialize.Name} kept {LimitlessReserialize.Kept}, rebuilt {LimitlessReserialize.Rebuilt}, skipped getters {LimitlessReserialize.SkippedGetters}, known data {LimitlessReserialize.KnownData}, "
-                        + $"verify mismatches {LimitlessReserialize.VerifyMismatches}; {LimitlessRecalcSkip.Name} skipped {LimitlessRecalcSkip.Skipped}, verified {LimitlessRecalcSkip.Verified}, mismatches {LimitlessRecalcSkip.Mismatches}; {SnapshotCardReuse.Name} reused {SnapshotCardReuse.Reused}, built {SnapshotCardReuse.Built}, verified {SnapshotCardReuse.Verified}, mismatches {SnapshotCardReuse.Mismatches}; {FastListeners.Name} cache mismatches {FastListeners.CacheMismatches}, "
+                        + $"verify mismatches {LimitlessReserialize.VerifyMismatches}; {LimitlessRecalcSkip.Name} passes skipped {LimitlessRecalcSkip.PassesSkipped}, run {LimitlessRecalcSkip.PassesRun}, mismatches {LimitlessRecalcSkip.PassMismatches}, skipped {LimitlessRecalcSkip.Skipped}, verified {LimitlessRecalcSkip.Verified}, mismatches {LimitlessRecalcSkip.Mismatches}; {SnapshotCardReuse.Name} reused {SnapshotCardReuse.Reused}, built {SnapshotCardReuse.Built}, upgraded {SnapshotCardReuse.LightBuilt}, piles trusted {SnapshotCardReuse.PilesTrusted}, pile bits reused {SnapshotCardReuse.PileBitsReused}, composed {SnapshotCardReuse.PileBitsComposed}, pile mismatches {SnapshotCardReuse.PileMismatches}, verified {SnapshotCardReuse.Verified}, mismatches {SnapshotCardReuse.Mismatches}, piles reused {SnapshotCardReuse.PilesReused}, built {SnapshotCardReuse.PilesBuilt}, bits reused {SnapshotCardReuse.BitsReused}, captured {SnapshotCardReuse.BitsCaptured}, checked {SnapshotCardReuse.BitChecks}; {FastListeners.Name} cache mismatches {FastListeners.CacheMismatches}, "
                         + $"segments rebuilt {FastListeners.SegmentRebuilds} (versions {FastListeners.RebuiltVersions}, pile version {FastListeners.PileVersion}), "
-                        + $"extended {FastListeners.SegmentExtends}, snapshot catch-ups {FastListeners.SnapshotCatchUps}, hits {FastListeners.SegmentHits}, uncached walks {FastListeners.UncachedWalks}; "
-                        + $"{HookFilter.Name} walk checks {HookFilter.WalkChecks}, mismatches {HookFilter.WalkMismatches}, cost color checks {HookFilter.CostColorChecks / 64}, mismatches {HookFilter.CostColorMismatches}; {RelicFlashMerge.Name} merged {RelicFlashMerge.Merged}; {PileIndex.Name} duplicate checks fast {PileIndex.FastDuplicateChecks}, slow {PileIndex.SlowDuplicateChecks}; subscriber checks {FastListeners.SubscriberChecks} in {FastListeners.SubscriberCheckTicks * 1000.0 / Stopwatch.Frequency:F1} ms");
+                        + $"extended {FastListeners.SegmentExtends}, kept across moves {FastListeners.SegmentMoveHits}, snapshot catch-ups {FastListeners.SnapshotCatchUps}, rebuilds {FastListeners.SnapshotRebuilds}, move checks {FastListeners.MoveChecks}, mismatches {FastListeners.MoveMismatches}, hits {FastListeners.SegmentHits}, uncached walks {FastListeners.UncachedWalks}; "
+                        + $"{HookFilter.Name} walk checks {HookFilter.WalkChecks}, mismatches {HookFilter.WalkMismatches}, cost color checks {HookFilter.CostColorChecks / 64}, mismatches {HookFilter.CostColorMismatches}; {RelicFlashMerge.Name} merged {RelicFlashMerge.Merged}; {CardFlightLimit.Name} skipped {CardFlightLimit.Skipped}; {ReplayStateSkip.Name} skipped {ReplayStateSkip.Skipped}; {ThemeColorSkip.Name} skipped {ThemeColorSkip.Skipped}, set {ThemeColorSkip.Set}; {GcPacing.Name} regions {GcPacing.Regions}, refused {GcPacing.RegionsRefused}, exhausted {GcPacing.Exhausted}, {GcPacing.RegionMs:F0} ms, collections {GcPacing.Collections} (full {GcPacing.Fulls}) in {GcPacing.CollectMs:F0} ms, worst {GcPacing.WorstCollectMs:F0} ms; {PileIndex.Name} duplicate checks fast {PileIndex.FastDuplicateChecks}, slow {PileIndex.SlowDuplicateChecks}; subscriber checks {FastListeners.SubscriberChecks} in {FastListeners.SubscriberCheckTicks * 1000.0 / Stopwatch.Frequency:F1} ms");
+                    break;
+                case "effects":
+                    // What each optimization really did so far: tools/autotest/effects.py checks none stayed at zero.
+                    foreach ((string name, long count) in new (string, long)[]
+                    {
+                        (ListenerCache.Name, ListenerCache.Served), (HookFilter.Name, HookFilter.ListsFiltered), (ExtraScopes.Name, ExtraScopes.FirstTurnPasses),
+                        (IdleButtonInput.Name, IdleButtonInput.Muted), (GridSortCache.Name, GridSortCache.Sorts), (EnchantmentTabReuse.Name, EnchantmentTabReuse.Reused),
+                        (PoolSignalScan.Name, PoolSignalScan.Nodes), (CardDbScan.Name, CardDbScan.Skipped), (PileIndex.Name, PileIndex.Fast), (PileIndex.Name + ".Duplicates", PileIndex.FastDuplicateChecks),
+                        (PileCounterBatch.Name, PileCounterBatch.Batched), (FastCombatStart.Name, FastCombatStart.SkippedWaits), (HoverTipReuse.Name, HoverTipReuse.Reused),
+                        (FastListeners.Name + ".CombatWalk", FastListeners.CombatWalks), (FastListeners.Name + ".RunWalk", FastListeners.RunWalks),
+                        (FastListeners.Name + ".Cache", FastListeners.SegmentHits + FastListeners.SegmentMoveHits), (FastListeners.Name + ".Moves", FastListeners.SegmentMoveHits + FastListeners.SnapshotCatchUps),
+                        (HookSkip.Name, HookSkip.FilteredWalks), (LimitlessReserialize.Name, LimitlessReserialize.Kept), (LimitlessRecalcSkip.Name + ".Memos", LimitlessRecalcSkip.Skipped), (LimitlessRecalcSkip.Name + ".Passes", LimitlessRecalcSkip.PassesSkipped),
+                        (SnapshotCardReuse.Name + ".Cards", SnapshotCardReuse.Reused), (SnapshotCardReuse.Name + ".Piles", SnapshotCardReuse.PilesReused + SnapshotCardReuse.PilesTrusted), (SnapshotCardReuse.Name + ".Trust", SnapshotCardReuse.PilesTrusted),
+                        (SnapshotCardReuse.Name + ".CardBits", SnapshotCardReuse.BitsReused), (SnapshotCardReuse.Name + ".PileBits", SnapshotCardReuse.PileBitsReused + SnapshotCardReuse.PileBitsComposed),
+                        (LimitlessHookSkip.Name, LimitlessHookSkip.Dropped), (TextPoolReuse.Name, TextPoolReuse.Served), (ThemeColorSkip.Name, ThemeColorSkip.Skipped), (ReplayStateSkip.Name, ReplayStateSkip.Skipped),
+                        (GcPacing.Name, GcPacing.Regions), (RelicFlashMerge.Name, RelicFlashMerge.Merged), (CardFlightLimit.Name, CardFlightLimit.Skipped), (TypePlaqueSkip.Name, TypePlaqueSkip.Skipped),
+                        ("InlineGuard", InlineGuard.Protected),
+                    })
+                    {
+                        Say($"EFFECT {name} {count}");
+                    }
+                    // Nothing runs here: what a patch opens before a method and closes after it must be closed.
+                    Say($"BALANCE {nameof(ListenerCache)}.OpenScopes {ListenerCache.OpenScopes}");
+                    Say($"BALANCE {nameof(FastListeners)}.OpenShuffles {FastListeners.OpenShuffles}");
+                    Say($"BALANCE {nameof(PileCounterBatch)}.OpenClears {PileCounterBatch.OpenClears}");
+                    break;
+                case "patchlist":
+                    // For tools/profiling/inlines.
+                    Say($"  InlineGuard available {InlineGuard.Available}, methods protected {InlineGuard.Protected}");
+                    foreach (MethodBase patched in Harmony.GetAllPatchedMethods())
+                    {
+                        HarmonyLib.Patches? info = Harmony.GetPatchInfo(patched);
+                        string kinds = (info?.Prefixes.Count > 0 ? "prefix " : "") + (info?.Postfixes.Count > 0 ? "postfix " : "") + (info?.Transpilers.Count > 0 ? "transpiler " : "") + (info?.Finalizers.Count > 0 ? "finalizer " : "");
+                        Say($"  PATCHED {patched.DeclaringType?.FullName}::{patched.Name} {kinds}il {patched.GetMethodBody()?.GetILAsByteArray()?.Length} by {(info == null ? "" : string.Join(",", info.Owners.Select(o => o.Split('.')[0]).Distinct()))} finalizers {(info == null ? "" : string.Join(",", info.Finalizers.Select(f => f.PatchMethod.DeclaringType?.Name + "." + f.PatchMethod.Name)))}");
+                    }
                     break;
                 case "marker":
                     // A line the profiling scripts look for to cut traces into phases.
@@ -598,12 +677,18 @@ public static class AutoTest
                 case "play":
                     await Play(tree, int.Parse(arg));
                     break;
+                case "avoid":
+                    _avoid.UnionWith(arg.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+                    break;
                 case "deckview":
                     string[] viewArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                     await DeckView(tree, viewArgs.Length > 0 ? double.Parse(viewArgs[0]) : 3, viewArgs.Length > 1 ? viewArgs[1] : null);
                     break;
                 case "deckscroll":
                     await DeckScroll(tree, int.Parse(arg));
+                    break;
+                case "decksort":
+                    await DeckSort(tree);
                     break;
                 case "pilescroll":
                     string[] pileArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
@@ -643,14 +728,23 @@ public static class AutoTest
                     _selector = null;
                     Say("handed over to the player");
                     return;
-                default:
-                    Say("unknown script command: " + parts[0]);
+                case "onfail":
+                    _continueOnFail = arg.Trim() == "continue";
                     break;
+                default:
+                    throw new ArgumentException("unknown script command: " + parts[0]);
             }
             }
             catch (Exception e) when (e is not OutOfMemoryException)
             {
                 Say($"FAILED line '{line}': {e.Message}");
+                if (!_continueOnFail)
+                {
+                    // What follows a failed line rarely means anything, and each later wait would time out in turn.
+                    Say("ABORT: first failed line (a scenario expecting failures says 'onfail continue')");
+                    Quit();
+                    return;
+                }
             }
         }
         Say("script finished");
@@ -691,6 +785,11 @@ public static class AutoTest
         {
             await Frames(node, 1);
             held = condition() ? held + 1 : 0;
+            if (_turnLoopDied)
+            {
+                _turnLoopDied = false;
+                throw new InvalidOperationException($"waitfor {what}: the combat's turn loop died ({StateText()})");
+            }
             if (_clock.Elapsed.TotalSeconds - start > timeout)
             {
                 throw new TimeoutException($"waitfor {what} timed out after {timeout:F0} s ({StateText()})");
@@ -811,6 +910,28 @@ public static class AutoTest
         _frameMs.Clear();
     }
 
+    /// <summary>
+    /// Script <c>pilemove &lt;from&gt; &lt;to&gt; [keep]</c>: moves a pile's cards to another pile silently, leaving the first
+    /// <c>keep</c> ones, to set up a situation (a huge discard pile for the next reshuffle).
+    /// </summary>
+    private static void PileMove(string from, string to, int keep)
+    {
+        Player me = Me() ?? throw new InvalidOperationException("no local player");
+        CardPile source = Enum.Parse<PileType>(from, ignoreCase: true).GetPile(me);
+        CardPile target = Enum.Parse<PileType>(to, ignoreCase: true).GetPile(me);
+        List<CardModel> moved = source.Cards.Skip(keep).ToList();
+        for (int i = moved.Count - 1; i >= 0; i--)
+        {
+            // Through reflection: test tooling must keep working on game versions where this method changed.
+            typeof(CardPile).GetMethods().First(m => m.Name.StartsWith("RemoveInternal", StringComparison.Ordinal)).Invoke(source, new object[] { moved[i], true });
+        }
+        foreach (CardModel card in moved)
+        {
+            target.AddInternal(card, -1, silent: true);
+        }
+        Say($"  moved {moved.Count} cards {from} -> {to}: {source.Cards.Count} / {target.Cards.Count}");
+    }
+
     /// <summary>Script <c>emptyhand</c>: moves the hand to the discard pile (room for the next test card).</summary>
     private static async Task EmptyHand(SceneTree tree)
     {
@@ -907,6 +1028,10 @@ public static class AutoTest
             Say($"  GCSTAT {label}: {wall - _gcWall:F0} ms, GC pauses {(pause - _gcPause).TotalMilliseconds:F0} ms, " +
                 $"collections gen0 {counts[0] - _gcCounts[0]} gen1 {counts[1] - _gcCounts[1]} gen2 {counts[2] - _gcCounts[2]}, " +
                 $"heap {GC.GetTotalMemory(false) / (1024 * 1024)} MB");
+            GCMemoryInfo info = GC.GetGCMemoryInfo(GCKind.Ephemeral);
+            Say($"    last ephemeral GC: gen{info.Generation}, pause {info.PauseDurations[0].TotalMilliseconds:F0} ms, promoted {info.PromotedBytes / (1024 * 1024)} MB, compacted {info.Compacted}, pinned {info.PinnedObjectsCount}, "
+                + $"gen0 {info.GenerationInfo[0].SizeBeforeBytes / (1024 * 1024)}->{info.GenerationInfo[0].SizeAfterBytes / (1024 * 1024)} MB, gen1 {info.GenerationInfo[1].SizeBeforeBytes / (1024 * 1024)}->{info.GenerationInfo[1].SizeAfterBytes / (1024 * 1024)} MB, "
+                + $"gen2 {info.GenerationInfo[2].SizeAfterBytes / (1024 * 1024)} MB, loh {info.GenerationInfo[3].SizeAfterBytes / (1024 * 1024)} MB, fragmented {info.FragmentedBytes / (1024 * 1024)} MB");
         }
         _gcWall = wall;
         _gcPause = pause;
@@ -920,6 +1045,8 @@ public static class AutoTest
     }
 
     private static Player? Me() => RunManager.Instance.DebugOnlyGetState() is { } state ? LocalContext.GetMe(state) : null;
+
+    private static readonly List<WeakReference> _leftRuns = new();
 
     private static async Task NewRun(NGame game, string arg)
     {
@@ -1038,6 +1165,9 @@ public static class AutoTest
     }
 
     /// <summary>Plays up to n cards from hand, like clicks: each one waits for the game to be idle again.</summary>
+    /// <summary>Script <c>avoid ID,ID</c>: cards <c>play</c> leaves in hand (Apotheosis upgrades a whole huge deck at each play).</summary>
+    private static readonly HashSet<string> _avoid = new();
+
     private static async Task Play(SceneTree node, int count)
     {
         int played = 0;
@@ -1051,7 +1181,7 @@ public static class AutoTest
                 break;
             }
             Creature? enemy = combat.Enemies.FirstOrDefault(e => e.IsAlive);
-            CardModel? card = PileType.Hand.GetPile(me).Cards.FirstOrDefault(c => c.CanPlayTargeting(enemy) || c.CanPlayTargeting(null));
+            CardModel? card = PileType.Hand.GetPile(me).Cards.FirstOrDefault(c => !_avoid.Contains(c.Id.Entry) && (c.CanPlayTargeting(enemy) || c.CanPlayTargeting(null)));
             if (card == null)
             {
                 Say("  no playable card left");
@@ -1127,6 +1257,26 @@ public static class AutoTest
         await Frames(tree, 1);
         Say($"  deck view closed in {Stopwatch.GetElapsedTime(start).TotalMilliseconds:F0} ms");
         _deckView = null;
+    }
+
+    /// <summary>Script <c>decksort</c>: opens the deck view and sorts its grid by cost then title, as its sort buttons do.</summary>
+    private static async Task DeckSort(SceneTree tree)
+    {
+        Player me = Me() ?? throw new InvalidOperationException("no local player");
+        var screen = MegaCrit.Sts2.Core.Nodes.Screens.NDeckViewScreen.ShowScreen(me) ?? throw new InvalidOperationException("no deck view");
+        await Frames(tree, 30);
+        NCardGrid grid = FindChild<NCardGrid>(screen) ?? throw new InvalidOperationException("no card grid in the deck view");
+        long start = Stopwatch.GetTimestamp();
+        grid.SetCards(me.Deck.Cards, PileType.Deck, new List<MegaCrit.Sts2.Core.Nodes.Screens.CardLibrary.SortingOrders>
+        {
+            MegaCrit.Sts2.Core.Nodes.Screens.CardLibrary.SortingOrders.CostAscending,
+            MegaCrit.Sts2.Core.Nodes.Screens.CardLibrary.SortingOrders.AlphabetAscending,
+            MegaCrit.Sts2.Core.Nodes.Screens.CardLibrary.SortingOrders.Ascending,
+        });
+        Say($"  deck sorted in {Stopwatch.GetElapsedTime(start).TotalMilliseconds:F0} ms ({me.Deck.Cards.Count} cards), sorts {GridSortCache.Sorts}");
+        await Frames(tree, 10);
+        MegaCrit.Sts2.Core.Nodes.Screens.Capstones.NCapstoneContainer.Instance?.Close();
+        await Frames(tree, 5);
     }
 
     /// <summary>Script <c>deckscroll &lt;steps&gt;</c>: opens the deck view and scrolls its grid one step per frame.</summary>

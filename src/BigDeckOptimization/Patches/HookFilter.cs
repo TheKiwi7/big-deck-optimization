@@ -101,6 +101,8 @@ public static class HookFilter
     public static long HittingMismatches { get; internal set; }
     public static long CostColorChecks { get; internal set; }
     public static long CostColorMismatches { get; internal set; }
+    /// <summary>Hook lists built with only the listeners overriding the hook (the effects check).</summary>
+    public static long ListsFiltered { get; private set; }
 #endif
 
     /// <summary>v0.107.1 hooks mirrored by the prefixes below; a changed hook is left vanilla.</summary>
@@ -282,6 +284,9 @@ public static class HookFilter
             _filtered?.Clear();
         }
         _filteredWith = _safe;
+#if BENCH
+        ListsFiltered++;
+#endif
         var perHook = new List<AbstractModel>?[_hooks.Length];
         for (int i = 0; i < _hooks.Length; i++)
         {
@@ -383,7 +388,8 @@ public static class HookFilter
             }
             entry.PerHook[hook] = list;
 #if BENCH
-            if (++WalkChecks % 32 == 0)
+            ListsFiltered++;
+            if (ExtraScopes.BenchChecks && ++WalkChecks % 32 == 0)
             {
                 List<AbstractModel>? reference = Get(materialized(), hook);
                 if (reference == null || !reference.SequenceEqual(list, ReferenceEqualityComparer.Instance))

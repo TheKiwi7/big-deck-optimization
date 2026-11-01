@@ -25,6 +25,10 @@ public static class IdleButtonInput
     private static readonly ConcurrentDictionary<Type, bool> _eligibleByType = new();
     private static AccessTools.FieldRef<NClickableControl, bool>? _isPressed;
     private static AccessTools.FieldRef<NClickableControl, bool>? _isEnabled;
+#if BENCH
+    /// <summary>Buttons kept from processing input (the effects check).</summary>
+    public static long Muted { get; private set; }
+#endif
 
     public static void Apply(Harmony harmony)
     {
@@ -63,6 +67,9 @@ public static class IdleButtonInput
             if (enable && IsEligible(__instance) && !_isPressed!((NClickableControl)__instance))
             {
                 enable = false;
+#if BENCH
+                Muted++;
+#endif
             }
         }
         catch (Exception e)

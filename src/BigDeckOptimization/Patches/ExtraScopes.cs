@@ -32,6 +32,8 @@ public static class ExtraScopes
 #if BENCH
     /// <summary>Test builds: re-run checked passes the vanilla way and compare (costly: off to measure real timings).</summary>
     public static bool BenchChecks { get; set; } = true;
+    /// <summary>First-turn filters run inside a scope (the effects check).</summary>
+    public static long FirstTurnPasses { get; private set; }
 #endif
 
     public static void Apply(Harmony harmony)
@@ -89,6 +91,7 @@ public static class ExtraScopes
         List<T> result;
 #if BENCH
         long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        FirstTurnPasses++;
 #endif
         ListenerCache.EnterRefresh();
         try

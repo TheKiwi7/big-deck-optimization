@@ -198,6 +198,7 @@ public static class EnchantmentTabReuse
         return true;
     }
 
+#if BENCH
     /// <summary>Bench: every property of the card's enchantment tabs that rendering sets or a duplicate copies.</summary>
     internal static string DescribeTabs(NCard nCard)
     {
@@ -224,6 +225,7 @@ public static class EnchantmentTabReuse
         }
         return sb.ToString();
     }
+#endif
 
     /// <summary>A tab Limitless built: a duplicate of the template (icon + amount label), not queued for deletion.</summary>
     private static bool IsTab(Node node) =>

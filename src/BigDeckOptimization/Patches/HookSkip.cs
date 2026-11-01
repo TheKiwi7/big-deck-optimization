@@ -42,6 +42,10 @@ public static partial class HookSkip
     /// <summary>Hooks redirected, and those left vanilla (changed code), for the status line.</summary>
     public static int Active { get; private set; }
     public static int LeftVanilla { get; private set; }
+#if BENCH
+    /// <summary>Hook walks that ran filtered (the effects check).</summary>
+    public static long FilteredWalks { get; private set; }
+#endif
 
     private sealed class Entry
     {
@@ -332,6 +336,9 @@ public static partial class HookSkip
                     return null;
                 }
             }
+#if BENCH
+            FilteredWalks++;
+#endif
             return entry.Filter;
         }
         catch (Exception e)
@@ -433,7 +440,7 @@ public static partial class HookSkip
     }
 
     /// <summary>
-    /// BaseLib's hand size and heal hooks (BaseLib is optional and may load after this mod): they loop over every
+    /// BaseLib's hand size, heal and downgrade hooks (BaseLib is optional and may load after this mod): they loop over every
     /// listener and use only those implementing their interface, so the walk they ask for keeps only the implementers.
     /// </summary>
     private static class BaseLibHooks
@@ -445,6 +452,8 @@ public static partial class HookSkip
                 "1EE490EF3F75AF02", "BaseLib.Hooks.IMaxHandSizeModifier"),
             ("BaseLib.Patches.Hooks.ModifyHealAmountPatches", "ModifyAdditive", null, "895AD94736FEED8E", "BaseLib.Hooks.IHealAmountModifier"),
             ("BaseLib.Patches.Hooks.ModifyHealAmountPatches", "ModifyMultiplicative", null, "98B29C743F42C15F", "BaseLib.Hooks.IHealAmountModifier"),
+            // A postfix of CardModel.DowngradeInternal: one walk per downgraded card (Dampen downgrades a whole deck).
+            ("BaseLib.Hooks.IAfterCardDowngraded+DowngradeHook", "Patch", null, "D268A4B256D8F60C", "BaseLib.Hooks.IAfterCardDowngraded"),
         };
 
         private static readonly Dictionary<MethodBase, PileFilter> _filters = new();
@@ -497,7 +506,7 @@ public static partial class HookSkip
         /// <summary>The next RunState.IterateHookListeners call (this method's own walk) keeps only implementers.</summary>
         private static void Prefix(MethodBase __originalMethod)
         {
-            if (Enabled && !ListenerCache.IsCaching && !ListenerCache.IsSuspended && !PatchSafety.IsPatchedByOthers(__originalMethod))
+            if (Enabled && FastListeners.RunMirrored && !ListenerCache.IsSuspended && !PatchSafety.IsPatchedByOthers(__originalMethod))
             {
                 FastListeners.PendingRunFilter = _filters[__originalMethod];
             }

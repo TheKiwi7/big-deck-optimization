@@ -26,12 +26,12 @@ public static class CardDbScan
 {
     public const string Name = "CardDbScan";
 
-    /// <summary>v0.107.1 code this relies on: the pile walk, the ID assignment, the only way into a pile, and the combat
-    /// start that IDs every card already in a pile (same code in v0.111).</summary>
+    /// <summary>v0.107.1 code this relies on: the pile walk, the ID assignment and the combat start that IDs every card
+    /// already in a pile (same code in v0.111). <c>AddInternal</c> only has to be the only way into a pile (its writers
+    /// are checked); recording a card whose add then fails costs one more ID check.</summary>
     private const string WalkFingerprint = "207017C48274E22C";
     private const string StartCombatFingerprint = "01491A6EA42EBCE2";
     private const string IdFingerprint = "DEC87C0A856497A5";
-    private const string AddFingerprint = "0A80C8EF3B697A4E";
 
     private const int VerifyEvery = 64;
     private const int MaxPending = 256;
@@ -62,7 +62,6 @@ public static class CardDbScan
             ?? throw new MissingMethodException("CardPile.AddInternal");
         PatchSafety.RequireFingerprint(walk, WalkFingerprint);
         PatchSafety.RequireFingerprint(id, IdFingerprint);
-        PatchSafety.RequireFingerprint(add, AddFingerprint);
         MethodInfo startCombat = AccessTools.Method(typeof(NetCombatCardDb), nameof(NetCombatCardDb.StartCombat))
             ?? throw new MissingMethodException("NetCombatCardDb.StartCombat");
         PatchSafety.RequireFingerprint(startCombat, StartCombatFingerprint);

@@ -29,7 +29,7 @@ public static class LimitlessReserialize
 {
     public const string Name = "LimitlessReserialize";
 
-    private const string LimitlessAssembly = "Limitless";
+    internal const string LimitlessAssembly = "Limitless";
     internal const string MultiEnchantmentType = "Limitless.LimitlessCode.UncappedEnchantments.MultiEnchantment";
     private const string HandlersType = "BaseLib.Patches.Saves.ExtendedSaveHandlers`2";
 
@@ -51,6 +51,12 @@ public static class LimitlessReserialize
     public static bool Enabled { get; set; } = true;
 
     public static bool Applied { get; private set; }
+
+    /// <summary>
+    /// The comparison holds: the game's and BaseLib's code it reproduces is the one expected. Limitless's own method only
+    /// matters to keeping its lists (<see cref="Applied"/>): <see cref="SnapshotCardReuse"/> doesn't call it.
+    /// </summary>
+    public static bool ComparisonReady { get; private set; }
 
     /// <summary>Lists kept (identical content), and lists left to Limitless to rebuild.</summary>
     public static long Kept { get; private set; }
@@ -92,15 +98,12 @@ public static class LimitlessReserialize
             ModEntry.TryApply(Name, ApplyNow);
             ModEntry.TryApply(LimitlessRecalcSkip.Name, LimitlessRecalcSkip.Apply);
             ModEntry.TryApply(SnapshotCardReuse.Name, SnapshotCardReuse.Apply);
+            ModEntry.TryApply(LimitlessHookSkip.Name, LimitlessHookSkip.Apply);
         }
     }
 
     private static void ApplyNow(Harmony harmony)
     {
-        Type multi = AccessTools.TypeByName(MultiEnchantmentType) ?? throw new PatchSkippedException("Limitless has no " + MultiEnchantmentType);
-        MethodInfo original = AccessTools.Method(multi, "SetSerializableCards", new[] { typeof(List<CardModel>) })
-            ?? throw new MissingMethodException(MultiEnchantmentType, "SetSerializableCards");
-        PatchSafety.RequireFingerprint(original, SetSerializableCardsFingerprint);
         _cardToSerializable = AccessTools.Method(typeof(CardModel), nameof(CardModel.ToSerializable));
         _enchantmentToSerializable = AccessTools.Method(typeof(EnchantmentModel), nameof(EnchantmentModel.ToSerializable));
         PatchSafety.RequireFingerprint(_cardToSerializable, CardToSerializableFingerprint);
@@ -114,9 +117,15 @@ public static class LimitlessReserialize
             "BaseLib.Patches.Saves.ExtendedSavePatches+PrepExtendedCardData:ExtendedDataForCard", ExtendedDataForCardFingerprint);
         _enchantmentData = new ExtendedData(handlers, typeof(EnchantmentModel), typeof(SerializableEnchantment),
             "BaseLib.Patches.Saves.ExtendedSavePatches+PrepExtendedEnchantmentData:ExtendedDataForEnchantment", ExtendedDataForEnchantmentFingerprint);
+        _mainThread = Environment.CurrentManagedThreadId;
+        ComparisonReady = true;
+
+        Type multi = AccessTools.TypeByName(MultiEnchantmentType) ?? throw new PatchSkippedException("Limitless has no " + MultiEnchantmentType);
+        MethodInfo original = AccessTools.Method(multi, "SetSerializableCards", new[] { typeof(List<CardModel>) })
+            ?? throw new MissingMethodException(MultiEnchantmentType, "SetSerializableCards");
+        PatchSafety.RequireFingerprint(original, SetSerializableCardsFingerprint);
         Stored = AccessTools.FieldRefAccess<List<SerializableCard>?>(multi, "<SerializableEnchantmentsOnCards>k__BackingField");
         _original = original;
-        _mainThread = Environment.CurrentManagedThreadId;
         PatchGuard.Patch(harmony, original, prefix: new HarmonyMethod(typeof(LimitlessReserialize), nameof(Prefix)));
         Applied = true;
     }
@@ -130,6 +139,9 @@ public static class LimitlessReserialize
         public readonly MethodInfo Postfix;
         public readonly Func<object, object?> Stored;
         public readonly Func<object, Dictionary<Type, IDictionary>> Dictionaries;
+
+        /// <summary>Sets a serialized object's data, as BaseLib's postfix does for a new one.</summary>
+        public readonly Action<object, object> Store;
 
         /// <summary>The registered saves (BaseLib only ever adds to that list): what <see cref="KnownWithoutBuilding"/> depends on, with the CardModifier types.</summary>
         public int SavesCount => _registeredSaves().Count;
@@ -304,6 +316,10 @@ public static class LimitlessReserialize
             Stored = Expression.Lambda<Func<object, object?>>(Expression.Block(new[] { found },
                 Expression.Condition(Expression.Call(Expression.Constant(table), tryGet, Expression.Convert(arg, serializable), found),
                     Expression.Convert(found, typeof(object)), Expression.Constant(null))), arg).Compile();
+            MethodInfo addOrUpdate = table.GetType().GetMethod("AddOrUpdate") ?? throw new MissingMethodException(table.GetType().Name, "AddOrUpdate");
+            ParameterExpression value = Expression.Parameter(typeof(object));
+            Store = Expression.Lambda<Action<object, object>>(
+                Expression.Call(Expression.Constant(table), addOrUpdate, Expression.Convert(arg, serializable), Expression.Convert(value, data)), arg, value).Compile();
         }
     }
 
@@ -319,7 +335,7 @@ public static class LimitlessReserialize
         long now = Environment.TickCount64;
         if (now - _patchesCheckedAt >= 2000)
         {
-            _patchedByOthers = PatchSafety.IsPatchedByOthers(_original) || PatchSafety.IsPatchedByOthers(_savedPropertiesFrom)
+            _patchedByOthers = (_original != null && PatchSafety.IsPatchedByOthers(_original)) || PatchSafety.IsPatchedByOthers(_savedPropertiesFrom)
                 || PatchSafety.IsPatchedByOthers(_cardToSerializable, new[] { _cardData!.Postfix })
                 || PatchSafety.IsPatchedByOthers(_enchantmentToSerializable, new[] { _enchantmentData!.Postfix });
             _patchesCheckedAt = now;
@@ -507,7 +523,7 @@ public static class LimitlessReserialize
             return false;
         }
         if (!Equals(saved.Id, card.Id) || saved.CurrentUpgradeLevel != card.CurrentUpgradeLevel
-            || saved.FloorAddedToDeck != card.FloorAddedToDeck || !SameProps(PropsOf(card), saved.Props))
+            || saved.FloorAddedToDeck != card.FloorAddedToDeck || !SamePropsOf(card, saved.Props))
         {
             return false;
         }
@@ -522,13 +538,102 @@ public static class LimitlessReserialize
     /// <summary><c>EnchantmentModel.ToSerializable</c> and BaseLib's postfix.</summary>
     private static bool SameEnchantment(EnchantmentModel enchantment, SerializableEnchantment? saved, StoredData data, int slot) =>
         saved != null && enchantment.IsMutable && Equals(saved.Id, enchantment.Id) && saved.Amount == enchantment.Amount
-        && SameProps(PropsOf(enchantment), saved.Props) && SameData(_enchantmentData!, enchantment, data.For(slot, saved, _enchantmentData!));
+        && SamePropsOf(enchantment, saved.Props) && SameData(_enchantmentData!, enchantment, data.For(slot, saved, _enchantmentData!));
 
-    /// <summary><c>SavedProperties.From</c>, which returns null without reading anything when the type has no saved property.</summary>
-    private static SavedProperties? PropsOf(AbstractModel model) =>
-        _jsonProperties!(model.GetType()) == null ? null : SavedProperties.From(model);
+    /// <summary>How <see cref="SamePropsOf"/> reads a type's saved properties.</summary>
+    private sealed class PropsPlan
+    {
+        public bool None;
+        /// <summary>The type's only saved property, when it is a list of cards (Limitless's stacked enchantments).</summary>
+        public string? ListName;
+        public Func<object, List<SerializableCard>?>? ListGetter;
+    }
 
-    /// <summary>Whether models of this type save no property: <see cref="PropsOf"/> is then null without reading the model.</summary>
+    private static readonly Dictionary<Type, PropsPlan> _propsPlans = new();
+    private static Type? _lastPlanType;
+    private static PropsPlan? _lastPlan;
+
+    private static PropsPlan PlanOf(Type type)
+    {
+        if (ReferenceEquals(type, _lastPlanType))
+        {
+            return _lastPlan!;
+        }
+        if (!_propsPlans.TryGetValue(type, out PropsPlan? plan))
+        {
+            plan = new PropsPlan();
+            List<System.Reflection.PropertyInfo>? properties = _jsonProperties!(type);
+            plan.None = properties == null;
+            if (properties is { Count: 1 } && properties[0].PropertyType == typeof(List<SerializableCard>) && properties[0].GetMethod is { } getter)
+            {
+                ParameterExpression model = Expression.Parameter(typeof(object));
+                plan.ListName = properties[0].Name;
+                plan.ListGetter = Expression.Lambda<Func<object, List<SerializableCard>?>>(
+                    Expression.Call(Expression.Convert(model, type), getter), model).Compile();
+            }
+            _propsPlans[type] = plan;
+        }
+        _lastPlanType = type;
+        _lastPlan = plan;
+        return plan;
+    }
+
+    /// <summary>
+    /// <c>SameProps(SavedProperties.From(model), saved)</c>. The game's call goes through reflection (property read, its
+    /// attribute, a copy of the list) for every stacked enchantment of every card at every comparison: ~90% of the co-op
+    /// checksum at 20,000 cards. When the type's only saved property is a list of cards and the saved object holds just
+    /// that list, with the same objects in the same order, a new call would give the same result: it depends only on
+    /// that value.
+    /// </summary>
+    private static bool SamePropsOf(AbstractModel model, SavedProperties? saved)
+    {
+        PropsPlan plan = PlanOf(model.GetType());
+        if (plan.None)
+        {
+            return saved == null;
+        }
+        if (plan.ListGetter != null && saved is { cardArrays: { Count: 1 } arrays, ints: null, bools: null, strings: null, intArrays: null, modelIds: null, cards: null }
+            && string.Equals(arrays[0].name, plan.ListName, StringComparison.Ordinal)
+            && arrays[0].value is { } array && plan.ListGetter(model) is { } list && list.Count == array.Length)
+        {
+            bool same = true;
+            for (int i = 0; i < array.Length && same; i++)
+            {
+                same = ReferenceEquals(list[i], array[i]);
+            }
+            if (same)
+            {
+                return true;
+            }
+        }
+        return SameProps(SavedProperties.From(model), saved);
+    }
+
+    /// <summary>
+    /// For <see cref="SnapshotCardReuse"/>'s memo: whether a model's saved properties are nothing at all, or just one list
+    /// of cards (returned) whose object and version tell whether they changed.
+    /// </summary>
+    internal static bool MemoPlan(AbstractModel model, out Func<object, List<SerializableCard>?>? list)
+    {
+        PropsPlan plan = PlanOf(model.GetType());
+        list = plan.ListGetter;
+        return plan.None || plan.ListGetter != null;
+    }
+
+    /// <summary>
+    /// What the BaseLib data of a snapshot object depends on when known without building it: changes when a save is
+    /// registered or a type is loaded; -1 when it isn't known (no memo).
+    /// </summary>
+    internal static long MemoStamp()
+    {
+        if (_cardData == null || !_cardData.KnownWithoutBuilding(out _, out _) || !_enchantmentData!.KnownWithoutBuilding(out _, out _))
+        {
+            return -1;
+        }
+        return ((long)BaseLibTypes.Changes << 24) | ((long)_cardData.SavesCount << 12) | (uint)_enchantmentData.SavesCount;
+    }
+
+    /// <summary>Whether models of this type save no property: <c>SavedProperties.From</c> then returns null without reading the model.</summary>
     internal static bool SavesNoProperty(Type type) => _jsonProperties!(type) == null;
 
     /// <summary>

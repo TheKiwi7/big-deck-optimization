@@ -46,6 +46,7 @@ public static class HoverTipReuse
 
     private static readonly ConditionalWeakTable<NCreature, Shown> _shown = new();
     private static Func<Dictionary<Control, NHoverTipSet>>? _activeHoverTips;
+    private static System.Reflection.MethodInfo? _handler;
 
     public static void Apply(Harmony harmony)
     {
@@ -55,10 +56,7 @@ public static class HoverTipReuse
         PatchSafety.RequireFingerprint(AccessTools.Method(typeof(NCreature), nameof(NCreature.ShowHoverTips)), ShowFingerprint);
         PatchSafety.RequireFingerprint(AccessTools.Method(typeof(NCreature), nameof(NCreature.HideHoverTips)), HideFingerprint);
         PatchSafety.RequireFingerprint(AccessTools.Method(typeof(NHoverTipSet), "Init"), InitFingerprint);
-        if (PatchSafety.IsPatchedByOthers(handler))
-        {
-            throw new PatchSkippedException("NCreature.ShowCreatureHoverTips is patched by another mod");
-        }
+        _handler = handler;
         var field = AccessTools.Field(typeof(NHoverTipSet), "_activeHoverTips") ?? throw new MissingFieldException("NHoverTipSet._activeHoverTips");
         var active = (Dictionary<Control, NHoverTipSet>)field.GetValue(null)!;
         _activeHoverTips = () => active;
@@ -69,7 +67,8 @@ public static class HoverTipReuse
     /// <summary>Does what ShowCreatureHoverTips does, skipping the rebuild when nothing shown would change.</summary>
     private static bool Prefix(NCreature __instance)
     {
-        if (!Enabled)
+        // Asked at each call: a mod loading later may patch it too.
+        if (!Enabled || PatchSafety.IsPatchedByOthers(_handler))
         {
             return true;
         }

@@ -92,6 +92,8 @@ public class PerfConsoleCmd : AbstractConsoleCmd
             case "fault" when args.Length >= 2 && args[1] == "piles":
                 FastListeners.FailNextPileWalk = true;
                 return new CmdResult(success: true, "The next filtered pile walk throws inside FastListeners' cache (test of its fallback).");
+            case "gcprobe":
+                return GcProbe();
             case "opt":
                 return SetOptimizations(args.Length >= 2 ? args[1] : null);
             case "listeners":
@@ -103,6 +105,40 @@ public class PerfConsoleCmd : AbstractConsoleCmd
             default:
                 return new CmdResult(success: false, "Usage: bdperf " + Args);
         }
+    }
+
+    /// <summary>
+    /// bdperf gcprobe: what an ephemeral collection costs right now, and how much of it each 100,000 extra dependent
+    /// handles (ConditionalWeakTable entries, scanned by every collection) add.
+    /// </summary>
+    private static CmdResult GcProbe()
+    {
+        static double Pause(int generation)
+        {
+            double total = 0;
+            for (int i = 0; i < 8; i++)
+            {
+                TimeSpan before = GC.GetTotalPauseDuration();
+                GC.Collect(generation, GCCollectionMode.Forced, blocking: true);
+                total += (GC.GetTotalPauseDuration() - before).TotalMilliseconds;
+            }
+            return total / 8;
+        }
+        double gen0 = Pause(0), gen1 = Pause(1);
+        var keys = new object[100_000];
+        var values = new object[keys.Length];
+        var table = new System.Runtime.CompilerServices.ConditionalWeakTable<object, object>();
+        for (int i = 0; i < keys.Length; i++)
+        {
+            keys[i] = new object();
+            values[i] = new object();
+            table.Add(keys[i], values[i]);
+        }
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true);
+        double gen0Extra = Pause(0), gen1Extra = Pause(1);
+        GC.KeepAlive(keys);
+        GC.KeepAlive(values);
+        return new CmdResult(success: true, $"GCPROBE gen0 {gen0:F1} ms, gen1 {gen1:F1} ms; with 100,000 more dependent handles gen0 {gen0Extra:F1} ms, gen1 {gen1Extra:F1} ms; latency {System.Runtime.GCSettings.LatencyMode}, server {System.Runtime.GCSettings.IsServerGC}");
     }
 
     /// <summary>
@@ -310,8 +346,16 @@ public class PerfConsoleCmd : AbstractConsoleCmd
         }
     }
 
+    private static bool _probeApplied;
+
     private static CmdResult ProbeCmd(string[] args)
     {
+        // Only when asked: a probe's stub allocates on every call of very hot methods (CardModel.Pile), which falsifies measures.
+        if (!_probeApplied && !(args.Length > 0 && args[0].Equals("off", StringComparison.OrdinalIgnoreCase)))
+        {
+            _probeApplied = true;
+            ModEntry.TryApply(PerfProbe.Name, PerfProbe.Apply);
+        }
         switch (args.Length > 0 ? args[0].ToLowerInvariant() : "")
         {
             case "":
@@ -423,25 +467,29 @@ public class PerfConsoleCmd : AbstractConsoleCmd
         }
         ChecksumTracker tracker = RunManager.Instance.ChecksumTracker;
 
-        bool cacheWasEnabled = ListenerCache.SnapshotEnabled, filterWasEnabled = HookFilter.Enabled;
+        bool cacheWasEnabled = ListenerCache.SnapshotEnabled, filterWasEnabled = HookFilter.Enabled, reuseWasEnabled = SnapshotCardReuse.Enabled;
         VerifyMode verifyMode = SnapshotVerifier.Mode;
-        Sample vanilla, cacheOnly, optimized;
+        Sample vanilla, cacheOnly, filtered, optimized;
         try
         {
             // The bench compares against vanilla itself; live verification would skew timings.
             SnapshotVerifier.Mode = VerifyMode.Off;
             ListenerCache.SnapshotEnabled = false;
             HookFilter.Enabled = false;
+            SnapshotCardReuse.Enabled = false;
             vanilla = Measure(state, tracker, iterations);
             ListenerCache.SnapshotEnabled = true;
             cacheOnly = Measure(state, tracker, iterations);
             HookFilter.Enabled = true;
+            filtered = Measure(state, tracker, iterations);
+            SnapshotCardReuse.Enabled = reuseWasEnabled;
             optimized = Measure(state, tracker, iterations);
         }
         finally
         {
             ListenerCache.SnapshotEnabled = cacheWasEnabled;
             HookFilter.Enabled = filterWasEnabled;
+            SnapshotCardReuse.Enabled = reuseWasEnabled;
             SnapshotVerifier.Mode = verifyMode;
         }
 
@@ -458,12 +506,13 @@ public class PerfConsoleCmd : AbstractConsoleCmd
             }
         }
 
-        bool identical = vanilla.Checksum == cacheOnly.Checksum && vanilla.Checksum == optimized.Checksum;
+        bool identical = vanilla.Checksum == cacheOnly.Checksum && vanilla.Checksum == filtered.Checksum && vanilla.Checksum == optimized.Checksum;
         double speedup = (vanilla.SnapshotMs + vanilla.HashMs) / Math.Max(0.001, optimized.SnapshotMs + optimized.HashMs);
         string msg = $"checksum x{iterations} — players: {state.Players.Count}, combat cards: {cards}, relics: {relics}\n"
             + vanilla.Format("vanilla     ") + "\n"
             + cacheOnly.Format("cache       ") + "\n"
-            + optimized.Format("cache+filter") + "\n"
+            + filtered.Format("cache+filter") + "\n"
+            + optimized.Format("+card reuse ") + "\n"
             + (identical ? $"  OK: identical checksums, x{speedup:F1} faster" : "  MISMATCH: optimized checksum differs from vanilla!");
         if (identical)
         {
