@@ -1,0 +1,6 @@
+# A whole run played by the game's own auto player (AutoSlay: map, fights, events, shops, rests), mod on: compare with
+# autoslay-off (CARDPLAY lines). It closes the game itself when the run ends; 25 minutes at most.
+timeout 1700
+autoslay 1234
+wait 1600
+quit

@@ -1,0 +1,20 @@
+# Every power of the game, a full checksum after each step: off (A/B over the whole game at ~1,900 cards, compare.py).
+timeout 3400
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdopt off
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+enemyhp 999999
+speed fast
+immortal
+cmd godmode
+sweep powers checksum
+counters end
+wait 2
+cmd bdopt on
+quit

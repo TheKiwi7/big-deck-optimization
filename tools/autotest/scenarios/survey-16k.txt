@@ -1,0 +1,103 @@
+# Survey of every situation at ~16,800 cards + 736 relics, release-like timings: where does it still lag?
+timeout 1500
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+enemyhp 999999
+speed fast
+wait 2
+marker deckview-map
+fpsstat
+gcstat
+deckview 2
+deckscroll 200
+fpsstat deckview map
+gcstat deckview map
+marker combat-start
+fpsstat
+gcstat
+cmd fight CULTISTS_NORMAL
+waitfor idle 900
+fpsstat combat start
+gcstat combat start
+cmd bdperf combatstart
+wait 2
+fpsstat idle reference
+marker pile-open
+fpsstat
+pilescroll draw 120 120
+fpsstat pile view
+marker plays
+gcstat
+fpsstat
+cmd energy 50
+play 8
+waitfor idle 120
+fpsstat plays 8
+gcstat plays 8
+marker endturn
+endturn
+waitfor idle 300
+fpsstat end turn
+gcstat end turn
+cmd energy 50
+marker plays2
+play 8
+waitfor idle 120
+fpsstat plays 8 b
+gcstat plays 8 b
+endturn
+waitfor idle 300
+fpsstat end turn b
+gcstat end turn b
+marker combat-end
+cmd kill all
+waitfor nocombat 300
+fpsstat combat end
+gcstat combat end
+wait 4
+fpsstat rewards idle
+marker shop
+gcstat
+cmd room SHOP
+wait 4
+fpsstat shop
+gcstat shop
+marker rest
+cmd room RESTSITE
+waitfor restsite 60
+fpsstat rest
+gcstat rest
+marker upgrade
+restsite SmithRestSiteOption
+wait 4
+fpsstat smith
+gcstat smith
+marker map
+cmd room MAP
+wait 3
+fpsstat map
+gcstat map
+wait 20
+quit

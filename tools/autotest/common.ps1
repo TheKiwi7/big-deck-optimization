@@ -11,6 +11,21 @@ $Scenarios = Join-Path $PSScriptRoot "scenarios"
 $Results = Join-Path $PSScriptRoot "results"
 New-Item -ItemType Directory -Force $Results | Out-Null
 
+# The game version of an install or copy ("v0.107.1"): logs are kept per version under results/<version>/.
+function Get-GameTag([string]$dir) {
+    $info = Join-Path $dir "release_info.json"
+    if (Test-Path $info) { (Get-Content $info -Raw | ConvertFrom-Json).version } else { "unknown" }
+}
+
+# A second copy of a session's log per game version: results/<name>.log is overwritten by the next session on any version.
+# BD_NO_VERSIONED_LOGS: sessions on a modified game (mutations.ps1).
+function Save-VersionedLog([string]$log, [string]$dir) {
+    if ($env:BD_NO_VERSIONED_LOGS -or -not (Test-Path $log)) { return }
+    $target = Join-Path $Results (Get-GameTag $dir)
+    New-Item -ItemType Directory -Force $target | Out-Null
+    Copy-Item $log (Join-Path $target (Split-Path $log -Leaf)) -Force
+}
+
 function Assert-GameNotRunning {
     if (Get-Process -Name SlayTheSpire2 -ErrorAction SilentlyContinue) { throw "Slay the Spire 2 is already running" }
 }

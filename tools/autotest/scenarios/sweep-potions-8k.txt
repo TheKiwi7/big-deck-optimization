@@ -1,0 +1,24 @@
+# Every potion of the game one by one at ~8,400 cards (no extra relics): what still depends on the deck size? Compare with sweep-potions-small (tools/autotest/sweepdiff.py).
+timeout 5400
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+enemyhp 999999
+speed fast
+immortal
+cmd godmode
+sweep potions
+wait 2
+quit

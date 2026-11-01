@@ -1,0 +1,126 @@
+# Memory check across fights and runs (mod off), ~1,900 cards: the reference of memory-runs-on.
+timeout 900
+newrun NECROBINDER 1234
+waitfor run 60
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdopt off
+cmd bdperf checks off
+enemyhp 999999
+gcfull run1 start
+cmd fight CULTISTS_NORMAL
+waitfor idle 60
+play 4
+waitfor idle 30
+leakcheck current
+endturn
+waitfor idle 60
+cmd kill all
+waitfor nocombat 60
+gcfull run1 fight1
+cmd fight CULTISTS_NORMAL
+waitfor idle 60
+play 4
+waitfor idle 30
+endturn
+waitfor idle 60
+cmd kill all
+waitfor nocombat 60
+gcfull run1 fight2
+tomenu
+wait 2
+gcfull menu1
+leakcheck menu1
+leakcheck game menu1
+newrun NECROBINDER 1234
+waitfor run 60
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 60
+play 4
+waitfor idle 30
+endturn
+waitfor idle 60
+cmd kill all
+waitfor nocombat 60
+gcfull run2 fight1
+cmd fight CULTISTS_NORMAL
+waitfor idle 60
+play 4
+waitfor idle 30
+endturn
+waitfor idle 60
+cmd kill all
+waitfor nocombat 60
+gcfull run2 fight2
+tomenu
+wait 2
+gcfull menu2
+leakcheck menu2
+leakcheck game menu2
+newrun NECROBINDER 1234
+waitfor run 60
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 60
+play 4
+waitfor idle 30
+endturn
+waitfor idle 60
+cmd kill all
+waitfor nocombat 60
+gcfull run3 fight1
+cmd fight CULTISTS_NORMAL
+waitfor idle 60
+play 4
+waitfor idle 30
+endturn
+waitfor idle 60
+cmd kill all
+waitfor nocombat 60
+gcfull run3 fight2
+tomenu
+wait 2
+gcfull menu3
+leakcheck menu3
+leakcheck game menu3
+newrun NECROBINDER 1234
+waitfor run 60
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 60
+play 4
+waitfor idle 30
+endturn
+waitfor idle 60
+cmd kill all
+waitfor nocombat 60
+gcfull run4 fight1
+cmd fight CULTISTS_NORMAL
+waitfor idle 60
+play 4
+waitfor idle 30
+endturn
+waitfor idle 60
+cmd kill all
+waitfor nocombat 60
+gcfull run4 fight2
+tomenu
+wait 2
+gcfull menu4
+leakcheck menu4
+leakcheck game menu4
+leakcheck oldest
+leakcheck game oldest
+cmd bdopt on
+quit

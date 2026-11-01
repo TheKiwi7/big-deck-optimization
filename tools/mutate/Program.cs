@@ -40,7 +40,13 @@ var mutations = new Dictionary<string, (string What, Action<ModuleDefinition> Ap
         Prepend(Method(m, "MegaCrit.Sts2.Core.Models.AbstractModel", "AfterCardPlayed"), OpCodes.Ldarg_0, OpCodes.Pop)),
     ["helper-push"] = ("PlayerChoiceContext.PushModel changed (hooks using choice contexts rely on it)", m =>
         Prepend(Method(m, "MegaCrit.Sts2.Core.GameActions.Multiplayer.PlayerChoiceContext", "PushModel"), OpCodes.Ldarg_1, OpCodes.Pop)),
-    ["pile-remove"] = ("CardPile.RemoveInternal changed (PileIndex and FastListeners rely on it)", m =>
+    ["pile-add"] = ("CardPile.AddInternal changed (only moves applied to FastListeners' entries rely on its code; PileIndex checks each call)", m =>
+        Prepend(Method(m, "MegaCrit.Sts2.Core.Entities.Cards.CardPile", "AddInternal"), OpCodes.Ldarg_1, OpCodes.Pop)),
+    ["combat-walk"] = ("CombatState.IterateHookListeners (its iterator) changed (only FastListeners' mirror of that walk relies on it)", m =>
+        Prepend(Type(m, "MegaCrit.Sts2.Core.Combat.CombatState").NestedTypes.First(t => t.Name.Contains("<IterateHookListeners>")).Methods.First(x => x.Name == "MoveNext"), OpCodes.Ldarg_0, OpCodes.Pop)),
+    ["run-walk"] = ("RunState.IterateHookListeners (its iterator) changed (only FastListeners' mirror of that walk relies on it)", m =>
+        Prepend(Type(m, "MegaCrit.Sts2.Core.Runs.RunState").NestedTypes.First(t => t.Name.Contains("<IterateHookListeners>")).Methods.First(x => x.Name == "MoveNext"), OpCodes.Ldarg_0, OpCodes.Pop)),
+    ["pile-remove"] = ("CardPile.RemoveInternal changed (only moves applied to FastListeners' entries rely on its code; PileIndex checks each call)", m =>
         Prepend(Method(m, "MegaCrit.Sts2.Core.Entities.Cards.CardPile", "RemoveInternal"), OpCodes.Ldarg_1, OpCodes.Pop)),
     ["pile-writer"] = ("a new CardPile.ReverseInternal() reversing _cards (no fingerprinted method changes: PileIndex and FastListeners must notice the new writer)", m =>
     {
@@ -56,6 +62,26 @@ var mutations = new Dictionary<string, (string What, Action<ModuleDefinition> Ap
         Method(m, "MegaCrit.Sts2.Core.Entities.Cards.CardPile", "RemoveInternal").Name = "RemoveInternalRenamed"),
     ["rename-field"] = ("CombatState._allies renamed (FastListeners reads it by name)", m =>
         Type(m, "MegaCrit.Sts2.Core.Combat.CombatState").Fields.Single(f => f.Name == "_allies").Name = "_alliesRenamed"),
+    // --- game, v0.9.0 patches: only that part may leave ---
+    ["flight-count"] = ("NCombatCardPile.AddCard changed (CardFlightLimit adds to its count)", m =>
+        Prepend(Method(m, "MegaCrit.Sts2.Core.Nodes.Combat.NCombatCardPile", "AddCard"), OpCodes.Ldarg_0, OpCodes.Pop)),
+    ["replay-record"] = ("CombatReplayWriter.RecordChecksum changed (ReplayStateSkip skips it)", m =>
+        Prepend(Method(m, "MegaCrit.Sts2.Core.Multiplayer.Replay.CombatReplayWriter", "RecordChecksum"), OpCodes.Ldarg_0, OpCodes.Pop)),
+    ["theme-rename"] = ("NHealthBar.RefreshText renamed (ThemeColorSkip transpiles it by name; the game's own callers follow)", m =>
+        Method(m, "MegaCrit.Sts2.Core.Nodes.Combat.NHealthBar", "RefreshText").Name = "RefreshTextRenamed"),
+    ["upgrade-writer"] = ("a new CardModel method writing _currentUpgradeLevel (trusted piles watch that field's writers)", m =>
+    {
+        TypeDefinition card = Type(m, "MegaCrit.Sts2.Core.Models.CardModel");
+        FieldDefinition level = card.Fields.Single(f => f.Name == "_currentUpgradeLevel");
+        var added = new MethodDefinition("SetLevelDirectly", MethodAttributes.Public | MethodAttributes.HideBySig, m.TypeSystem.Void);
+        ILProcessor il = added.Body.GetILProcessor();
+        il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Ldc_I4_0); il.Emit(OpCodes.Stfld, level); il.Emit(OpCodes.Ret);
+        card.Methods.Add(added);
+    }),
+    ["write-list"] = ("PacketWriter.WriteList changed (SnapshotCardReuse mirrors it for piles: only pile bits may leave)", m =>
+        Prepend(Method(m, "MegaCrit.Sts2.Core.Multiplayer.Serialization.PacketWriter", "WriteList"), OpCodes.Ldarg_0, OpCodes.Pop)),
+    ["local-keywords"] = ("CardModel.LocalKeywords changed (SnapshotCardReuse reads it without allocating)", m =>
+        Prepend(Method(m, "MegaCrit.Sts2.Core.Models.CardModel", "get_LocalKeywords"), OpCodes.Ldarg_0, OpCodes.Pop)),
     // (Making the CardModel.EnergyCost property internal breaks the game itself: its serialization reads public properties.)
     ["internal-member"] = ("CardEnergyCost.GetWithModifiers made internal (HookFilter's cost color calls it directly; the game's own callers are in the same assembly)", m =>
     {
@@ -84,6 +110,19 @@ var mutations = new Dictionary<string, (string What, Action<ModuleDefinition> Ap
         Prepend(m.GetTypes().Where(t => t.Name == "MultiEnchantment").SelectMany(t => t.Methods).First(x => x.Name == "SetSerializableCards"), OpCodes.Ldarg_0, OpCodes.Pop)),
     ["limitless-tabs"] = ("Limitless: CardExtensions.UpdateEnchantmentVisuals changed (EnchantmentTabReuse mirrors it)", m =>
         Prepend(m.GetTypes().SelectMany(t => t.Methods).First(x => x.Name == "UpdateEnchantmentVisuals" && x.HasBody), OpCodes.Ldarg_0, OpCodes.Pop)),
+    ["limitless-forward"] = ("Limitless: MultiEnchantment.AfterCardPlayed changed (LimitlessHookSkip relies on it only forwarding)", m =>
+        Prepend(m.GetTypes().First(t => t.Name.Contains("<AfterCardPlayed>") && t.DeclaringType?.Name == "MultiEnchantment").Methods.First(x => x.Name == "MoveNext"), OpCodes.Ldarg_0, OpCodes.Pop)),
+    ["limitless-writer"] = ("Limitless: a new MultiEnchantment method writing its saved list (trusted piles watch that field's writers)", m =>
+    {
+        TypeDefinition multi = m.GetTypes().First(t => t.Name == "MultiEnchantment");
+        FieldDefinition list = multi.Fields.Single(f => f.Name == "<SerializableEnchantmentsOnCards>k__BackingField");
+        var added = new MethodDefinition("ResetList", MethodAttributes.Public | MethodAttributes.HideBySig, m.TypeSystem.Void);
+        ILProcessor il = added.Body.GetILProcessor();
+        il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Ldfld, list); il.Emit(OpCodes.Stfld, list); il.Emit(OpCodes.Ret);
+        multi.Methods.Add(added);
+    }),
+    ["limitless-recalc"] = ("Limitless: MultiEnchantment.RecalculateValues changed (LimitlessRecalcSkip relies on it)", m =>
+        Prepend(m.GetTypes().Where(t => t.Name == "MultiEnchantment").SelectMany(t => t.Methods).First(x => x.Name == "RecalculateValues"), OpCodes.Ldarg_0, OpCodes.Pop)),
     ["baselib-plaque"] = ("BaseLib: AddSubtypesToTypePlaquePatch.TryModifyPlaqueText changed (TypePlaqueSkip relies on it)", m =>
         Prepend(m.GetTypes().SelectMany(t => t.Methods).First(x => x.Name == "TryModifyPlaqueText" && x.HasBody), OpCodes.Ldarg_0, OpCodes.Pop)),
 };

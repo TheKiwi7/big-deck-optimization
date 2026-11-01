@@ -34,7 +34,8 @@ STEAMCMD = Path(os.environ.get("STEAMCMD", r"C:\steamcmd\steamcmd.exe"))
 
 # Log lines of this mod saying a part of it runs the unmodified game (or another mod's version) instead.
 VANILLA = re.compile(r"\[BigDeckOptimization\].*(Patch \w+ skipped|could not be applied|changed \(fingerprint|left vanilla"
-                     r"|missing or changed|getter kept|is also patched by)")
+                     r"|missing or changed|getter kept|is also patched by|read through the game's own calls|read every time|not reused"
+                     r"|not skipped|left uncached|not found, it sets)")
 # Normal: an optional mod absent, a summary with nothing left vanilla.
 EXPECTED = re.compile(r"(Limitless|BaseLib) not loaded|no --bdtest argument| 0 left vanilla")
 
@@ -166,8 +167,13 @@ def main() -> int:
             print(f"{label:20} {fmt(v):>16} {fmt(r):>16} {fmt(l) if l else '-':>16}  {' '.join(notes)}")
     if "--log" in args:
         log = Path(args[args.index("--log") + 1])
-        lines = [line.strip() for line in log.read_text(encoding="utf-8", errors="replace").splitlines()
-                 if VANILLA.search(line) and not EXPECTED.search(line)]
+        text = log.read_text(encoding="utf-8", errors="replace")
+        # A patch waiting for an optional mod is skipped first, then applied when that mod loads.
+        applied = set(re.findall(r"\[BigDeckOptimization\] Patch (\w+) applied", text))
+        def left_vanilla(line):
+            skipped = re.search(r"Patch (\w+) skipped", line)
+            return VANILLA.search(line) and not EXPECTED.search(line) and not (skipped and skipped.group(1) in applied)
+        lines = [line.strip() for line in text.splitlines() if left_vanilla(line)]
         print(f"\n{log.name}: {len(lines)} part(s) left vanilla")
         for line in dict.fromkeys(lines):
             print("  " + line[:220])

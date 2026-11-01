@@ -1,0 +1,20 @@
+# Knights (Hex, slow death with the mod off) to Living Fog, run with sweep.ps1 -Start 31: off (compare.py).
+timeout 3400
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdopt off
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+enemyhp 999999
+speed fast
+immortal
+cmd godmode
+sweep encounters 4 checksum
+counters end
+wait 2
+cmd bdopt on
+quit

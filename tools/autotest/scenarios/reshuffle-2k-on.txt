@@ -1,0 +1,36 @@
+# Reshuffle of a ~1,900-card discard pile, on: same checksums with the flying cards limited.
+timeout 900
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 999999
+speed fast
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+pilemove draw discard 2
+wait 1
+fpsstat
+gcstat
+endturn
+waitfor idle 500
+fpsstat end turn with shuffle
+gcstat end turn with shuffle
+checksum after shuffle
+state after shuffle
+play 3
+waitfor idle 300
+checksum plays
+state plays
+endturn
+waitfor idle 300
+checksum t2
+state t2
+counters end
+wait 2
+quit

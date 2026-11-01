@@ -1,19 +1,29 @@
 """A/B comparison of two AutoTest logs (same script, one option differing).
 
-    python -I tools/autotest/compare.py results/<a>.log results/<b>.log
+    python -I tools/autotest/compare.py results/<a>.log results/<b>.log [--unordered] [--no-times]
 
-Checks that the CHECKSUM, STATE and CARDPLAY lines match line for line (values only, not timings), then lists the
-per-card times of 'playcard' ("played X in N ms") side by side.
+Checks that the CHECKSUM, STATE and CARDPLAY lines match line for line (values only, not timings): a mismatch shows the
+first line that differs, and which values in it. Then what else differs: game errors only one side logged, this mod's
+problems. Then the per-card times of 'playcard' ("played X in N ms") side by side.
+--unordered compares them as sets of lines: for autoslay sessions, whose order varies a little between any two sessions.
 """
 import re
 import sys
 
 CHECKED = re.compile(r'AutoTest\s+[\d.]+s\s+(CHECKSUM [^:]+: \w+|STATE .*$|CARDPLAY .*$)')
 PLAYED = re.compile(r'AutoTest\s+[\d.]+s\s+played (\S+) in (\d+) ms')
+# Beyond results: lines saying this mod backed off or went wrong during the session.
+MOD_PROBLEM = re.compile(r'\[BigDeckOptimization\].*(MISMATCH|mismatches [1-9]|disabled after|turned off and removed|changed unseen|\b[1-9]\d* (part\(s\) |hooks? )?left vanilla|skipped:)')
+
+
+def normalized_error(line):
+    """A game error without what changes between sessions (numbers, paths)."""
+    line = re.sub(r'[A-Za-z]:\\\S+', '<path>', line)
+    return re.sub(r'\d+', 'N', line)[:130].strip()
 
 
 def read(path):
-    checked, played = [], []
+    checked, played, errors, problems = [], [], {}, []
     with open(path, encoding='utf-8', errors='replace') as f:
         for line in f:
             line = line.rstrip('\n')
@@ -21,20 +31,61 @@ def read(path):
                 checked.append(m.group(1))
             elif m := PLAYED.search(line):
                 played.append((m.group(1), int(m.group(2))))
-    return checked, played
+            elif line.startswith('[ERROR]'):
+                key = normalized_error(line)
+                errors[key] = errors.get(key, 0) + 1
+            if MOD_PROBLEM.search(line):
+                problems.append(line[:170])
+    return checked, played, errors, problems
 
 
-def main(a_path, b_path):
-    a_checked, a_played = read(a_path)
-    b_checked, b_played = read(b_path)
+def difference(x, y):
+    """The words that differ between two lines of the same kind."""
+    a, b = x.split(), y.split()
+    if len(a) != len(b):
+        return ''
+    words = [f'{p} -> {q}' for p, q in zip(a, b) if p != q]
+    return ', '.join(words[:6])
+
+
+def describe_mismatches(a_checked, b_checked, limit=6):
+    """(index, A, B, differing words) of the first mismatches, line for line."""
+    found = []
+    for i, (x, y) in enumerate(zip(a_checked, b_checked)):
+        if x != y:
+            found.append((i, x, y, difference(x, y)))
+            if len(found) >= limit:
+                break
+    return found
+
+
+def errors_only_in(a, b):
+    return {k: v for k, v in a.items() if k not in b}
+
+
+def main(a_path, b_path, unordered=False, times=True):
+    a_checked, a_played, a_errors, a_problems = read(a_path)
+    b_checked, b_played, b_errors, b_problems = read(b_path)
+    if unordered:
+        a_checked.sort()
+        b_checked.sort()
     mismatches = [(i, x, y) for i, (x, y) in enumerate(zip(a_checked, b_checked)) if x != y]
     print(f'checked lines: {len(a_checked)} vs {len(b_checked)}, mismatches: {len(mismatches)}')
     for i, x, y in mismatches[:20]:
-        print(f'  #{i}\n    A: {x}\n    B: {y}')
+        words = difference(x, y)
+        print(f'  #{i}\n    A: {x}\n    B: {y}' + (f'\n    differs: {words}' if words else ''))
     if len(a_checked) != len(b_checked):
         print('  DIFFERENT LENGTHS (a session stopped early?)')
     ok = not mismatches and len(a_checked) == len(b_checked)
     print('IDENTICAL' if ok else 'DIFFERENT')
+    for name, only in (('A', errors_only_in(a_errors, b_errors)), ('B', errors_only_in(b_errors, a_errors))):
+        for text, count in list(only.items())[:8]:
+            print(f'errors only in {name}: {count}x {text}')
+    for name, problems in (('A', a_problems), ('B', b_problems)):
+        for line in problems[:5]:
+            print(f'mod problem in {name}: {line}')
+    if not times:
+        return 0 if ok else 1
 
     b_times = dict(b_played)
     print(f'\n{"card":<22}{"A ms":>9}{"B ms":>9}{"A/B":>7}')
@@ -52,4 +103,4 @@ def main(a_path, b_path):
 
 
 if __name__ == '__main__':
-    sys.exit(main(sys.argv[1], sys.argv[2]))
+    sys.exit(main(sys.argv[1], sys.argv[2], '--unordered' in sys.argv, '--no-times' not in sys.argv))

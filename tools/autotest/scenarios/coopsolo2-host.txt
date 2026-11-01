@@ -1,5 +1,6 @@
 # Co-op without action races (E2, host): mod off (stand-in for a player without the mod), never plays a card: waits for the other player's plays to run, then ends its turn. Only one player acts at a time, so the action order
 # can't differ between peers: any divergence would come from a different computation. See coopsolo2-client.txt.
+onfail continue
 timeout 1800
 mplobby NECROBINDER 2
 waitfor run 240

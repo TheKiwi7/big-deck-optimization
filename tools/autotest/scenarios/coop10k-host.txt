@@ -1,0 +1,95 @@
+# V1 target (user): 10,000 cards in co-op, always above 120 fps, almost never a freeze. Each player ~10,300 cards + the reference relics;
+# both play 8 cards then end the turn, 4 turns (see coop10k-client.txt). The frames of these two instances share one PC.
+onfail continue
+timeout 1500
+mplobby NECROBINDER 2
+waitfor run 240
+uncap
+cmd bigdeck import ref all all {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+wait 8
+enemyhp 999999
+wait 25
+fpsstat
+gcstat
+cmd fight CULTISTS_NORMAL
+waitfor idle 900
+fpsstat combat start
+gcstat combat start
+wait 2
+fpsstat idle
+counters start
+cmd energy 50
+fpsstat
+gcstat
+play 8
+waitfor idle 300
+fpsstat plays t1
+gcstat plays t1
+fpsstat
+gcstat
+endturn
+waitfor idle 600
+fpsstat end of turn t1
+gcstat end of turn t1
+state t1
+counters t1
+fpsstat
+gcstat
+play 8
+waitfor idle 300
+fpsstat plays t2
+gcstat plays t2
+fpsstat
+gcstat
+endturn
+waitfor idle 600
+fpsstat end of turn t2
+gcstat end of turn t2
+state t2
+counters t2
+fpsstat
+gcstat
+play 8
+waitfor idle 300
+fpsstat plays t3
+gcstat plays t3
+fpsstat
+gcstat
+endturn
+waitfor idle 600
+fpsstat end of turn t3
+gcstat end of turn t3
+state t3
+counters t3
+fpsstat
+gcstat
+play 8
+waitfor idle 300
+fpsstat plays t4
+gcstat plays t4
+fpsstat
+gcstat
+endturn
+waitfor idle 600
+fpsstat end of turn t4
+gcstat end of turn t4
+state t4
+counters t4
+counters end
+effects end
+cmd bdperf verify
+wait 20
+quit

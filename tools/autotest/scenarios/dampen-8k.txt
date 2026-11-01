@@ -1,0 +1,26 @@
+# Dampen on a whole ~8,400-card deck (each upgraded card downgraded, BaseLib's hook once per card) and the Knights, whose
+# Dampen froze an end of turn. Timings only: mod off is unusable at this size (equivalence: the 1,900-card sweeps).
+timeout 900
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+enemyhp 999999
+speed fast
+immortal
+cmd godmode
+sweep encounters KNIGHTS_ELITE checksum
+effects end
+wait 2
+quit

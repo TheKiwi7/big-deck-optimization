@@ -1,0 +1,48 @@
+# A reshuffle of a huge discard pile at ~16,800 cards (a draw pile running out): never measured at this size.
+timeout 600
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+enemyhp 999999
+speed fast
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 900
+wait 1
+checksum start
+pilemove draw discard 2
+wait 1
+marker shuffle
+fpsstat
+gcstat
+endturn
+waitfor idle 500
+fpsstat end turn with shuffle
+gcstat end turn with shuffle
+checksum after shuffle
+state after shuffle
+counters after shuffle
+cmd bdperf gcprobe
+wait 5
+quit

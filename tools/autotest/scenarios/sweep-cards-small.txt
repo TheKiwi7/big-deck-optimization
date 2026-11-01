@@ -1,0 +1,15 @@
+# Every card of the game one by one with the starting deck: baseline of sweep-cards-8k.
+timeout 5400
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+enemyhp 999999
+speed fast
+immortal
+cmd godmode
+sweep cards
+wait 2
+quit

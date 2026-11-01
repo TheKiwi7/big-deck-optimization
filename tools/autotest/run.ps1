@@ -1,13 +1,13 @@
 # Unattended singleplayer session through Steam: runs scenarios/<Name>.txt with the Debug build's AutoTest runner,
 # optionally records a CPU trace, and copies the game log to results/<Name>.log.
-#   powershell -File tools/autotest/run.ps1 -Name solo-8k [-TimeoutSec 900] [-TraceSec 60 [-TraceProfile gc-verbose]] [-KeepConfig] [-Visible] [-Sound] [-Screen 1] [-Show] [-GameDir <copy>]
+#   powershell -File tools/autotest/run.ps1 -Name solo-8k [-TimeoutSec 900] [-TraceSec 60 [-TraceProfile gc-verbose] [-TraceProviders <providers>]] [-KeepConfig] [-Visible] [-Sound] [-Screen 1] [-Show] [-GameDir <copy>]
 # -GameDir: a full copy of another game version (e.g. the beta, C:\Games\StS2-beta-0.111.0) with a steam_appid.txt
 # (2868840) next to its exe, launched directly instead of through Steam (Steam must be running; Workshop mods load as
 # usual). Deploy the Debug build into it with dotnet build ... -p:ModDeployDir=<copy>\mods\BigDeckOptimization.
 # A trace must end while the game still runs (method names are written at the end): give the scenario a final wait.
 # With BaseLib, bdopt saves its changes in mod_configs/BigDeckOptimization.cfg: the file is restored byte for byte after
 # the session (a scenario stopped before its final 'bdopt on' would leave the mod off), unless -KeepConfig.
-param([Parameter(Mandatory)][string]$Name, [int]$TimeoutSec = 900, [int]$TraceSec = 0, [string]$TraceProfile = "cpu-sampling", [switch]$KeepConfig, [switch]$Visible, [switch]$Sound, [int]$Screen = 1, [switch]$Show, [string]$GameDir = "")
+param([Parameter(Mandatory)][string]$Name, [int]$TimeoutSec = 900, [int]$TraceSec = 0, [string]$TraceProfile = "cpu-sampling", [string]$TraceProviders = "", [switch]$KeepConfig, [switch]$Visible, [switch]$Sound, [int]$Screen = 1, [switch]$Show, [string]$GameDir = "", [int]$StallSec = 300)
 # -GameDir, else STS2_GAME_DIR (scripts calling run.ps1, e.g. settings.ps1, then test that copy too).
 $copyDir = if ($GameDir) { $GameDir } else { "$env:STS2_GAME_DIR" }
 . (Join-Path $PSScriptRoot "common.ps1")
@@ -55,12 +55,19 @@ try {
         Start-Sleep 8
         $span = [TimeSpan]::FromSeconds($TraceSec).ToString("dd\:hh\:mm\:ss")
         $trace = Start-Process -FilePath "dotnet-trace" -PassThru -WindowStyle Hidden -ArgumentList "collect", "-p", $game.Id,
-            "--profile", $TraceProfile, "--duration", $span, "-o", "`"$Results\$Name.nettrace`""
+            $(if ($TraceProviders) { "--providers" } else { "--profile" }), $(if ($TraceProviders) { $TraceProviders } else { $TraceProfile }), "--duration", $span, "-o", "`"$Results\$Name.nettrace`""
     }
     $t = 0
     $waitStart = Get-Date
     while ((Get-Process -Name SlayTheSpire2 -ErrorAction SilentlyContinue) -and $t -lt $TimeoutSec) {
         Start-Sleep 5; $t += 5
+        # A silent log: nothing is moving, the rest of the timeout would only wait. A session handed to the player stays.
+        if ($t -gt 60 -and (Test-Path $log) -and ((Get-Date) - (Get-Item $log).LastWriteTime).TotalSeconds -gt $StallSec -and -not (Select-String -Path $log -SimpleMatch "handed over to the player" -Quiet)) {
+            Write-Output "STALLED: no log for $StallSec s, closing the game"
+            Stop-Process -Name SlayTheSpire2 -Force -ErrorAction SilentlyContinue
+            Start-Sleep 3
+            break
+        }
         # The test runner couldn't load (e.g. a modified game in tools/autotest/mutations.ps1): nothing would run and the
         # window would stay on screen until the timeout.
         if ($t -le 120 -and (Test-Path $log) -and (Get-Item $log).LastWriteTime -gt $waitStart.AddSeconds(-30) -and (Select-String -Path $log -Pattern "Patch AutoTest (skipped|could not)" -Quiet)) {
@@ -77,6 +84,7 @@ try {
     }
     if ($trace) { $trace.WaitForExit(60000) | Out-Null }
     Copy-Item $log (Join-Path $Results "$Name.log") -Force
+    Save-VersionedLog (Join-Path $Results "$Name.log") $(if ($copyDir) { $copyDir } else { $GameDir })
     Write-Output "done in $t s: $Results\$Name.log"
 }
 finally {

@@ -5,12 +5,17 @@
 #   - the session ran to its end with no error from this mod outside what the mutation explains,
 #   - exactly the parts relying on the changed code were left vanilla (every "left vanilla" line matches the
 #     mutation's pattern; none for mutations that change nothing the mod relies on),
-#   - every bdperf comparison still says identical.
-#   powershell -ExecutionPolicy Bypass -File tools/autotest/mutations.ps1 [-GameDir C:\Games\StS2-public-0.107.1] [-Only renumber-hooks,energy-hook] [-Scenario release-checks]
+#   - every bdperf comparison still says identical,
+#   - the optimizations not relying on the changed code still work: against a session on the unmodified game, only the
+#     effects (AutoTest's "effects" counters) the mutation may take away dropped to zero,
+#   - the game did the same: CHECKSUM, STATE and CARDPLAY lines identical to that session, whatever is left vanilla.
+#   powershell -ExecutionPolicy Bypass -File tools/autotest/mutations.ps1 [-GameDir C:\Games\StS2-public-0.107.1] [-Only renumber-hooks,energy-hook] [-Scenario effects-check]
 # The copy's sts2.dll is backed up (sts2.dll.bdmut-backup) and restored after each mutation, and at the start if a
 # previous run was stopped; a modified mod goes to <copy>\mods\<Mod>-bdmut (overrides the Workshop copy, removed after).
 # Never point -GameDir at the Steam install. Debug build deployed in the copy first.
-param([string]$GameDir = "C:\Games\StS2-public-0.107.1", [string[]]$Only = @(), [string]$Scenario = "release-checks", [int]$TimeoutSec = 240)
+param([string]$GameDir = "C:\Games\StS2-public-0.107.1", [string[]]$Only = @(), [string]$Scenario = "effects-check", [int]$TimeoutSec = 600)
+# Logs of sessions on a modified game stay out of results/<version>/.
+$env:BD_NO_VERSIONED_LOGS = "1"
 $ErrorActionPreference = "Stop"
 $Only = @($Only | ForEach-Object { $_ -split "," } | Where-Object { $_ })  # "-Only a,b" through powershell -File arrives as one string
 $Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -29,31 +34,50 @@ function Restore-All {
 }
 Restore-All
 
-# Target, pattern every "left vanilla" line must match ("" = nothing may be left vanilla).
+# What leaves when the whole pile tracking does: the listener cache watches the same methods, hook lists are built inside it.
+$PileWriters = "ListenerCache|HookFilter|PileIndex(\.Duplicates)?|CardDbScan|FastListeners\.(Cache|Moves)|LimitlessRecalcSkip\.Passes|SnapshotCardReuse\.(Trust|Piles|PileBits)"
+# Target, pattern every "left vanilla" line must match ("" = nothing may be left vanilla), effects allowed to drop to zero ("" = none).
 $Expected = [ordered]@{
-    "renumber-hooks"  = @("game", "")
-    "new-hook"        = @("game", "")
-    "unrelated-body"  = @("game", "")
-    "energy-hook"     = @("game", "ModifyEnergyCostInCombat")
-    "default-hitting" = @("game", "ShouldAllowHitting")
-    "default-task"    = @("game", "AfterCardPlayed")
-    "helper-push"     = @("game", "choice context helpers changed|PushModel")
-    "pile-remove"     = @("game", "RemoveInternal|needs FastListeners")
-    "pile-writer"     = @("game", "_cards|needs FastListeners")
-    "rename-method"   = @("game", "RemoveInternal|needs FastListeners|AutoTest")
-    "rename-field"    = @("game", "FastListeners|_allies")
-    "internal-member" = @("game", "HookFilter|GetWithModifiers")
-    "signature"       = @("game", "HookFilter|ShouldPlay")
-    "limitless-body"  = @("Limitless", "LimitlessReserialize|SetSerializableCards")
-    "limitless-tabs"  = @("Limitless", "EnchantmentTabReuse|UpdateEnchantmentVisuals")
-    "baselib-plaque"  = @("BaseLib", "TypePlaqueSkip|TryModifyPlaqueText")
+    "renumber-hooks"  = @("game", "", "")
+    "new-hook"        = @("game", "", "")
+    "unrelated-body"  = @("game", "", "")
+    "energy-hook"     = @("game", "ModifyEnergyCostInCombat", "")
+    "default-hitting" = @("game", "ShouldAllowHitting", "")
+    "default-task"    = @("game", "AfterCardPlayed", "")
+    "helper-push"     = @("game", "choice context helpers changed|PushModel", "")
+    "pile-add"        = @("game", "CardPile.AddInternal changed", "FastListeners\.Moves")
+    "pile-remove"     = @("game", "CardPile.RemoveInternal changed", "FastListeners\.Moves")
+    "pile-writer"     = @("game", "_cards", $PileWriters)
+    "rename-method"   = @("game", "RemoveInternal|AutoTest", $PileWriters)
+    "rename-field"    = @("game", "combat walk left vanilla", "FastListeners\.CombatWalk")
+    "combat-walk"     = @("game", "combat walk left vanilla", "FastListeners\.CombatWalk")
+    "run-walk"        = @("game", "run walk left vanilla", "FastListeners\.RunWalk")
+    "internal-member" = @("game", "HookFilter|GetWithModifiers", "SnapshotCardReuse\.(Piles|Trust|CardBits|PileBits)")
+    "signature"       = @("game", "HookFilter|ShouldPlay", "")
+    "flight-count"    = @("game", "CardFlightLimit|AddCard", "CardFlightLimit")
+    "replay-record"   = @("game", "ReplayStateSkip|RecordChecksum", "ReplayStateSkip")
+    "theme-rename"    = @("game", "ThemeColorSkip|RefreshText", "")
+    "upgrade-writer"  = @("game", "_currentUpgradeLevel", "SnapshotCardReuse\.Trust|LimitlessRecalcSkip\.Passes")
+    "write-list"      = @("game", "pile bits not reused", "SnapshotCardReuse\.PileBits")
+    "local-keywords"  = @("game", "read through the game's own calls|get_LocalKeywords", "SnapshotCardReuse\.Trust")
+    "limitless-body"  = @("Limitless", "LimitlessReserialize|LimitlessRecalcSkip|SetSerializableCards", "LimitlessReserialize|LimitlessRecalcSkip\.(Memos|Passes)")
+    "limitless-forward" = @("Limitless", "LimitlessHookSkip|AfterCardPlayed", "LimitlessHookSkip")
+    "limitless-writer"  = @("Limitless", "unchanged piles|SerializableEnchantmentsOnCards", "SnapshotCardReuse\.Trust")
+    "limitless-recalc"  = @("Limitless", "LimitlessRecalcSkip|RecalculateValues|not skipped", "LimitlessRecalcSkip\.(Memos|Passes)")
+    "limitless-tabs"  = @("Limitless", "EnchantmentTabReuse|UpdateEnchantmentVisuals", "EnchantmentTabReuse")
+    "baselib-plaque"  = @("BaseLib", "TypePlaqueSkip|TryModifyPlaqueText", "TypePlaqueSkip")
 }
 dotnet build (Join-Path $Root "tools\mutate") -c Release -v q | Out-Null
 $mutate = Join-Path $Root "tools\mutate\bin\Release\net9.0\mutate.dll"
+# The reference: every effect must have fired on the unmodified game, or the check below proves nothing.
+powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "run.ps1") -Name $Scenario -GameDir $GameDir -TimeoutSec $TimeoutSec | Select-Object -Last 1 | Out-Host
+$Reference = Join-Path $Results "mutation-reference.log"
+Copy-Item (Join-Path $Results "$Scenario.log") $Reference -Force
+python -I (Join-Path $PSScriptRoot "effects.py") $Reference | Out-Host
 $summary = @()
 foreach ($name in $Expected.Keys) {
     if ($Only.Count -gt 0 -and $Only -notcontains $name) { continue }
-    $target, $pattern = $Expected[$name]
+    $target, $pattern, $mayLose = $Expected[$name]
     try {
         if ($target -eq "game") {
             Copy-Item $Dll $Backup -Force
@@ -81,16 +105,20 @@ foreach ($name in $Expected.Keys) {
         }
         $errors = $text | Where-Object { $_ -match "\[ERROR\].*\[BigDeckOptimization\]|BigDeckOptimization.*(disabled after exception|faulted)" -and ($pattern -eq "" -or $_ -notmatch $pattern) }
         $problems += $errors | Select-Object -First 5 | ForEach-Object { "error: $($_.Substring(0, [Math]::Min(200, $_.Length)))" }
-        $mismatch = $text | Where-Object { $_ -match "MISMATCH|mismatches [1-9]|differ" }
+        $mismatch = $text | Where-Object { $_ -cmatch "MISMATCH|mismatches [1-9]|differ" }
         $problems += $mismatch | Select-Object -First 3 | ForEach-Object { "comparison: $($_.Substring(0, [Math]::Min(200, $_.Length)))" }
+        $lost = @(python -I (Join-Path $PSScriptRoot "effects.py") $log --reference $Reference --lost)
+        $problems += $lost | Where-Object { $_ -and ($mayLose -eq "" -or $_ -notmatch "^($mayLose)$") } | ForEach-Object { "effect lost: $_" }
+        $same = python -I (Join-Path $PSScriptRoot "compare.py") $Reference $log | Where-Object { $_ -match "^(IDENTICAL|DIFFERENT)" -or $_ -match "^checked lines" }
+        if (-not ($same -contains "IDENTICAL")) { $problems += "game state differs from the unmodified game: $($same -join ' ')" }
         $ok = @($text | Where-Object { $_ -match "OK: identical" }).Count
         $verdict = if ($problems.Count -eq 0) { "PASS" } else { "FAIL" }
-        $summary += [pscustomobject]@{ Mutation = $name; Verdict = $verdict; Vanilla = $vanilla.Count; Identical = $ok; Problems = ($problems -join " | ") }
-        Write-Output "== $name : $verdict ($($vanilla.Count) left vanilla, $ok comparisons identical)"
+        $summary += [pscustomobject]@{ Mutation = $name; Verdict = $verdict; Vanilla = $vanilla.Count; Lost = ($lost -join " "); Identical = $ok; Problems = ($problems -join " | ") }
+        Write-Output "== $name : $verdict ($($vanilla.Count) left vanilla, lost: $($lost -join ' '), $ok comparisons identical)"
         $vanilla | Select-Object -First 8 | ForEach-Object { Write-Output "     $($_.Substring(0, [Math]::Min(180, $_.Length)))" }
         $problems | ForEach-Object { Write-Output "   ! $_" }
     } finally {
         Restore-All
     }
 }
-$summary | Format-Table Mutation, Verdict, Vanilla, Identical -AutoSize | Out-String | Write-Output
+$summary | Format-Table Mutation, Verdict, Vanilla, Lost, Identical -AutoSize | Out-String -Width 200 | Write-Output

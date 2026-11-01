@@ -1,5 +1,6 @@
 # Local co-op with a vanilla peer (client, mod off): see coopvanilla-host.txt.
 # Every machine needs the same bigdeck/ref.run.
+onfail continue
 timeout 2400
 mplobby IRONCLAD 2
 waitfor run 240

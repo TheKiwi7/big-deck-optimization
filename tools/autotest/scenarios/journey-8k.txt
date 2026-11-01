@@ -1,5 +1,6 @@
 # A run's worth of rooms with ~8,400 cards: combat, shop, rest site, elite, then The Kin boss finished by Pommel Strike
 # (the friends' co-op case: ~80 s stuck after that kill with 8,274 combat cards).
+onfail continue
 timeout 1500
 newrun NECROBINDER
 waitfor run 120

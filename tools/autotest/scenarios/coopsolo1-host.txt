@@ -1,5 +1,6 @@
 # Co-op without action races (E1, host): mod on, plays 4 cards per turn. Only one player acts at a time, so the action order
 # can't differ between peers: any divergence would come from a different computation. See coopsolo1-client.txt.
+onfail continue
 timeout 1800
 mplobby NECROBINDER 2
 waitfor run 240

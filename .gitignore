@@ -25,3 +25,9 @@ CLAUDE.md
 # Game reference assemblies per version (MegaCrit copyright): build against one while another is installed
 /refs/
 
+
+# Local assistant skills, settings and notes (machine-specific)
+/.claude/
+
+# Python caches
+__pycache__/

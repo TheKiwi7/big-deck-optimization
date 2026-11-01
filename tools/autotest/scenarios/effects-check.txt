@@ -1,0 +1,57 @@
+# Every optimization must really run, not only load: tools/autotest/effects.py on this session's EFFECT lines. Also the
+# session mutations.ps1 compares against the unmodified game (fixed seed: CHECKSUM and STATE lines must match line for line).
+timeout 900
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 2
+cmd bdperf checksum 5
+cmd bdperf refresh 10
+cmd bdperf grid
+cmd bdperf pile
+cmd bdperf listeners 10
+checksum first fight
+state first fight
+cmd kill all
+waitfor nocombat 300
+wait 2
+deckview 2
+decksort
+cmd bigdeck import ref all cards
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 2
+checksum start
+hover 0
+wait 1
+play 4
+waitfor idle 120
+wait 1
+checksum plays
+state plays
+pilescroll draw 30 40
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+checksum reshuffle
+state reshuffle
+play 3
+waitfor idle 300
+checksum t2
+state t2
+endturn
+waitfor idle 300
+checksum t3
+state t3
+cmd kill all
+waitfor nocombat 300
+wait 3
+state after combat
+effects end
+counters end
+quit
