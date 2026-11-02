@@ -8,13 +8,16 @@ $BaselineRoot = Join-Path $Results "baselines"
 $MinFreeKB = 3 * 1024 * 1024
 $StartLimitSec = 60
 $FreezeSilenceSec = 20
+# run.ps1 -KeepSlot: the slot of the sessions that follow each other and share their user data.
+$KeptSlot = 80
 
 function Resolve-GameCopy([string]$dir) {
     if (-not $dir) { $dir = "$env:STS2_GAME_DIR" }
     if (-not $dir) { throw "Give -GameDir or STS2_GAME_DIR: parallel sessions run on a game copy" }
     if (-not (Test-Path (Join-Path $dir "steam_appid.txt"))) { throw "No steam_appid.txt in $dir" }
-    # mutations.ps1 stopped from outside: its modified game is still there, and every result would be about that game.
+    # An old mutations.ps1 stopped from outside left its modified game there: every result would be about that game.
     if (Test-Path (Join-Path $dir "data_sts2_windows_x86_64\sts2.dll.bdmut-backup")) { throw "$dir has a modified game left by mutations.ps1: restore sts2.dll.bdmut-backup first" }
+    Set-CopyOverrides $dir
     $dir
 }
 
@@ -22,6 +25,7 @@ function Resolve-GameCopy([string]$dir) {
 # whatever APPDATA says, and parallel sessions of one account make cloud conflicts. So no Workshop either: the mods go in the
 # copy's mods_STEAMTEST, as for co-op sessions, for as long as the script runs.
 function Add-TestMods([string]$gameDir) {
+    Set-CopyOverrides $gameDir
     $testMods = Join-Path $gameDir "mods_STEAMTEST"
     $own = Join-Path $testMods ".bdtest-created"
     if (Test-Path $own) { return }
@@ -47,13 +51,68 @@ function Get-VersionDir([string]$gameDir) {
     $path
 }
 
-function Sync-Slot([int]$slot) {
+# Without Steam the game reads the profiles default/1 and default/1001, with their own settings (60 fps, less anti-aliasing):
+# timings are only comparable with your account's. Everything but the mod list and the language, which stay English there.
+# Solo sessions also take the test profile's progress and preferences (what's unlocked changes what a run offers), so they
+# give the same results as sessions through Steam. Co-op keeps its own unlocked profiles.
+function Copy-DisplaySettings([string]$data, [bool]$solo) {
+    $accounts = @(Get-ChildItem (Join-Path $data "steam") -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d+$' })
+    if ($accounts.Count -ne 1) { return }
+    $source = Get-Content (Join-Path $accounts[0].FullName "settings.save") -Raw | ConvertFrom-Json
+    foreach ($id in "1", "1001") {
+        $file = Join-Path $data "default\$id\settings.save"
+        if (-not (Test-Path $file)) { continue }
+        $settings = Get-Content $file -Raw | ConvertFrom-Json
+        foreach ($property in $source.PSObject.Properties) {
+            if ($property.Name -in "mod_settings", "language", "schema_version") { continue }
+            $settings | Add-Member -NotePropertyName $property.Name -NotePropertyValue $property.Value -Force
+        }
+        [IO.File]::WriteAllText($file, ($settings | ConvertTo-Json -Depth 30))
+    }
+    if ($solo) {
+        $saves = Join-Path $data "default\1\modded\profile3\saves"
+        New-Item -ItemType Directory -Force $saves | Out-Null
+        foreach ($name in "progress.save", "prefs.save") {
+            $from = Join-Path $accounts[0].FullName "modded\profile3\saves\$name"
+            if (Test-Path $from) { Copy-Item $from (Join-Path $saves $name) -Force }
+        }
+    }
+}
+
+function Sync-Slot([int]$slot, [switch]$Coop) {
     $dir = Join-Path $SlotRoot "slot$slot"
     # The profiles' progress stays (what's unlocked changes what a run offers). Runs in progress don't: a save left by the last
     # session here, maybe from another game version, is called corrupt by the game.
     robocopy $UserData (Join-Path $dir "SlayTheSpire2") /MIR /XD logs history replays sentry shader_cache vulkan /XF *.log *.tmp current_run* *.corrupt /NFL /NDL /NJH /NJS /NP | Out-Null
     Get-ChildItem (Join-Path $dir "SlayTheSpire2") -Recurse -File -Include current_run*, *.corrupt -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    Copy-DisplaySettings (Join-Path $dir "SlayTheSpire2") (-not $Coop)
     $dir
+}
+
+# Edits the mod list of a slot's solo profile: $change takes the list and returns the new one.
+function Update-SlotModList([string]$slot, [scriptblock]$change) {
+    $file = Join-Path $slot "SlayTheSpire2\default\1\settings.save"
+    $data = Get-Content $file -Raw | ConvertFrom-Json
+    $data.mod_settings.mod_list = @(& $change @($data.mod_settings.mod_list))
+    # No BOM: the game's JSON reader expects plain UTF-8.
+    [IO.File]::WriteAllText($file, ($data | ConvertTo-Json -Depth 32), (New-Object Text.UTF8Encoding($false)))
+}
+
+# Takes a Workshop mod out of a slot's solo profile or back in. The profile may have no entry for it yet: a mod without one loads.
+# The game goes by id and source, and reads mods_STEAMTEST as the Workshop.
+function Set-SlotModEnabled([string]$slot, [string]$id, [bool]$enabled) {
+    Update-SlotModList $slot {
+        param($mods)
+        $entry = @($mods | Where-Object { $_.id -eq $id })
+        if ($entry.Count) { $entry | ForEach-Object { $_.is_enabled = $enabled }; $mods }
+        else { $mods; [pscustomobject]@{ id = $id; is_enabled = $enabled; source = "steam_workshop" } }
+    }
+}
+
+# Whether a session's log shows what the test is about: a setup that did nothing would otherwise pass unseen.
+function Test-SessionLog([string]$name, [string]$pattern, [bool]$expected, [string]$meaning) {
+    $found = Select-String -Path (Join-Path $Results "$name.log") -Pattern $pattern -Quiet
+    Write-Output ("{0} {1}: {2}" -f $(if ([bool]$found -eq $expected) { "ok     " } else { "PROBLEM" }), $name, $meaning)
 }
 
 # Everything a mod-off log depends on but this mod's own patches: a baseline stays valid until the game, a Workshop mod,
@@ -113,12 +172,25 @@ function Write-SessionStatus([string]$label, [int]$total, [int]$finished, [int]$
     Set-Content (Join-Path $Results "status.txt") (@($header) + @($rows)) -Encoding utf8 -ErrorAction SilentlyContinue
 }
 
+# A game copy that costs nothing: hard links to every file of $source. Replacing a file: delete its link, then write a new
+# one; writing through a link would change the original. Same volume as the source.
+function New-ThinCopy([string]$source, [string]$target) {
+    $root = (Get-Item $source).FullName
+    foreach ($item in Get-ChildItem $root -Recurse -Force) {
+        $path = Join-Path $target $item.FullName.Substring($root.Length + 1)
+        if ($item.PSIsContainer) { New-Item -ItemType Directory -Force $path | Out-Null }
+        else { [void][BdHardLink]::CreateHardLink($path, $item.FullName, [IntPtr]::Zero) }
+    }
+}
+if (-not ("BdHardLink" -as [type])) {
+    Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class BdHardLink { [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool CreateHardLink(string link, string existing, IntPtr security); }'
+}
+
 # Jobs: objects with Name, Script (scenario path), Log. Runs at most $MaxJobs at once. A session is closed when it passes
 # $TimeoutSec, or when its log stays silent for $StallSec. Returns one result per job: Name, State (done, cached, TIMEOUT,
-# STALLED), Seconds, Failed.
+# STALLED, FROZEN, CRASHED), Seconds, Failed, Restarts.
 function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$TimeoutSec = 900, [int]$StallSec = 240, [switch]$Rendered, [switch]$UseBaselines, [string]$Label = "sessions") {
-    $exe = Join-Path $GameDir "SlayTheSpire2.exe"
-    $launchMode = if ($Rendered) { @("--bdhidden", "--screen", "1") } else { @("--headless") }
+    $launchMode = if ($Rendered) { @("--bdhidden", "--windowed", "--resolution", "1920x1080") } else { @("--headless") }
     Add-TestMods $GameDir
     $pending = [Collections.Generic.Queue[object]]::new()
     $done = [Collections.Generic.List[object]]::new()
@@ -151,8 +223,13 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                 $job = $pending.Dequeue()
                 Remove-Item $job.Log -ErrorAction SilentlyContinue
                 $env:APPDATA = Sync-Slot $slot
-                $p = Start-Process -FilePath $exe -WorkingDirectory $GameDir -PassThru -WindowStyle Hidden -ArgumentList (@("--force-steam", "off", "--log-file", "`"$($job.Log)`"", "--bdtest", "`"$($job.Script)`"", "--bdmute") + $launchMode)
+                # A job may name its own game folder (mutations.ps1).
+                $jobDir = if ($job.PSObject.Properties["GameDir"]) { $job.GameDir } else { $GameDir }
+                $launch = @("--force-steam", "off", "--log-file", "`"$($job.Log)`"", "--bdtest", "`"$($job.Script)`"", "--bdmute") + $launchMode
+                $jobExe = Join-Path $jobDir "SlayTheSpire2.exe"
+                $p = if ($Rendered) { Start-HiddenGame $jobExe $jobDir $launch } else { Start-Process -FilePath $jobExe -WorkingDirectory $jobDir -PassThru -WindowStyle Hidden -ArgumentList $launch }
                 $env:APPDATA = $realAppData
+                [void]$p.Handle # or its exit code is lost
                 $running[$slot] = [pscustomobject]@{ Job = $job; Process = $p; Started = Get-Date; ScriptStarted = $false }
             }
             Start-Sleep -Milliseconds 300
@@ -164,8 +241,8 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                 $run = $running[$slot]
                 $state = $null
                 $age = ((Get-Date) - $run.Started).TotalSeconds
-                # About one headless session in 40 freezes on Godot's dummy renderer (log: Parameter "t" is null, then silence),
-                # at the start or later; the session can only start over. Or it never reached the script's first line.
+                # The freeze Set-CopyOverrides removes (log: Parameter "t" is null, then silence) should not come back, nor any other at
+                # that point; if one does, the session can only start over. Or it never reached the script's first line.
                 $frozen = $false
                 if (-not $run.Process.HasExited -and $age -gt 20 -and (Test-Path $run.Job.Log)) {
                     if (((Get-Date) - (Get-Item $run.Job.Log).LastWriteTime).TotalSeconds -gt $FreezeSilenceSec) {
@@ -183,16 +260,30 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                     Start-Sleep 1
                     $running.Remove($slot)
                     if ($retries[$name] -le 2) { $pending.Enqueue($run.Job) }
-                    else { $done.Add([pscustomobject]@{ Name = $name; State = "FROZEN"; Seconds = [int]$age; Failed = @("froze 3 times") }) }
+                    else { $done.Add([pscustomobject]@{ Name = $name; State = "FROZEN"; Seconds = [int]$age; Failed = @("froze 3 times"); Restarts = $retries[$name] }) }
                     continue
                 }
-                if ($run.Process.HasExited) { $state = "done" }
+                if ($run.Process.HasExited) {
+                    $state = "done"
+                    # Gone before the script's end, without a word: a native crash, rare on Godot's dummy renderer (seen after a texture
+                    # load outside the cache). Its log compares as a shorter session: it starts over, the first log kept beside it.
+                    if ((Select-String -Path $run.Job.Log -Pattern "AutoTest\s+[\d.]+s > " -Quiet -ErrorAction SilentlyContinue) -and -not (Select-String -Path $run.Job.Log -Pattern "AutoTest\s+[\d.]+s > quit|ABORT|TIMEOUT: script|\[AutoSlay\] Action: Quitting" -Quiet -ErrorAction SilentlyContinue)) {
+                        $name = $run.Job.Name
+                        $retries[$name] = 1 + [int]$retries[$name]
+                        Copy-Item $run.Job.Log "$($run.Job.Log).early" -Force
+                        Start-Sleep 1
+                        $running.Remove($slot)
+                        if ($retries[$name] -le 2) { $pending.Enqueue($run.Job) }
+                        else { $done.Add([pscustomobject]@{ Name = $name; State = "CRASHED"; Seconds = [int]$age; Failed = @("stopped early 3 times, exit code $($run.Process.ExitCode)"); Restarts = $retries[$name] }) }
+                        continue
+                    }
+                }
                 elseif ($age -gt $TimeoutSec) { $state = "TIMEOUT" }
                 elseif ($age -gt 60 -and (Test-Path $run.Job.Log) -and ((Get-Date) - (Get-Item $run.Job.Log).LastWriteTime).TotalSeconds -gt $StallSec) { $state = "STALLED" }
                 if (-not $state) { continue }
                 if ($state -ne "done") { Stop-Process -Id $run.Process.Id -Force -ErrorAction SilentlyContinue; Start-Sleep 1 }
                 $failed = @(Get-FailedLines $run.Job.Log)
-                $done.Add([pscustomobject]@{ Name = $run.Job.Name; State = $state; Seconds = [int]$age; Failed = $failed })
+                $done.Add([pscustomobject]@{ Name = $run.Job.Name; State = $state; Seconds = [int]$age; Failed = $failed; Restarts = [int]$retries[$run.Job.Name] })
                 $running.Remove($slot)
                 if ($UseBaselines -and $state -eq "done" -and $failed.Count -eq 0 -and $run.Job.Name -match '-off(\d*$|-)') {
                     New-Item -ItemType Directory -Force $baselineDir | Out-Null

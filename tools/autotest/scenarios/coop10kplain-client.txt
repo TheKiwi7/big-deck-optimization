@@ -20,6 +20,7 @@ cmd bdperf probe off
 cmd bdperf segments verify off
 wait 14
 enemyhp 999999
+immortal until 6
 fpsstat
 gcstat
 waitfor combat 900

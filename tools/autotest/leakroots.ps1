@@ -19,6 +19,7 @@ Add-TestMods $GameDir
 $game = Start-Process -FilePath (Join-Path $GameDir "SlayTheSpire2.exe") -WorkingDirectory $GameDir -PassThru -WindowStyle Hidden -ArgumentList @("--force-steam", "off", "--log-file", "`"$log`"", "--bdtest", "`"$script`"", "--bdmute", "--headless")
 $env:APPDATA = $realAppData
 $dump = Join-Path $out "game.dmp"
+Set-Content (Join-Path $Results "status.txt") ("{0}  leakroots {1}: one session, a dump, then gcroot on each run; several minutes, quiet log" -f (Get-Date -Format "HH:mm:ss"), $Scenario) -Encoding utf8
 try {
     $end = (Get-Date).AddSeconds(400)
     Start-Sleep 20

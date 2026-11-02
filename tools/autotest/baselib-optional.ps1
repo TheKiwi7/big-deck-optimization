@@ -1,33 +1,26 @@
-# BaseLib is optional (v0.2.3): two sessions with your mod list edited in settings.save, restored byte for byte after.
+# BaseLib is optional (v0.2.3): two sessions with the mod list edited, on a game copy, in a test slot (your own settings are
+# never touched).
 #   baselib-late:   this mod moved before BaseLib in the load order (the settings menu registers when BaseLib loads).
 #   baselib-absent: BaseLib disabled (every patch applies, bdopt works, no settings menu).
-#   powershell -ExecutionPolicy Bypass -File tools/autotest/baselib-optional.ps1
-. (Join-Path $PSScriptRoot "common.ps1")
+#   powershell -ExecutionPolicy Bypass -File tools/autotest/baselib-optional.ps1 -GameDir <copy>
+param([string]$GameDir = "")
+$copy = $GameDir
+. (Join-Path $PSScriptRoot "parlib.ps1")
+$GameDir = Resolve-GameCopy $copy
 Assert-GameNotRunning
-$settings = Join-Path (Get-SteamAccountDir) "settings.save"
-$backup = Join-Path $Results "settings.save.backup"
-Copy-Item $settings $backup -Force
-$before = (Get-FileHash $settings).Hash
 
-function Write-Settings($data) {
-    # No BOM: the game's JSON reader expects plain UTF-8.
-    [IO.File]::WriteAllText($settings, ($data | ConvertTo-Json -Depth 32), (New-Object Text.UTF8Encoding($false)))
-}
+$slot = Sync-Slot $KeptSlot
+Update-SlotModList $slot { param($mods) @($mods | Where-Object { $_.id -eq "BigDeckOptimization" }) + @($mods | Where-Object { $_.id -ne "BigDeckOptimization" }) }
+& (Join-Path $PSScriptRoot "run.ps1") -Name baselib-late -TimeoutSec 240 -GameDir $GameDir -KeepSlot
 
-try {
-    $data = Get-Content $settings -Raw | ConvertFrom-Json
-    $mods = @($data.mod_settings.mod_list)
-    $ours = @($mods | Where-Object { $_.id -eq "BigDeckOptimization" })
-    $data.mod_settings.mod_list = @($ours + @($mods | Where-Object { $_.id -ne "BigDeckOptimization" }))
-    Write-Settings $data
-    & (Join-Path $PSScriptRoot "run.ps1") -Name baselib-late -TimeoutSec 240
+$slot = Sync-Slot $KeptSlot
+Set-SlotModEnabled $slot "BaseLib" $false
+& (Join-Path $PSScriptRoot "run.ps1") -Name baselib-absent -TimeoutSec 240 -GameDir $GameDir -KeepSlot
 
-    $data = Get-Content $backup -Raw | ConvertFrom-Json
-    $data.mod_settings.mod_list | Where-Object { $_.id -eq "BaseLib" } | ForEach-Object { $_.is_enabled = $false }
-    Write-Settings $data
-    & (Join-Path $PSScriptRoot "run.ps1") -Name baselib-absent -TimeoutSec 240
-}
-finally {
-    Copy-Item $backup $settings -Force
-    Write-Output "settings.save restored: $($before -eq (Get-FileHash $settings).Hash)"
-}
+Test-SessionLog "baselib-late" "BaseLib not loaded \(yet\)" $true "this mod loaded before BaseLib"
+Test-SessionLog "baselib-late" "BaseLibSettings: registered" $true "the settings menu registered all the same"
+Test-SessionLog "baselib-late" "screenshot .*shot-settings-late" $true "the menu was captured"
+Test-SessionLog "baselib-absent" "Finished mod initialization for 'BaseLib'" $false "BaseLib did not load"
+Test-SessionLog "baselib-absent" "BaseLibSettings: registered" $false "no settings menu"
+Test-SessionLog "baselib-absent" "FAILED line" $false "bdopt worked"
+Test-SessionLog "baselib-absent" "[1-9]\d* left vanilla|Patch \w+ could not" $false "every patch that needs no other mod applied"

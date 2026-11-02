@@ -76,6 +76,14 @@ public static partial class AutoTest
         PatchGuard.Patch(harmony, AccessTools.Method(typeof(NCharacterSelectScreen), nameof(NCharacterSelectScreen.InitializeMultiplayerAsClient)),
             postfix: new HarmonyMethod(typeof(AutoTest), nameof(LobbyScreenPostfix)));
         string[] launchArgs = OS.GetCmdlineArgs().Concat(OS.GetCmdlineUserArgs()).ToArray();
+        int portArg = Array.IndexOf(launchArgs, "--bdport");
+        if (portArg >= 0 && portArg + 1 < launchArgs.Length && ushort.TryParse(launchArgs[portArg + 1], out _port))
+        {
+            // Several co-op tests at once: each pair of instances on its own local port instead of the game's fixed one.
+            var usePort = new HarmonyMethod(typeof(AutoTest), nameof(UseTestPort));
+            PatchGuard.Patch(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Multiplayer.NetHostGameService), "StartENetHost"), prefix: usePort);
+            PatchGuard.Patch(harmony, typeof(MegaCrit.Sts2.Core.Multiplayer.Connection.ENetClientConnectionInitializer).GetConstructors()[0], prefix: usePort);
+        }
         int show = Array.IndexOf(launchArgs, "--bdshow");
         if (show >= 0 && show + 1 < launchArgs.Length && int.TryParse(launchArgs[show + 1], out int showScreen))
         {
@@ -92,8 +100,17 @@ public static partial class AutoTest
         {
             _hidden = true;
             PatchGuard.Patch(harmony, AccessTools.Method(typeof(NGame), nameof(NGame.ApplyDisplaySettings)),
-                postfix: new HarmonyMethod(typeof(AutoTest), nameof(HideWindow)));
+                prefix: new HarmonyMethod(typeof(AutoTest), nameof(WindowStaysPut)),
+                postfix: new HarmonyMethod(typeof(AutoTest), nameof(HideWindow)), finalizer: new HarmonyMethod(typeof(AutoTest), nameof(WindowMayMove)));
+            // The game's fullscreen and screen would show the window on a screen for a moment, however soon it moves away.
+            var stay = new HarmonyMethod(typeof(AutoTest), nameof(KeepWindowWhereItIs));
+            PatchGuard.Patch(harmony, AccessTools.Method(typeof(DisplayServer), nameof(DisplayServer.WindowSetMode)), prefix: stay);
+            PatchGuard.Patch(harmony, AccessTools.Method(typeof(DisplayServer), nameof(DisplayServer.WindowSetCurrentScreen)), prefix: stay);
             Callable.From(HideWindow).CallDeferred();
+        }
+        if (launchArgs.Contains("--bdturnstates"))
+        {
+            LogTurnStates();
         }
         if (OS.GetCmdlineArgs().Concat(OS.GetCmdlineUserArgs()).Contains("--bdmute"))
         {
@@ -141,7 +158,14 @@ public static partial class AutoTest
     {
     }
 
-    private static bool _hidden, _quitting;
+    private static bool _hidden, _quitting, _applyingDisplaySettings;
+
+    private static void WindowStaysPut() => _applyingDisplaySettings = !_quitting;
+
+    private static void WindowMayMove() => _applyingDisplaySettings = false;
+
+    private static bool KeepWindowWhereItIs() => !_applyingDisplaySettings;
+
     private static int _showScreen = -1;
 
     /// <summary>
@@ -183,6 +207,7 @@ public static partial class AutoTest
         {
             return;
         }
+        _applyingDisplaySettings = false;
         try
         {
             if (DisplayServer.WindowGetMode() != DisplayServer.WindowMode.Windowed)
@@ -197,7 +222,12 @@ public static partial class AutoTest
                 left = Math.Min(left, position.X);
                 top = Math.Min(top, position.Y);
             }
-            DisplayServer.WindowSetPosition(new Vector2I(left - 1920 - 400, top));
+            // --bdedge: one column of pixels on screen. Windows throttles the presents of a window entirely off-screen, which an
+            // outside measure (PresentMon) would see as half the frames.
+            DisplayServer.WindowSetPosition(new Vector2I(OS.GetCmdlineArgs().Concat(OS.GetCmdlineUserArgs()).Contains("--bdedge") ? left - 1919 : left - 1920 - 400, top));
+            // Launched hidden (run.ps1): shown only now it is beyond the screens, without the focus, so it renders as a normal window.
+            const int ShowNoActivate = 4;
+            ShowWindow((IntPtr)DisplayServer.WindowGetNativeHandle(DisplayServer.HandleType.WindowHandle), ShowNoActivate);
             Say($"window hidden at {DisplayServer.WindowGetPosition()} ({DisplayServer.WindowGetSize()}), focus handed back: {ReturnFocus()}");
         }
         catch (Exception e)
@@ -213,6 +243,7 @@ public static partial class AutoTest
     [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern int GetWindowTextLength(IntPtr window);
     [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
     [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr window);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr window, int command);
 
     /// <summary>While the game window has the focus (it takes it at launch), gives it to the next visible window below it.</summary>
     private static bool ReturnFocus()
@@ -444,6 +475,113 @@ public static partial class AutoTest
     private static void Say(string text) => Log.Info($"[{ModEntry.Id}] {Name} {_clock.Elapsed.TotalSeconds,7:F1}s {text}");
 
     private static bool _continueOnFail, _turnLoopDied;
+    private static ushort _port;
+
+    private static void UseTestPort(ref ushort port) => port = _port;
+
+    /// <summary>
+    /// The combat's state as each turn starts: the same point of the run whatever the session's speed, on both co-op peers too. A
+    /// script's <c>state</c> line comes when that session gets there, maybe after the other peer's plays of the turn.
+    /// </summary>
+    private static void LogTurnStates()
+    {
+        CombatManager.Instance.TurnStarted += combat =>
+            LogState($"floor {RunManager.Instance.DebugOnlyGetState()?.TotalFloor} round {combat.RoundNumber} {combat.CurrentSide}");
+    }
+
+    private static readonly List<string> _autoSlayFirst = new();
+    private static AccessTools.FieldRef<object, DateTime>? _watchdogProgress;
+    private static string? _autoSlaySeed;
+
+    /// <summary>
+    /// AutoSlay gives up after 30 s on a fight or without progress, 2 minutes on a room, 25 on a run: too short with the mod off
+    /// or a big deck, and then the run stops at a point that depends on the session's speed.
+    /// </summary>
+    private static void PatchAutoSlayLimits()
+    {
+        foreach (MethodInfo until in AccessTools.GetDeclaredMethods(typeof(MegaCrit.Sts2.Core.AutoSlay.Helpers.WaitHelper)).Where(m => m.Name == "Until" && m.GetParameters().Any(p => p.Name == "timeout")))
+        {
+            bool lazyMessage = until.GetParameters().Last().ParameterType != typeof(string);
+            PatchGuard.Patch(ModEntry.Harmony, until, prefix: new HarmonyMethod(typeof(AutoTest), lazyMessage ? nameof(LongerAutoSlayWaitLazyMessage) : nameof(LongerAutoSlayWait)));
+        }
+        PatchGuard.Patch(ModEntry.Harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.AutoSlay.Helpers.WaitHelper), "WithTimeout"), prefix: new HarmonyMethod(typeof(AutoTest), nameof(LongerAutoSlayRoom)));
+        // The character screen clears the seed AutoSlay asked for (public version), and the run takes one from the clock, in seconds:
+        // only sessions started together played the same run.
+        PatchGuard.Patch(ModEntry.Harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Helpers.SeedHelper), nameof(MegaCrit.Sts2.Core.Helpers.SeedHelper.GetRandomSeed)), prefix: new HarmonyMethod(typeof(AutoTest), nameof(AutoSlayRunSeed)));
+        foreach (MethodInfo handler in AccessTools.GetDeclaredMethods(typeof(MegaCrit.Sts2.Core.AutoSlay.Handlers.Rooms.CombatRoomHandler)).Where(m => m.IsDefined(typeof(System.Runtime.CompilerServices.AsyncStateMachineAttribute), false)))
+        {
+            PatchGuard.Patch(ModEntry.Harmony, AccessTools.AsyncMoveNext(handler), transpiler: new HarmonyMethod(typeof(AutoTest), nameof(AutoSlayWaitsForActions)));
+        }
+        _watchdogProgress = AccessTools.FieldRefAccess<DateTime>(typeof(MegaCrit.Sts2.Core.AutoSlay.Helpers.Watchdog), "_lastProgressTime");
+        PatchGuard.Patch(ModEntry.Harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.AutoSlay.Helpers.Watchdog), "Check"), prefix: new HarmonyMethod(typeof(AutoTest), nameof(LongerAutoSlayWatchdog)));
+        PatchGuard.Patch(ModEntry.Harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.AutoSlay.AutoSlayer), "HandleRoomAsync"), prefix: new HarmonyMethod(typeof(AutoTest), nameof(AutoSlayEntersRoom)));
+    }
+
+    // Its limits are only guards against a stuck game: no caller goes on after one. A fixed value, as one overload calls the other on
+    // the beta. Not the end of the run: with Limitless neither the game over screen nor the main menu comes (its last event goes on),
+    // and 30 s are enough.
+    private static void LongerAutoSlayWait(ref Func<bool> condition, ref TimeSpan? timeout, string? timeoutMessage)
+    {
+        timeout = timeoutMessage != null && (timeoutMessage.StartsWith("Main menu") || timeoutMessage.StartsWith("Game over")) ? TimeSpan.FromSeconds(30) : TimeSpan.FromMinutes(10);
+        if (timeoutMessage == "Play phase not started")
+        {
+            // After ending a turn it goes straight to its next one while the phase is still Play: with nothing playable, its limit of
+            // 100 turns is gone in a moment, however fast the session, and nobody plays the fight any more ("Combat did not end").
+            Func<bool> started = condition;
+            condition = () => !CombatManager.Instance.IsInProgress || (started() && !CombatManager.Instance.IsPlayerReadyToEndTurn(Me()));
+        }
+    }
+
+    private static void LongerAutoSlayWaitLazyMessage(ref Func<bool> condition, ref TimeSpan? timeout, Func<string>? timeoutMessage) => LongerAutoSlayWait(ref condition, ref timeout, timeoutMessage?.Invoke());
+
+    // Per room and for the whole run: the scenario's own timeout is the limit that counts.
+    private static void LongerAutoSlayRoom(ref TimeSpan timeout) => timeout = TimeSpan.FromHours(3);
+
+    private static bool LongerAutoSlayWatchdog(object __instance) => DateTime.UtcNow - _watchdogProgress!(__instance) > TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// In a fight it waits a fixed time after a potion or a card, then picks among what is playable: a potion not finished by then
+    /// (Snecko Oil draws and changes costs) makes another pick, on a session's speed.
+    /// </summary>
+    private static IEnumerable<CodeInstruction> AutoSlayWaitsForActions(IEnumerable<CodeInstruction> instructions)
+    {
+        MethodInfo delay = AccessTools.Method(typeof(Task), nameof(Task.Delay), new[] { typeof(int), typeof(System.Threading.CancellationToken) });
+        foreach (CodeInstruction instruction in instructions)
+        {
+            if (instruction.Calls(delay))
+            {
+                instruction.operand = AccessTools.Method(typeof(AutoTest), nameof(DelayThenActionsDone));
+            }
+            yield return instruction;
+        }
+    }
+
+    private static async Task DelayThenActionsDone(int milliseconds, System.Threading.CancellationToken token)
+    {
+        await Task.Delay(milliseconds, token);
+        SceneTree tree = (SceneTree)Engine.GetMainLoop();
+        for (int calm = 0; calm < 2; calm = RunManager.Instance.ActionExecutor.IsRunning || !RunManager.Instance.ActionQueueSet.IsEmpty ? 0 : calm + 1)
+        {
+            token.ThrowIfCancellationRequested();
+            await Frames(tree, 1);
+        }
+    }
+
+    private static bool AutoSlayRunSeed(ref string __result)
+    {
+        __result = _autoSlaySeed!;
+        return false;
+    }
+
+    private static void AutoSlayEntersRoom()
+    {
+        foreach (string line in _autoSlayFirst)
+        {
+            Say("> (first room) " + line);
+            _ = Command(line);
+        }
+        _autoSlayFirst.Clear();
+    }
 
     private static async Task Run(SceneTree tree)
     {
@@ -578,9 +716,22 @@ public static partial class AutoTest
                     Say($"  GCFULL {arg.Trim()}: live heap {GC.GetTotalMemory(false) / (1024.0 * 1024):F1} MB"
                         + (_leftRuns.Count == 0 ? "" : $", left runs alive {_leftRuns.Count(r => r.IsAlive)}/{_leftRuns.Count}"));
                     break;
+                case "autoslayfirst":
+                    // A console command run as the auto player enters its first room: at the same point whatever the session's
+                    // speed (a deck imported from the script would land at a different moment, and change the run).
+                    _autoSlayFirst.Add(arg);
+                    break;
                 case "autoslay":
                     // The game's own auto player: a whole seeded run from the main menu, then it closes the game. Replaces newrun.
-                    new MegaCrit.Sts2.Core.AutoSlay.AutoSlayer().Start(arg.Trim());
+                    // "state": the combat's state at each turn start, for the A/B to compare more than the cards played.
+                    string[] slayArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    PatchAutoSlayLimits();
+                    _autoSlaySeed = slayArgs[0];
+                    if (slayArgs.Contains("state"))
+                    {
+                        LogTurnStates();
+                    }
+                    new MegaCrit.Sts2.Core.AutoSlay.AutoSlayer().Start(slayArgs[0]);
                     break;
                 case "tomenu":
                     // Leaves the run as the game does; the next gcfull says how many of the left runs something still holds.

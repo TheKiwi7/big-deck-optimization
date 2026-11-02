@@ -1,0 +1,8 @@
+# A whole run played by the auto player with about 1,900 cards, mod off: the reference of autoslay-2k-on.
+timeout 3400
+cmd bdopt off
+autoslayfirst bigdeck import ref all cards
+autoslayfirst bigdeck import ref all cards
+autoslay 1234 state
+wait 3300
+quit

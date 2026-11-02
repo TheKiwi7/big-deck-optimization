@@ -1,6 +1,6 @@
 # A whole run played by the game's own auto player, mod off: the reference of autoslay-on.
 timeout 1700
 cmd bdopt off
-autoslay 1234
+autoslay 1234 state
 wait 1600
 quit

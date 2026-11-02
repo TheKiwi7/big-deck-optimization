@@ -1,0 +1,8 @@
+# A whole run played by the auto player with about 1,900 cards (no relics: they would end every fight at once), mod on. The deck
+# comes as it enters its first room, so at the same point whatever the session's speed. It closes the game itself when the run ends.
+timeout 3400
+autoslayfirst bigdeck import ref all cards
+autoslayfirst bigdeck import ref all cards
+autoslay 1234 state
+wait 3300
+quit

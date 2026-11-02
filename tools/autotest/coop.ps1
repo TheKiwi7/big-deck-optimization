@@ -7,10 +7,12 @@
 # Without Steam only <game>/mods and <game>/mods_STEAMTEST load. -WithMods copies the Workshop mods enabled in your
 # settings into mods_STEAMTEST for the test and always deletes it afterwards (a normal Steam launch reads that folder
 # too and would load the mods twice). Copies, never links, so the cleanup can't touch the Workshop folders.
-# -StopWhen <regex>: ends the test as soon as the client log matches it (a client without this mod can't hide its window).
-param([Parameter(Mandatory)][string]$Name, [int]$TimeoutSec = 1500, [switch]$WithMods, [int]$TraceSec = 0, [string]$TraceProfile = "cpu-sampling", [string]$TraceProviders = "", [switch]$Visible, [switch]$Sound, [int]$Screen = 1, [switch]$HostVisible, [string]$StopWhen = "")
+# -StopWhen <regex>: ends the test as soon as the client log matches it (a client without this mod never quits by itself).
+# -ClientHeadless: the client has no window at all (a client without this mod can't hide one).
+param([Parameter(Mandatory)][string]$Name, [int]$TimeoutSec = 1500, [switch]$WithMods, [int]$TraceSec = 0, [string]$TraceProfile = "cpu-sampling", [string]$TraceProviders = "", [switch]$Visible, [switch]$Sound, [int]$Screen = 1, [switch]$HostVisible, [string]$StopWhen = "", [switch]$ClientHeadless)
 . (Join-Path $PSScriptRoot "common.ps1")
 Assert-GameNotRunning
+Set-CopyOverrides $GameDir
 $hostScript = Join-Path $Scenarios "$Name-host.txt"
 $clientScript = Join-Path $Scenarios "$Name-client.txt"
 foreach ($s in $hostScript, $clientScript) { if (-not (Test-Path $s)) { throw "No scenario $s" } }
@@ -56,15 +58,15 @@ if ($WithMods) {
 }
 
 $h = $null; $c = $null
-# As run.ps1: both windows off-screen (shown a moment on screen $Screen while the mod loads) and muted, unless -Visible / -Sound.
+# As run.ps1: both windows off-screen and muted, unless -Visible / -Sound.
 $extra = @()
-if (-not $Visible) { $extra += "--bdhidden", "--screen", $Screen }
+if (-not $Visible) { $extra += "--bdhidden", "--windowed", "--resolution", "1920x1080" }
 if (-not $Sound) { $extra += "--bdmute" }
 try {
     $hostLog = Join-Path $Results "$Name-host.log"; $clientLog = Join-Path $Results "$Name-client.log"
     Remove-Item $hostLog, $clientLog -ErrorAction SilentlyContinue
     $hostArgs = @("--force-steam", "off", "--fastmp", "host_standard", "--log-file", "`"$hostLog`"", "--bdtest", "`"$hostScript`"") + $(if ($HostVisible) { @() } else { $extra })
-    $h = Start-Process -FilePath $GameExe -WorkingDirectory $GameDir -PassThru -ArgumentList $hostArgs
+    $h = if ($Visible -or $HostVisible) { Start-Process -FilePath $GameExe -WorkingDirectory $GameDir -PassThru -ArgumentList $hostArgs } else { Start-HiddenGame $GameExe $GameDir $hostArgs }
     $trace = $null
     if ($TraceSec -gt 0) {
         Start-Sleep 5  # the runtime only accepts diagnostics once started
@@ -74,7 +76,8 @@ try {
     }
     Start-Sleep 12
     $clientArgs = @("--force-steam", "off", "--fastmp", "join", "--clientId", "1001", "--log-file", "`"$clientLog`"", "--bdtest", "`"$clientScript`"") + $extra
-    $c = Start-Process -FilePath $GameExe -WorkingDirectory $GameDir -PassThru -ArgumentList $clientArgs
+    if ($ClientHeadless) { $clientArgs = @("--headless") + $clientArgs }
+    $c = if ($Visible) { Start-Process -FilePath $GameExe -WorkingDirectory $GameDir -PassThru -ArgumentList $clientArgs } else { Start-HiddenGame $GameExe $GameDir $clientArgs }
     $t = 0
     while ((-not $h.HasExited -or -not $c.HasExited) -and $t -lt $TimeoutSec -and -not ($HostVisible -and $h.HasExited)) {
         Start-Sleep 5; $t += 5

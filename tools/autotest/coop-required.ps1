@@ -21,8 +21,8 @@ try {
     $data.mod_settings.mod_list | Where-Object { $_.id -eq "BigDeckOptimization" } | ForEach-Object { $_.is_enabled = $false }
     # No BOM: the game's JSON reader expects plain UTF-8.
     [IO.File]::WriteAllText($clientSettings, ($data | ConvertTo-Json -Depth 32), (New-Object Text.UTF8Encoding($false)))
-    # The client, without this mod, can't hide its window: closed as soon as the refusal is logged.
-    & (Join-Path $PSScriptRoot "coop.ps1") -Name coopreq -WithMods -TimeoutSec 150 -StopWhen "Mismatch in gameplay-relevant mods"
+    # The client, without this mod, has no test runner to quit, nor to hide its window: headless, closed as soon as the refusal is logged.
+    & (Join-Path $PSScriptRoot "coop.ps1") -Name coopreq -WithMods -TimeoutSec 150 -ClientHeadless -StopWhen "Mismatch in gameplay-relevant mods"
 }
 finally {
     Copy-Item $backup $clientSettings -Force

@@ -1,24 +1,25 @@
 """A/B comparison of two AutoTest logs (same script, one option differing).
 
-    python -I tools/autotest/compare.py results/<a>.log results/<b>.log [--unordered] [--no-times]
+    python -I tools/autotest/compare.py results/<a>.log results/<b>.log [--no-times]
 
 Checks that the CHECKSUM, STATE and CARDPLAY lines match line for line (values only, not timings): a mismatch shows the
 first line that differs, and which values in it. Then what else differs: game errors only one side logged, this mod's
 problems. Then the per-card times of 'playcard' ("played X in N ms") side by side.
---unordered compares them as sets of lines: for autoslay sessions, whose order varies a little between any two sessions.
 """
 import re
 import sys
 
 CHECKED = re.compile(r'AutoTest\s+[\d.]+s\s+(CHECKSUM [^:]+: \w+|STATE .*$|CARDPLAY .*$)')
 PLAYED = re.compile(r'AutoTest\s+[\d.]+s\s+played (\S+) in (\d+) ms')
+# AutoSlay's rooms: the run went the same way, and how far.
+ROOM = re.compile(r'\[AutoSlay\] (Entering .*)$')
 # Beyond results: lines saying this mod backed off or went wrong during the session.
 MOD_PROBLEM = re.compile(r'\[BigDeckOptimization\].*(MISMATCH|mismatches [1-9]|disabled after|turned off and removed|changed unseen|\b[1-9]\d* (part\(s\) |hooks? )?left vanilla|skipped:)')
 
 
 def normalized_error(line):
     """A game error without what changes between sessions (numbers, paths)."""
-    line = re.sub(r'[A-Za-z]:\\\S+', '<path>', line)
+    line = re.sub(r'[A-Za-z]:\\.*?\.(json|dll|save|log|run|pck)\b', '<path>', line)
     return re.sub(r'\d+', 'N', line)[:130].strip()
 
 
@@ -27,7 +28,7 @@ def read(path):
     with open(path, encoding='utf-8', errors='replace') as f:
         for line in f:
             line = line.rstrip('\n')
-            if m := CHECKED.search(line):
+            if m := CHECKED.search(line) or ROOM.search(line):
                 checked.append(m.group(1))
             elif m := PLAYED.search(line):
                 played.append((m.group(1), int(m.group(2))))
@@ -63,14 +64,14 @@ def errors_only_in(a, b):
     return {k: v for k, v in a.items() if k not in b}
 
 
-def main(a_path, b_path, unordered=False, times=True):
+def main(a_path, b_path, times=True):
     a_checked, a_played, a_errors, a_problems = read(a_path)
     b_checked, b_played, b_errors, b_problems = read(b_path)
-    if unordered:
-        a_checked.sort()
-        b_checked.sort()
     mismatches = [(i, x, y) for i, (x, y) in enumerate(zip(a_checked, b_checked)) if x != y]
     print(f'checked lines: {len(a_checked)} vs {len(b_checked)}, mismatches: {len(mismatches)}')
+    rooms = [sum(x.startswith('Entering') for x in side) for side in (a_checked, b_checked)]
+    if any(rooms):
+        print(f'AutoSlay rooms: {rooms[0]} vs {rooms[1]}')
     for i, x, y in mismatches[:20]:
         words = difference(x, y)
         print(f'  #{i}\n    A: {x}\n    B: {y}' + (f'\n    differs: {words}' if words else ''))
@@ -103,4 +104,4 @@ def main(a_path, b_path, unordered=False, times=True):
 
 
 if __name__ == '__main__':
-    sys.exit(main(sys.argv[1], sys.argv[2], '--unordered' in sys.argv, '--no-times' not in sys.argv))
+    sys.exit(main(sys.argv[1], sys.argv[2], '--no-times' not in sys.argv))
