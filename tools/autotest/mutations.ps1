@@ -24,7 +24,7 @@ $Data = Join-Path $GameDir "data_sts2_windows_x86_64"
 $env:PATH = "C:\Program Files\dotnet;$env:PATH"; $env:DOTNET_CLI_TELEMETRY_OPTOUT = "1"
 
 # What leaves when the whole pile tracking does: the listener cache watches the same methods, hook lists are built inside it.
-$PileWriters = "ListenerCache|HookFilter|PileIndex(\.Duplicates)?|CardDbScan|FastListeners\.(Cache|Moves)|LimitlessRecalcSkip\.Passes|SnapshotCardReuse\.(Trust|Piles|PileBits)"
+$PileWriters = "ListenerCache|HookFilter|PileIndex(\.Duplicates)?|CardDbScan|FastListeners\.(Cache|Moves)|LimitlessRecalcSkip\.Passes|SnapshotCardReuse\.(Trust|Moved|Piles|PileBits|Blocks)"
 # Target, pattern every "left vanilla" line must match ("" = nothing may be left vanilla), effects allowed to drop to zero ("" = none).
 $Expected = [ordered]@{
     "renumber-hooks"  = @("game", "", "")
@@ -34,24 +34,24 @@ $Expected = [ordered]@{
     "default-hitting" = @("game", "ShouldAllowHitting", "")
     "default-task"    = @("game", "AfterCardPlayed", "")
     "helper-push"     = @("game", "choice context helpers changed|PushModel", "")
-    "pile-add"        = @("game", "CardPile.AddInternal changed", "FastListeners\.Moves")
-    "pile-remove"     = @("game", "CardPile.RemoveInternal changed", "FastListeners\.Moves")
+    "pile-add"        = @("game", "CardPile.AddInternal changed", "FastListeners\.Moves|LimitlessHookSkip\.Saved")
+    "pile-remove"     = @("game", "CardPile.RemoveInternal changed", "FastListeners\.Moves|LimitlessHookSkip\.Saved")
     "pile-writer"     = @("game", "_cards", $PileWriters)
     "rename-method"   = @("game", "RemoveInternal|AutoTest", $PileWriters)
     "rename-field"    = @("game", "combat walk left vanilla", "FastListeners\.CombatWalk")
     "combat-walk"     = @("game", "combat walk left vanilla", "FastListeners\.CombatWalk")
     "run-walk"        = @("game", "run walk left vanilla", "FastListeners\.RunWalk")
-    "internal-member" = @("game", "HookFilter|GetWithModifiers", "SnapshotCardReuse\.(Piles|Trust|CardBits|PileBits)")
+    "internal-member" = @("game", "HookFilter|GetWithModifiers", "SnapshotCardReuse\.(Piles|Trust|Moved|Blocks|CardBits|PileBits)")
     "signature"       = @("game", "HookFilter|ShouldPlay", "")
     "flight-count"    = @("game", "CardFlightLimit|AddCard", "CardFlightLimit")
     "replay-record"   = @("game", "ReplayStateSkip|RecordChecksum", "ReplayStateSkip")
     "theme-rename"    = @("game", "ThemeColorSkip|RefreshText", "")
-    "upgrade-writer"  = @("game", "_currentUpgradeLevel", "SnapshotCardReuse\.Trust|LimitlessRecalcSkip\.Passes")
-    "write-list"      = @("game", "pile bits not reused", "SnapshotCardReuse\.PileBits")
-    "local-keywords"  = @("game", "read through the game's own calls|get_LocalKeywords", "SnapshotCardReuse\.Trust")
-    "limitless-body"  = @("Limitless", "LimitlessReserialize|LimitlessRecalcSkip|SetSerializableCards", "LimitlessReserialize|LimitlessRecalcSkip\.(Memos|Passes)")
-    "limitless-forward" = @("Limitless", "LimitlessHookSkip|AfterCardPlayed", "LimitlessHookSkip")
-    "limitless-writer"  = @("Limitless", "unchanged piles|SerializableEnchantmentsOnCards", "SnapshotCardReuse\.Trust")
+    "upgrade-writer"  = @("game", "_currentUpgradeLevel", "SnapshotCardReuse\.(Trust|Moved)|LimitlessRecalcSkip\.Passes")
+    "write-list"      = @("game", "pile bits not reused", "SnapshotCardReuse\.(PileBits|Blocks)")
+    "local-keywords"  = @("game", "read through the game's own calls|get_LocalKeywords", "SnapshotCardReuse\.(Trust|Moved)")
+    "limitless-body"  = @("Limitless", "LimitlessReserialize|LimitlessRecalcSkip|SetSerializableCards", "LimitlessReserialize|LimitlessRecalcSkip\.(Memos|Passes)|SnapshotCardReuse\.Moved|LimitlessCloneMemo")
+    "limitless-forward" = @("Limitless", "LimitlessHookSkip|AfterCardPlayed", "LimitlessHookSkip(\.Saved)?")
+    "limitless-writer"  = @("Limitless", "unchanged piles|SerializableEnchantmentsOnCards", "SnapshotCardReuse\.(Trust|Moved)")
     "limitless-recalc"  = @("Limitless", "LimitlessRecalcSkip|RecalculateValues|not skipped", "LimitlessRecalcSkip\.(Memos|Passes)")
     "limitless-tabs"  = @("Limitless", "EnchantmentTabReuse|UpdateEnchantmentVisuals", "EnchantmentTabReuse")
     "baselib-plaque"  = @("BaseLib", "TypePlaqueSkip|TryModifyPlaqueText", "TypePlaqueSkip")

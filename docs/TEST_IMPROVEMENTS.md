@@ -33,6 +33,14 @@ What the v0.9.0 test series taught, what was built from it, and what's left. Num
 | Those scripts check themselves | `Test-SessionLog`, `ok` / `PROBLEM` lines | Caught a mod "disabled" that still loaded: its entry didn't exist in the test profile |
 | Co-op peers compared at the same point | `--bdturnstates`, `parcoop.ps1` | Enemy states at each turn start: public and beta agree, 56 lines. The script's own `state` lines made false alarms |
 | AutoSlay compares states and rooms too | `autoslay <seed> state`, `compare.py` | 1,517 lines identical mod on and off, public; 1,035 on the beta |
+| What deck size costs where a player sees it | `ladder.ps1`, `ladderreport.py`: the same rendered session at several sizes, same card mix | Co-op plays 1% low 77 -> 12 fps from 945 to 32,735 cards per player, where headless sweeps saw nothing |
+| Where a frame goes | `framedetail`, `FRAMES` lines | Process step, draw step, GPU, rest, main thread use, draw calls, per window |
+| A player's mouse | `forcefocus`, `mousesweep`, `mouseplay`: events through the game's input path, the real cursor never moves | Hover and drag run for the first time in a test; `PLAYTIME` from click to next action |
+| A co-op host alone on the GPU | `coop.ps1 -ClientHeadless` in `ladder.ps1` | Idle 393 fps at 10,295 cards; two rendering instances showed ~144 fps each |
+| Which items depend on the size | `parsweep -Imports`, `scalereport.py`, `cpu` in `SWEEP` lines | Potions, cards, relics in 7 min. Finds heavy items only: headless, it can't show that something is smooth |
+| A divergence ends the wait | `AutoTest` | A session was stuck for minutes waiting on a client that had left |
+| A whole run by kind of step | `PHASE` lines, `phasereport.py`, `autoslay-10k-on` | Found a freeze at each room entry, 333 -> 1,650 ms over a run at 10,300 cards, no scripted test goes there |
+| Traces of many card plays | `tools/profiling/bigconvert`, `coop.ps1 -TraceDelaySec` | `dotnet-trace convert` overflowed its stack on them and wrote nothing |
 | Claude setup | Skills `run-tests`, `profile-game`, `version-check`, `release` (local); a hook refusing a deploy to the Steam install (`tools/hooks/no-steam-deploy.py`); `tools/version_task.ps1`, a daily check of published versions | `CLAUDE.md` 27 -> 4.6 KB |
 
 ## Lessons
@@ -47,6 +55,11 @@ What the v0.9.0 test series taught, what was built from it, and what's left. Num
 - A test can pass without testing anything: `baselib-absent` and `limitless-absent` passed while the mod they disabled still loaded. Reading a script's outcome means reading what it was meant to show, so the scripts now say it themselves.
 - Two peers playing at once aren't at the same point when each logs a `state` line: compare at a point of the game itself (a turn start), not of a script.
 - Speeding a test up can make it wrong: killing a boss again 0.5 s after the last kill made results depend on the session's speed. A wait must depend on the game's state, held long enough in frames and in time.
+- A headless sweep can't say a thing is smooth. It said a typical card costs the same at 969 and 10,318 cards, and the user had to point out that combats do lag: no rendering, no animation time, no mouse, a 15.6 ms clock. What a player reports outranks what a test didn't see: look for what the test can't see first.
+- Godot's `TimeProcess` monitor is the highest value of the last second, not this frame's: 8 ms read on frames of 1.9 ms. Timestamps at `process_frame`, `frame_pre_draw`, `frame_post_draw` give the frame's own timeline.
+- A window without the focus skips part of the game's input code, and `Viewport.GetMousePosition` on the root viewport reads the real cursor whatever the events said: `forcefocus` covers both.
+- A trace ending after the game closes has no method names (`?!?`): that one was first blamed on the provider list.
+- PowerShell's `$s` is `$S`: a loop variable overwrote the scratch folder's path.
 - Rejected, tested: time scale (mod-off sessions hang), holding waits for 3 frames instead of 10 (2-3 s per 14 items, mod on only, against a risk of races).
 
 ## Left

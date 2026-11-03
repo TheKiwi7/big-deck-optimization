@@ -1,0 +1,53 @@
+# Snapshot reuse when a cost or keyword listener comes and goes: every co-op snapshot compared with the game's own
+# (bdperf verify all). A pile read while Spiked Gauntlets changed costs must not be reused once the relic is gone,
+# whether the pile moved since (end of turn) or not. The last line fails the session on any difference.
+timeout 600
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+enemyhp 999999
+speed instant
+immortal
+cmd godmode
+cmd fight CULTISTS_NORMAL
+waitfor idle 120
+cmd bdperf verify all
+checksum start
+cmd relic add SPIKED_GAUNTLETS
+wait 0.5
+checksum hook on
+checksum hook on again
+cmd relic remove SPIKED_GAUNTLETS
+wait 0.5
+checksum hook gone, piles unchanged
+checksum hook gone, trusted again
+cmd relic add SPIKED_GAUNTLETS
+wait 0.5
+checksum hook back
+endturn
+waitfor idle 120
+checksum hook on, turn 2
+cmd relic remove SPIKED_GAUNTLETS
+wait 0.5
+checksum hook gone
+endturn
+waitfor idle 120
+checksum hook gone, turn 3
+cmd relic add SPIKED_GAUNTLETS
+wait 0.5
+endturn
+waitfor idle 120
+checksum hook on, turn 4
+cmd relic remove SPIKED_GAUNTLETS
+endturn
+waitfor idle 120
+checksum hook gone after a moved pile
+cmd bdperf verify
+effects end
+cmd bdperf verify check
+quit

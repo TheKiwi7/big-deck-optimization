@@ -1,0 +1,45 @@
+# What moving the mouse costs, the account's saved controller map against the game's defaults: a map saved by an older game version
+# names actions that no longer exist, and NInputManager asks about each of them at every input event. ~945 cards + the run's relics.
+timeout 300
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+uncap
+framedetail
+forcefocus
+cmd bigdeck import ref all all
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 300
+wait 3
+fpsstat
+wait 8
+fpsstat still
+mousesweep 10
+fpsstat mouse saved map
+cmd energy 50
+wait 0.5
+fpsstat
+mouseplay 8
+waitfor idle 120
+fpsstat plays saved map
+controllermap default
+fpsstat
+mousesweep 10
+fpsstat mouse default map
+cmd energy 50
+wait 0.5
+endturn
+waitfor idle 120
+cmd energy 50
+wait 0.5
+fpsstat
+mouseplay 8
+waitfor idle 120
+fpsstat plays default map
+fpsstat
+quit

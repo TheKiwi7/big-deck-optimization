@@ -1,0 +1,50 @@
+# Scans of the draw pile outside any scope (Catastrophe, Uproar, Hidden Gem read each card's Keywords), ~10,300 cards + the reference
+# relics: vanilla, filtered, kinds of listener left out, with and without Hex on a creature (the one game type reacting to that hook);
+# then each of those cards played. Rendered: run.ps1, nothing else running.
+timeout 400
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+uncap
+framedetail
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 300
+wait 2
+cmd bdperf scan
+cmd bdperf scan
+setenergy 90
+emptyhand
+cmd card CATASTROPHE hand
+cmd card HIDDEN_GEM hand
+cmd card UPROAR hand
+wait 0.5
+fpsstat
+playcard CATASTROPHE 0 free
+waitfor idle 120
+fpsstat catastrophe
+playcard HIDDEN_GEM 0 free
+waitfor idle 120
+fpsstat hidden gem
+playcard UPROAR 0 free
+waitfor idle 120
+fpsstat uproar
+cmd power HEX_POWER 1 0
+wait 0.5
+cmd bdperf scan
+quit

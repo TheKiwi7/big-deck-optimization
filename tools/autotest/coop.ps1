@@ -9,7 +9,8 @@
 # too and would load the mods twice). Copies, never links, so the cleanup can't touch the Workshop folders.
 # -StopWhen <regex>: ends the test as soon as the client log matches it (a client without this mod never quits by itself).
 # -ClientHeadless: the client has no window at all (a client without this mod can't hide one).
-param([Parameter(Mandatory)][string]$Name, [int]$TimeoutSec = 1500, [switch]$WithMods, [int]$TraceSec = 0, [string]$TraceProfile = "cpu-sampling", [string]$TraceProviders = "", [switch]$Visible, [switch]$Sound, [int]$Screen = 1, [switch]$HostVisible, [string]$StopWhen = "", [switch]$ClientHeadless)
+# -TraceDelaySec: the trace starts that long after the host: dotnet-trace's convert overflows its stack on long traces with many plays.
+param([Parameter(Mandatory)][string]$Name, [int]$TimeoutSec = 1500, [switch]$WithMods, [int]$TraceSec = 0, [int]$TraceDelaySec = 0, [string]$TraceProfile = "cpu-sampling", [string]$TraceProviders = "", [switch]$Visible, [switch]$Sound, [int]$Screen = 1, [switch]$HostVisible, [string]$StopWhen = "", [switch]$ClientHeadless)
 . (Join-Path $PSScriptRoot "common.ps1")
 Assert-GameNotRunning
 Set-CopyOverrides $GameDir
@@ -71,8 +72,11 @@ try {
     if ($TraceSec -gt 0) {
         Start-Sleep 5  # the runtime only accepts diagnostics once started
         $span = [TimeSpan]::FromSeconds($TraceSec).ToString("dd\:hh\:mm\:ss")
-        $trace = Start-Process -FilePath "dotnet-trace" -PassThru -WindowStyle Hidden -ArgumentList "collect", "-p", $h.Id,
-            $(if ($TraceProviders) { "--providers" } else { "--profile" }), $(if ($TraceProviders) { $TraceProviders } else { $TraceProfile }), "--duration", $span, "-o", "`"$Results\$Name-host.nettrace`""
+        Remove-Item "$Results\$Name-host.nettrace" -ErrorAction SilentlyContinue
+        $traceArgs = @("collect", "-p", $h.Id, $(if ($TraceProviders) { "--providers" } else { "--profile" }), $(if ($TraceProviders) { $TraceProviders } else { $TraceProfile }), "--duration", $span, "-o")
+        $trace = if ($TraceDelaySec -gt 0) {
+            Start-Process -FilePath "powershell" -PassThru -WindowStyle Hidden -ArgumentList "-NoProfile", "-Command", "`"Start-Sleep $TraceDelaySec; & dotnet-trace $($traceArgs -join ' ') '$Results\$Name-host.nettrace'`""
+        } else { Start-Process -FilePath "dotnet-trace" -PassThru -WindowStyle Hidden -ArgumentList ($traceArgs + "`"$Results\$Name-host.nettrace`"") }
     }
     Start-Sleep 12
     $clientArgs = @("--force-steam", "off", "--fastmp", "join", "--clientId", "1001", "--log-file", "`"$clientLog`"", "--bdtest", "`"$clientScript`"") + $extra

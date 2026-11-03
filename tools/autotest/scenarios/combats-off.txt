@@ -1,0 +1,42 @@
+# Combats left behind: six fights won in a row with ~1,880 cards, then the menu wait leakroots.ps1 -Type ...CombatState dumps at.
+# A combat over should be garbage; tools/autotest/leakroots.ps1 names what holds those still alive. combats-on: the same, mod on.
+timeout 600
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdopt off
+cmd fight CULTISTS_NORMAL
+waitfor idle 300
+cmd kill all
+waitfor nocombat 300
+wait 3
+cmd fight CULTISTS_NORMAL
+waitfor idle 300
+cmd kill all
+waitfor nocombat 300
+wait 3
+cmd fight CULTISTS_NORMAL
+waitfor idle 300
+cmd kill all
+waitfor nocombat 300
+wait 3
+cmd fight CULTISTS_NORMAL
+waitfor idle 300
+cmd kill all
+waitfor nocombat 300
+wait 3
+cmd fight CULTISTS_NORMAL
+waitfor idle 300
+cmd kill all
+waitfor nocombat 300
+wait 3
+cmd fight CULTISTS_NORMAL
+waitfor idle 300
+cmd kill all
+waitfor nocombat 300
+wait 3
+gcfull after six combats
+quit

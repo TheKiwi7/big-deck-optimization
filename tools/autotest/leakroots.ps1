@@ -2,7 +2,8 @@
 # the last menu, and for every RunState prints what roots it (dotnet-dump gcroot), counting chains through this mod.
 #   powershell -ExecutionPolicy Bypass -File tools/autotest/leakroots.ps1 -GameDir C:\Games\StS2-public-0.107.1 [-Scenario memory-runs-off]
 # The dump (about 1.5 GB) is deleted afterwards. Needs dotnet-dump (dotnet tool install -g dotnet-dump --version 9.0.*).
-param([string]$GameDir = "", [string]$Scenario = "memory-runs-on")
+# -Type: another object to look for, e.g. MegaCrit.Sts2.Core.Combat.CombatState with -Scenario combats-on (combats left behind).
+param([string]$GameDir = "", [string]$Scenario = "memory-runs-on", [string]$Type = "MegaCrit.Sts2.Core.Runs.RunState")
 $copy = $GameDir
 . (Join-Path $PSScriptRoot "parlib.ps1")
 $GameDir = Resolve-GameCopy $copy
@@ -32,13 +33,13 @@ finally {
     Stop-Process -Id $game.Id -Force -ErrorAction SilentlyContinue
     Remove-TestMods $GameDir
 }
-$runState = "MegaCrit.Sts2.Core.Runs.RunState"
+$runState = $Type
 $stat = dotnet-dump analyze $dump -c "dumpheap -type $runState -stat" -c "exit"
 $table = ($stat | Where-Object { $_ -match "\s$([regex]::Escape($runState))\s*$" } | Select-Object -First 1)
 if (-not $table) { throw "No $runState in the dump" }
 $methodTable = ($table.Trim() -split '\s+')[0]
 $addresses = @(dotnet-dump analyze $dump -c "dumpheap -mt $methodTable -short" -c "exit" | Where-Object { $_ -match '^\s*[0-9a-f]{12,16}\s*$' } | ForEach-Object { $_.Trim() })
-Write-Output "$($addresses.Count) RunState object(s) alive"
+Write-Output "$($addresses.Count) $Type object(s) alive"
 $inMod = 0
 foreach ($address in $addresses) {
     $file = Join-Path $out "gcroot-$address.txt"

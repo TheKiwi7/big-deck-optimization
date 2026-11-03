@@ -1,0 +1,45 @@
+# See snapcheckcoop-host.txt.
+timeout 1500
+mplobby IRONCLAD 2
+waitfor run 240
+# Before the host can start the fight: the same enemy HP on both peers.
+enemyhp 999999
+cmd bigdeck import ref all all {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bdperf checks off
+cmd bdperf segments verify off
+wait 26
+immortal until 99
+waitfor combat 900
+waitfor idle 900
+wait 10
+cmd energy 50
+play 4
+waitfor idle 120
+endturn
+waitfor round 2 900
+cmd energy 50
+play 4
+waitfor idle 120
+endturn
+waitfor round 3 900
+cmd energy 50
+play 4
+waitfor idle 120
+endturn
+waitfor round 4 900
+cmd energy 50
+play 4
+waitfor idle 120
+endturn
+waitfor round 5 900
+cmd energy 50
+play 4
+waitfor idle 120
+endturn
+waitfor round 6 900
+wait 20
+quit

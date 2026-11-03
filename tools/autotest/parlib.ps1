@@ -214,6 +214,11 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
     $total = $pending.Count + $done.Count
     $started = Get-Date
     $lastStatus = [datetime]::MinValue
+    # The slots are shared by every series, whatever the game copy: two at once would run two games in one user data folder
+    # (a save of one renamed under the other, a slot mirrored over a running session).
+    New-Item -ItemType Directory -Force $SlotRoot | Out-Null
+    try { $slotLock = [IO.File]::Open((Join-Path $SlotRoot "slots.lock"), 'OpenOrCreate', 'ReadWrite', 'None') }
+    catch { throw "Another parallel test series uses the test slots ($SlotRoot): wait for it to end." }
     try {
         while ($pending.Count -gt 0 -or $running.Count -gt 0) {
             foreach ($slot in 0..($MaxJobs - 1)) {
@@ -295,6 +300,7 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
     finally {
         $env:APPDATA = $realAppData
         foreach ($run in $running.Values) { Stop-Process -Id $run.Process.Id -Force -ErrorAction SilentlyContinue }
+        $slotLock.Dispose()
     }
     $done
 }

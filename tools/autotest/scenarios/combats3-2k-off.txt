@@ -1,0 +1,62 @@
+# Three combat starts in a row at ~1,900 cards (the reference deck, Limitless stacked enchantments): what a combat start clones
+# (LimitlessCloneMemo from the second start on) and plays, mod off. Compare combats3-2k-off and -on: CHECKSUM/STATE identical.
+timeout 1500
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bdopt off
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum CULTISTS_NORMAL start
+state CULTISTS_NORMAL start
+play 5
+waitfor idle 300
+checksum CULTISTS_NORMAL plays
+state CULTISTS_NORMAL plays
+endturn
+waitfor idle 600
+checksum CULTISTS_NORMAL t1 end
+state CULTISTS_NORMAL t1 end
+cmd kill all
+waitfor nocombat 300
+wait 2
+cmd fight KNIGHTS_ELITE
+waitfor idle 600
+wait 1
+checksum KNIGHTS_ELITE start
+state KNIGHTS_ELITE start
+play 5
+waitfor idle 300
+checksum KNIGHTS_ELITE plays
+state KNIGHTS_ELITE plays
+endturn
+waitfor idle 600
+checksum KNIGHTS_ELITE t1 end
+state KNIGHTS_ELITE t1 end
+cmd kill all
+waitfor nocombat 300
+wait 2
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum CULTISTS_NORMAL start
+state CULTISTS_NORMAL start
+play 5
+waitfor idle 300
+checksum CULTISTS_NORMAL plays
+state CULTISTS_NORMAL plays
+endturn
+waitfor idle 600
+checksum CULTISTS_NORMAL t1 end
+state CULTISTS_NORMAL t1 end
+cmd kill all
+waitfor nocombat 300
+wait 2
+cmd bdopt on
+wait 1
+quit

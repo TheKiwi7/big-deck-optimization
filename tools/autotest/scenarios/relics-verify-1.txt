@@ -1,0 +1,22 @@
+# Every relic (from 75, 75 of them; 297 in v0.107.1): obtained, a card played, a turn ended, each snapshot compared with the
+# game's own (bdperf verify all, the relics' and the piles' optimized states). The last line fails the session on any difference.
+timeout 1500
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+enemyhp 999999
+speed instant
+immortal
+cmd godmode
+sweeptimeout 45
+cmd bdperf verify all
+sweep relics 75 75 checksum state
+cmd bdperf verify
+effects end
+cmd bdperf verify check
+quit

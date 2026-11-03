@@ -1,0 +1,157 @@
+# Co-op snapshots against the game's own (host, with snapcheckcoop-client.txt): ~4,700 cards per player, after each step
+# "checksum x" with moved piles kept, then read in full (snapmoved off), must match: the game's own snapshot takes ~17 s at this size
+# and the client would time out (snapcheck-5k compares with it, solo). Peers diverging would fail the session too.
+timeout 1500
+mplobby NECROBINDER 2
+waitfor run 240
+cmd bigdeck import ref all all {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bdperf checks off
+cmd bdperf segments verify off
+wait 20
+enemyhp 999999
+immortal until 99
+cmd fight CULTISTS_NORMAL
+waitfor idle 900
+# The client may still be starting the combat: the game drops actions it gets then (DESIGN, co-op with a player without the mod).
+wait 10
+checksum start
+cmd bdperf snapmoved off
+checksum start
+cmd bdperf snapmoved on
+cmd energy 50
+wait 1
+checksum t1 start
+cmd bdperf snapmoved off
+checksum t1 start
+cmd bdperf snapmoved on
+play 2
+waitfor idle 120
+checksum t1 p1
+cmd bdperf snapmoved off
+checksum t1 p1
+cmd bdperf snapmoved on
+play 2
+waitfor idle 120
+checksum t1 p2
+cmd bdperf snapmoved off
+checksum t1 p2
+cmd bdperf snapmoved on
+play 2
+waitfor idle 120
+checksum t1 p3
+cmd bdperf snapmoved off
+checksum t1 p3
+cmd bdperf snapmoved on
+endturn
+waitfor round 2 900
+cmd energy 50
+wait 1
+checksum t2 start
+cmd bdperf snapmoved off
+checksum t2 start
+cmd bdperf snapmoved on
+play 2
+waitfor idle 120
+checksum t2 p1
+cmd bdperf snapmoved off
+checksum t2 p1
+cmd bdperf snapmoved on
+play 2
+waitfor idle 120
+checksum t2 p2
+cmd bdperf snapmoved off
+checksum t2 p2
+cmd bdperf snapmoved on
+play 2
+waitfor idle 120
+checksum t2 p3
+cmd bdperf snapmoved off
+checksum t2 p3
+cmd bdperf snapmoved on
+endturn
+waitfor round 3 900
+cmd energy 50
+wait 1
+checksum t3 start
+cmd bdperf snapmoved off
+checksum t3 start
+cmd bdperf snapmoved on
+play 2
+waitfor idle 120
+checksum t3 p1
+cmd bdperf snapmoved off
+checksum t3 p1
+cmd bdperf snapmoved on
+play 2
+waitfor idle 120
+checksum t3 p2
+cmd bdperf snapmoved off
+checksum t3 p2
+cmd bdperf snapmoved on
+play 2
+waitfor idle 120
+checksum t3 p3
+cmd bdperf snapmoved off
+checksum t3 p3
+cmd bdperf snapmoved on
+endturn
+waitfor round 4 900
+cmd energy 50
+wait 1
+checksum t4 start
+cmd bdperf snapmoved off
+checksum t4 start
+cmd bdperf snapmoved on
+play 2
+waitfor idle 120
+checksum t4 p1
+cmd bdperf snapmoved off
+checksum t4 p1
+cmd bdperf snapmoved on
+play 2
+waitfor idle 120
+checksum t4 p2
+cmd bdperf snapmoved off
+checksum t4 p2
+cmd bdperf snapmoved on
+play 2
+waitfor idle 120
+checksum t4 p3
+cmd bdperf snapmoved off
+checksum t4 p3
+cmd bdperf snapmoved on
+endturn
+waitfor round 5 900
+cmd energy 50
+wait 1
+checksum t5 start
+cmd bdperf snapmoved off
+checksum t5 start
+cmd bdperf snapmoved on
+play 2
+waitfor idle 120
+checksum t5 p1
+cmd bdperf snapmoved off
+checksum t5 p1
+cmd bdperf snapmoved on
+play 2
+waitfor idle 120
+checksum t5 p2
+cmd bdperf snapmoved off
+checksum t5 p2
+cmd bdperf snapmoved on
+play 2
+waitfor idle 120
+checksum t5 p3
+cmd bdperf snapmoved off
+checksum t5 p3
+cmd bdperf snapmoved on
+endturn
+waitfor round 6 900
+effects end
+wait 10
+quit

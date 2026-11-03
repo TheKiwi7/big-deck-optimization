@@ -48,7 +48,7 @@ def extract_hooks():
     src = open(ROOT + '/MegaCrit.Sts2.Core.Hooks/Hook.cs', encoding='utf-8').read().split('\n')
     found, i = {}, 0
     while i < len(src):
-        m = re.match(r'\t(public|private|internal) static (async )?([\w<>\[\], ?]+) (\w+)\(', src[i])
+        m = re.match(r'\t(public|private|internal) static (async )?([\w<>\[\], ?()]+) (\w+)\(', src[i])
         if m:
             depth, body, j, started = 0, [], i, False
             while j < len(src):
@@ -102,7 +102,7 @@ def split_args(s):
 def parse_defaults():
     """AbstractModel virtual defaults: name -> (params, kind)."""
     defaults = {}
-    for m in re.finditer(r'public virtual ([\w<>?\[\], ]+?) (\w+)\(([^)]*)\)\s*\{', abstract):
+    for m in re.finditer(r'public virtual ([\w<>?\[\], ]+?|\([\w<>?\[\], ]+\)) (\w+)\(([^)]*)\)\s*\{', abstract):
         name = m.group(2)
         body, _ = block(abstract, m.end() - 1)
         params = [p.split()[-1] for p in split_args(m.group(3))] if m.group(3).strip() else []
@@ -123,6 +123,9 @@ def parse_defaults():
         elif re.fullmatch(r'((\w+) = (null|false|0m|0); )+return false;', b) and all(
                 a in params for a in re.findall(r'(\w+) = (?:null|false|0m|0);', b)):
             kind = ('falsy',)
+        elif re.fullmatch(r'return \((\w+), (\w+)\);', b) and all(x in params for x in re.fullmatch(r'return \((\w+), (\w+)\);', b).groups()):
+            # A tuple of two parameters given back: passes both through.
+            kind = ('tupleid', tuple(params.index(x) for x in re.fullmatch(r'return \((\w+), (\w+)\);', b).groups()))
         elif re.fullmatch(r'return (\w+);', b) and re.fullmatch(r'return (\w+);', b).group(1) in params:
             kind = ('identity', params.index(re.fullmatch(r'return (\w+);', b).group(1)))
         else:
@@ -279,7 +282,17 @@ def check_loop(var, body, used, neutral=None):
                 used['methods'].add(meth)
                 k += 1
                 continue
-            m = re.fullmatch(r'(?:decimal|int|bool|float) (\w+) = (\w+)', s)
+            # (a, b) = VAR.M(..., a, b) whose default gives both back
+            m = re.fullmatch(rf'\((\w+), (\w+)\) = {var}\.(\w+)\((.*)\)', s)
+            if m:
+                acc, meth, args = (m.group(1), m.group(2)), m.group(3), split_args(m.group(4))
+                kind = defaults.get(meth, (None, ('missing',)))[1]
+                if kind[0] != 'tupleid' or max(kind[1]) >= len(args) or (args[kind[1][0]], args[kind[1][1]]) != acc:
+                    raise Unsafe(f'{meth}: not an identity on {acc} ({kind})')
+                used['methods'].add(meth)
+                k += 1
+                continue
+            m = re.fullmatch(r'(?:decimal|int|bool|float|PileType|CardPilePosition|CardLocation) (\w+) = (\w+)', s)
             if m and not re.search(rf'\b{var}\b', s):
                 k += 1  # previous value of the accumulator
                 continue
@@ -305,6 +318,10 @@ def check_loop(var, body, used, neutral=None):
             m = re.fullmatch(r'(?:decimal\.Truncate\(|\(int\))?(\w+)\)? != (?:decimal\.Truncate\(|\(int\))?(\w+)\)?', c)
             if m and re.fullmatch(rf'\w+\.Add\({var}\);', inner_s):
                 k += 1  # value changed -> listed: a default keeps it unchanged
+                continue
+            m = re.fullmatch(r'\(?(\w+) != (\w+) \|\| (\w+) != (\w+)\)?', c)
+            if m and re.fullmatch(rf'\w+\.Add\({var}\);', inner_s):
+                k += 1  # either value changed -> listed: a default keeps both unchanged
                 continue
             m = re.fullmatch(r'(\w+) != (\w+)', c)
             if m and m.group(1) in neutral and m.group(2) == neutral[m.group(1)] and re.fullmatch(rf'\w+\.Add\({var}\);', inner_s):

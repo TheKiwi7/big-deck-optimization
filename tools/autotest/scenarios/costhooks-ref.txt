@@ -1,0 +1,17 @@
+# Which listeners of the keyword and energy cost hooks a combat with the reference run has (they keep piles from being trusted
+# by SnapshotCardReuse: every card is read at every co-op checksum).
+timeout 300
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 300
+wait 1
+cmd bdperf costhooks
+play 3
+waitfor idle 120
+cmd bdperf costhooks
+quit

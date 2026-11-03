@@ -1,0 +1,37 @@
+# Combat start parts at ~10,300 cards (probe): SetUpCombat against the pile adds it makes. Headless: shares, not frame times.
+timeout 400
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf segments verify off
+cmd bdperf probe on
+cmd bdperf probe hitch 1000
+enemyhp 999999
+wait 2
+cmd bdperf probe reset
+cmd fight CULTISTS_NORMAL
+waitfor idle 300
+cmd bdperf probe log
+cmd bdperf probe reset
+cmd fight CULTISTS_NORMAL
+wait 1
+cmd kill all
+waitfor nocombat 120
+wait 2
+cmd bdperf probe reset
+cmd fight CULTISTS_NORMAL
+waitfor idle 300
+cmd bdperf probe log
+quit

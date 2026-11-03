@@ -1,0 +1,22 @@
+# A whole run played by the auto player with about 10,300 cards (no relics: they would end every fight at once), mod on, uncapped:
+# what's left outside the scripted fights, by kind of step (tools/autotest/phasereport.py). Rendered: run.ps1, nothing else running.
+timeout 3400
+uncap
+framedetail
+autoslayfirst bigdeck import ref all cards
+autoslayfirst bigdeck import ref all cards
+autoslayfirst bigdeck import ref all cards
+autoslayfirst bigdeck import ref all cards
+autoslayfirst bigdeck import ref all cards
+autoslayfirst bigdeck import ref all cards
+autoslayfirst bigdeck import ref all cards
+autoslayfirst bigdeck import ref all cards
+autoslayfirst bigdeck import ref all cards
+autoslayfirst bigdeck import ref all cards
+autoslayfirst bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+autoslay 1234
+wait 3300
+quit

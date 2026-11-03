@@ -1,0 +1,253 @@
+# Co-op snapshot pieces against the game's own, same session: after each step, the optimized checksum then the vanilla one
+# ("checksum x" / "checksum x vanilla" must print the same value). ~4,700 cards + the reference relics, plays over turns (piles moving).
+timeout 1500
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 300
+wait 1
+checksum start
+checksum start vanilla
+cmd energy 50
+checksum t1 energy
+checksum t1 energy vanilla
+play 2
+waitfor idle 120
+checksum t1 p1
+checksum t1 p1 vanilla
+play 2
+waitfor idle 120
+checksum t1 p2
+checksum t1 p2 vanilla
+play 2
+waitfor idle 120
+checksum t1 p3
+checksum t1 p3 vanilla
+play 2
+waitfor idle 120
+checksum t1 p4
+checksum t1 p4 vanilla
+endturn
+waitfor idle 300
+checksum t1 end
+checksum t1 end vanilla
+cmd energy 50
+checksum t2 energy
+checksum t2 energy vanilla
+play 2
+waitfor idle 120
+checksum t2 p1
+checksum t2 p1 vanilla
+play 2
+waitfor idle 120
+checksum t2 p2
+checksum t2 p2 vanilla
+play 2
+waitfor idle 120
+checksum t2 p3
+checksum t2 p3 vanilla
+play 2
+waitfor idle 120
+checksum t2 p4
+checksum t2 p4 vanilla
+endturn
+waitfor idle 300
+checksum t2 end
+checksum t2 end vanilla
+cmd energy 50
+checksum t3 energy
+checksum t3 energy vanilla
+play 2
+waitfor idle 120
+checksum t3 p1
+checksum t3 p1 vanilla
+play 2
+waitfor idle 120
+checksum t3 p2
+checksum t3 p2 vanilla
+play 2
+waitfor idle 120
+checksum t3 p3
+checksum t3 p3 vanilla
+play 2
+waitfor idle 120
+checksum t3 p4
+checksum t3 p4 vanilla
+endturn
+waitfor idle 300
+checksum t3 end
+checksum t3 end vanilla
+cmd energy 50
+checksum t4 energy
+checksum t4 energy vanilla
+play 2
+waitfor idle 120
+checksum t4 p1
+checksum t4 p1 vanilla
+play 2
+waitfor idle 120
+checksum t4 p2
+checksum t4 p2 vanilla
+play 2
+waitfor idle 120
+checksum t4 p3
+checksum t4 p3 vanilla
+play 2
+waitfor idle 120
+checksum t4 p4
+checksum t4 p4 vanilla
+endturn
+waitfor idle 300
+checksum t4 end
+checksum t4 end vanilla
+cmd energy 50
+checksum t5 energy
+checksum t5 energy vanilla
+play 2
+waitfor idle 120
+checksum t5 p1
+checksum t5 p1 vanilla
+play 2
+waitfor idle 120
+checksum t5 p2
+checksum t5 p2 vanilla
+play 2
+waitfor idle 120
+checksum t5 p3
+checksum t5 p3 vanilla
+play 2
+waitfor idle 120
+checksum t5 p4
+checksum t5 p4 vanilla
+endturn
+waitfor idle 300
+checksum t5 end
+checksum t5 end vanilla
+cmd energy 50
+checksum t6 energy
+checksum t6 energy vanilla
+play 2
+waitfor idle 120
+checksum t6 p1
+checksum t6 p1 vanilla
+play 2
+waitfor idle 120
+checksum t6 p2
+checksum t6 p2 vanilla
+play 2
+waitfor idle 120
+checksum t6 p3
+checksum t6 p3 vanilla
+play 2
+waitfor idle 120
+checksum t6 p4
+checksum t6 p4 vanilla
+endturn
+waitfor idle 300
+checksum t6 end
+checksum t6 end vanilla
+cmd energy 50
+checksum t7 energy
+checksum t7 energy vanilla
+play 2
+waitfor idle 120
+checksum t7 p1
+checksum t7 p1 vanilla
+play 2
+waitfor idle 120
+checksum t7 p2
+checksum t7 p2 vanilla
+play 2
+waitfor idle 120
+checksum t7 p3
+checksum t7 p3 vanilla
+play 2
+waitfor idle 120
+checksum t7 p4
+checksum t7 p4 vanilla
+endturn
+waitfor idle 300
+checksum t7 end
+checksum t7 end vanilla
+cmd energy 50
+checksum t8 energy
+checksum t8 energy vanilla
+play 2
+waitfor idle 120
+checksum t8 p1
+checksum t8 p1 vanilla
+play 2
+waitfor idle 120
+checksum t8 p2
+checksum t8 p2 vanilla
+play 2
+waitfor idle 120
+checksum t8 p3
+checksum t8 p3 vanilla
+play 2
+waitfor idle 120
+checksum t8 p4
+checksum t8 p4 vanilla
+endturn
+waitfor idle 300
+checksum t8 end
+checksum t8 end vanilla
+cmd energy 50
+checksum t9 energy
+checksum t9 energy vanilla
+play 2
+waitfor idle 120
+checksum t9 p1
+checksum t9 p1 vanilla
+play 2
+waitfor idle 120
+checksum t9 p2
+checksum t9 p2 vanilla
+play 2
+waitfor idle 120
+checksum t9 p3
+checksum t9 p3 vanilla
+play 2
+waitfor idle 120
+checksum t9 p4
+checksum t9 p4 vanilla
+endturn
+waitfor idle 300
+checksum t9 end
+checksum t9 end vanilla
+cmd energy 50
+checksum t10 energy
+checksum t10 energy vanilla
+play 2
+waitfor idle 120
+checksum t10 p1
+checksum t10 p1 vanilla
+play 2
+waitfor idle 120
+checksum t10 p2
+checksum t10 p2 vanilla
+play 2
+waitfor idle 120
+checksum t10 p3
+checksum t10 p3 vanilla
+play 2
+waitfor idle 120
+checksum t10 p4
+checksum t10 p4 vanilla
+endturn
+waitfor idle 300
+checksum t10 end
+checksum t10 end vanilla
+effects end
+quit
