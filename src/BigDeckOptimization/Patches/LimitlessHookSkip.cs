@@ -6,6 +6,7 @@ using System.Reflection;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Saves.Runs;
 
 namespace BigDeckOptimization.Patches;
 
@@ -88,9 +89,29 @@ public static class LimitlessHookSkip
 
     private static long _version;
     private static readonly HashSet<Type> _known = new();
+
+    /// <summary>A copy of <see cref="_known"/>, never changed once published (replaced on each new type): read without the lock.</summary>
+    private static volatile HashSet<Type> _knownRead = new();
     private static readonly HashSet<string> _forwarded = new(Forwarders.Select(f => f.Method));
     private static Func<object, List<CardModel>>? _inner;
     private static MethodBase? _addEnchantment;
+
+    /// <summary>
+    /// Limitless 1.1.7's getter builds the inner cards from the saved list on first use (<c>CardModel.FromSerializable</c> each), and
+    /// every clone starts without them: noting a combat's clones built them all (~170 ms at a 20,000-card combat start). What a saved
+    /// entry gives is fixed by its card and enchantment ids (the game's deserializers, fingerprinted): once a (card, enchantment) pair
+    /// was seen built, its type is known, and a list holding only such pairs adds nothing.
+    /// </summary>
+    private const string InnerGetterFingerprint = "0AA01E688AC72C3C";
+    private const string CardFromSerializableFingerprint = "663431D80AC6CCDF";
+    private const string EnchantmentFromSerializableFingerprint = "F59AC9E4E33F6805";
+    private static AccessTools.FieldRef<object, List<CardModel>?>? _built;
+    private static AccessTools.FieldRef<object, List<SerializableCard>?>? _saved;
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(ModelId Card, ModelId Enchantment), byte> _seenPairs = new();
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<List<SerializableCard>, object> _pairsRecorded = new();
+
+    /// <summary>Notes answered from the saved list, without building the inner cards.</summary>
+    public static long NotesFromSaved { get; private set; }
 
     public static void Apply(Harmony harmony)
     {
@@ -118,6 +139,22 @@ public static class LimitlessHookSkip
         ParameterExpression model = Expression.Parameter(typeof(object));
         _inner = Expression.Lambda<Func<object, List<CardModel>>>(Expression.Call(Expression.Convert(model, multi), getter), model).Compile();
         _addEnchantment = add;
+        try
+        {
+            PatchSafety.RequireFingerprint(getter, InnerGetterFingerprint);
+            PatchSafety.RequireFingerprint(AccessTools.Method(typeof(CardModel), nameof(CardModel.FromSerializable)), CardFromSerializableFingerprint);
+            PatchSafety.RequireFingerprint(AccessTools.Method(typeof(EnchantmentModel), nameof(EnchantmentModel.FromSerializable)), EnchantmentFromSerializableFingerprint);
+            _built = AccessTools.FieldRefAccess<object, List<CardModel>?>(AccessTools.Field(multi, "_enchantmentsOnCards")
+                ?? throw new MissingFieldException(LimitlessReserialize.MultiEnchantmentType, "_enchantmentsOnCards"));
+            _saved = AccessTools.FieldRefAccess<object, List<SerializableCard>?>(AccessTools.Field(multi, "<SerializableEnchantmentsOnCards>k__BackingField")
+                ?? throw new MissingFieldException(LimitlessReserialize.MultiEnchantmentType, "SerializableEnchantmentsOnCards"));
+        }
+        catch (Exception e)
+        {
+            _built = null;
+            _saved = null;
+            Log.Info($"[{ModEntry.Id}] {Name}: inner enchantment types read from the built cards only: {e.Message}");
+        }
         PatchGuard.Patch(harmony, add, prefix: new HarmonyMethod(typeof(LimitlessHookSkip), nameof(BeforeAdd)),
             finalizer: new HarmonyMethod(typeof(LimitlessHookSkip), nameof(AfterAdd)));
         Multi = multi;
@@ -140,10 +177,21 @@ public static class LimitlessHookSkip
         return __exception;
     }
 
-    /// <summary>Records the types of a MultiEnchantment's inner enchantments.</summary>
+    /// <summary>
+    /// Records the types of a MultiEnchantment's inner enchantments. Runs for every card with one added to a pile (20,000 at a
+    /// combat start): types already known are found in a published copy, without the lock.
+    /// </summary>
     internal static void Note(AbstractModel multi)
     {
+        List<SerializableCard>? saved = _saved?.Invoke(multi);
+        if (saved != null && _built!(multi) == null && AllSeen(saved))
+        {
+            NotesFromSaved++;
+            return;
+        }
         List<CardModel> inner = _inner!(multi);
+        HashSet<Type> known = _knownRead;
+        Type? last = null;
         for (int i = 0; i < inner.Count; i++)
         {
             EnchantmentModel? enchantment = inner[i].Enchantment;
@@ -152,14 +200,56 @@ public static class LimitlessHookSkip
                 continue;
             }
             Type type = enchantment.GetType();
+            if (ReferenceEquals(type, last) || known.Contains(type))
+            {
+                last = type;
+                continue;
+            }
             lock (_known)
             {
                 if (_known.Add(type))
                 {
                     _version++;
+                    _knownRead = new HashSet<Type>(_known);
+                }
+            }
+            known = _knownRead;
+            last = type;
+        }
+        // Once their types are recorded above: the pairs built from this saved list (same count, same ids at each place), once
+        // per list (this runs at every move of a card holding one; a pair's type never changes, so a pair left out only means
+        // a later note builds the cards, as before).
+        saved = _saved?.Invoke(multi);
+        if (saved != null && saved.Count == inner.Count && !_pairsRecorded.TryGetValue(saved, out _))
+        {
+            _pairsRecorded.AddOrUpdate(saved, _pairsRecorded);
+            for (int i = 0; i < inner.Count; i++)
+            {
+                if (inner[i].Enchantment is { } built && saved[i] is { Id: { } cardId, Enchantment.Id: { } enchantmentId }
+                    && cardId == inner[i].Id && enchantmentId == built.Id)
+                {
+                    _seenPairs.TryAdd((cardId, enchantmentId), 0);
                 }
             }
         }
+    }
+
+    /// <summary>Whether every saved entry with an enchantment is a (card, enchantment) pair already seen built, its type recorded.</summary>
+    private static bool AllSeen(List<SerializableCard> saved)
+    {
+        for (int i = 0; i < saved.Count; i++)
+        {
+            SerializableCard card = saved[i];
+            if (card.Enchantment == null)
+            {
+                continue;
+            }
+            if (card.Id is not { } cardId || card.Enchantment.Id is not { } enchantmentId || !_seenPairs.ContainsKey((cardId, enchantmentId)))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     /// <summary>Whether Multi only forwards this hook, so it needs an inner enchantment overriding it to react.</summary>

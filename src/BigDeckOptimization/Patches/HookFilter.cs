@@ -320,6 +320,9 @@ public static class HookFilter
     /// <summary>Per (state, child) the filtered lists built by <see cref="Walked"/>, for one listener/pile version, dropped at scope end.</summary>
     [ThreadStatic] private static Dictionary<(object, object?), (int Version, long PileVersion, List<AbstractModel>?[] PerHook)>? _walked;
 
+    /// <summary>The size of each hook's last walked list (capacity of the next one).</summary>
+    [ThreadStatic] private static int[]? _lastWalked;
+
     /// <summary>
     /// The combat listeners of one hook in walk order, or null when filtering it isn't safe. Built from FastListeners'
     /// filtered walk (listeners outside piles + the pile entries overriding the hook, cached per pile version) instead
@@ -377,16 +380,28 @@ public static class HookFilter
         List<AbstractModel>? list = entry.PerHook[hook];
         if (list == null)
         {
-            list = new List<AbstractModel>();
+            // Sized as last time: thousands of entries grown by doubling were a copy each time the version changed.
+            _lastWalked ??= new int[_hooks.Length];
+            list = new List<AbstractModel>(_lastWalked[hook]);
             int bit = 1 << hook;
+            Type? lastType = null;
+            bool lastKept = false;
             foreach (AbstractModel listener in walk(_pileFilters![hook]))
             {
-                if ((OverrideMask(listener.GetType()) & bit) != 0)
+                // Listeners come in runs of one type (a pile's copies of a card): one lookup per run.
+                Type type = listener.GetType();
+                if (!ReferenceEquals(type, lastType))
+                {
+                    lastType = type;
+                    lastKept = (OverrideMask(type) & bit) != 0;
+                }
+                if (lastKept)
                 {
                     list.Add(listener);
                 }
             }
             entry.PerHook[hook] = list;
+            _lastWalked[hook] = list.Count;
 #if BENCH
             ListsFiltered++;
             if (ExtraScopes.BenchChecks && ++WalkChecks % 32 == 0)

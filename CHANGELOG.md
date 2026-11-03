@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.10.0
+
+- Co-op with huge decks: playing cards is much smoother. In my tests with two players at about 20,000 cards each, the slowest moments while playing cards quickly are now at about 90 to 130 fps instead of 55, and about 120 to 155 fps instead of 105 when playing with the mouse (your numbers will differ on another PC).
+- Long runs no longer get slower and slower: with BaseLib, every finished combat stayed in memory until the end of the run. In my tests with 10,300 cards, memory at the end of a run is about 260 MB instead of 1.2 GB, and starting an Act 3 combat takes about 0.5 s instead of up to 1.6 s.
+- Shorter freezes when entering a room: the game's memory cleanup after loading a room now runs in the background (about 0.1 to 0.25 s instead of 0.3 to 0.65 s in my tests with 10,300 cards).
+- With Limitless: combats start faster after the first one of a session (in my tests with 10,300 cards, preparing the deck takes about 0.14 s instead of 0.27 s).
+- No more error written to the game's log at every input when your settings still hold old controller actions that no longer exist (hundreds per card played).
+- Fixed: after a relic that changes card costs was removed (Spiked Gauntlets, for example), the co-op state check could differ from the game's own. Players who all have the mod got the same result on every side, so games didn't desync.
+
 ## v0.9.0
 
 - Much smoother combat with huge decks. In my tests with about 32,000 cards, playing cards now runs at about 170 fps instead of 65, and the slowest moments of an end of turn at about 120 fps instead of 17 (your numbers will differ on another PC).

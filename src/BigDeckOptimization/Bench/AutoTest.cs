@@ -474,7 +474,7 @@ public static partial class AutoTest
 
     private static void Say(string text) => Log.Info($"[{ModEntry.Id}] {Name} {_clock.Elapsed.TotalSeconds,7:F1}s {text}");
 
-    private static bool _continueOnFail, _turnLoopDied;
+    private static bool _continueOnFail, _turnLoopDied, _coopDiverged;
     private static ushort _port;
 
     private static void UseTestPort(ref ushort port) => port = _port;
@@ -515,6 +515,34 @@ public static partial class AutoTest
         _watchdogProgress = AccessTools.FieldRefAccess<DateTime>(typeof(MegaCrit.Sts2.Core.AutoSlay.Helpers.Watchdog), "_lastProgressTime");
         PatchGuard.Patch(ModEntry.Harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.AutoSlay.Helpers.Watchdog), "Check"), prefix: new HarmonyMethod(typeof(AutoTest), nameof(LongerAutoSlayWatchdog)));
         PatchGuard.Patch(ModEntry.Harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.AutoSlay.AutoSlayer), "HandleRoomAsync"), prefix: new HarmonyMethod(typeof(AutoTest), nameof(AutoSlayEntersRoom)));
+        PatchGuard.Patch(ModEntry.Harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.AutoSlay.Helpers.Watchdog), "Reset"), prefix: new HarmonyMethod(typeof(AutoTest), nameof(AutoSlayPhase)));
+    }
+
+    private static string? _phase;
+    private static long _phaseStart, _phaseCpu, _phaseBytes;
+    private static TimeSpan _phasePause;
+
+    /// <summary>
+    /// AutoSlay names what it's doing at each step (a room, a screen, the map, each card played): a <c>PHASE</c> line for the step
+    /// that ends, whatever the session's speed. <c>tools/autotest/phasereport.py</c> adds them up by kind of step.
+    /// </summary>
+    private static void AutoSlayPhase(string activity)
+    {
+        if (_phase != null && _frameMs.Count > 0)
+        {
+            double wall = Stopwatch.GetElapsedTime(_phaseStart).TotalMilliseconds;
+            double cpu = (MainThreadCpuTicks() - _phaseCpu) / 10000.0;
+            double mb = (GC.GetTotalAllocatedBytes(false) - _phaseBytes) / (1024.0 * 1024);
+            double gc = (GC.GetTotalPauseDuration() - _phasePause).TotalMilliseconds;
+            string frames = string.Join(",", _frameMs.Where(ms => ms > 8.33).Select(ms => ms.ToString("F0")));
+            Say($"  PHASE {_phase} | wall {wall:F0} frames {_frameMs.Count} worst {_frameMs.Max():F0} gc {gc:F0} mb {mb:F1} cpu {cpu:F0} long {frames}");
+        }
+        _frameMs.Clear();
+        _phase = activity;
+        _phaseStart = Stopwatch.GetTimestamp();
+        _phaseCpu = MainThreadCpuTicks();
+        _phaseBytes = GC.GetTotalAllocatedBytes(false);
+        _phasePause = GC.GetTotalPauseDuration();
     }
 
     // Its limits are only guards against a stuck game: no caller goes on after one. A fixed value, as one overload calls the other on
@@ -586,7 +614,12 @@ public static partial class AutoTest
     private static async Task Run(SceneTree tree)
     {
         // Logged when a combat's turn loop throws: the combat stays stuck, no wait on it can end.
-        Log.LogCallback += (_, text, _) => _turnLoopDied |= text.Contains("turn loop died");
+        Log.LogCallback += (_, text, _) =>
+        {
+            _turnLoopDied |= text.Contains("turn loop died");
+            // The client then leaves for the main menu and the host goes on alone: no wait on the other peer can end.
+            _coopDiverged |= text.Contains("State divergence message received");
+        };
         string[] lines = File.ReadAllLines(_script!);
         Say($"script {_script} ({lines.Length} lines)");
         await Until(tree, () => NGame.Instance?.MainMenu != null && ModEntry.AllApplied, 300, "menu");
@@ -747,6 +780,21 @@ public static partial class AutoTest
                 case "fpsstat":
                     FpsStat(arg.Trim());
                     break;
+                case "framedetail":
+                    FrameDetailOn(tree);
+                    break;
+                case "forcefocus":
+                    ForceFocus();
+                    break;
+                case "controllermap":
+                    ControllerMapDefault();
+                    break;
+                case "mousesweep":
+                    await MouseSweep(tree, double.Parse(arg));
+                    break;
+                case "mouseplay":
+                    await MousePlay(tree, int.Parse(arg));
+                    break;
                 case "hover":
                     Hover(int.Parse(arg));
                     break;
@@ -776,16 +824,20 @@ public static partial class AutoTest
                         (PileCounterBatch.Name, PileCounterBatch.Batched), (FastCombatStart.Name, FastCombatStart.SkippedWaits), (HoverTipReuse.Name, HoverTipReuse.Reused),
                         (FastListeners.Name + ".CombatWalk", FastListeners.CombatWalks), (FastListeners.Name + ".RunWalk", FastListeners.RunWalks),
                         (FastListeners.Name + ".Cache", FastListeners.SegmentHits + FastListeners.SegmentMoveHits), (FastListeners.Name + ".Moves", FastListeners.SegmentMoveHits + FastListeners.SnapshotCatchUps),
+                        (FastListeners.Name + ".Kinds", FastListeners.KindsSkipped), (FastListeners.Name + ".Others", FastListeners.OthersDropped),
                         (HookSkip.Name, HookSkip.FilteredWalks), (LimitlessReserialize.Name, LimitlessReserialize.Kept), (LimitlessRecalcSkip.Name + ".Memos", LimitlessRecalcSkip.Skipped), (LimitlessRecalcSkip.Name + ".Passes", LimitlessRecalcSkip.PassesSkipped),
-                        (SnapshotCardReuse.Name + ".Cards", SnapshotCardReuse.Reused), (SnapshotCardReuse.Name + ".Piles", SnapshotCardReuse.PilesReused + SnapshotCardReuse.PilesTrusted), (SnapshotCardReuse.Name + ".Trust", SnapshotCardReuse.PilesTrusted),
+                        (SnapshotCardReuse.Name + ".Cards", SnapshotCardReuse.Reused), (SnapshotCardReuse.Name + ".Piles", SnapshotCardReuse.PilesReused + SnapshotCardReuse.PilesTrusted), (SnapshotCardReuse.Name + ".Trust", SnapshotCardReuse.PilesTrusted), (SnapshotCardReuse.Name + ".Moved", SnapshotCardReuse.MovedReused), (SnapshotCardReuse.Name + ".Blocks", SnapshotCardReuse.BlockCopiedCards),
                         (SnapshotCardReuse.Name + ".CardBits", SnapshotCardReuse.BitsReused), (SnapshotCardReuse.Name + ".PileBits", SnapshotCardReuse.PileBitsReused + SnapshotCardReuse.PileBitsComposed),
-                        (LimitlessHookSkip.Name, LimitlessHookSkip.Dropped), (TextPoolReuse.Name, TextPoolReuse.Served), (ThemeColorSkip.Name, ThemeColorSkip.Skipped), (ReplayStateSkip.Name, ReplayStateSkip.Skipped),
+                        (LimitlessHookSkip.Name, LimitlessHookSkip.Dropped), (LimitlessHookSkip.Name + ".Saved", LimitlessHookSkip.NotesFromSaved), (LimitlessCloneMemo.Name, LimitlessCloneMemo.Reused), (TextPoolReuse.Name, TextPoolReuse.Served), (ThemeColorSkip.Name, ThemeColorSkip.Skipped), (ReplayStateSkip.Name, ReplayStateSkip.Skipped),
                         (GcPacing.Name, GcPacing.Regions), (RelicFlashMerge.Name, RelicFlashMerge.Merged), (CardFlightLimit.Name, CardFlightLimit.Skipped), (TypePlaqueSkip.Name, TypePlaqueSkip.Skipped),
-                        ("InlineGuard", InlineGuard.Protected),
+                        (ControllerActionSkip.Name, ControllerActionSkip.Skipped), (RoomCollect.Name, RoomCollect.Background), (PooledCardRelease.Name, PooledCardRelease.Released), (SavedPropertyLookup.Name, SavedPropertyLookup.Served), (RelicStateReuse.Name, RelicStateReuse.Reused), ("InlineGuard", InlineGuard.Protected),
                     })
                     {
                         Say($"EFFECT {name} {count}");
                     }
+                    Say("PILE READS " + string.Join(", ", SnapshotCardReuse.WhyRead.OrderByDescending(p => p.Value).Select(p => $"{p.Key} {p.Value}")));
+                    Say("WRITES " + string.Join(", ", SnapshotCardReuse.WritesByMethod.OrderByDescending(p => p.Value).Select(p => $"{p.Key} {p.Value}")));
+                    Say("PILE BITS " + string.Join(", ", SnapshotCardReuse.WhyPileBits.OrderByDescending(p => p.Value).Select(p => $"{p.Key} {p.Value}")));
                     // Nothing runs here: what a patch opens before a method and closes after it must be closed.
                     Say($"BALANCE {nameof(ListenerCache)}.OpenScopes {ListenerCache.OpenScopes}");
                     Say($"BALANCE {nameof(FastListeners)}.OpenShuffles {FastListeners.OpenShuffles}");
@@ -941,6 +993,10 @@ public static partial class AutoTest
                 _turnLoopDied = false;
                 throw new InvalidOperationException($"waitfor {what}: the combat's turn loop died ({StateText()})");
             }
+            if (_coopDiverged)
+            {
+                throw new InvalidOperationException($"waitfor {what}: the peers' states diverged ({StateText()})");
+            }
             if (_clock.Elapsed.TotalSeconds - start > timeout)
             {
                 throw new TimeoutException($"waitfor {what} timed out after {timeout:F0} s ({StateText()})");
@@ -952,6 +1008,14 @@ public static partial class AutoTest
     private static Task WaitFor(SceneTree node, string arg)
     {
         string[] parts = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts[0] == "round")
+        {
+            // waitfor round <n> [timeout]: the combat's round n has begun and this player can act (both peers ended the turn before),
+            // or the combat is over. "turn" doesn't wait for the other peer: a player who ended the turn is idle at once.
+            int round = int.Parse(parts[1]);
+            return Until(node, () => !CombatManager.Instance.IsInProgress
+                || (CombatManager.Instance.DebugOnlyGetState()?.RoundNumber >= round && IsIdle()), parts.Length > 2 ? double.Parse(parts[2]) : 120, "round " + round);
+        }
         double timeout = parts.Length > 1 ? double.Parse(parts[1]) : 120;
         Func<bool> condition = parts[0] switch
         {
@@ -1041,6 +1105,94 @@ public static partial class AutoTest
             _frameMs.Add(Stopwatch.GetElapsedTime(_lastFrame, now).TotalMilliseconds);
         }
         _lastFrame = now;
+        if (_frameDetail)
+        {
+            _frameStart = now;
+            int collections = GC.CollectionCount(0);
+            if (collections != _lastCollections)
+            {
+                _lastCollections = collections;
+                GCMemoryInfo info = GC.GetGCMemoryInfo(GCKind.Any);
+                Say($"  GCEVENT gen{info.Generation} concurrent {info.Concurrent} compacted {info.Compacted} pauses {info.PauseDurations[0].TotalMilliseconds:F0}+{info.PauseDurations[1].TotalMilliseconds:F0} ms, "
+                    + $"last frame {(_frameMs.Count > 0 ? _frameMs[^1] : 0):F0} ms, heap {info.HeapSizeBytes / (1024 * 1024)} MB, phase {_phase ?? "-"}");
+            }
+            Rid viewport = ((SceneTree)Engine.GetMainLoop()).Root.GetViewportRid();
+            _frameRenderCpu.Add(RenderingServer.ViewportGetMeasuredRenderTimeCpu(viewport) + RenderingServer.GetFrameSetupTimeCpu());
+            _frameRenderGpu.Add(RenderingServer.ViewportGetMeasuredRenderTimeGpu(viewport));
+            _frameDraws += Performance.GetMonitor(Performance.Monitor.RenderTotalDrawCallsInFrame);
+            _frameObjects += Performance.GetMonitor(Performance.Monitor.RenderTotalObjectsInFrame);
+        }
+    }
+
+    private static bool _frameDetail;
+    private static int _lastCollections;
+    private static readonly List<double> _frameProcess = new(), _frameDraw = new(), _frameRenderCpu = new(), _frameRenderGpu = new();
+    private static double _frameDraws, _frameObjects;
+    private static long _frameStart, _framePreDraw, _detailCpu, _detailBytes;
+    private static TimeSpan _detailPause;
+
+    /// <summary>Script <c>framedetail</c>: each <c>fpsstat</c> also logs a <c>FRAMES</c> line, where a frame's time goes.</summary>
+    private static void FrameDetailOn(SceneTree tree)
+    {
+        RenderingServer.ViewportSetMeasureRenderTime(tree.Root.GetViewportRid(), true);
+        // Godot's own TimeProcess monitor is the highest value of the last second, not this frame's: the frame's own timeline instead.
+        // process_frame -> scripts, deferred calls, the game's awaits -> frame_pre_draw -> rendering -> frame_post_draw -> present, input.
+        RenderingServer.FramePreDraw += () =>
+        {
+            _framePreDraw = Stopwatch.GetTimestamp();
+            if (_frameStart != 0)
+            {
+                _frameProcess.Add(Stopwatch.GetElapsedTime(_frameStart, _framePreDraw).TotalMilliseconds);
+            }
+        };
+        RenderingServer.FramePostDraw += () =>
+        {
+            if (_framePreDraw != 0)
+            {
+                _frameDraw.Add(Stopwatch.GetElapsedTime(_framePreDraw).TotalMilliseconds);
+            }
+        };
+        _frameDetail = true;
+        FrameDetailReset();
+    }
+
+    private static void FrameDetailReset()
+    {
+        _frameProcess.Clear();
+        _frameDraw.Clear();
+        _frameRenderCpu.Clear();
+        _frameRenderGpu.Clear();
+        _frameDraws = _frameObjects = 0;
+        _detailCpu = MainThreadCpuTicks();
+        _detailBytes = GC.GetTotalAllocatedBytes(false);
+        _detailPause = GC.GetTotalPauseDuration();
+    }
+
+    private static double Percentile(double[] sorted, double fraction) => sorted.Length == 0 ? 0 : sorted[Math.Min(sorted.Length - 1, (int)(sorted.Length * fraction))];
+
+    /// <summary>
+    /// Where the frames of an fpsstat window went, in ms per frame: the process step (scripts, the game's awaits, a GC pause they
+    /// meet), the draw step on the main thread (of which rendercpu is the renderer's own measure), and the rest (present, driver,
+    /// input, physics); GPU time apart, it runs alongside. Main thread CPU against wall time tells a frame that works from one
+    /// that waits.
+    /// </summary>
+    private static void FrameDetail(string label, double[] sorted)
+    {
+        double[] process = _frameProcess.OrderBy(ms => ms).ToArray();
+        double[] draw = _frameDraw.OrderBy(ms => ms).ToArray();
+        double[] cpu = _frameRenderCpu.OrderBy(ms => ms).ToArray();
+        double[] gpu = _frameRenderGpu.OrderBy(ms => ms).ToArray();
+        double total = sorted.Sum();
+        int frames = Math.Max(process.Length, 1);
+        double rest = total / sorted.Length - process.Sum() / frames - draw.Sum() / Math.Max(draw.Length, 1);
+        double mainCpu = (MainThreadCpuTicks() - _detailCpu) / 10000.0;
+        Say($"  FRAMES {label}: p50 {Percentile(sorted, 0.5):F2} p90 {Percentile(sorted, 0.9):F2} p99 {Percentile(sorted, 0.99):F2} p999 {Percentile(sorted, 0.999):F2} "
+            + $"over8 {sorted.Count(ms => ms > 8.33)} over16 {sorted.Count(ms => ms > 16.67)} "
+            + $"process avg {process.Sum() / frames:F2} p99 {Percentile(process, 0.99):F2} max {(process.Length > 0 ? process[^1] : 0):F1} "
+            + $"draw avg {draw.Sum() / Math.Max(draw.Length, 1):F2} p99 {Percentile(draw, 0.99):F2} max {(draw.Length > 0 ? draw[^1] : 0):F1} "
+            + $"rendercpu avg {cpu.Sum() / Math.Max(cpu.Length, 1):F2} gpu avg {gpu.Sum() / Math.Max(gpu.Length, 1):F2} p99 {Percentile(gpu, 0.99):F2} rest avg {rest:F2} "
+            + $"maincpu {mainCpu * 100 / Math.Max(total, 1):F0}% draws {_frameDraws / frames:F0} objects {_frameObjects / frames:F0} "
+            + $"nodes {Performance.GetMonitor(Performance.Monitor.ObjectNodeCount):F0} mb {(GC.GetTotalAllocatedBytes(false) - _detailBytes) / (1024.0 * 1024):F1} gc {(GC.GetTotalPauseDuration() - _detailPause).TotalMilliseconds:F0}");
     }
 
     /// <summary>
@@ -1057,8 +1209,16 @@ public static partial class AutoTest
             Say($"  FPSSTAT {label}: {sorted.Length} frames in {total / 1000:F1} s, avg {sorted.Length * 1000 / total:F0} fps, " +
                 $"1% low {1000 / p99:F0} fps, worst {sorted[^1]:F0} ms, over 33 ms {sorted.Count(ms => ms > 33)}, " +
                 $"over 50 ms {sorted.Count(ms => ms > 50)}, over 100 ms {sorted.Count(ms => ms > 100)}");
+            if (_frameDetail)
+            {
+                FrameDetail(label, sorted);
+            }
         }
         _frameMs.Clear();
+        if (_frameDetail)
+        {
+            FrameDetailReset();
+        }
     }
 
     /// <summary>
@@ -1322,9 +1482,16 @@ public static partial class AutoTest
     private static async Task Play(SceneTree node, int count)
     {
         int played = 0;
+        string? last = null;
+        long lastStart = 0;
         for (int i = 0; i < count; i++)
         {
             await Until(node, () => !CombatManager.Instance.IsInProgress || IsIdle(), 120, "idle"); // stops once the combat is over
+            if (last != null)
+            {
+                // From the click to when the player can act again: what a player waits for, animations included.
+                Say($"  PLAYTIME {last} {Stopwatch.GetElapsedTime(lastStart).TotalMilliseconds:F0} ms");
+            }
             Player? me = Me();
             CombatState? combat = CombatManager.Instance.DebugOnlyGetState();
             if (!CombatManager.Instance.IsInProgress || me?.PlayerCombatState == null || combat == null)
@@ -1340,6 +1507,8 @@ public static partial class AutoTest
             }
             Creature? target = card.CanPlayTargeting(enemy) ? enemy : null;
             Say($"  play {card.Id.Entry} -> {target?.ToString() ?? "no target"}");
+            last = card.Id.Entry;
+            lastStart = Stopwatch.GetTimestamp();
             if (!card.TryManualPlay(target))
             {
                 break;

@@ -64,6 +64,12 @@ public class PerfConsoleCmd : AbstractConsoleCmd
                 return CompareChecksum(iterations);
             case "verify":
                 return Verify(args.Length >= 2 ? args[1] : null);
+            case "blocks" when args.Length >= 2:
+                SnapshotCardReuse.BlockCopies = args[1] == "on";
+                return new CmdResult(success: true, $"{SnapshotCardReuse.Name}: unchanged runs of a pile's cards {(SnapshotCardReuse.BlockCopies ? "copied as blocks" : "composed card by card")}; {SnapshotCardReuse.BlockCopiedCards} cards copied in blocks so far.");
+            case "relicreuse" when args.Length >= 3 && args[1] == "blind":
+                RelicStateReuse.BlindForTest = args[2] == "on";
+                return new CmdResult(success: true, $"{RelicStateReuse.Name}: saved properties {(RelicStateReuse.BlindForTest ? "taken as unchanged (test)" : "compared")}; reused {RelicStateReuse.Reused}, built {RelicStateReuse.Built}.");
             case "grid":
                 int tabCards = args.Length >= 2 && int.TryParse(args[1], out int g) && g > 0 ? g : 100;
                 return GridBench.Run(tabCards);
@@ -78,6 +84,25 @@ public class PerfConsoleCmd : AbstractConsoleCmd
                 return ComparePile();
             case "text":
                 return CompareText();
+            case "scan":
+                return CompareScan();
+            case "costhooks":
+                // Who keeps SnapshotCardReuse from trusting piles: the listeners of the keyword and energy cost hooks in this combat.
+                if (CombatManager.Instance.DebugOnlyGetState() is not { } costCombat)
+                {
+                    return new CmdResult(success: false, "Start a combat first.");
+                }
+                string Types(int hook)
+                {
+                    ListenerCache.InvokeStateChangedInScope(_ => _costList = HookFilter.ForCombat(costCombat, hook), costCombat);
+                    return _costList is { } list
+                    ? $"{list.Count}: " + string.Join(", ", list.GroupBy(m => m.GetType().Name).Select(g => $"{g.Key} x{g.Count()}"))
+                    : "not filtered";
+                }
+                return new CmdResult(success: true, $"keywords {Types(HookFilter.Keywords)} | cost {Types(HookFilter.EnergyCost)} | cost late {Types(HookFilter.EnergyCostLate)}");
+            case "snapmoved" when args.Length >= 2 && args[1] is "on" or "off":
+                SnapshotCardReuse.MovedPiles = args[1] == "on";
+                return new CmdResult(success: true, $"{SnapshotCardReuse.Name} moved piles {args[1]}.");
             case "plaque":
                 int plaqueCards = args.Length >= 2 && int.TryParse(args[1], out int pc) && pc > 0 ? pc : 200;
                 return CompareTypePlaque(plaqueCards);
@@ -149,6 +174,48 @@ public class PerfConsoleCmd : AbstractConsoleCmd
     /// bdperf listeners [n]: the combat and run (with the combat as child) listener sequences, FastListeners off then
     /// on: the same objects in the same order, and the time of n full walks each.
     /// </summary>
+    /// <summary>
+    /// <c>bdperf scan</c>: reading <c>Keywords</c> of every card of the draw pile, as Catastrophe, Uproar or Hidden Gem do outside any
+    /// scope: vanilla walk, filtered walk, filtered walk leaving out kinds of listener. Same keywords for every card, or it says so.
+    /// </summary>
+    private static List<AbstractModel>? _costList;
+
+    private static CmdResult CompareScan()
+    {
+        if (!CombatManager.Instance.IsInProgress || RunManager.Instance.DebugOnlyGetState() is not { } run || LocalContext.GetMe(run) is not { } me)
+        {
+            return new CmdResult(success: false, "Start a combat first.");
+        }
+        List<CardModel> cards = PileType.Draw.GetPile(me).Cards.ToList();
+        (double Ms, List<string> Sets) Scan()
+        {
+            Stopwatch sw = Stopwatch.StartNew();
+            foreach (CardModel card in cards)
+            {
+                _ = card.Keywords.Contains(CardKeyword.Unplayable);
+            }
+            double ms = sw.Elapsed.TotalMilliseconds;
+            return (ms, cards.Select(c => string.Join(",", c.Keywords.OrderBy(k => k))).ToList());
+        }
+        bool kinds = FastListeners.KindSkipEnabled;
+        try
+        {
+            (double Ms, List<string> Sets) vanilla = ListenerCache.RunVanilla(Scan);
+            FastListeners.KindSkipEnabled = false;
+            Scan();
+            (double Ms, List<string> Sets) filtered = Scan();
+            FastListeners.KindSkipEnabled = true;
+            Scan();
+            (double Ms, List<string> Sets) skipped = Scan();
+            bool same = vanilla.Sets.SequenceEqual(filtered.Sets) && vanilla.Sets.SequenceEqual(skipped.Sets);
+            return new CmdResult(success: true, $"keyword scan of {cards.Count} cards: vanilla {vanilla.Ms:F1} ms, filtered {filtered.Ms:F1} ms, kinds left out {skipped.Ms:F1} ms; keywords {(same ? "identical" : "DIFFERENT")}");
+        }
+        finally
+        {
+            FastListeners.KindSkipEnabled = kinds;
+        }
+    }
+
     private static CmdResult CompareListeners(int iterations)
     {
         RunState? run = RunManager.Instance.DebugOnlyGetState();
@@ -379,6 +446,12 @@ public class PerfConsoleCmd : AbstractConsoleCmd
 
     private static CmdResult Verify(string? mode)
     {
+        // "check": fails when a snapshot differed, so a scenario's cmd line ends the session there.
+        if (mode == "check")
+        {
+            return new CmdResult(success: SnapshotVerifier.Mismatches == 0 && SnapshotVerifier.Verified > 0,
+                $"verified {SnapshotVerifier.Verified}, mismatches {SnapshotVerifier.Mismatches}");
+        }
         if (mode != null)
         {
             if (!TryParseEnum(mode, out VerifyMode parsed))

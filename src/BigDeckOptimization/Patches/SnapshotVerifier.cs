@@ -113,6 +113,9 @@ public static class SnapshotVerifier
             if (diffAt >= 0)
             {
                 Mismatches++;
+#if BENCH
+                NetFullCombatState optimizedState = __result;
+#endif
                 __result = vanilla;
                 ListenerCache.SnapshotEnabled = false;
                 HookFilter.Enabled = false;
@@ -123,6 +126,22 @@ public static class SnapshotVerifier
                 Log.Error($"[{ModEntry.Id}] {Name}: optimized snapshot differs from vanilla at byte {diffAt} "
                     + $"(lengths {optimizedLength} vs {vanillaLength}, action {justFinishedAction}). "
                     + "Using vanilla snapshot; snapshot optimizations disabled for this session. Please report this log.");
+#if BENCH
+                // Which state lines differ (the game's own dump format, as on a co-op divergence).
+                string[] mine = optimizedState.ToString().Split('\n');
+                string[] theirs = vanilla.ToString().Split('\n');
+                int shown = 0;
+                for (int i = 0; i < Math.Max(mine.Length, theirs.Length) && shown < 20; i++)
+                {
+                    string a = i < mine.Length ? mine[i] : "<none>";
+                    string b = i < theirs.Length ? theirs[i] : "<none>";
+                    if (a != b)
+                    {
+                        Log.Error($"[{ModEntry.Id}] {Name}: line {i}: optimized '{a.Trim()}' vanilla '{b.Trim()}' (previous line '{(i > 0 && i - 1 < theirs.Length ? theirs[i - 1].Trim() : "")}')");
+                        shown++;
+                    }
+                }
+#endif
             }
         }
         catch (Exception e)

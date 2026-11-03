@@ -63,7 +63,6 @@ public static class PerfProbe
     public static void Apply(Harmony harmony)
     {
         // Sync: CPU time on the calling thread.
-        Probe(harmony, AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.Pile)), "CardModel.Pile");
         Probe(harmony, AccessTools.Method(typeof(CardPile), nameof(CardPile.AddInternal)), "CardPile.AddInternal");
         Probe(harmony, AccessTools.Method(typeof(CardPile), nameof(CardPile.RemoveInternal)), "CardPile.RemoveInternal");
         Probe(harmony, AccessTools.Method(typeof(CardPile), nameof(CardPile.Clear)), "CardPile.Clear");
@@ -76,6 +75,26 @@ public static class PerfProbe
         Probe(harmony, AccessTools.Method(typeof(NCardGrid), nameof(NCardGrid.SetCards)), "NCardGrid.SetCards");
         Probe(harmony, AccessTools.Method(typeof(NCard), nameof(NCard.FindOnTable)), "NCard.FindOnTable");
         Probe(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Entities.Multiplayer.NetFullCombatState), "FromRun"), "NetFullCombatState.FromRun (co-op checksum)");
+        // What one action costs after it (frames of a play): checksum, state refresh and its parts, hover.
+        Probe(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Multiplayer.Game.ChecksumTracker), nameof(MegaCrit.Sts2.Core.Multiplayer.Game.ChecksumTracker.GenerateChecksum), new[] { typeof(string), typeof(MegaCrit.Sts2.Core.GameActions.GameAction) }), "ChecksumTracker.GenerateChecksum");
+        Probe(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Entities.Multiplayer.NetFullCombatState.CombatPileState), "From"), "CombatPileState.From (one pile)");
+        Probe(harmony, AccessTools.Method(typeof(RelicModel), nameof(RelicModel.ToSerializable)), "RelicModel.ToSerializable");
+        Probe(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Entities.Multiplayer.NetFullCombatState), "Serialize"), "NetFullCombatState.Serialize");
+        Probe(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState), "RecalculateCardValues"), "PlayerCombatState.RecalculateCardValues");
+        Probe(harmony, AccessTools.Method(typeof(NPlayerHand), "OnCombatStateChanged"), "NPlayerHand.OnCombatStateChanged");
+        Probe(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Cards.Holders.NHandCardHolder), "UpdateCard"), "NHandCardHolder.UpdateCard");
+        Probe(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Orbs.NOrbManager), "UpdateVisuals"), "NOrbManager.UpdateVisuals");
+        Probe(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Combat.NEndTurnButton), "StartOrStopPulseVfx"), "NEndTurnButton.StartOrStopPulseVfx");
+        Probe(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Combat.NIntent), "UpdateVisuals"), "NIntent.UpdateVisuals");
+        Probe(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Combat.NCreatureStateDisplay), "RefreshValues"), "NCreatureStateDisplay.RefreshValues");
+        Probe(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.HoverTips.NHoverTipSet), nameof(MegaCrit.Sts2.Core.Nodes.HoverTips.NHoverTipSet.CreateAndShow),
+            new[] { typeof(Godot.Control), typeof(IEnumerable<MegaCrit.Sts2.Core.HoverTips.IHoverTip>), typeof(MegaCrit.Sts2.Core.HoverTips.HoverTipAlignment) }), "NHoverTipSet.CreateAndShow");
+        Probe(harmony, AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.HoverTips)), "CardModel.HoverTips");
+        Probe(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Combat.CombatStateTracker), "CallCombatStateChangedDeferred"), "CombatStateTracker.CallCombatStateChangedDeferred");
+        if (AccessTools.TypeByName("BetterSpire2.DamageTracker") is { } tracker)
+        {
+            Probe(harmony, AccessTools.Method(tracker, "Recalculate"), "BetterSpire2 DamageTracker.Recalculate");
+        }
 
         // Async: first slice (until the first await) + wall time until the task completes (includes animations).
         Probe(harmony, AccessTools.Method(typeof(CombatManager), nameof(CombatManager.EndCombatInternal)), "CombatManager.EndCombatInternal");
@@ -233,7 +252,7 @@ public static class PerfProbe
         {
             if (Enabled && frameMs >= HitchMs)
             {
-                string top = string.Join(", ", _frameMs.OrderByDescending(p => p.Value).Take(5).Select(p => $"{p.Key} {p.Value:F0}"));
+                string top = string.Join(", ", _frameMs.OrderByDescending(p => p.Value).Take(8).Select(p => $"{p.Key} {p.Value:F1}"));
                 string line = $"hitch {frameMs:F0} ms (GC {gcMs:F0} ms, {CardCounts()}): {(top.Length > 0 ? top : "no probe")}";
                 _hitches.Add($"{DateTime.Now:HH:mm:ss} {line}");
                 if (_hitches.Count > 200)

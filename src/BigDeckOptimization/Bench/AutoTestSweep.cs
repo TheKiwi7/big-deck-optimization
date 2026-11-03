@@ -86,17 +86,19 @@ public static partial class AutoTest
         _frameMs.Clear();
         TimeSpan pause = GC.GetTotalPauseDuration();
         long allocated = GC.GetTotalAllocatedBytes(false);
+        long cpu = MainThreadCpuTicks();
         long start = Stopwatch.GetTimestamp();
         await body();
         await SweepSettle(tree);
         double wall = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        double cpuMs = (MainThreadCpuTicks() - cpu) / 10000.0;
         double worst = _frameMs.Count > 0 ? _frameMs.Max() : 0;
         int over50 = _frameMs.Count(ms => ms > 50);
         double gc = (GC.GetTotalPauseDuration() - pause).TotalMilliseconds;
         long bytes = GC.GetTotalAllocatedBytes(false) - allocated;
         int cards = Me()?.PlayerCombatState?.AllPiles.Sum(p => p.Cards.Count) ?? 0;
         int deck = Me()?.Deck.Cards.Count ?? 0;
-        Say($"  SWEEP {kind} {id} {step} wall {wall:F0} worst {worst:F0} over50 {over50} gc {gc:F0} mb {bytes / (1024.0 * 1024):F1} combat {cards} deck {deck}");
+        Say($"  SWEEP {kind} {id} {step} wall {wall:F0} worst {worst:F0} over50 {over50} gc {gc:F0} mb {bytes / (1024.0 * 1024):F1} combat {cards} deck {deck} cpu {cpuMs:F0}");
         if (_sweepChecksum)
         {
             LogChecksum($"{kind} {id} {step}");
@@ -108,11 +110,30 @@ public static partial class AutoTest
         }
     }
 
-    /// <summary>Until the player can act again, the combat is over, or the item timeout.</summary>
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentThread();
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern bool GetThreadTimes(IntPtr thread, out long creation, out long exit, out long kernel, out long user);
+
+    /// <summary>CPU time of the calling thread in 100 ns ticks: unlike wall time it holds with sessions sharing the cores.</summary>
+    private static long MainThreadCpuTicks() => GetThreadTimes(GetCurrentThread(), out _, out _, out long kernel, out long user) ? kernel + user : 0;
+
+    /// <summary>
+    /// Until the player can act again, the combat is over, or the item timeout. A screen showing changed cards (Pandora's Box's
+    /// transformed Strikes and Defends) waits for its confirm button: closed as that button does (UI only, the cards are already changed).
+    /// </summary>
     private static async Task SweepSettle(SceneTree tree)
     {
         await Frames(tree, 2);
-        await Until(tree, () => IsIdle() || !CombatManager.Instance.IsInProgress, SweepItemTimeout, "settled");
+        await Until(tree, () =>
+        {
+            if (MegaCrit.Sts2.Core.Nodes.Screens.Capstones.NCapstoneContainer.Instance is { CurrentCapstoneScreen: MegaCrit.Sts2.Core.Nodes.Screens.NSimpleCardsViewScreen } capstone)
+            {
+                capstone.Close();
+            }
+            return IsIdle() || !CombatManager.Instance.IsInProgress;
+        }, SweepItemTimeout, "settled");
     }
 
     /// <summary>A combat with an empty hand and energy to spare, whatever the last item did.</summary>

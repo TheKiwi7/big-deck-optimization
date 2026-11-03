@@ -40,6 +40,7 @@ public static class ModEntry
         (LimitlessRecalcSkip.Name, LimitlessRecalcSkip.Apply),
         (SnapshotCardReuse.Name, SnapshotCardReuse.Apply),
         (LimitlessHookSkip.Name, LimitlessHookSkip.Apply),
+        (LimitlessCloneMemo.Name, LimitlessCloneMemo.Apply),
         (TextPoolReuse.Name, TextPoolReuse.Apply),
         (ThemeColorSkip.Name, ThemeColorSkip.Apply),
         (ReplayStateSkip.Name, ReplayStateSkip.Apply),
@@ -47,6 +48,11 @@ public static class ModEntry
         (RelicFlashMerge.Name, RelicFlashMerge.Apply),
         (CardFlightLimit.Name, CardFlightLimit.Apply),
         (TypePlaqueSkip.Name, TypePlaqueSkip.Apply),
+        (ControllerActionSkip.Name, ControllerActionSkip.Apply),
+        (RoomCollect.Name, RoomCollect.Apply),
+        (PooledCardRelease.Name, PooledCardRelease.Apply),
+        (SavedPropertyLookup.Name, SavedPropertyLookup.Apply),
+        (RelicStateReuse.Name, RelicStateReuse.Apply),
     });
 
     /// <summary>Time given to patching per frame: each patched method takes ~1.5 ms, ~400 ms in all.</summary>

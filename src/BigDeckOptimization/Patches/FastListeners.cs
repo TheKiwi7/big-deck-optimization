@@ -69,9 +69,133 @@ public static class FastListeners
     /// <summary>Set by <see cref="HookSkip"/> just before a hook calls RunState.IterateHookListeners; taken by that call.</summary>
     [ThreadStatic] internal static PileFilter? PendingRunFilter;
 
+    /// <summary>Filtered walks also leave out what isn't in a pile (relics, potions, orbs, powers...) when its type doesn't react.</summary>
+    public static bool KindSkipEnabled { get; set; } = true;
+#if BENCH
+    /// <summary>Kinds of listener left out of a walk as a whole, and listeners outside piles left out one by one (the effects check).</summary>
+    public static long KindsSkipped { get; internal set; }
+    public static long OthersDropped { get; internal set; }
+#endif
+
     /// <summary>
-    /// Which pile entries (cards, their enchantment/affliction, deck cards) a hook needs: those whose type reacts to it.
-    /// Every other listener (powers, relics, potions, orbs, monsters, modifiers, mod subscribers) is always kept.
+    /// The types of each kind of listener outside piles, from every loaded assembly: a kind none of whose types reacts to a hook
+    /// needs no look at its objects. Scanned once, and again when an assembly loads later.
+    /// </summary>
+    private static class ListenerKinds
+    {
+        internal const int Relics = 0, Potions = 1, Orbs = 2, Count = 3;
+        private static readonly Type[] _bases = { typeof(RelicModel), typeof(PotionModel), typeof(OrbModel) };
+        private static List<Type>[]? _types;
+        private static int _stamp;
+        /// <summary>Set when an assembly loads: types are then looked for again. Asking for the assembly list at each walk allocated it each time.</summary>
+        private static volatile bool _stale = true;
+        private static bool _listening;
+
+        /// <summary>Changes when types may have been added: answers per filter are then asked again.</summary>
+        internal static int Stamp
+        {
+            get
+            {
+                Refresh();
+                return _stamp;
+            }
+        }
+
+        private static void Refresh()
+        {
+            if (!_stale)
+            {
+                return;
+            }
+            if (!_listening)
+            {
+                _listening = true;
+                // Not for the dynamic ones Harmony and others make: they hold no model types.
+                AppDomain.CurrentDomain.AssemblyLoad += (_, args) => _stale |= !args.LoadedAssembly.IsDynamic;
+            }
+            _stale = false;
+            var found = new List<Type>[Count];
+            for (int i = 0; i < Count; i++)
+            {
+                found[i] = new List<Type>();
+            }
+            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                if (assembly.IsDynamic || assembly.FullName is not { } name || name.StartsWith("System", StringComparison.Ordinal) || name.StartsWith("Microsoft", StringComparison.Ordinal) || name.StartsWith("Godot", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                Type?[] types;
+                try
+                {
+                    types = assembly.GetTypes();
+                }
+                catch (ReflectionTypeLoadException e)
+                {
+                    // Types it couldn't load can't be instantiated either.
+                    types = e.Types;
+                }
+                catch
+                {
+                    continue;
+                }
+                foreach (Type? type in types)
+                {
+                    if (type == null || type.IsAbstract)
+                    {
+                        continue;
+                    }
+                    for (int i = 0; i < Count; i++)
+                    {
+                        if (type.IsSubclassOf(_bases[i]))
+                        {
+                            found[i].Add(type);
+                        }
+                    }
+                }
+            }
+            _types = found;
+            _stamp++;
+        }
+
+        internal static bool Any(int kind, PileFilter filter)
+        {
+            Refresh();
+            foreach (Type type in _types![kind])
+            {
+                if (filter.TypeReacts(type))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    /// <summary>Adds these listeners of one kind, without those whose type doesn't react: only reads their type, then calls nothing on them.</summary>
+    private static void AddReacting<T>(List<AbstractModel> list, IReadOnlyList<T> models, PileFilter? filter) where T : AbstractModel
+    {
+        for (int i = 0; i < models.Count; i++)
+        {
+            T model = models[i];
+            if (filter == null || !KindSkipEnabled || filter.Keeps(model))
+            {
+                list.Add(model);
+            }
+#if BENCH
+            else
+            {
+                OthersDropped++;
+            }
+#endif
+        }
+    }
+
+    /// <summary>
+    /// Which listeners a hook needs: those whose type reacts to it. Pile entries (cards, their enchantment/affliction, deck cards) come
+    /// from cached segments; the others (powers, relics, potions, orbs, monsters, modifiers) are looked at in the walk, or not at all when
+    /// no type of their kind reacts. Mod subscribers are always kept. A listener keeping a hook's defaults does nothing in it, whatever
+    /// its kind (what <c>tools/hookskip</c> checks of each hook), so the walk gives the same result in the same order.
     /// </summary>
     public sealed class PileFilter
     {
@@ -176,7 +300,7 @@ public static class FastListeners
                 SegmentMoveHits++;
 #endif
                 segment.Version = PileVersion;
-                if (Environment.TickCount64 >= _nextMoveCheck)
+                if (CheckDue(_nextMoveCheck))
                 {
                     _nextMoveCheck = Environment.TickCount64 + SubscriptionCheckMs;
                     CheckMoveHit(segment, piles, withAfflictions);
@@ -213,7 +337,7 @@ public static class FastListeners
                 segment.Unscoped = UnscopedVersion;
                 segment.Moves = SubscribedMoves;
             }
-            else if (_keepSubscribed && Environment.TickCount64 >= _nextSubscriberCheck)
+            else if (_keepSubscribed && CheckDue(_nextSubscriberCheck))
             {
                 _nextSubscriberCheck = Environment.TickCount64 + SubscriptionCheckMs;
                 CheckSubscribers(segment, key, piles, withAfflictions);
@@ -561,7 +685,12 @@ public static class FastListeners
                 SyncMulti();
             }
             bool reacts;
-            if (ReferenceEquals(_lastFilter, this) && _lastType == type)
+            if (Environment.CurrentManagedThreadId == _mainThread)
+            {
+                // Per type id, an array read: the walks outside scopes ask this for every relic, potion, power and monster.
+                reacts = Reacts(TypeIdOf(type));
+            }
+            else if (ReferenceEquals(_lastFilter, this) && _lastType == type)
             {
                 reacts = _lastReacts;
             }
@@ -577,6 +706,102 @@ public static class FastListeners
                 reacts = !MultiDoesNothing(model);
             }
             return reacts || (_keepSubscribed && _executionFinished!(model) != null);
+        }
+
+        /// <summary>Per kind of listener outside piles: 0 unknown, 1 some type reacts, -1 none does.</summary>
+        private readonly sbyte[] _kindReacts = new sbyte[ListenerKinds.Count];
+        private int _kindReactsStamp = -1;
+
+        /// <summary>
+        /// Whether a whole kind of listener can be left out of a walk: no loaded type of it reacts to this hook, so a run's
+        /// hundreds of relics aren't even looked at. Never for filters keeping ExecutionFinished subscribers (those depend on each object).
+        /// </summary>
+        internal bool Skips(int kind)
+        {
+            if (_keepSubscribed || !KindSkipEnabled)
+            {
+                return false;
+            }
+            int stamp = ListenerKinds.Stamp;
+            if (stamp != _kindReactsStamp)
+            {
+                Array.Clear(_kindReacts);
+                _kindReactsStamp = stamp;
+            }
+            sbyte known = _kindReacts[kind];
+            if (known == 0)
+            {
+                known = ListenerKinds.Any(kind, this) ? (sbyte)1 : (sbyte)-1;
+                _kindReacts[kind] = known;
+            }
+#if BENCH
+            if (known < 0)
+            {
+                KindsSkipped++;
+            }
+#endif
+            return known < 0;
+        }
+
+        /// <summary>Whether this type reacts, cached per filter: no subscriber check, no stacked enchantment check.</summary>
+        internal bool TypeReacts(Type type) => Environment.CurrentManagedThreadId == _mainThread ? Reacts(TypeIdOf(type)) : _byType.GetOrAdd(type, _reacts);
+
+        /// <summary>Whether each relic of a player's relic list reacts to this filter's hook, and the list's version then (main thread only).</summary>
+        private sealed class KeptRelics
+        {
+            public List<RelicModel>? Source;
+            public int Version;
+            public bool[] Reacts = Array.Empty<bool>();
+        }
+
+        private readonly ConditionalWeakTable<Player, KeptRelics> _relics = new();
+
+        /// <summary>
+        /// The player's relics (not melted) that <see cref="Keeps"/> keeps, in order. Which types react never changes for a filter, so
+        /// that is only looked up again when the relic list changed (its <c>List</c> version: every add, insert, removal or set bumps
+        /// it); a filter keeping subscribers also checks each relic's subscribers, a field read, every time.
+        /// </summary>
+        internal void AddRelics(List<AbstractModel> list, Player player)
+        {
+            IReadOnlyList<RelicModel> relics = player.Relics;
+            if (!OnMainThread || _relicListVersion == null || relics is not List<RelicModel> source)
+            {
+                for (int j = 0; j < relics.Count; j++)
+                {
+                    if (!relics[j].IsMelted && Keeps(relics[j]))
+                    {
+                        list.Add(relics[j]);
+                    }
+                }
+                return;
+            }
+            KeptRelics kept = _relics.GetValue(player, _ => new KeptRelics());
+            int version = _relicListVersion(source);
+            if (!ReferenceEquals(kept.Source, source) || kept.Version != version || kept.Reacts.Length != source.Count)
+            {
+                kept.Source = source;
+                kept.Version = version;
+                kept.Reacts = new bool[source.Count];
+                for (int j = 0; j < source.Count; j++)
+                {
+                    kept.Reacts[j] = TypeReacts(source[j].GetType());
+                }
+            }
+            bool[] reacts = kept.Reacts;
+            for (int j = 0; j < reacts.Length; j++)
+            {
+                RelicModel relic = source[j];
+                if ((reacts[j] || (_keepSubscribed && _executionFinished!(relic) != null)) && !relic.IsMelted)
+                {
+                    list.Add(relic);
+                }
+#if BENCH
+                else
+                {
+                    OthersDropped++;
+                }
+#endif
+            }
         }
 
         /// <summary>The base methods whose no-op defaults the dropped listeners rely on (null for interface filters).</summary>
@@ -748,7 +973,7 @@ public static class FastListeners
             if (shifts > 0)
             {
                 Generation++;
-                if (Environment.TickCount64 >= _nextShiftCheck)
+                if (CheckDue(_nextShiftCheck))
                 {
                     _nextShiftCheck = Environment.TickCount64 + SubscriptionCheckMs;
                     if (!MatchesPiles(withAfflictions))
@@ -897,6 +1122,11 @@ public static class FastListeners
 
     private static int TypeIdOf(Type type)
     {
+        // Main thread only (its callers check): a pile filled at combat start asks about the same few types thousands of times.
+        if (ReferenceEquals(type, _lastIdType))
+        {
+            return _lastId;
+        }
         if (!_typeIds.TryGetValue(type, out int id))
         {
             id = _typeList.Count;
@@ -911,8 +1141,13 @@ public static class FastListeners
                 _multiTypeId = id;
             }
         }
+        _lastIdType = type;
+        _lastId = id;
         return id;
     }
+
+    private static Type? _lastIdType;
+    private static int _lastId;
 
     /// <summary>The type id of Limitless's MultiEnchantment, once one was seen.</summary>
     private static int _multiTypeId = -1;
@@ -998,6 +1233,9 @@ public static class FastListeners
 
     private static AccessTools.FieldRef<AbstractModel, Action<AbstractModel>?>? _executionFinished;
 
+    /// <summary><c>List&lt;RelicModel&gt;._version</c>; null if the runtime has none (relics then checked one by one).</summary>
+    private static AccessTools.FieldRef<List<RelicModel>, int>? _relicListVersion;
+
     private static int _mainThread;
 
     /// <summary>
@@ -1046,6 +1284,24 @@ public static class FastListeners
 
     /// <summary>A cached hit of the filters keeping subscribers is checked live at most this often (every build, main thread).</summary>
     private const long SubscriptionCheckMs = 2000;
+
+    /// <summary>A due check waiting for a moment without an action running waits at most this much longer.</summary>
+    private const long CheckWaitMs = 6000;
+
+    /// <summary>
+    /// Whether a live check (one walk of every pile: ~5 ms at 20,000 cards per player) runs now: when due and no action runs
+    /// (hooks are also walked between actions: hover, costs), or overdue by <see cref="CheckWaitMs"/>. During an action it
+    /// lands in the frames that already take longest. This moves when a mismatch would be found, never what is found.
+    /// </summary>
+    private static bool CheckDue(long next)
+    {
+        long now = Environment.TickCount64;
+        if (now < next)
+        {
+            return false;
+        }
+        return now >= next + CheckWaitMs || RunManager.Instance?.ActionExecutor is not { IsRunning: true };
+    }
     private static long _nextSubscriberCheck;
     /// <summary>Live subscriber checks run, and their total time (Stopwatch ticks).</summary>
     public static long SubscriberChecks { get; private set; }
@@ -1347,6 +1603,8 @@ public static class FastListeners
     public static void Apply(Harmony harmony)
     {
         _executionFinished = AccessTools.FieldRefAccess<AbstractModel, Action<AbstractModel>?>("ExecutionFinished");
+        _relicListVersion = AccessTools.Field(typeof(List<RelicModel>), "_version")?.FieldType == typeof(int)
+            ? AccessTools.FieldRefAccess<List<RelicModel>, int>("_version") : null;
         _mainThread = Thread.CurrentThread.ManagedThreadId;
         try
         {
@@ -1609,40 +1867,59 @@ public static class FastListeners
             for (int i = 0; i < allies.Count + enemies.Count; i++)
             {
                 Creature creature = i < allies.Count ? allies[i] : enemies[i - allies.Count];
-                list.AddRange(creature.Powers);
+                AddReacting(list, creature.Powers, filter);
                 Player? player = creature.Player;
                 if (player == null)
                 {
-                    list.Add(creature.Monster!);
+                    if (filter == null || !KindSkipEnabled || filter.Keeps(creature.Monster!))
+                    {
+                        list.Add(creature.Monster!);
+                    }
                     continue;
                 }
                 if (!player.IsActiveForHooks)
                 {
                     continue;
                 }
-                IReadOnlyList<RelicModel> relics = player.Relics;
-                for (int j = 0; j < relics.Count; j++)
+                if (filter != null && KindSkipEnabled)
                 {
-                    if (!relics[j].IsMelted)
+                    if (!filter.Skips(ListenerKinds.Relics))
                     {
-                        list.Add(relics[j]);
+                        filter.AddRelics(list, player);
                     }
                 }
-                IReadOnlyList<PotionModel?> potionSlots = player.PotionSlots;
-                for (int k = 0; k < potionSlots.Count; k++)
+                else
                 {
-                    if (potionSlots[k] != null)
+                    IReadOnlyList<RelicModel> relics = player.Relics;
+                    for (int j = 0; j < relics.Count; j++)
                     {
-                        list.Add(potionSlots[k]!);
+                        if (!relics[j].IsMelted)
+                        {
+                            list.Add(relics[j]);
+                        }
+                    }
+                }
+                if (filter == null || !filter.Skips(ListenerKinds.Potions))
+                {
+                    IReadOnlyList<PotionModel?> potionSlots = player.PotionSlots;
+                    for (int k = 0; k < potionSlots.Count; k++)
+                    {
+                        if (potionSlots[k] != null && (filter == null || !KindSkipEnabled || filter.Keeps(potionSlots[k]!)))
+                        {
+                            list.Add(potionSlots[k]!);
+                        }
                     }
                 }
                 if (player.PlayerCombatState == null)
                 {
                     continue;
                 }
-                list.AddRange(player.PlayerCombatState.OrbQueue.Orbs);
+                if (filter == null || !filter.Skips(ListenerKinds.Orbs))
+                {
+                    AddReacting(list, player.PlayerCombatState.OrbQueue.Orbs, filter);
+                }
                 IReadOnlyList<CardPile> allPiles = player.PlayerCombatState.AllPiles;
-                if (filter != null && Guarded(list, () => filter.AddPiles(list, player.PlayerCombatState, allPiles)))
+                if (filter != null && GuardedPiles(list, filter, player.PlayerCombatState, allPiles))
                 {
                     continue;
                 }
@@ -1664,15 +1941,9 @@ public static class FastListeners
                     }
                 }
             }
-            for (int n = 0; n < state.Modifiers.Count; n++)
-            {
-                list.Add(state.Modifiers[n]);
-            }
-            for (int n = 0; n < state.BadgeModels.Count; n++)
-            {
-                list.Add(state.BadgeModels[n]);
-            }
-            if (state.MultiplayerScalingModel != null)
+            AddReacting(list, state.Modifiers, filter);
+            AddReacting(list, state.BadgeModels, filter);
+            if (state.MultiplayerScalingModel != null && (filter == null || !KindSkipEnabled || filter.Keeps(state.MultiplayerScalingModel)))
             {
                 list.Add(state.MultiplayerScalingModel);
             }
@@ -1789,7 +2060,7 @@ public static class FastListeners
                 {
                     continue;
                 }
-                if (filter != null && Guarded(list, () => filter.AddDeck(list, player.Deck)))
+                if (filter != null && GuardedDeck(list, filter, player.Deck))
                 {
                     continue;
                 }
@@ -1808,19 +2079,45 @@ public static class FastListeners
                 {
                     if (player.IsActiveForHooks)
                     {
-                        foreach (RelicModel relic in player.Relics)
+                        if (filter != null && KindSkipEnabled)
                         {
-                            if (!relic.IsMelted)
+                            if (!filter.Skips(ListenerKinds.Relics))
                             {
-                                list.Add(relic);
+                                filter.AddRelics(list, player);
                             }
                         }
-                        list.AddRange(player.Potions);
+                        else
+                        {
+                            foreach (RelicModel relic in player.Relics)
+                            {
+                                if (!relic.IsMelted)
+                                {
+                                    list.Add(relic);
+                                }
+                            }
+                        }
+                        if (filter == null)
+                        {
+                            list.AddRange(player.Potions);
+                        }
+                        else if (!filter.Skips(ListenerKinds.Potions))
+                        {
+                            foreach (PotionModel potion in player.Potions)
+                            {
+                                if (!KindSkipEnabled || filter.Keeps(potion))
+                                {
+                                    list.Add(potion);
+                                }
+                            }
+                        }
                     }
                 }
-                list.AddRange(run.Modifiers);
-                list.AddRange(run.BadgeModels);
-                list.Add(run.MultiplayerScalingModel);
+                AddReacting(list, run.Modifiers, filter);
+                AddReacting(list, run.BadgeModels, filter);
+                if (filter == null || !KindSkipEnabled || filter.Keeps(run.MultiplayerScalingModel))
+                {
+                    list.Add(run.MultiplayerScalingModel);
+                }
             }
             for (int i = 0; i < list.Count; i++)
             {
@@ -1863,12 +2160,36 @@ public static class FastListeners
     /// extra ones keep the no-op defaults. So even a hook running in an async state machine, where an exception would
     /// only fault the hook's task and never reach <see cref="PatchGuard"/>, completes like vanilla and later hooks run vanilla.
     /// </summary>
-    private static bool Guarded(List<AbstractModel> list, Action add)
+    private static bool GuardedPiles(List<AbstractModel> list, PileFilter filter, object key, IReadOnlyList<CardPile> piles)
     {
         int count = list.Count;
         try
         {
-            add();
+            filter.AddPiles(list, key, piles);
+#if BENCH
+            if (FailNextPileWalk)
+            {
+                FailNextPileWalk = false;
+                throw new InvalidOperationException("simulated error in the pile entry cache (bdperf fault piles)");
+            }
+#endif
+            return true;
+        }
+        catch (Exception e)
+        {
+            list.RemoveRange(count, list.Count - count);
+            Disable(e);
+            return false;
+        }
+    }
+
+    /// <summary>As <see cref="GuardedPiles"/>, for a deck.</summary>
+    private static bool GuardedDeck(List<AbstractModel> list, PileFilter filter, CardPile deck)
+    {
+        int count = list.Count;
+        try
+        {
+            filter.AddDeck(list, deck);
 #if BENCH
             if (FailNextPileWalk)
             {

@@ -99,6 +99,7 @@ public static class LimitlessReserialize
             ModEntry.TryApply(LimitlessRecalcSkip.Name, LimitlessRecalcSkip.Apply);
             ModEntry.TryApply(SnapshotCardReuse.Name, SnapshotCardReuse.Apply);
             ModEntry.TryApply(LimitlessHookSkip.Name, LimitlessHookSkip.Apply);
+            ModEntry.TryApply(LimitlessCloneMemo.Name, LimitlessCloneMemo.Apply);
         }
     }
 

@@ -80,13 +80,22 @@ public static class SnapshotCardReuse
     public static long PileBitsReused { get; private set; }
     public static long PileBitsComposed { get; private set; }
     public static long PileMismatches { get; private set; }
+    /// <summary>Cards of moved piles given their previous state without a read.</summary>
+    public static long MovedReused { get; private set; }
+
+    /// <summary>Moved piles keep their unwritten cards' states (bdperf snapmoved on|off).</summary>
+    public static bool MovedPiles { get; set; } = true;
 
     /// <summary>One trusted pile in this many is read for real.</summary>
     public const int PileVerifyEvery = 128;
     /// <summary>Below this many cards a pile isn't worth a copy of its bits.</summary>
     private const int MinCardsForPileBits = 32;
-    /// <summary>A pile with more cards to compare every time than this isn't trusted.</summary>
+    /// <summary>
+    /// A pile with more cards to compare every time than this (or than one card in <see cref="LiveShare"/> of a bigger pile) isn't
+    /// trusted. A fixed 64 left every big pile of a huge deck read in full at each checksum: 20,000 cards for a few hundred live ones.
+    /// </summary>
     private const int MaxLiveCards = 64;
+    private const int LiveShare = 16;
 
     private static bool _trustPiles;
     private static bool _headerOnly;
@@ -187,6 +196,12 @@ public static class SnapshotCardReuse
         public byte[]? Bits;
         public int BitCount;
         public List<NetFullCombatState.CardState>? BitsFor;
+
+        /// <summary>When <see cref="Compose"/> made <see cref="Bits"/>: where each card of <see cref="BitsFor"/> starts in them, then the end.</summary>
+        public int[]? Offsets;
+        /// <summary>The other buffer: a compose reads the previous bits while writing the new ones.</summary>
+        public byte[]? SpareBits;
+        public int[]? SpareOffsets;
 
         /// <summary>The game's bits before the first card of a list of <see cref="HeaderCards"/> cards.</summary>
         public byte[]? Header;
@@ -340,10 +355,44 @@ public static class SnapshotCardReuse
         }
     }
 
+#if BENCH
+    /// <summary>Writes counted per kind, and the method that made them (which ones keep piles from being trusted).</summary>
+    public static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> WritesByMethod = new();
+
+    /// <summary>Why piles were read rather than trusted.</summary>
+    public static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> WhyRead = new();
+
+    private static void CountWrite(System.Reflection.MethodBase method) => WritesByMethod.AddOrUpdate(method.DeclaringType?.Name + "." + method.Name, 1, (_, n) => n + 1);
+
+    private static void CardWrite(CardModel __instance, System.Reflection.MethodBase __originalMethod)
+    {
+        CountWrite(__originalMethod);
+        Wrote(__instance);
+    }
+
+    private static void CostWrite(CardEnergyCost __instance, System.Reflection.MethodBase __originalMethod)
+    {
+        CountWrite(__originalMethod);
+        Wrote(_costCard!(__instance));
+    }
+
+    private static void EnchantmentWrite(EnchantmentModel __instance, System.Reflection.MethodBase __originalMethod)
+    {
+        CountWrite(__originalMethod);
+        Wrote(_enchantmentCard!(__instance));
+    }
+
+    private static void AfflictionWrite(AfflictionModel __instance, System.Reflection.MethodBase __originalMethod)
+    {
+        CountWrite(__originalMethod);
+        Wrote(_afflictionCard!(__instance));
+    }
+#else
     private static void CardWrite(CardModel __instance) => Wrote(__instance);
     private static void CostWrite(CardEnergyCost __instance) => Wrote(_costCard!(__instance));
     private static void EnchantmentWrite(EnchantmentModel __instance) => Wrote(_enchantmentCard!(__instance));
     private static void AfflictionWrite(AfflictionModel __instance) => Wrote(_afflictionCard!(__instance));
+#endif
 
     private static void ApplyBits(Harmony harmony)
     {
@@ -431,8 +480,28 @@ public static class SnapshotCardReuse
             {
                 _sincePileCheck = 0;
             }
+            // A pile whose list moved (a card added at the end, taken from the top) but whose cards had no write since the last read:
+            // a card found again at its place, last read in this pile and with its memo valid, has the state it had then, as in a
+            // trusted pile. Only cards that came from elsewhere, or have no memo, are read. One such pile in PileVerifyEvery is read in full.
+#if BENCH
+            if (!trusted)
+            {
+                string why = !_trustPiles ? "untrusted" : previous == null ? "first read" : last.WritesAt != last.Writes ? (last.WritesAt < 0 ? "not trustable last time" : "written")
+                    : last.StampAt != reads.Stamp || reads.Stamp < 0 ? "stamp" : !reads.NoKeywordHook || !reads.NoCostHook ? "cost or keyword hook"
+                    : last.ListVersion != listVersion ? "moved" : "live card changed";
+                WhyRead.AddOrUpdate(why, 1, (_, n) => n + 1);
+            }
+#endif
+            bool moved = MovedPiles && !trusted && _trustPiles && previous != null && last.WritesAt == last.Writes && last.StampAt == reads.Stamp && reads.Stamp >= 0
+                && reads.NoKeywordHook && reads.NoCostHook;
+            bool verifyMoved = moved && ++_sincePileCheck >= PileVerifyEvery;
+            if (verifyMoved)
+            {
+                _sincePileCheck = 0;
+            }
             long writesBefore = last.Writes;
             int live = 0;
+            int maxLive = Math.Max(MaxLiveCards, count / LiveShare);
             Last?[] lasts = last.Lasts;
             if (last.Spare.Length < count)
             {
@@ -446,24 +515,50 @@ public static class SnapshotCardReuse
                 CardModel card = cards[i];
                 Last? entry = null;
                 int at = i + shift;
+                int was = -1;
                 if (at >= 0 && at < oldCount && ReferenceEquals(lasts[at]?.Card, card))
                 {
                     entry = lasts[at];
+                    was = at;
                 }
                 else if (at + 1 < oldCount && at >= -1 && ReferenceEquals(lasts[at + 1]?.Card, card))
                 {
                     entry = lasts[at + 1];
+                    was = at + 1;
                     shift++;
                 }
-                NetFullCombatState.CardState state = CardFrom(card, ref entry, reads);
+                NetFullCombatState.CardState state;
+                if (moved && was >= 0 && was < previous!.Count && entry != null && ReferenceEquals(entry.In, last) && entry.MemoStamp == reads.Stamp)
+                {
+                    state = previous[was];
+                    MovedReused++;
+                    if (verifyMoved)
+                    {
+                        Last? fresh = entry;
+                        NetFullCombatState.CardState read = CardFrom(card, ref fresh, reads);
+                        if (!SameState(read, state))
+                        {
+                            PileMismatches++;
+                            _trustPiles = false;
+                            moved = false;
+                            Log.Error($"[{ModEntry.Id}] {Name}: a moved pile's card changed unseen ({pile.Type}, {count} cards), piles are read every time from now on");
+                            state = read;
+                        }
+                        entry = fresh;
+                    }
+                }
+                else
+                {
+                    state = CardFrom(card, ref entry, reads);
+                }
                 next[i] = entry;
                 if (entry != null)
                 {
                     entry.In = last;
                 }
-                if ((entry == null || entry.MemoStamp != reads.Stamp) && live <= MaxLiveCards)
+                if ((entry == null || entry.MemoStamp != reads.Stamp) && live <= maxLive)
                 {
-                    if (live < MaxLiveCards)
+                    if (live < maxLive)
                     {
                         if (live == last.Live.Length)
                         {
@@ -518,7 +613,8 @@ public static class SnapshotCardReuse
             last.Lasts = next;
             last.Count = count;
             last.LiveCount = live;
-            last.WritesAt = reads.Stamp >= 0 && live <= MaxLiveCards - 1 && writesBefore == last.Writes ? writesBefore : -1;
+            // States read while a listener changed keywords or costs hold what it made of them: no base once it is gone (a relic removed).
+            last.WritesAt = reads.Stamp >= 0 && reads.NoKeywordHook && reads.NoCostHook && live <= maxLive - 1 && writesBefore == last.Writes ? writesBefore : -1;
             last.StampAt = reads.Stamp;
             last.ListVersion = listVersion;
             _byList.AddOrUpdate(list, last);
@@ -839,13 +935,25 @@ public static class SnapshotCardReuse
         if (!Enabled || __instance.cards == null || __instance.cards.Count < MinCardsForPileBits || !LimitlessReserialize.CanCompareHere
             || SerializePatched() || PatchedOthersOnPile())
         {
+#if BENCH
+            if (__instance.cards is { Count: >= MinCardsForPileBits })
+            {
+                CountPileBits(!Enabled ? "disabled" : !LimitlessReserialize.CanCompareHere ? "can't compare here" : "patched by others");
+            }
+#endif
             return true;
         }
         try
         {
             if (_byList.TryGetValue(__instance.cards, out PileLast? last))
             {
+#if BENCH
+                _composeFail = null;
+#endif
                 bool composed = !ReferenceEquals(last.BitsFor, __instance.cards) && Compose(ref __instance, last);
+#if BENCH
+                CountPileBits(ReferenceEquals(last.BitsFor, __instance.cards) ? (composed ? "composed" : "same list") : "compose failed: " + _composeFail);
+#endif
                 if (ReferenceEquals(last.BitsFor, __instance.cards) && ++_sincePileBits < PileVerifyEvery)
                 {
                     _reserveBits!(writer, last.BitCount);
@@ -863,6 +971,12 @@ public static class SnapshotCardReuse
                     return false;
                 }
             }
+#if BENCH
+            else
+            {
+                CountPileBits("list not from a read");
+            }
+#endif
             if (!Enabled)
             {
                 return true;
@@ -904,6 +1018,7 @@ public static class SnapshotCardReuse
             last.Bits = taken;
             last.BitCount = bits;
             last.BitsFor = __instance.cards;
+            last.Offsets = null;
         }
         catch (Exception e)
         {
@@ -914,6 +1029,8 @@ public static class SnapshotCardReuse
     /// <summary>
     /// A changed pile's bits, without a call per card: what the game's method writes before the first card (from that
     /// method, with no card written), then each card's kept bits. <see cref="PileVerifyEvery"/> compares the result with the game's.
+    /// A card's bits depend on its state alone: the longest runs of the same states at the start and at the end of the previous
+    /// list (a card added at the end, cards drawn from the top) are copied from the previous bits as two blocks.
     /// </summary>
     [PatchPart("bits")]
     private static bool Compose(ref NetFullCombatState.CombatPileState state, PileLast last)
@@ -922,16 +1039,50 @@ public static class SnapshotCardReuse
         int count = cards.Count;
         if (!ReferenceEquals(last.Cards, cards) || last.Count != count)
         {
+#if BENCH
+            _composeFail = "not the last read list";
+#endif
             return false;
         }
         Span<NetFullCombatState.CardState> states = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(cards);
         Last?[] lasts = last.Lasts;
+        List<NetFullCombatState.CardState>? previous = last.BitsFor;
+        byte[]? previousBits = last.Bits;
+        int[]? previousOffsets = last.Offsets;
+        int head = 0, tail = 0;
+        // Offsets are set with the bits they describe (BitsFor's cards, then the end); the array may be longer.
+        if (BlockCopies && previous != null && previousBits != null && previousOffsets != null && previousOffsets.Length >= previous.Count + 1
+            && !ReferenceEquals(previous, cards))
+        {
+            Span<NetFullCombatState.CardState> before = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(previous);
+            int max = Math.Min(before.Length, count);
+            while (head < max && SameState(before[head], states[head]))
+            {
+                head++;
+            }
+            while (tail < max - head && SameState(before[before.Length - 1 - tail], states[count - 1 - tail]))
+            {
+                tail++;
+            }
+        }
+        else
+        {
+            previousOffsets = null;
+        }
         long bits = 0;
-        for (int i = 0; i < count; i++)
+        if (previousOffsets != null)
+        {
+            bits += previousOffsets[head] - previousOffsets[0];
+            bits += previousOffsets[previous!.Count] - previousOffsets[previous.Count - tail];
+        }
+        for (int i = head; i < count - tail; i++)
         {
             Last? entry = lasts[i];
             if (entry == null)
             {
+#if BENCH
+                _composeFail = "a card without entry";
+#endif
                 return false;
             }
             ref NetFullCombatState.CardState card = ref states[i];
@@ -964,28 +1115,87 @@ public static class SnapshotCardReuse
             return false;
         }
         int bytes = (int)((bits + 7) >> 3);
-        if (last.Bits == null || last.Bits.Length < bytes + 8)
-        {
-            last.Bits = new byte[bytes + bytes / 8 + 8];
-        }
-        byte[] buffer = last.Bits;
+        // Written into the spare buffer: the previous bits are read for the copied blocks.
+        byte[] buffer = last.SpareBits is { } spare && spare.Length >= bytes + 8 && !ReferenceEquals(spare, previousBits) ? spare : new byte[bytes + bytes / 8 + 8];
+        int[] offsets = last.SpareOffsets is { } spareOffsets && spareOffsets.Length >= count + 1 && !ReferenceEquals(spareOffsets, previousOffsets)
+            ? spareOffsets : new int[count + count / 8 + 1];
         Buffer.BlockCopy(last.Header!, 0, buffer, 0, last.Header!.Length);
         int position = last.HeaderBits;
-        for (int i = 0; i < count; i++)
+        if (head > 0)
+        {
+            int start = previousOffsets![0];
+            for (int i = 0; i < head; i++)
+            {
+                offsets[i] = position + previousOffsets[i] - start;
+            }
+            position = CopyBlock(buffer, position, previousBits!, start, previousOffsets[head] - start);
+        }
+        for (int i = head; i < count - tail; i++)
         {
             Last entry = lasts[i]!;
+            offsets[i] = position;
             AppendBits(buffer, position, entry.Bits!, entry.BitCount);
             position += entry.BitCount;
         }
+        if (tail > 0)
+        {
+            int start = previousOffsets![previous!.Count - tail];
+            for (int i = 0; i < tail; i++)
+            {
+                offsets[count - tail + i] = position + previousOffsets[previous.Count - tail + i] - start;
+            }
+            position = CopyBlock(buffer, position, previousBits!, start, previousOffsets[previous.Count] - start);
+            BlockCopiedCards += tail;
+        }
+        BlockCopiedCards += head;
+        offsets[count] = position;
         // Zeros after the last bit, as a copy expects.
         if ((position & 7) != 0)
         {
             buffer[position >> 3] &= (byte)((1 << (position & 7)) - 1);
         }
         Array.Clear(buffer, (position + 7) >> 3, buffer.Length - ((position + 7) >> 3));
+        last.SpareBits = previousBits;
+        last.SpareOffsets = previousOffsets ?? last.Offsets;
+        last.Bits = buffer;
+        last.Offsets = offsets;
         last.BitCount = position;
         last.BitsFor = cards;
         return true;
+    }
+
+#if BENCH
+    /// <summary>What happened to piles of 32+ cards at serialization (bits reused, composed, or why the game's method ran).</summary>
+    public static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> WhyPileBits = new();
+    private static string? _composeFail;
+    private static void CountPileBits(string why) => WhyPileBits.AddOrUpdate(why, 1, (_, n) => n + 1);
+#endif
+
+    /// <summary>Cards whose bits a compose copied as part of a block from the previous bits.</summary>
+    public static long BlockCopiedCards { get; private set; }
+
+    /// <summary>Block copies of unchanged runs of cards (bdperf blocks on|off).</summary>
+    public static bool BlockCopies { get; set; } = true;
+
+    private static byte[] _blockScratch = Array.Empty<byte>();
+
+    /// <summary>Appends <paramref name="bits"/> bits of <paramref name="source"/> from bit <paramref name="start"/>: the new position.</summary>
+    private static int CopyBlock(byte[] destination, int position, byte[] source, int start, int bits)
+    {
+        if (bits <= 0)
+        {
+            return position;
+        }
+        int bytes = (bits + 7) >> 3;
+        if (_blockScratch.Length < bytes + 8)
+        {
+            _blockScratch = new byte[bytes + bytes / 4 + 8];
+        }
+        ExtractBits(source, start, _blockScratch, bits);
+        // AppendBits reads whole words: zeros after the block's last byte.
+        Array.Clear(_blockScratch, bytes, Math.Min(8, _blockScratch.Length - bytes));
+        AppendBits(destination, position, _blockScratch, bits);
+        return position + bits;
     }
 
     [PatchPart("bits")]
