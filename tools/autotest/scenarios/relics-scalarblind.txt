@@ -1,0 +1,23 @@
+# Positive control of RelicStateReuse.Scalar (relics-verify-0 with every relic of a scalar plan taken as unchanged without reading
+# it): the snapshot checks and the part's own sampled check must both see it. Expected to fail at its last line.
+timeout 1500
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+enemyhp 999999
+speed instant
+immortal
+cmd godmode
+sweeptimeout 45
+cmd bdperf relicreuse scalarblind on
+cmd bdperf verify all
+sweep relics 0 75 checksum state
+cmd bdperf verify
+effects end
+cmd bdperf verify check
+quit

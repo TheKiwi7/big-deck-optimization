@@ -1,0 +1,77 @@
+# Outside combat in co-op, client (with outside-coop-host.txt): see the host's scenario.
+timeout 3000
+mplobby IRONCLAD 2
+waitfor run 240
+wait 8
+cmd bigdeck import ref all all {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd gold 5000
+enemyhp 1
+selector ui
+barrier start
+runstate start
+barrier read1
+waitfor combat 600
+autoroom 900
+barrier fight
+wait 3
+runstate after fight
+barrier read2
+automap
+autoroom 900
+barrier map1
+wait 3
+runstate map 1
+barrier read3
+automap
+autoroom 900
+barrier map2
+wait 3
+runstate map 2
+barrier read4
+automap
+autoroom 900
+barrier map3
+wait 3
+runstate map 3
+barrier read5
+waitfor room Shop 300
+autoroom remove 900
+barrier shop
+wait 3
+runstate shop local
+barrier read6
+waitfor room RestSite 300
+autoroom SmithRestSiteOption 900
+barrier smith
+wait 3
+runstate smith
+barrier read7
+waitfor room Treasure 300
+autoroom 300
+barrier treasure
+wait 3
+runstate treasure
+barrier read8
+waitfor event 300
+autoroom 900
+barrier aroma
+wait 3
+runstate aroma of chaos
+barrier read9
+waitfor event 300
+autoroom 900
+barrier zen
+wait 3
+runstate zen weaver
+barrier read10
+waitfor event 300
+autoroom 900
+barrier wood
+wait 3
+runstate wood carvings
+barrier read11
+barrier end
+counters end
+wait 20
+quit

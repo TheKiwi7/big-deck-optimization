@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.11.0
+
+- Shorter freezes everywhere, even with a small deck: the game's animated texts now free their temporary memory right away. In my tests on the map, the memory cleanups take about 0.02 to 0.03 s instead of 0.07 to 0.09 s, and the slowest frame went from about 85 ms to 29 ms (your numbers will differ on another PC).
+- Co-op with huge decks: the state check after each action is much shorter when a card changes cards in your draw pile, or while a cost effect is active (Curious, Corruption, Spiked Gauntlets...). In my tests with 11,000 cards per player, it re-read the whole draw pile in about 5 to 9 ms after such actions, and now takes about 0.6 ms.
+- Co-op: after Apotheosis on a huge deck, the state check takes about 8 ms instead of about 20 with 10,300 cards. With 369 relics per player, checking the relics takes about 0.2 ms per player instead of 0.5.
+- Fixed: with BaseLib, the co-op state check could miss cost changes made by some cards (Bullet Time making your hand free, for example). Players who all have the mod got the same result on every side, so games didn't desync.
+
 ## v0.10.0
 
 - Co-op with huge decks: playing cards is much smoother. In my tests with two players at about 20,000 cards each, the slowest moments while playing cards quickly are now at about 90 to 130 fps instead of 55, and about 120 to 155 fps instead of 105 when playing with the mouse (your numbers will differ on another PC).

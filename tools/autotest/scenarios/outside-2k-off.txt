@@ -1,0 +1,106 @@
+# Outside combat at ~1,900 cards with the reference run's 368 relics, A/B (off; with outside-2k-on): every STATE line must match.
+# The game's own auto player plays each room (autoroom) and card choices go through the game's screens (selector ui, the deck
+# grids): rewards after a combat, the map, a shop with card removal, rest sites (smith on the deck grid, then the auto player's
+# pick), a treasure, events that remove, transform, upgrade or enchant cards, deck views on the map, act 2, the run saved, left
+# for the main menu and continued ("before save" and "after load" must be the same state). Enemies at 1 HP: the fights are only
+# the way into their rewards.
+timeout 3000
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bdopt off
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd gold 5000
+enemyhp 1
+selector ui
+runstate start
+deckview 2
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+runstate after fight
+automap
+autoroom 900
+runstate map 1
+automap
+autoroom 900
+runstate map 2
+automap
+autoroom 900
+runstate map 3
+automap
+autoroom 900
+runstate map 4
+deckview 2
+cmd room Shop
+waitfor room Shop
+autoroom remove 900
+runstate shop
+cmd room RestSite
+waitfor room RestSite
+autoroom SmithRestSiteOption 900
+runstate smith
+cmd room Treasure
+waitfor room Treasure
+autoroom 300
+runstate treasure
+cmd room RestSite
+waitfor room RestSite
+autoroom 900
+runstate rest site
+cmd event AROMA_OF_CHAOS
+waitfor event 120
+autoroom 900
+runstate aroma of chaos
+cmd event MORPHIC_GROVE
+waitfor event 120
+autoroom 900
+runstate morphic grove
+cmd event SELF_HELP_BOOK
+waitfor event 120
+autoroom 900
+runstate self help book
+cmd event ZEN_WEAVER
+waitfor event 120
+autoroom 900
+runstate zen weaver
+cmd event DOORS_OF_LIGHT_AND_DARK
+waitfor event 120
+autoroom 900
+runstate doors
+cmd event TRIAL
+waitfor event 120
+autoroom 900
+runstate trial
+cmd event SAPPHIRE_SEED
+waitfor event 120
+autoroom 900
+runstate sapphire seed
+cmd event WOOD_CARVINGS
+waitfor event 120
+autoroom 900
+runstate wood carvings
+cmd event AMALGAMATOR
+waitfor event 120
+autoroom 900
+runstate amalgamator
+cmd act 2
+wait 5
+runstate act 2
+automap
+autoroom 900
+runstate act 2 room 1
+automap
+wait 3
+runstate before save
+tomenu
+continuerun 600
+wait 3
+runstate after load
+autoroom 900
+runstate act 2 room 2
+deckview 2
+cmd bdopt on
+quit

@@ -24,7 +24,7 @@
   "card_flights.title": "Limitar cartas voando",
   "card_flights.desc": "Visual: quando uma pilha enorme se move de uma vez (um embaralhamento de milhares de cartas), um fluxo constante de cartas voa até a pilha em vez de uma por carta, o que travava o jogo por minutos. Pilhas pequenas ficam iguais. Mesmos resultados.",
   "gc_pacing.title": "Limpeza de memória em momentos calmos",
-  "gc_pacing.desc": "Em combates com 1.000 cartas ou mais, as limpezas de memória do .NET (as pequenas travadas ao jogar cartas) esperam um momento sem animações. A limpeza após carregar cada sala é feita em segundo plano, e os combates terminados são liberados da memória (com o BaseLib, eles ficavam até o fim da run). Usa algumas centenas de MB a mais nesses combates. Mesmos resultados.",
+  "gc_pacing.desc": "Em combates com 1.000 cartas ou mais, as limpezas de memória do .NET (as pequenas travadas ao jogar cartas) esperam um momento sem animações. A limpeza após carregar cada sala é feita em segundo plano, e os combates terminados são liberados da memória (com o BaseLib, eles ficavam até o fim da run). Os textos animados também liberam a memória temporária na hora, o que encurta as limpezas em todo o jogo. Usa algumas centenas de MB a mais nesses combates. Mesmos resultados.",
   "grid_sort.title": "Ordenação das grades de cartas",
   "grid_sort.desc": "Ordenação mais rápida da visualização do deck e de outras grades de cartas.",
   "grid_pool.title": "Reciclagem das grades de cartas",

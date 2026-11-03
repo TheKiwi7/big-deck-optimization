@@ -1,0 +1,15 @@
+# mapidle with the text effects' dictionaries left to their finalizers (bdperf envrelease off): the A/B of RichTextEnvRelease.
+timeout 300
+newrun NECROBINDER 1234
+waitfor run 120
+uncap
+framedetail
+cmd bdperf envrelease off
+wait 5
+fpsstat
+gcstat
+wait 30
+fpsstat map idle
+gcstat map idle
+wait 10
+quit

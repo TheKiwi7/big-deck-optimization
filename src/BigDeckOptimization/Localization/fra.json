@@ -24,7 +24,7 @@
   "card_flights.title": "Limiter les cartes volantes",
   "card_flights.desc": "Visuel : quand une énorme pile bouge d'un coup (un remélange de milliers de cartes), un flot régulier de cartes vole vers la pile au lieu d'une par carte, ce qui figeait le jeu pendant des minutes. Les petites piles ne changent pas. Mêmes résultats.",
   "gc_pacing.title": "Nettoyages mémoire aux moments calmes",
-  "gc_pacing.desc": "Dans les combats à 1 000 cartes ou plus, les nettoyages mémoire de .NET (les petits gels quand on joue des cartes) attendent un moment où rien n'est animé. Le nettoyage après le chargement de chaque salle se fait en arrière-plan, et les combats terminés sont libérés de la mémoire (avec BaseLib, ils y restaient jusqu'à la fin du run). Utilise quelques centaines de Mo de plus pendant ces combats. Mêmes résultats.",
+  "gc_pacing.desc": "Dans les combats à 1 000 cartes ou plus, les nettoyages mémoire de .NET (les petits gels quand on joue des cartes) attendent un moment où rien n'est animé. Le nettoyage après le chargement de chaque salle se fait en arrière-plan, et les combats terminés sont libérés de la mémoire (avec BaseLib, ils y restaient jusqu'à la fin du run). Les textes animés libèrent aussi leur mémoire temporaire tout de suite, ce qui raccourcit les nettoyages partout. Utilise quelques centaines de Mo de plus pendant ces combats. Mêmes résultats.",
   "grid_sort.title": "Tri des grilles de cartes",
   "grid_sort.desc": "Tri plus rapide de la vue du deck et des autres grilles de cartes.",
   "grid_pool.title": "Recyclage des grilles de cartes",

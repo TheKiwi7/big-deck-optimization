@@ -24,7 +24,7 @@
   "card_flights.title": "Uçan kartları sınırla",
   "card_flights.desc": "Görsel: dev bir deste bir anda hareket ettiğinde (binlerce kartın karıştırılması) her kart için bir kart yerine desteye düzenli bir kart akışı uçar; bu, oyunu dakikalarca donduruyordu. Küçük desteler aynı görünür. Sonuçlar aynıdır.",
   "gc_pacing.title": "Sakin anlarda bellek temizliği",
-  "gc_pacing.desc": "1.000 veya daha fazla kartlı savaşlarda .NET bellek temizlikleri (kart oynarken yaşanan kısa donmalar) animasyon olmayan bir anı bekler. Her odanın yüklenmesinden sonraki temizlik arka planda yapılır ve biten savaşlar bellekten serbest bırakılır (BaseLib ile koşunun sonuna kadar kalıyorlardı). Bu savaşlarda birkaç yüz MB daha fazla bellek kullanır. Sonuçlar aynıdır.",
+  "gc_pacing.desc": "1.000 veya daha fazla kartlı savaşlarda .NET bellek temizlikleri (kart oynarken yaşanan kısa donmalar) animasyon olmayan bir anı bekler. Her odanın yüklenmesinden sonraki temizlik arka planda yapılır ve biten savaşlar bellekten serbest bırakılır (BaseLib ile koşunun sonuna kadar kalıyorlardı). Hareketli metinler de geçici belleklerini hemen bırakır, bu da temizlikleri her yerde kısaltır. Bu savaşlarda birkaç yüz MB daha fazla bellek kullanır. Sonuçlar aynıdır.",
   "grid_sort.title": "Kart ızgarası sıralama",
   "grid_sort.desc": "Deste görünümünün ve diğer kart ızgaralarının daha hızlı sıralanması.",
   "grid_pool.title": "Kart ızgarası geri dönüşümü",

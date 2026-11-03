@@ -24,7 +24,7 @@
   "card_flights.title": "Limitar las cartas voladoras",
   "card_flights.desc": "Visual: cuando un mazo enorme se mueve de golpe (al barajar miles de cartas), un flujo constante de cartas vuela hacia el mazo en lugar de una por carta, lo que congelaba el juego durante minutos. Los mazos pequeños se ven igual. Mismos resultados.",
   "gc_pacing.title": "Limpieza de memoria en momentos tranquilos",
-  "gc_pacing.desc": "En combates con 1000 cartas o más, las limpiezas de memoria de .NET (los pequeños tirones al jugar cartas) esperan a un momento sin animaciones. La limpieza tras cargar cada sala se hace en segundo plano, y los combates terminados se liberan de la memoria (con BaseLib se quedaban hasta el final de la partida). Usa unos cientos de MB más durante esos combates. Mismos resultados.",
+  "gc_pacing.desc": "En combates con 1000 cartas o más, las limpiezas de memoria de .NET (los pequeños tirones al jugar cartas) esperan a un momento sin animaciones. La limpieza tras cargar cada sala se hace en segundo plano, y los combates terminados se liberan de la memoria (con BaseLib se quedaban hasta el final de la partida). Además, los textos animados liberan su memoria temporal al momento, lo que acorta las limpiezas en todo el juego. Usa unos cientos de MB más durante esos combates. Mismos resultados.",
   "grid_sort.title": "Ordenación de cuadrículas de cartas",
   "grid_sort.desc": "Ordenación más rápida de la vista del mazo y de otras cuadrículas de cartas.",
   "grid_pool.title": "Reciclaje de cuadrículas de cartas",

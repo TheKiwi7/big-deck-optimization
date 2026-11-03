@@ -1,13 +1,13 @@
 # What deck size costs where a player sees it: the same rendered session at several sizes, uncapped, nothing else running, the
 # frames split by where they go (FRAMES lines) and each play's time (PLAYTIME lines). Each size has the same card mix and the
 # reference run's relics: every size is that run's deck imported N times (935 cards each). ladderreport.py makes the table.
-#   powershell -File tools/autotest/ladder.ps1 -GameDir <copy> -Sizes "1,2,5,11,22,44" [-Coop] [-Plain] [-Turns 5] [-Tag x]
+#   powershell -File tools/autotest/ladder.ps1 -GameDir <copy> -Sizes "1,2,5,11,22,44" [-Coop] [-Plain] [-Turns 5] [-Tag x] [-PlaysOnly [-Plays 10]]
 # -Coop: two peers, both playing; the host renders, the client is headless, as a second instance on this GPU would take half of
 # the host's frames (real co-op: one game per PC). Logs: results/<version>/lad-<tag>c<N>-host.log, solo lad-<tag>s<N>.log.
 # Headless rendering would hide what this is for: never run it through par.ps1.
 # -TraceSec: a trace of the host, as coop.ps1 and run.ps1 record it. The game's card ids are 16 bits on the network: two peers above
 # 32,768 cards each make it play the wrong cards and diverge (it can't go above 35 imports in co-op, 70 solo).
-param([Parameter(Mandatory)][string]$GameDir, [string]$Sizes = "1,2,5,11,22,35", [switch]$Coop, [switch]$Plain, [int]$Turns = 5, [string]$Tag = "", [int]$TimeoutSec = 900, [int]$TraceSec = 0, [int]$TraceDelaySec = 0, [string]$TraceProfile = "cpu-sampling", [string]$TraceProviders = "", [switch]$Party5, [string]$Avoid = "", [switch]$Probe, [switch]$Verify, [string[]]$Extra = @())
+param([Parameter(Mandatory)][string]$GameDir, [string]$Sizes = "1,2,5,11,22,35", [switch]$Coop, [switch]$Plain, [int]$Turns = 5, [string]$Tag = "", [int]$TimeoutSec = 900, [int]$TraceSec = 0, [int]$TraceDelaySec = 0, [string]$TraceProfile = "cpu-sampling", [string]$TraceProviders = "", [switch]$Party5, [string]$Avoid = "", [switch]$Probe, [switch]$Verify, [string[]]$Extra = @(), [switch]$PlaysOnly, [int]$Plays = 10, [ValidateSet("all", "cards", "relics")][string]$What = "all", [string]$RelicsFrom = "all")
 $scenarioDir = Join-Path $PSScriptRoot "scenarios"
 
 # -Avoid APOTHEOSIS,...: cards neither play picks (Apotheosis upgrades the whole deck: one play of it isn't a typical play).
@@ -21,6 +21,25 @@ function Get-Body([string]$label) {
     $Extra
     "fpsstat"
     "gcstat"
+    # -PlaysOnly: each turn only rapid plays, a full hand of them (cards drawn first), long enough to measure and trace.
+    if ($PlaysOnly) {
+        foreach ($t in 1..$Turns) {
+            "cmd energy 50"
+            "cmd draw 6"
+            "waitfor idle 300"
+            "fpsstat"
+            "gcstat"
+            if ($Probe) { "cmd bdperf piletimes reset" }
+            "play $Plays"
+            "waitfor idle 300"
+            "fpsstat plays t$t"
+            if ($Probe) { "cmd bdperf piletimes"; "cmd bdperf costhooks" }
+            "gcstat plays t$t"
+            "endturn"
+            "waitfor idle 900"
+        }
+        return
+    }
     foreach ($t in 1..$Turns) {
         "cmd energy 50"
         "wait 0.5"
@@ -49,9 +68,15 @@ function Get-Body([string]$label) {
 }
 
 # Size 0: the starting deck and relics, nothing imported (the game's own cost per play, with or without this mod).
+# -What cards|relics: the first import brings only the reference run's cards or only its relics (all four players': 368).
+# -RelicsFrom 1: the relics of that player of the reference run only (1 = its Ironclad, 189: the most a real player had).
 function Get-Imports([int]$n, [string]$suffix) {
     if ($n -le 0) { return @() }
-    "cmd bigdeck import ref all all$suffix"
+    if ($RelicsFrom -ne "all") {
+        "cmd bigdeck import ref all cards$suffix"
+        "cmd bigdeck import ref $RelicsFrom relics$suffix"
+    }
+    else { "cmd bigdeck import ref all $What$suffix" }
     if ($n -ge 2) { 2..$n | ForEach-Object { "cmd bigdeck import ref all cards$suffix" } }
 }
 

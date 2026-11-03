@@ -91,6 +91,20 @@ public static class PerfProbe
             new[] { typeof(Godot.Control), typeof(IEnumerable<MegaCrit.Sts2.Core.HoverTips.IHoverTip>), typeof(MegaCrit.Sts2.Core.HoverTips.HoverTipAlignment) }), "NHoverTipSet.CreateAndShow");
         Probe(harmony, AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.HoverTips)), "CardModel.HoverTips");
         Probe(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Combat.CombatStateTracker), "CallCombatStateChangedDeferred"), "CombatStateTracker.CallCombatStateChangedDeferred");
+        // Parts of the co-op checksum (this mod's own prefixes included): what each costs per action.
+        Probe(harmony, AccessTools.Method(typeof(Patches.SnapshotCardReuse), "PilePrefix"), "checksum: SnapshotCardReuse.PilePrefix (one pile)");
+        Probe(harmony, AccessTools.Method(typeof(Patches.SnapshotCardReuse), "PileSerializePrefix"), "checksum: SnapshotCardReuse.PileSerializePrefix (one pile)");
+        Probe(harmony, AccessTools.Method(typeof(Patches.RelicStateReuse), "Serialize"), "checksum: RelicStateReuse.Serialize (one relic)");
+        Probe(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Runs.RelicGrabBag), nameof(MegaCrit.Sts2.Core.Runs.RelicGrabBag.ToSerializable)), "checksum: RelicGrabBag.ToSerializable");
+        Probe(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Random.PlayerRngSet), nameof(MegaCrit.Sts2.Core.Random.PlayerRngSet.ToSerializable)), "checksum: PlayerRngSet.ToSerializable");
+        Probe(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Entities.Multiplayer.NetFullCombatState.PlayerState), "Serialize"), "checksum: PlayerState.Serialize");
+        Probe(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Entities.Multiplayer.NetFullCombatState.CreatureState), "Serialize"), "checksum: CreatureState.Serialize");
+        // The game's text effects, one call per glyph per frame: the bridge's entry (the glyph's wrapper built there) and the effect.
+        foreach (Type effect in typeof(MegaCrit.Sts2.Core.RichTextTags.RichTextGold).Assembly.GetTypes().Where(t => t.Namespace == "MegaCrit.Sts2.Core.RichTextTags" && !t.IsAbstract
+            && typeof(Godot.RichTextEffect).IsAssignableFrom(t)))
+        {
+            Probe(harmony, AccessTools.DeclaredMethod(effect, "InvokeGodotClassMethod"), "text effect: " + effect.Name);
+        }
         if (AccessTools.TypeByName("BetterSpire2.DamageTracker") is { } tracker)
         {
             Probe(harmony, AccessTools.Method(tracker, "Recalculate"), "BetterSpire2 DamageTracker.Recalculate");
@@ -117,6 +131,61 @@ public static class PerfProbe
         Subscribe();
     }
 
+    /// <summary>
+    /// <c>bdperf probe nodes</c>: every per-frame callback the game's and the mods' nodes declare (<c>_Process</c>,
+    /// <c>_PhysicsProcess</c>, <c>_Input</c>, <c>_GuiInput</c>, <c>_UnhandledInput</c>, <c>_Draw</c>), so a long frame shows
+    /// which node types ran in it. Each probe costs its own call: for finding where a frame goes, not for timings.
+    /// </summary>
+    public static void ApplyNodes(Harmony harmony)
+    {
+        string[] callbacks = { "_Process", "_PhysicsProcess", "_Input", "_GuiInput", "_UnhandledInput", "_Draw" };
+        int probed = 0;
+        foreach (System.Reflection.Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            string? name = assembly.GetName().Name;
+            if (name is null || name.StartsWith("System", StringComparison.Ordinal) || name.StartsWith("Godot", StringComparison.Ordinal)
+                || name.StartsWith("Microsoft", StringComparison.Ordinal) || name == "0Harmony" || name == typeof(PerfProbe).Assembly.GetName().Name)
+            {
+                continue;
+            }
+            Type[] types;
+            try
+            {
+                types = assembly.GetTypes();
+            }
+            catch (ReflectionTypeLoadException e)
+            {
+                types = e.Types.Where(t => t != null).ToArray()!;
+            }
+            foreach (Type type in types)
+            {
+                if (!typeof(Godot.Node).IsAssignableFrom(type) || type.IsGenericTypeDefinition)
+                {
+                    continue;
+                }
+                foreach (string callback in callbacks)
+                {
+                    if (AccessTools.DeclaredMethod(type, callback) is { IsAbstract: false } method)
+                    {
+                        Probe(harmony, method, $"node: {type.Name}.{callback}");
+                        probed++;
+                    }
+                }
+            }
+        }
+        // The engine work managed code starts: scenes instanced, nodes added and freed, tweens made.
+        Probe(harmony, typeof(Godot.PackedScene).GetMethods().First(m => m.Name == nameof(Godot.PackedScene.Instantiate) && !m.IsGenericMethod), "engine: PackedScene.Instantiate");
+        Probe(harmony, AccessTools.Method(typeof(Godot.Node), nameof(Godot.Node.AddChild)), "engine: Node.AddChild");
+        Probe(harmony, AccessTools.Method(typeof(Godot.Node), nameof(Godot.Node.RemoveChild)), "engine: Node.RemoveChild");
+        Probe(harmony, AccessTools.Method(typeof(Godot.Node), nameof(Godot.Node.QueueFree)), "engine: Node.QueueFree");
+        Probe(harmony, AccessTools.Method(typeof(Godot.Node), nameof(Godot.Node.CreateTween)), "engine: Node.CreateTween");
+        Probe(harmony, AccessTools.Method(typeof(Godot.Node), nameof(Godot.Node.Reparent)), "engine: Node.Reparent");
+        Probe(harmony, AccessTools.PropertySetter(typeof(Godot.CanvasItem), nameof(Godot.CanvasItem.Visible)), "engine: CanvasItem.Visible set");
+        Probe(harmony, AccessTools.PropertySetter(typeof(Godot.RichTextLabel), nameof(Godot.RichTextLabel.Text)), "engine: RichTextLabel.Text set");
+        Probe(harmony, AccessTools.PropertySetter(typeof(Godot.Label), nameof(Godot.Label.Text)), "engine: Label.Text set");
+        Log.Info($"[{ModEntry.Id}] {Name}: {probed} node callbacks probed");
+    }
+
     private static void Probe(Harmony harmony, MethodBase? target, string label)
     {
         if (target == null)
@@ -126,9 +195,18 @@ public static class PerfProbe
         }
         _labels[target] = label;
         Type returnType = target is MethodInfo info ? info.ReturnType : typeof(void);
-        Patches.PatchGuard.Patch(harmony, target,
-            prefix: new HarmonyMethod(typeof(PerfProbe), nameof(Prefix)),
-            postfix: new HarmonyMethod(typeof(PerfProbe), typeof(Task).IsAssignableFrom(returnType) ? nameof(AsyncPostfix) : nameof(SyncPostfix)));
+        try
+        {
+            Patches.PatchGuard.Patch(harmony, target,
+                prefix: new HarmonyMethod(typeof(PerfProbe), nameof(Prefix)),
+                postfix: new HarmonyMethod(typeof(PerfProbe), typeof(Task).IsAssignableFrom(returnType) ? nameof(AsyncPostfix) : nameof(SyncPostfix)));
+        }
+        catch (Exception e)
+        {
+            // One method Harmony can't wrap (some of this mod's own prefixes) leaves the others probed.
+            _labels.Remove(target);
+            Log.Warn($"[{ModEntry.Id}] {Name}: {label} not probed: {e.Message}");
+        }
     }
 
     private static void Prefix(out long __state)

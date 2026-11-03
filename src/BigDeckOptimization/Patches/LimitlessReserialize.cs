@@ -643,7 +643,7 @@ public static class LimitlessReserialize
     /// </summary>
     private static Func<Type, List<System.Reflection.PropertyInfo>?>? _jsonProperties;
 
-    private static Func<Type, List<System.Reflection.PropertyInfo>?> JsonPropertiesLookup()
+    internal static Func<Type, List<System.Reflection.PropertyInfo>?> JsonPropertiesLookup()
     {
         foreach (string type in new[] { "MegaCrit.Sts2.Core.Saves.Runs.SavedPropertiesTypeCache", "MegaCrit.Sts2.Core.Multiplayer.Serialization.ModelIdSerializationCache" })
         {

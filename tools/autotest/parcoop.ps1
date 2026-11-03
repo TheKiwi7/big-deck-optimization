@@ -100,8 +100,11 @@ foreach ($entry in $done) {
     $enemies = foreach ($log in $entry.Group.HostLog, $entry.Group.ClientLog) { ,@(Select-String -Path $log -Pattern "STATE floor .*: enemy " -ErrorAction SilentlyContinue | ForEach-Object { $_.Line -replace '^.*STATE ', '' }) }
     $same = (($enemies[0] -join "`n") -eq ($enemies[1] -join "`n"))
     if (-not $same) { $problems += "enemy states differ ($($enemies[0].Count) vs $($enemies[1].Count) lines)" }
-    if ($enemies[0].Count -eq 0) { $problems += "no enemy state line" }
-    Write-Output ("{0,-16} {1,-8} {2,4} s  {3} enemy state lines{4}" -f $entry.Group.Name, $entry.State, $entry.Seconds, $enemies[0].Count, $(if ($problems.Count) { "  PROBLEMS: " + ($problems -join "; ") } else { "  agree" }))
+    # runstate lines (outside combat, every player's gold, HP, potions, relics, deck): each peer logs them for all players.
+    $runStates = foreach ($log in $entry.Group.HostLog, $entry.Group.ClientLog) { ,@(Select-String -Path $log -Pattern "STATE (?![^:]*\(local\))[^:]+: (floor \d+, act |\S+ gold )" -ErrorAction SilentlyContinue | ForEach-Object { $_.Line -replace '^.*STATE ', '' }) }
+    if (($runStates[0] -join "`n") -ne ($runStates[1] -join "`n")) { $problems += "run states differ ($($runStates[0].Count) vs $($runStates[1].Count) lines)" }
+    if ($enemies[0].Count -eq 0 -and $runStates[0].Count -eq 0) { $problems += "no enemy or run state line" }
+    Write-Output ("{0,-16} {1,-8} {2,4} s  {3} enemy, {4} run state lines{5}" -f $entry.Group.Name, $entry.State, $entry.Seconds, $enemies[0].Count, $runStates[0].Count, $(if ($problems.Count) { "  PROBLEMS: " + ($problems -join "; ") } else { "  agree" }))
     if ($problems.Count) { $bad++ }
 }
 Write-Output ("done in {0:F1} min, {1} with problems, logs in {2}" -f ((Get-Date) - $started).TotalMinutes, $bad, $out)

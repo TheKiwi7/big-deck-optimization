@@ -1,0 +1,83 @@
+# Positive control of SnapshotCardReuse's upgrade bits (snapcheck-apotheosis with a wrong level written into them): the check of
+# patched bits must see it (SnapshotCardReuse off for the session, its "bits kept for a card differ" error); the checksum
+# pairs stay identical (the game's own snapshot from then on).
+timeout 1500
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+cmd bdperf upgradebits wrong
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 300
+wait 1
+checksum start
+checksum start vanilla
+cmd energy 10
+play 2
+waitfor idle 120
+checksum before 1
+checksum before 1 vanilla
+play 2
+waitfor idle 120
+checksum before 2
+checksum before 2 vanilla
+emptyhand
+setenergy 5
+cmd card APOTHEOSIS hand
+playcard APOTHEOSIS free
+waitfor idle 120
+checksum apotheosis 1
+checksum apotheosis 1 vanilla
+cmd energy 10
+play 2
+waitfor idle 120
+checksum apotheosis 1 plays
+checksum apotheosis 1 plays vanilla
+emptyhand
+setenergy 5
+cmd card APOTHEOSIS hand
+playcard APOTHEOSIS free
+waitfor idle 120
+checksum apotheosis 2
+checksum apotheosis 2 vanilla
+cmd energy 10
+play 2
+waitfor idle 120
+checksum apotheosis 2 plays
+checksum apotheosis 2 plays vanilla
+emptyhand
+setenergy 5
+cmd card APOTHEOSIS hand
+playcard APOTHEOSIS free
+waitfor idle 120
+checksum apotheosis 3
+checksum apotheosis 3 vanilla
+cmd energy 10
+play 2
+waitfor idle 120
+checksum apotheosis 3 plays
+checksum apotheosis 3 plays vanilla
+emptyhand
+setenergy 5
+cmd card APOTHEOSIS hand
+playcard APOTHEOSIS free
+waitfor idle 120
+checksum apotheosis 4
+checksum apotheosis 4 vanilla
+cmd energy 10
+play 2
+waitfor idle 120
+checksum apotheosis 4 plays
+checksum apotheosis 4 plays vanilla
+counters end
+effects end
+quit

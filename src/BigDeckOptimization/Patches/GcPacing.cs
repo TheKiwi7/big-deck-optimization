@@ -24,7 +24,7 @@ public static class GcPacing
 {
     public const string Name = "GcPacing";
 
-    public const int MinCards = 1000;
+    public static int MinCards { get; set; } = 1000;
     private const long Budget = 240L * 1024 * 1024;
     private const long LohBudget = 64L * 1024 * 1024;
     private const double Refill = 0.35;

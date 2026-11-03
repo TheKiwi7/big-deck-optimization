@@ -1,0 +1,35 @@
+# bdperf upgradebench at ~10,300 cards + 368 relics: an upgrade's bookkeeping per card variable, before and after an Apotheosis.
+# each play (what a co-op peer computes). Played twice: fresh cards, then already upgraded ones. -TraceSec 60 for a trace.
+timeout 1200
+newrun NECROBINDER
+waitfor run 120
+wait 2
+uncap
+framedetail
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf segments verify off
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 3
+cmd bdperf upgradebench 5
+emptyhand
+setenergy 5
+cmd card APOTHEOSIS hand
+wait 2
+playcard APOTHEOSIS free
+waitfor idle 120
+wait 1
+cmd bdperf upgradebench 5
+quit

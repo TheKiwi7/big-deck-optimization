@@ -67,6 +67,24 @@ public class PerfConsoleCmd : AbstractConsoleCmd
             case "blocks" when args.Length >= 2:
                 SnapshotCardReuse.BlockCopies = args[1] == "on";
                 return new CmdResult(success: true, $"{SnapshotCardReuse.Name}: unchanged runs of a pile's cards {(SnapshotCardReuse.BlockCopies ? "copied as blocks" : "composed card by card")}; {SnapshotCardReuse.BlockCopiedCards} cards copied in blocks so far.");
+            case "upgradebits" when args.Length >= 2 && args[1] is "on" or "off" or "wrong":
+                SnapshotCardReuse.UpgradeBits = args[1] != "off";
+                SnapshotCardReuse.UpgradeBitsWrongForTest = args[1] == "wrong";
+                return new CmdResult(success: true, $"{SnapshotCardReuse.Name}: an upgraded card's bits {(SnapshotCardReuse.UpgradeBits ? "patched" : "written in full")}; patched {SnapshotCardReuse.UpgradeBitsPatched}, mismatches {SnapshotCardReuse.Mismatches}; not patched: "
+                    + string.Join(", ", SnapshotCardReuse.WhyNoUpgradeBits.OrderByDescending(p => p.Value).Select(p => $"{p.Key} {p.Value}")) + $"; cards upgraded (light snapshot objects) {SnapshotCardReuse.LightBuilt}");
+            case "envrelease" when args.Length >= 2 && args[1] is "on" or "off":
+                RichTextEnvRelease.Enabled = args[1] == "on";
+                return new CmdResult(success: true, $"{RichTextEnvRelease.Name}: text effects' dictionaries {(RichTextEnvRelease.Enabled ? "disposed after use" : "left to their finalizers")}; released {RichTextEnvRelease.Released}.");
+            case "gcmin" when args.Length >= 2 && int.TryParse(args[1], out int minCards) && minCards >= 0:
+                GcPacing.MinCards = minCards;
+                return new CmdResult(success: true, $"{GcPacing.Name}: combats from {minCards} cards; regions {GcPacing.Regions}, collections {GcPacing.Collections}.");
+            case "upgradebench":
+                return UpgradeBench.Run(args.Length >= 2 && int.TryParse(args[1], out int upgradePasses) && upgradePasses > 0 ? upgradePasses : 20);
+            case "relics":
+                return RelicBench.Run(args.Length >= 2 && int.TryParse(args[1], out int passes) && passes > 0 ? passes : 20);
+            case "relicreuse" when args.Length >= 3 && args[1] == "scalarblind":
+                RelicStateReuse.ScalarBlindForTest = args[2] == "on";
+                return new CmdResult(success: true, $"{RelicStateReuse.ScalarName}: relics {(RelicStateReuse.ScalarBlindForTest ? "taken as unchanged without reading them (test)" : "read")}; reused {RelicStateReuse.ScalarReused}, verified {RelicStateReuse.ScalarVerified}.");
             case "relicreuse" when args.Length >= 3 && args[1] == "blind":
                 RelicStateReuse.BlindForTest = args[2] == "on";
                 return new CmdResult(success: true, $"{RelicStateReuse.Name}: saved properties {(RelicStateReuse.BlindForTest ? "taken as unchanged (test)" : "compared")}; reused {RelicStateReuse.Reused}, built {RelicStateReuse.Built}.");
@@ -100,6 +118,41 @@ public class PerfConsoleCmd : AbstractConsoleCmd
                     : "not filtered";
                 }
                 return new CmdResult(success: true, $"keywords {Types(HookFilter.Keywords)} | cost {Types(HookFilter.EnergyCost)} | cost late {Types(HookFilter.EnergyCostLate)}");
+            case "piletimes":
+                lock (SnapshotCardReuse.PileTimes)
+                {
+                    string times = string.Join(", ", SnapshotCardReuse.PileTimes.OrderByDescending(p => p.Value.Ms).Select(p => $"{p.Key}: {p.Value.Calls} calls {p.Value.Ms:F1} ms {p.Value.Cards / Math.Max(1, p.Value.Calls)} cards avg"));
+                    if (args.Length >= 2 && args[1] == "reset")
+                    {
+                        SnapshotCardReuse.PileTimes.Clear();
+                    }
+                    return new CmdResult(success: true, "PILE TIMES " + times);
+                }
+            case "costwrites":
+                {
+                    // Whether a cost change reaches SnapshotCardReuse's write prefix, called directly and through the card.
+                    if (!CombatManager.Instance.IsInProgress || RunManager.Instance.DebugOnlyGetState() is not { } costRun || LocalContext.GetMe(costRun) is not { } costMe
+                        || PileType.Hand.GetPile(costMe).Cards.FirstOrDefault() is not { } costCard)
+                    {
+                        return new CmdResult(success: false, "Start a combat with a card in hand first.");
+                    }
+                    long before = SnapshotCardReuse.CostWriteCalls;
+                    costCard.EnergyCost.SetThisTurnOrUntilPlayed(costCard.EnergyCost.GetWithModifiers(CostModifiers.Local));
+                    long direct = SnapshotCardReuse.CostWriteCalls - before;
+                    before = SnapshotCardReuse.CostWriteCalls;
+                    costCard.SetToFreeThisTurn();
+                    long viaCard = SnapshotCardReuse.CostWriteCalls - before;
+                    return new CmdResult(success: true, $"COSTWRITES {costCard.Id}: SetThisTurnOrUntilPlayed called directly {direct}, through SetToFreeThisTurn {viaCard} (total {SnapshotCardReuse.CostWriteCalls})");
+                }
+            case "purehooks" when args.Length >= 2 && args[1] == "blind":
+                SnapshotCardReuse.PureHooksBlindForTest = true;
+                return new CmdResult(success: true, $"{SnapshotCardReuse.Name}: listeners compared without their amounts (test).");
+            case "purehooks" when args.Length >= 2 && args[1] is "on" or "off":
+                SnapshotCardReuse.PureHookReads = args[1] == "on";
+                return new CmdResult(success: true, $"{SnapshotCardReuse.Name}: piles {(SnapshotCardReuse.PureHookReads ? "trusted" : "read in full")} with pure cost or keyword listeners; {SnapshotCardReuse.PilesWithHooks} so far.");
+            case "dirtyreads" when args.Length >= 2 && args[1] is "on" or "off":
+                SnapshotCardReuse.DirtyReads = args[1] == "on";
+                return new CmdResult(success: true, $"{SnapshotCardReuse.Name}: piles with written cards {(SnapshotCardReuse.DirtyReads ? "read those only" : "read in full")}; {SnapshotCardReuse.DirtyPiles} so far.");
             case "snapmoved" when args.Length >= 2 && args[1] is "on" or "off":
                 SnapshotCardReuse.MovedPiles = args[1] == "on";
                 return new CmdResult(success: true, $"{SnapshotCardReuse.Name} moved piles {args[1]}.");
@@ -436,6 +489,9 @@ public class PerfConsoleCmd : AbstractConsoleCmd
             case "on" or "off":
                 PerfProbe.Enabled = args[0].ToLowerInvariant() == "on";
                 return new CmdResult(success: true, $"Probe {(PerfProbe.Enabled ? "on" : "off")}.");
+            case "nodes":
+                ModEntry.TryApply(PerfProbe.Name + ".Nodes", PerfProbe.ApplyNodes);
+                return new CmdResult(success: true, "Node callbacks probed.");
             case "hitch" when args.Length > 1 && double.TryParse(args[1], out double ms) && ms > 0:
                 PerfProbe.HitchMs = ms;
                 return new CmdResult(success: true, $"Hitch threshold {ms:F0} ms.");

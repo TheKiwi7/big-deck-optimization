@@ -71,10 +71,20 @@ public class BigDeckConsoleCmd : AbstractConsoleCmd
                 return Tank(args.Skip(1).ToArray());
             case "relics":
                 return AddRelics(issuingPlayer, args.Skip(1).ToArray());
+            case "mark":
+                // A barrier for co-op test scenarios: every peer records that this player got there (AutoTest's barrier waits for all).
+                lock (Marks)
+                {
+                    Marks.Add((issuingPlayer.NetId, string.Join(' ', args.Skip(1))));
+                }
+                return new CmdResult(success: true, "marked");
             default:
                 return Fill(issuingPlayer, scope, args);
         }
     }
+
+    /// <summary><c>bigdeck mark &lt;label&gt;</c>: which player reached which label, as every peer saw the command.</summary>
+    public static readonly HashSet<(ulong Player, string Label)> Marks = new();
 
     // Any peer can issue a networked command: cap it so nobody can freeze everyone's game with a huge count.
     private const int MaxDeckSize = 5000;

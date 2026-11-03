@@ -74,6 +74,13 @@ public static class SnapshotCardReuse
     public static long PilesBuilt { get; private set; }
     public static long BitsReused { get; private set; }
     public static long BitsCaptured { get; private set; }
+    /// <summary>Card bits whose only change was the upgrade level (Apotheosis): those 8 bits written into the kept ones.</summary>
+    public static long UpgradeBitsPatched { get; private set; }
+    public static bool UpgradeBits { get; set; } = true;
+#if BENCH
+    /// <summary>A wrong level written into patched bits (bdperf upgradebits wrong): the checks must see it.</summary>
+    public static bool UpgradeBitsWrongForTest { get; set; }
+#endif
     public static long BitChecks { get; private set; }
     public static long LightBuilt { get; private set; }
     public static long PilesTrusted { get; private set; }
@@ -82,9 +89,15 @@ public static class SnapshotCardReuse
     public static long PileMismatches { get; private set; }
     /// <summary>Cards of moved piles given their previous state without a read.</summary>
     public static long MovedReused { get; private set; }
+    /// <summary>Piles read with written cards listed: only those read again.</summary>
+    public static long DirtyPiles { get; private set; }
+    /// <summary>Piles trusted or kept while pure cost or keyword listeners were active.</summary>
+    public static long PilesWithHooks { get; private set; }
 
     /// <summary>Moved piles keep their unwritten cards' states (bdperf snapmoved on|off).</summary>
     public static bool MovedPiles { get; set; } = true;
+    /// <summary>A pile with written cards reads only those, the others kept as moved piles keep them (bdperf dirtyreads on|off).</summary>
+    public static bool DirtyReads { get; set; } = true;
 
     /// <summary>One trusted pile in this many is read for real.</summary>
     public const int PileVerifyEvery = 128;
@@ -95,6 +108,8 @@ public static class SnapshotCardReuse
     /// trusted. A fixed 64 left every big pile of a huge deck read in full at each checksum: 20,000 cards for a few hundred live ones.
     /// </summary>
     private const int MaxLiveCards = 64;
+    /// <summary>Written cards a pile lists between two reads; more, and its next read reads every card.</summary>
+    private const int MaxDirtyCards = 256;
     private const int LiveShare = 16;
 
     private static bool _trustPiles;
@@ -161,6 +176,8 @@ public static class SnapshotCardReuse
 
         /// <summary>The pile this card was last read in.</summary>
         public PileLast? In;
+        /// <summary>Written since its last read, listed in <see cref="In"/>'s <see cref="PileLast.Dirty"/>: read again, not reused.</summary>
+        public bool Dirty;
 
         /// <summary>The bits <c>CardState.Serialize</c> wrote for this state, from the first bit of <see cref="Bits"/>.</summary>
         public byte[]? Bits;
@@ -170,6 +187,8 @@ public static class SnapshotCardReuse
         public int BitsAfflictionCount;
         public int? BitsEnergyCost;
         public List<CardKeyword>? BitsKeywords;
+        /// <summary>The snapshot object <see cref="Saved"/> was made from by <see cref="Upgraded"/> (only its upgrade level differs).</summary>
+        public SerializableCard? UpgradedFrom;
     }
 
     /// <summary>A pile's last snapshot list (never changed once built) and each entry's <see cref="Last"/>.</summary>
@@ -183,8 +202,17 @@ public static class SnapshotCardReuse
         /// <summary>Writes to what the state of this pile's cards reads (<see cref="Last.In"/>).</summary>
         public long Writes;
 
+        /// <summary>
+        /// The cards written since the last read (each marked <see cref="Last.Dirty"/>), up to <see cref="MaxDirtyCards"/>: a read
+        /// then reads those again and keeps the others' states. More than that: <see cref="DirtyOverflow"/>, every card read.
+        /// </summary>
+        public readonly List<Last> Dirty = new();
+        public bool DirtyOverflow;
+
         /// <summary>What the last full read saw: trusted until one of these moves. -1: not trustable.</summary>
         public long WritesAt = -1;
+        /// <summary>The cost and keyword listeners of that read (see <see cref="Reads.Listeners"/>).</summary>
+        public HookListener[]? ListenersAt;
         public long StampAt = -1;
         public int ListVersion;
 
@@ -320,6 +348,13 @@ public static class SnapshotCardReuse
             _afflictionCard = AccessTools.FieldRefAccess<AfflictionModel, CardModel?>("_card");
             void Mark(Type type, string method, string prefix)
             {
+#if BENCH
+                // Harmony's __originalMethod costs a method lookup per call (~2 µs): only when writes are counted per method.
+                if (CountWritesByMethod)
+                {
+                    prefix += "Counted";
+                }
+#endif
                 PatchGuard.Patch(harmony, AccessTools.Method(type, method) ?? throw new MissingMethodException(type.Name, method),
                     prefix: new HarmonyMethod(typeof(SnapshotCardReuse), prefix));
             }
@@ -349,50 +384,98 @@ public static class SnapshotCardReuse
     /// <summary>A card no pile read yet is in no trusted pile: nothing to count.</summary>
     private static void Wrote(CardModel? card)
     {
-        if (card != null && _last.TryGetValue(card, out Last? entry) && entry.In != null)
+        if (card != null && _last.TryGetValue(card, out Last? entry) && entry.In is { } pile)
         {
-            entry.In.Writes++;
+            pile.Writes++;
+            if (!entry.Dirty)
+            {
+                if (pile.Dirty.Count < MaxDirtyCards)
+                {
+                    entry.Dirty = true;
+                    pile.Dirty.Add(entry);
+                }
+                else
+                {
+                    pile.DirtyOverflow = true;
+                }
+            }
         }
     }
 
 #if BENCH
     /// <summary>Writes counted per kind, and the method that made them (which ones keep piles from being trusted).</summary>
-    public static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> WritesByMethod = new();
 
     /// <summary>Why piles were read rather than trusted.</summary>
     public static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> WhyRead = new();
 
-    private static void CountWrite(System.Reflection.MethodBase method) => WritesByMethod.AddOrUpdate(method.DeclaringType?.Name + "." + method.Name, 1, (_, n) => n + 1);
+    /// <summary>Per method, its name built only when printed: this runs at every write of every card (Apotheosis: 10,000 at once).</summary>
+    private static readonly Dictionary<(System.Reflection.MethodBase, PileType?), long> _writes = new();
 
-    private static void CardWrite(CardModel __instance, System.Reflection.MethodBase __originalMethod)
+    private static void CountWrite(System.Reflection.MethodBase method, CardModel? card)
     {
-        CountWrite(__originalMethod);
+        lock (_writes)
+        {
+            (System.Reflection.MethodBase, PileType?) key = (method, card?.Pile?.Type);
+            _writes[key] = _writes.GetValueOrDefault(key) + 1;
+        }
+    }
+
+    public static IEnumerable<KeyValuePair<string, long>> WritesByMethod
+    {
+        get
+        {
+            lock (_writes)
+            {
+                return _writes.GroupBy(p => p.Key.Item1.DeclaringType?.Name + "." + p.Key.Item1.Name + " (" + (p.Key.Item2?.ToString() ?? "no pile") + ")").Select(g => KeyValuePair.Create(g.Key, g.Sum(p => p.Value))).ToList();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Writes counted per method (the WRITES line) only with <c>--bdwrites</c> on the command line (or <c>BD_WRITES=1</c> in the environment): Harmony looks the method up at
+    /// every call for that, which made an Apotheosis at 10,000 cards ~20 ms slower in Debug builds than in Release ones.
+    /// </summary>
+    private static readonly bool CountWritesByMethod = Godot.OS.GetCmdlineArgs().Concat(Godot.OS.GetCmdlineUserArgs()).Contains("--bdwrites")
+        || Environment.GetEnvironmentVariable("BD_WRITES") == "1";
+
+    private static void CardWriteCounted(CardModel __instance, System.Reflection.MethodBase __originalMethod)
+    {
+        CountWrite(__originalMethod, __instance);
         Wrote(__instance);
     }
 
-    private static void CostWrite(CardEnergyCost __instance, System.Reflection.MethodBase __originalMethod)
+    private static void CostWriteCounted(CardEnergyCost __instance, System.Reflection.MethodBase __originalMethod)
     {
-        CountWrite(__originalMethod);
+        CountWrite(__originalMethod, _costCard!(__instance));
         Wrote(_costCard!(__instance));
     }
 
-    private static void EnchantmentWrite(EnchantmentModel __instance, System.Reflection.MethodBase __originalMethod)
+    private static void EnchantmentWriteCounted(EnchantmentModel __instance, System.Reflection.MethodBase __originalMethod)
     {
-        CountWrite(__originalMethod);
+        CountWrite(__originalMethod, _enchantmentCard!(__instance));
         Wrote(_enchantmentCard!(__instance));
     }
 
-    private static void AfflictionWrite(AfflictionModel __instance, System.Reflection.MethodBase __originalMethod)
+    private static void AfflictionWriteCounted(AfflictionModel __instance, System.Reflection.MethodBase __originalMethod)
     {
-        CountWrite(__originalMethod);
+        CountWrite(__originalMethod, _afflictionCard!(__instance));
         Wrote(_afflictionCard!(__instance));
     }
-#else
+#endif
     private static void CardWrite(CardModel __instance) => Wrote(__instance);
+#if BENCH
+    /// <summary>Calls of the cost writers' prefix (bdperf costwrites): does a given path reach it.</summary>
+    public static long CostWriteCalls;
+    private static void CostWrite(CardEnergyCost __instance)
+    {
+        CostWriteCalls++;
+        Wrote(_costCard!(__instance));
+    }
+#else
     private static void CostWrite(CardEnergyCost __instance) => Wrote(_costCard!(__instance));
+#endif
     private static void EnchantmentWrite(EnchantmentModel __instance) => Wrote(_enchantmentCard!(__instance));
     private static void AfflictionWrite(AfflictionModel __instance) => Wrote(_afflictionCard!(__instance));
-#endif
 
     private static void ApplyBits(Harmony harmony)
     {
@@ -417,6 +500,14 @@ public static class SnapshotCardReuse
         }
         try
         {
+            ApplyUpgradeBits();
+        }
+        catch (Exception e) when (e is PatchSkippedException or MissingMemberException)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: an upgraded card's bits written in full: {e.Message}");
+        }
+        try
+        {
             _pileSerialize = AccessTools.Method(typeof(NetFullCombatState.CombatPileState), nameof(NetFullCombatState.CombatPileState.Serialize), new[] { typeof(PacketWriter) })
                 ?? throw new MissingMethodException("NetFullCombatState.CombatPileState", "Serialize");
             // From the caller: once its callers reach tier 1 the JIT inlines this small method, and a patch on it no longer runs.
@@ -433,7 +524,121 @@ public static class SnapshotCardReuse
     }
 
     /// <summary>What every card of a pile shares in one snapshot.</summary>
-    private readonly record struct Reads(long Stamp, bool NoKeywordHook, bool NoCostHook);
+    /// <summary>
+    /// <see cref="Listeners"/>: the cost and keyword listeners of the combat, each with its amount and owner, when every one of them
+    /// answers from what a read covers (<see cref="PureHooks"/>); null when one doesn't, and then no pile is trusted.
+    /// </summary>
+    private readonly record struct Reads(long Stamp, bool NoKeywordHook, bool NoCostHook, HookListener[]? Listeners);
+
+    private readonly record struct HookListener(AbstractModel Model, int Amount, object? Owner);
+
+    private static readonly HookListener[] NoListeners = Array.Empty<HookListener>();
+
+    /// <summary>
+    /// Cost and keyword listeners whose answer for a card depends only on the card's owner, type, base cost and local modifiers,
+    /// keywords, affliction or pile type (all of it written through the counted writers, or fixed for a pile's cards) and on the
+    /// listener's own amount and owner (v0.107.1 and v0.111). While the same listeners stand with the same amounts, a pile's
+    /// unwritten cards keep the costs and keywords they had. Not Void Form or Brilliant Scarf: they count the cards played this turn.
+    /// </summary>
+    private static readonly (string Type, string Method, string Fingerprint)[] PureHooks =
+    {
+        ("MegaCrit.Sts2.Core.Models.Powers.CuriousPower", "TryModifyEnergyCostInCombat", "F8A0E3D0504A6C32"),
+        ("MegaCrit.Sts2.Core.Models.Powers.BorrowedTimePower", "TryModifyEnergyCostInCombat", "2CFAD6BDBD87020F"),
+        ("MegaCrit.Sts2.Core.Models.Powers.CorruptionPower", "TryModifyEnergyCostInCombatLate", "AF1AEC99FB966FDD"),
+        ("MegaCrit.Sts2.Core.Models.Relics.SpikedGauntlets", "TryModifyEnergyCostInCombat", "EBEC652116165626"),
+        ("MegaCrit.Sts2.Core.Models.Powers.FreeAttackPower", "TryModifyEnergyCostInCombatLate", "1D9B5C1B89979BAB"),
+        ("MegaCrit.Sts2.Core.Models.Powers.FreePowerPower", "TryModifyEnergyCostInCombatLate", "801ACD8EF492F80C"),
+        ("MegaCrit.Sts2.Core.Models.Powers.FreeSkillPower", "TryModifyEnergyCostInCombatLate", "236DB712F26998E7"),
+        ("MegaCrit.Sts2.Core.Models.Powers.TangledPower", "TryModifyEnergyCostInCombat", "821BCEB038AC7E59"),
+        ("MegaCrit.Sts2.Core.Models.Powers.HexPower", "TryModifyKeywordsInCombat", "7CE6FD37170D4241"),
+        ("MegaCrit.Sts2.Core.Models.Powers.VeilpiercerPower", "TryModifyEnergyCostInCombatLate", "01EA4019AAB80E02"),
+    };
+
+    private static readonly string[] HookMethods = { "TryModifyEnergyCostInCombat", "TryModifyEnergyCostInCombatLate", "TryModifyKeywordsInCombat" };
+
+    /// <summary>Per listener type: its overrides of <see cref="HookMethods"/>, when all are known pure ones; null otherwise.</summary>
+    private static readonly Dictionary<Type, MethodInfo[]?> _pureTypes = new();
+
+    /// <summary>Piles stay trusted with pure listeners active (bdperf purehooks on|off).</summary>
+    public static bool PureHookReads { get; set; } = true;
+#if BENCH
+    /// <summary>Listeners compared without their amounts (bdperf purehooks blind): the checks must see it.</summary>
+    public static bool PureHooksBlindForTest { get; set; }
+#endif
+
+    private static MethodInfo[]? PureOverrides(Type type)
+    {
+        if (_pureTypes.TryGetValue(type, out MethodInfo[]? known))
+        {
+            return known;
+        }
+        List<MethodInfo> overrides = new();
+        foreach (string name in HookMethods)
+        {
+            MethodInfo? method = type.GetMethod(name, BindingFlags.Public | BindingFlags.Instance);
+            if (method == null || method.DeclaringType == typeof(AbstractModel))
+            {
+                continue;
+            }
+            int entry = Array.FindIndex(PureHooks, h => h.Type == method.DeclaringType?.FullName && h.Method == name);
+            if (entry < 0 || method.DeclaringType != type || !PatchSafety.FingerprintMatches(MethodFingerprint.Of(method), PureHooks[entry].Fingerprint))
+            {
+                return _pureTypes[type] = null;
+            }
+            overrides.Add(method);
+        }
+        return _pureTypes[type] = overrides.ToArray();
+    }
+
+    /// <summary>The listeners of these lists with their amounts and owners, or null when one may answer from more than a read covers.</summary>
+    private static HookListener[]? PureListeners(List<AbstractModel>? keywords, List<AbstractModel>? early, List<AbstractModel>? late)
+    {
+        if (!PureHookReads || keywords == null || early == null || late == null || HookFilter.CombatHookListenersEmpty)
+        {
+            return null;
+        }
+        var listeners = new HookListener[keywords.Count + early.Count + late.Count];
+        int i = 0;
+        foreach (List<AbstractModel> list in new[] { keywords, early, late })
+        {
+            foreach (AbstractModel model in list)
+            {
+                if (PureOverrides(model.GetType()) is not { } methods || methods.Any(m => PatchSafety.IsPatchedByOthers(m)))
+                {
+                    return null;
+                }
+                listeners[i++] = model switch
+                {
+                    PowerModel power => new HookListener(model, power.Amount, power.Owner),
+                    RelicModel relic => new HookListener(model, 0, relic.Owner),
+                    _ => new HookListener(model, 0, null),
+                };
+            }
+        }
+        return listeners;
+    }
+
+    private static bool SameListeners(HookListener[]? a, HookListener[]? b)
+    {
+        if (a == null || b == null || a.Length != b.Length)
+        {
+            return false;
+        }
+        for (int i = 0; i < a.Length; i++)
+        {
+#if BENCH
+            if (PureHooksBlindForTest && ReferenceEquals(a[i].Model, b[i].Model))
+            {
+                continue;
+            }
+#endif
+            if (!ReferenceEquals(a[i].Model, b[i].Model) || a[i].Amount != b[i].Amount || !ReferenceEquals(a[i].Owner, b[i].Owner))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
 
     [PatchPart("piles")]
     private static Reads ReadsFor(CardPile pile)
@@ -442,11 +647,14 @@ public static class SnapshotCardReuse
         if (!_fastReads || !HookFilter.Active || PatchSafety.IsPatchedByOthers(_keywordsMethod) || PatchSafety.IsPatchedByOthers(_withModifiers)
             || pile.Cards.Count == 0 || pile.Cards[0].Owner?.Creature.CombatState is not CombatState combat)
         {
-            return new Reads(stamp, false, false);
+            return new Reads(stamp, false, false, null);
         }
-        bool noKeywords = HookFilter.ForCombat(combat, HookFilter.Keywords) is { Count: 0 };
-        bool noCost = HookFilter.ForCombat(combat, HookFilter.EnergyCost) is { Count: 0 } && HookFilter.ForCombat(combat, HookFilter.EnergyCostLate) is { Count: 0 };
-        return new Reads(stamp, noKeywords, noCost);
+        List<AbstractModel>? keywords = HookFilter.ForCombat(combat, HookFilter.Keywords);
+        List<AbstractModel>? early = HookFilter.ForCombat(combat, HookFilter.EnergyCost);
+        List<AbstractModel>? late = HookFilter.ForCombat(combat, HookFilter.EnergyCostLate);
+        bool noKeywords = keywords is { Count: 0 };
+        bool noCost = early is { Count: 0 } && late is { Count: 0 };
+        return new Reads(stamp, noKeywords, noCost, noKeywords && noCost ? NoListeners : PureListeners(keywords, early, late));
     }
 
     /// <summary><c>CombatPileState.From</c>: the pile's previous list while every card's state equals its entry.</summary>
@@ -459,6 +667,10 @@ public static class SnapshotCardReuse
         {
             return true;
         }
+#if BENCH
+        long timedFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+        string timedPath = "full";
+#endif
         try
         {
             PileLast last = _piles.GetValue(pile, static _ => new PileLast());
@@ -469,11 +681,18 @@ public static class SnapshotCardReuse
             Reads reads = ReadsFor(pile);
             int listVersion = _trustPiles ? _listVersion!(_pileCards!(pile)) : 0;
             bool trusted = _trustPiles && previous != null && last.WritesAt == last.Writes && last.StampAt == reads.Stamp && reads.Stamp >= 0
-                && last.ListVersion == listVersion && reads.NoKeywordHook && reads.NoCostHook && LiveSame(cards, last, previous, reads);
+                && last.ListVersion == listVersion && SameListeners(last.ListenersAt, reads.Listeners) && LiveSame(cards, last, previous, reads);
             if (trusted && ++_sincePileCheck < PileVerifyEvery)
             {
                 PilesTrusted++;
+                if (reads.Listeners is { Length: > 0 })
+                {
+                    PilesWithHooks++;
+                }
                 __result = new NetFullCombatState.CombatPileState { pileType = pile.Type, cards = previous! };
+#if BENCH
+                timedPath = "trusted";
+#endif
                 return false;
             }
             if (trusted)
@@ -487,18 +706,32 @@ public static class SnapshotCardReuse
             if (!trusted)
             {
                 string why = !_trustPiles ? "untrusted" : previous == null ? "first read" : last.WritesAt != last.Writes ? (last.WritesAt < 0 ? "not trustable last time" : "written")
-                    : last.StampAt != reads.Stamp || reads.Stamp < 0 ? "stamp" : !reads.NoKeywordHook || !reads.NoCostHook ? "cost or keyword hook"
+                    : last.StampAt != reads.Stamp || reads.Stamp < 0 ? "stamp" : !SameListeners(last.ListenersAt, reads.Listeners) ? (reads.Listeners == null ? "cost or keyword hook" : "hook listeners changed")
                     : last.ListVersion != listVersion ? "moved" : "live card changed";
-                WhyRead.AddOrUpdate(why, 1, (_, n) => n + 1);
+                WhyRead.AddOrUpdate($"{pile.Type} {why}" + (why == "not trustable last time" ? $" (live {last.LiveCount}/{Math.Max(MaxLiveCards, last.Count / LiveShare)})" : ""), 1, (_, n) => n + 1);
             }
 #endif
-            bool moved = MovedPiles && !trusted && _trustPiles && previous != null && last.WritesAt == last.Writes && last.StampAt == reads.Stamp && reads.Stamp >= 0
-                && reads.NoKeywordHook && reads.NoCostHook;
+            // Written cards since then are all listed (no overflow): those are read again, the others keep their states.
+            bool moved = MovedPiles && !trusted && _trustPiles && previous != null && last.WritesAt >= 0 && (last.WritesAt == last.Writes || (DirtyReads && !last.DirtyOverflow))
+                && last.StampAt == reads.Stamp && reads.Stamp >= 0 && SameListeners(last.ListenersAt, reads.Listeners);
+            if (moved && last.WritesAt != last.Writes)
+            {
+                DirtyPiles++;
+            }
+            if (moved && reads.Listeners is { Length: > 0 })
+            {
+                PilesWithHooks++;
+            }
             bool verifyMoved = moved && ++_sincePileCheck >= PileVerifyEvery;
             if (verifyMoved)
             {
                 _sincePileCheck = 0;
             }
+#if BENCH
+            timedPath = moved ? (last.WritesAt != last.Writes ? "dirty" : "moved") : previous == null ? "first" : last.WritesAt < 0 ? "full, untrustable"
+                : !_trustPiles ? "full, piles untrusted" : last.WritesAt != last.Writes && last.DirtyOverflow ? "full, overflow" : last.StampAt != reads.Stamp || reads.Stamp < 0 ? "full, stamp"
+                : reads.Listeners == null ? "full, hook" : !SameListeners(last.ListenersAt, reads.Listeners) ? "full, listeners changed" : "full, other";
+#endif
             long writesBefore = last.Writes;
             int live = 0;
             int maxLive = Math.Max(MaxLiveCards, count / LiveShare);
@@ -528,7 +761,7 @@ public static class SnapshotCardReuse
                     shift++;
                 }
                 NetFullCombatState.CardState state;
-                if (moved && was >= 0 && was < previous!.Count && entry != null && ReferenceEquals(entry.In, last) && entry.MemoStamp == reads.Stamp)
+                if (moved && was >= 0 && was < previous!.Count && entry != null && ReferenceEquals(entry.In, last) && entry.MemoStamp == reads.Stamp && !entry.Dirty)
                 {
                     state = previous[was];
                     MovedReused++;
@@ -550,6 +783,10 @@ public static class SnapshotCardReuse
                 else
                 {
                     state = CardFrom(card, ref entry, reads);
+                    if (entry != null)
+                    {
+                        entry.Dirty = false;
+                    }
                 }
                 next[i] = entry;
                 if (entry != null)
@@ -609,12 +846,23 @@ public static class SnapshotCardReuse
                 last.Cards = list;
             }
             Array.Clear(next, count, next.Length - count);
+            // Every card of this pile was read or kept unwritten. A listed card read since in another pile is that pile's now.
+            foreach (Last written in last.Dirty)
+            {
+                if (ReferenceEquals(written.In, last))
+                {
+                    written.Dirty = false;
+                }
+            }
+            last.Dirty.Clear();
+            last.DirtyOverflow = false;
             last.Spare = lasts;
             last.Lasts = next;
             last.Count = count;
             last.LiveCount = live;
             // States read while a listener changed keywords or costs hold what it made of them: no base once it is gone (a relic removed).
-            last.WritesAt = reads.Stamp >= 0 && reads.NoKeywordHook && reads.NoCostHook && live <= maxLive - 1 && writesBefore == last.Writes ? writesBefore : -1;
+            last.WritesAt = reads.Stamp >= 0 && reads.Listeners != null && live <= maxLive - 1 && writesBefore == last.Writes ? writesBefore : -1;
+            last.ListenersAt = reads.Listeners;
             last.StampAt = reads.Stamp;
             last.ListVersion = listVersion;
             _byList.AddOrUpdate(list, last);
@@ -626,7 +874,24 @@ public static class SnapshotCardReuse
             Disable("exception", e.ToString());
             return true;
         }
+#if BENCH
+        finally
+        {
+            string key = $"{pile.Type} {timedPath}";
+            double ms = System.Diagnostics.Stopwatch.GetElapsedTime(timedFrom).TotalMilliseconds;
+            lock (PileTimes)
+            {
+                (long n, double total, int cards) = PileTimes.GetValueOrDefault(key);
+                PileTimes[key] = (n + 1, total + ms, cards + pile.Cards.Count);
+            }
+        }
+#endif
     }
+
+#if BENCH
+    /// <summary>Time in <see cref="PilePrefix"/> per pile type and path: calls, ms, cards walked.</summary>
+    public static readonly Dictionary<string, (long Calls, double Ms, int Cards)> PileTimes = new();
+#endif
 
     /// <summary>The cards a trusted pile still has to compare, as a full read would.</summary>
     [PatchPart("piles")]
@@ -745,6 +1010,7 @@ public static class SnapshotCardReuse
             return fresh;
         }
         cardData.Store(saved, data);
+        entry.UpgradedFrom = old;
         entry.Saved = saved;
         entry.Data = new LimitlessReserialize.StoredData();
         entry.Upgrade = card.CurrentUpgradeLevel;
@@ -952,7 +1218,7 @@ public static class SnapshotCardReuse
 #endif
                 bool composed = !ReferenceEquals(last.BitsFor, __instance.cards) && Compose(ref __instance, last);
 #if BENCH
-                CountPileBits(ReferenceEquals(last.BitsFor, __instance.cards) ? (composed ? "composed" : "same list") : "compose failed: " + _composeFail);
+                CountPileBits((ReferenceEquals(last.BitsFor, __instance.cards) ? (composed ? "composed" : "same list") : "compose failed: " + _composeFail) + $" {__instance.pileType}");
 #endif
                 if (ReferenceEquals(last.BitsFor, __instance.cards) && ++_sincePileBits < PileVerifyEvery)
                 {
@@ -974,7 +1240,7 @@ public static class SnapshotCardReuse
 #if BENCH
             else
             {
-                CountPileBits("list not from a read");
+                CountPileBits($"list not from a read {__instance.pileType} {__instance.cards.Count}");
             }
 #endif
             if (!Enabled)
@@ -1089,7 +1355,17 @@ public static class SnapshotCardReuse
             if (!ReferenceEquals(entry.BitsCard, card.card) || entry.Bits == null || !Equals(entry.BitsAffliction, card.affliction)
                 || entry.BitsAfflictionCount != card.afflictionCount || entry.BitsEnergyCost != card.energyCost || !ReferenceEquals(entry.BitsKeywords, card.keywords))
             {
-                Capture(ref card, entry);
+#if BENCH
+                _upgradePath = "pile ";
+#endif
+                if (!PatchUpgradeBits(ref card, entry))
+                {
+                    Capture(ref card, entry);
+                }
+                else if (!CheckPatchedBits(ref card, entry))
+                {
+                    return false;
+                }
             }
             else if (++_sinceBitCheck >= VerifyEvery)
             {
@@ -1277,6 +1553,126 @@ public static class SnapshotCardReuse
         return _serializePatched;
     }
 
+    // --- Upgrade bits: a card whose only change is its upgrade level keeps its bits but those 8 ---
+
+    /// <summary>v0.107.1 and v0.111: the card first (<c>writer.Write(card)</c>), then its affliction, cost and keywords.</summary>
+    private const string CardStateSerializeFingerprint = "CD9AA92A00A4338D";
+    /// <summary><c>SerializableCard.Serialize</c>: <c>WriteModelEntry(Id)</c>, then <c>WriteInt(CurrentUpgradeLevel, 8)</c>, then the rest.</summary>
+    private const string SerializableCardSerializeFingerprint = "043F1A4FC022488F";
+    /// <summary><c>WriteModelEntry</c>: the entry's net id on <c>ModelIdSerializationCache.EntryIdBitSize</c> bits.</summary>
+    private const string WriteModelEntryFingerprint = "67C0540FD55D5460";
+    /// <summary><c>WriteInt(val, bits)</c>: the value's little-endian bytes, their first <c>bits</c> bits (the low byte for 8).</summary>
+    private const string WriteIntFingerprint = "2E87784A326757CF";
+    /// <summary>The first patched cards of a session are all checked against the game's bits, then one in <see cref="VerifyEvery"/>.</summary>
+    private const int UpgradeBitsCheckedFirst = 64;
+    private static Func<int>? _entryIdBits;
+    private static MethodInfo? _serializableCardSerialize;
+    private static int _upgradeBitsChecked;
+
+    private static void ApplyUpgradeBits()
+    {
+        PatchSafety.RequireFingerprint(_cardSerialize!, CardStateSerializeFingerprint);
+        _serializableCardSerialize = AccessTools.Method(typeof(SerializableCard), nameof(SerializableCard.Serialize))
+            ?? throw new MissingMethodException(nameof(SerializableCard), nameof(SerializableCard.Serialize));
+        PatchSafety.RequireFingerprint(_serializableCardSerialize, SerializableCardSerializeFingerprint);
+        PatchSafety.RequireFingerprint(AccessTools.Method(typeof(PacketWriterExtensions), nameof(PacketWriterExtensions.WriteModelEntry))
+            ?? throw new MissingMethodException(nameof(PacketWriterExtensions), nameof(PacketWriterExtensions.WriteModelEntry)), WriteModelEntryFingerprint);
+        PatchSafety.RequireFingerprint(AccessTools.Method(typeof(PacketWriter), nameof(PacketWriter.WriteInt))
+            ?? throw new MissingMethodException(nameof(PacketWriter), nameof(PacketWriter.WriteInt)), WriteIntFingerprint);
+        _entryIdBits = AccessTools.MethodDelegate<Func<int>>(AccessTools.PropertyGetter(typeof(ModelIdSerializationCache), nameof(ModelIdSerializationCache.EntryIdBitSize))
+            ?? throw new MissingMethodException(nameof(ModelIdSerializationCache), "get_EntryIdBitSize"));
+    }
+
+    /// <summary>
+    /// The kept bits of a card <see cref="Upgraded"/> remade from the very object they were written for, with the rest of the state
+    /// the same: its upgrade level written into them as <c>WriteInt(level, 8)</c> would (the low byte, least significant bit first,
+    /// right after the entry id), instead of serializing the card again with its enchantments. Only while the card's own
+    /// serialization has no transpiler (prefixes and postfixes write before or after these bits, the same as when they were kept).
+    /// </summary>
+    [PatchPart("bits")]
+    private static bool PatchUpgradeBits(ref NetFullCombatState.CardState state, Last last)
+    {
+        if (!UpgradeBits || _entryIdBits == null || last.Bits == null || last.UpgradedFrom == null || !ReferenceEquals(last.BitsCard, last.UpgradedFrom)
+            || !ReferenceEquals(last.Saved, state.card) || !Equals(last.BitsAffliction, state.affliction) || last.BitsAfflictionCount != state.afflictionCount
+            || last.BitsEnergyCost != state.energyCost || !ReferenceEquals(last.BitsKeywords, state.keywords) || CardSerializeTranspiled())
+        {
+#if BENCH
+            if (last.UpgradedFrom == null || !ReferenceEquals(last.Saved, state.card))
+            {
+                return false; // Not an upgrade: any other card's first or new capture.
+            }
+            string why = !UpgradeBits || _entryIdBits == null ? "off" : last.Bits == null ? "no bits" : last.UpgradedFrom == null ? "not upgraded" : !ReferenceEquals(last.BitsCard, last.UpgradedFrom) ? "bits of another object"
+                : !ReferenceEquals(last.Saved, state.card) ? "other saved" : last.BitsEnergyCost != state.energyCost ? "cost" : !ReferenceEquals(last.BitsKeywords, state.keywords) ? "keywords" : CardSerializeTranspiled() ? "transpiled" : "affliction";
+            why = _upgradePath + why;
+            WhyNoUpgradeBits[why] = WhyNoUpgradeBits.GetValueOrDefault(why) + 1;
+#endif
+            return false;
+        }
+        int at = _entryIdBits();
+        if (at <= 0 || last.BitCount < at + 8)
+        {
+            return false;
+        }
+        int level = state.card.CurrentUpgradeLevel & 0xFF;
+#if BENCH
+        if (UpgradeBitsWrongForTest)
+        {
+            level ^= 1;
+        }
+#endif
+        for (int i = 0; i < 8; i++)
+        {
+            int bit = at + i;
+            if (((level >> i) & 1) != 0)
+            {
+                last.Bits[bit >> 3] |= (byte)(1 << (bit & 7));
+            }
+            else
+            {
+                last.Bits[bit >> 3] &= (byte)~(1 << (bit & 7));
+            }
+        }
+        last.BitsCard = state.card;
+        UpgradeBitsPatched++;
+        return true;
+    }
+
+#if BENCH
+    public static readonly Dictionary<string, long> WhyNoUpgradeBits = new();
+    private static string _upgradePath = "";
+#endif
+    /// <summary>Patched bits against the game's: the first ones of the session, then one in <see cref="VerifyEvery"/>. False: they differed (all of this is off).</summary>
+    [PatchPart("bits")]
+    private static bool CheckPatchedBits(ref NetFullCombatState.CardState state, Last last)
+    {
+        if (_upgradeBitsChecked < UpgradeBitsCheckedFirst || ++_sinceBitCheck >= VerifyEvery)
+        {
+            _upgradeBitsChecked++;
+            _sinceBitCheck = 0;
+            return SameBits(ref state, last);
+        }
+        return true;
+    }
+
+    private static long _transpiledCheckAt = long.MinValue;
+    private static bool _transpiled;
+
+    /// <summary>
+    /// A transpiler on <c>SerializableCard.Serialize</c> could move the upgrade bits; Unlimited's (fingerprinted by RelicStateReuse)
+    /// only widens list counts, and this method writes no list.
+    /// </summary>
+    private static bool CardSerializeTranspiled()
+    {
+        long now = Environment.TickCount64;
+        if (now - _transpiledCheckAt >= 2000)
+        {
+            _transpiledCheckAt = now;
+            MethodInfo? unlimited = RelicStateReuse.UnlimitedTranspilerMethod;
+            _transpiled = Harmony.GetPatchInfo(_serializableCardSerialize)?.Transpilers.Any(t => unlimited == null || t.PatchMethod.MethodHandle != unlimited.MethodHandle) == true;
+        }
+        return _transpiled;
+    }
+
     /// <summary><c>CardState.Serialize</c>: the bits it wrote for this same state last time.</summary>
     [PatchPart("bits")]
     private static bool CardSerializePrefix(ref NetFullCombatState.CardState __instance, PacketWriter writer)
@@ -1298,7 +1694,17 @@ public static class SnapshotCardReuse
             if (last.Bits == null || !ReferenceEquals(last.BitsCard, __instance.card) || !Equals(last.BitsAffliction, __instance.affliction)
                 || last.BitsAfflictionCount != __instance.afflictionCount || last.BitsEnergyCost != __instance.energyCost || !ReferenceEquals(last.BitsKeywords, __instance.keywords))
             {
-                Capture(ref __instance, last);
+#if BENCH
+                _upgradePath = "card ";
+#endif
+                if (!PatchUpgradeBits(ref __instance, last))
+                {
+                    Capture(ref __instance, last);
+                }
+                else if (!CheckPatchedBits(ref __instance, last))
+                {
+                    return true;
+                }
             }
             else if (++_sinceBitCheck >= VerifyEvery)
             {
@@ -1499,6 +1905,8 @@ public static class SnapshotCardReuse
             {
                 last.Saved = fresh;
                 last.Data = new LimitlessReserialize.StoredData();
+                // Not made by Upgraded: whatever bits are kept, this object may differ from theirs by more than its level.
+                last.UpgradedFrom = null;
             }
             Built++;
         }

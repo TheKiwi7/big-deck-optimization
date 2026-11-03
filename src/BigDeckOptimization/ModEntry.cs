@@ -53,6 +53,7 @@ public static class ModEntry
         (PooledCardRelease.Name, PooledCardRelease.Apply),
         (SavedPropertyLookup.Name, SavedPropertyLookup.Apply),
         (RelicStateReuse.Name, RelicStateReuse.Apply),
+        (RichTextEnvRelease.Name, RichTextEnvRelease.Apply),
     });
 
     /// <summary>Time given to patching per frame: each patched method takes ~1.5 ms, ~400 ms in all.</summary>
@@ -115,6 +116,17 @@ public static class ModEntry
             // async void: nothing may escape. Each patch catches its own errors, so this is about the frames.
             Log.Warn($"[{Id}] Applying over frames stopped, the rest applies now: {e}");
             spent += ApplySome(double.MaxValue);
+        }
+        try
+        {
+            if (!StartedOff)
+            {
+                InlineGuard.RecompileInliners(new Harmony(Harmony.Id + "." + nameof(InlineGuard)));
+            }
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"[{Id}] {nameof(InlineGuard)}: patched callers not compiled again: {e}");
         }
         Log.Info($"[{Id}] Patches applied: {spent:F0} ms of work over {frames} frames, {System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds:F0} ms after the start");
 #if BENCH

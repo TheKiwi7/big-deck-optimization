@@ -24,7 +24,7 @@
   "card_flights.title": "Ograniczenie latających kart",
   "card_flights.desc": "Wizualne: gdy ogromny stos przesuwa się naraz (przetasowanie tysięcy kart), do stosu leci równy strumień kart zamiast jednej na kartę, co zamrażało grę na minuty. Małe stosy wyglądają tak samo. Te same wyniki.",
   "gc_pacing.title": "Czyszczenie pamięci w spokojnych chwilach",
-  "gc_pacing.desc": "W walkach z co najmniej 1000 kart czyszczenia pamięci .NET (krótkie przycięcia przy zagrywaniu kart) czekają na moment bez animacji. Czyszczenie po wczytaniu każdej komnaty odbywa się w tle, a zakończone walki są zwalniane z pamięci (z BaseLib zostawały do końca runu). Zużywa kilkaset MB więcej podczas tych walk. Te same wyniki.",
+  "gc_pacing.desc": "W walkach z co najmniej 1000 kart czyszczenia pamięci .NET (krótkie przycięcia przy zagrywaniu kart) czekają na moment bez animacji. Czyszczenie po wczytaniu każdej komnaty odbywa się w tle, a zakończone walki są zwalniane z pamięci (z BaseLib zostawały do końca runu). Animowane teksty od razu zwalniają też swoją tymczasową pamięć, co wszędzie skraca czyszczenia. Zużywa kilkaset MB więcej podczas tych walk. Te same wyniki.",
   "grid_sort.title": "Sortowanie siatek kart",
   "grid_sort.desc": "Szybsze sortowanie widoku talii i innych siatek kart.",
   "grid_pool.title": "Recykling siatek kart",

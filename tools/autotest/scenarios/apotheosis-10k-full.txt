@@ -1,0 +1,64 @@
+# apotheosis-10k with an upgraded card's bits written in full (bdperf upgradebits off): the A/B of SnapshotCardReuse's upgrade bits.
+timeout 1200
+newrun NECROBINDER
+waitfor run 120
+wait 2
+uncap
+framedetail
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf segments verify off
+cmd bdperf upgradebits off
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 3
+cmd bdperf probe on
+cmd bdperf probe hitch 8
+cmd bdperf probe reset
+checksum start
+cmd energy 10
+play 2
+waitfor idle 120
+checksum before 1
+play 2
+waitfor idle 120
+checksum before 2
+emptyhand
+setenergy 5
+cmd card APOTHEOSIS hand
+wait 2
+fpsstat
+gcstat
+playcard APOTHEOSIS free
+waitfor idle 120
+wait 1
+fpsstat apotheosis 1
+gcstat apotheosis 1
+checksum after APOTHEOSIS 1
+emptyhand
+setenergy 5
+cmd card APOTHEOSIS hand
+wait 2
+fpsstat
+gcstat
+playcard APOTHEOSIS free
+waitfor idle 120
+wait 1
+fpsstat apotheosis 2
+gcstat apotheosis 2
+checksum after APOTHEOSIS 2
+cmd bdperf probe log
+# Stay open until a -TraceSec trace ends (a trace cut by the game exiting loses its method names).
+wait 30
+quit

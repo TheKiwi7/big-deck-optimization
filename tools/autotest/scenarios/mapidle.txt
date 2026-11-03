@@ -1,0 +1,15 @@
+# The map, idle, with the starting deck: what the game allocates while nothing happens (gen1 collections every few seconds, 70-90 ms
+# each in co-op ladder sessions, mod off too). With -TraceSec 30 -TraceProfile gc-verbose: who allocates.
+timeout 300
+newrun NECROBINDER 1234
+waitfor run 120
+uncap
+framedetail
+wait 5
+fpsstat
+gcstat
+wait 30
+fpsstat map idle
+gcstat map idle
+wait 10
+quit

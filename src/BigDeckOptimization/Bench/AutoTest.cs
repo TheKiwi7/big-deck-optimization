@@ -346,11 +346,16 @@ public static partial class AutoTest
         await Frames(tree, 30);
         startLobby.SetReady(true);
         Say($"  ready as {character.Id.Entry} ({LobbyPlayerCount(startLobby)} players)");
-        _selector ??= PushSelector(new FirstCardsSelector());
+        if (!_uiSelection)
+        {
+            _selector ??= PushSelector(new FirstCardsSelector());
+        }
         SaveManager.Instance.Progress.EnableFtues = false;
     }
 
     private static IDisposable? _selector;
+    /// <summary>Script <c>selector ui</c>: card choices go through the game's screens; a new run pushes no selector.</summary>
+    private static bool _uiSelection;
 
     /// <summary>
     /// CardSelectCmd.PushSelector through reflection: game v0.111 added an optional parameter (localOnly), which changes
@@ -497,8 +502,15 @@ public static partial class AutoTest
     /// AutoSlay gives up after 30 s on a fight or without progress, 2 minutes on a room, 25 on a run: too short with the mod off
     /// or a big deck, and then the run stops at a point that depends on the session's speed.
     /// </summary>
+    private static bool _autoSlayLimitsPatched;
+
     private static void PatchAutoSlayLimits()
     {
+        if (_autoSlayLimitsPatched)
+        {
+            return;
+        }
+        _autoSlayLimitsPatched = true;
         foreach (MethodInfo until in AccessTools.GetDeclaredMethods(typeof(MegaCrit.Sts2.Core.AutoSlay.Helpers.WaitHelper)).Where(m => m.Name == "Until" && m.GetParameters().Any(p => p.Name == "timeout")))
         {
             bool lazyMessage = until.GetParameters().Last().ParameterType != typeof(string);
@@ -597,7 +609,11 @@ public static partial class AutoTest
 
     private static bool AutoSlayRunSeed(ref string __result)
     {
-        __result = _autoSlaySeed!;
+        if (_autoSlaySeed == null)
+        {
+            return true; // autoroom's combats: no autoslay run, the game's own seed.
+        }
+        __result = _autoSlaySeed;
         return false;
     }
 
@@ -687,6 +703,32 @@ public static partial class AutoTest
                     new Harmony("bdtest.fakeconflict").Patch(conflictTarget, postfix: new HarmonyMethod(typeof(AutoTest), nameof(NoOpPostfix)));
                     Say($"  patched {conflictTarget.DeclaringType?.Name}.{conflictTarget.Name} as bdtest.fakeconflict");
                     break;
+                case "selector" when arg.Trim() is "ui" or "auto":
+                    // ui: no automatic selector, the game opens its card choice screens (deck grids) and autoroom's handlers answer them.
+                    _selector?.Dispose();
+                    _selector = arg.Trim() == "auto" ? PushSelector(new FirstCardsSelector()) : null;
+                    _uiSelection = _selector == null;
+                    if (_uiSelection)
+                    {
+                        WatchCombatsForSelector();
+                    }
+                    Say($"  card choices: {(_uiSelection ? "the game's screens" : "automatic selector")}");
+                    break;
+                case "autoroom":
+                    await AutoRoom(tree, arg);
+                    break;
+                case "automap":
+                    await AutoMap(tree, arg);
+                    break;
+                case "runstate":
+                    await LogRunState(tree, arg.Trim());
+                    break;
+                case "barrier":
+                    await Barrier(tree, arg);
+                    break;
+                case "continuerun":
+                    await ContinueRun(tree, arg);
+                    break;
                 case "selector":
                     _localSelector = arg.Trim() == "local";
                     bool supported = typeof(CardSelectCmd).GetMethods().Any(m => m.Name == nameof(CardSelectCmd.PushSelector) && m.GetParameters().Any(p => p.Name == "localOnly"));
@@ -772,6 +814,7 @@ public static partial class AutoTest
                     await game.ReturnToMainMenu();
                     // CleanUp emptied the game's selector stack: newrun must push ours again, or the next card choice waits forever.
                     _selector = null;
+                    _combatSelector = null;
                     Say("  on the main menu");
                     break;
                 case "leakcheck":
@@ -826,11 +869,11 @@ public static partial class AutoTest
                         (FastListeners.Name + ".Cache", FastListeners.SegmentHits + FastListeners.SegmentMoveHits), (FastListeners.Name + ".Moves", FastListeners.SegmentMoveHits + FastListeners.SnapshotCatchUps),
                         (FastListeners.Name + ".Kinds", FastListeners.KindsSkipped), (FastListeners.Name + ".Others", FastListeners.OthersDropped),
                         (HookSkip.Name, HookSkip.FilteredWalks), (LimitlessReserialize.Name, LimitlessReserialize.Kept), (LimitlessRecalcSkip.Name + ".Memos", LimitlessRecalcSkip.Skipped), (LimitlessRecalcSkip.Name + ".Passes", LimitlessRecalcSkip.PassesSkipped),
-                        (SnapshotCardReuse.Name + ".Cards", SnapshotCardReuse.Reused), (SnapshotCardReuse.Name + ".Piles", SnapshotCardReuse.PilesReused + SnapshotCardReuse.PilesTrusted), (SnapshotCardReuse.Name + ".Trust", SnapshotCardReuse.PilesTrusted), (SnapshotCardReuse.Name + ".Moved", SnapshotCardReuse.MovedReused), (SnapshotCardReuse.Name + ".Blocks", SnapshotCardReuse.BlockCopiedCards),
-                        (SnapshotCardReuse.Name + ".CardBits", SnapshotCardReuse.BitsReused), (SnapshotCardReuse.Name + ".PileBits", SnapshotCardReuse.PileBitsReused + SnapshotCardReuse.PileBitsComposed),
+                        (SnapshotCardReuse.Name + ".Cards", SnapshotCardReuse.Reused), (SnapshotCardReuse.Name + ".Piles", SnapshotCardReuse.PilesReused + SnapshotCardReuse.PilesTrusted), (SnapshotCardReuse.Name + ".Trust", SnapshotCardReuse.PilesTrusted), (SnapshotCardReuse.Name + ".Moved", SnapshotCardReuse.MovedReused), (SnapshotCardReuse.Name + ".Dirty", SnapshotCardReuse.DirtyPiles), (SnapshotCardReuse.Name + ".Hooks", SnapshotCardReuse.PilesWithHooks), (SnapshotCardReuse.Name + ".Blocks", SnapshotCardReuse.BlockCopiedCards),
+                        (SnapshotCardReuse.Name + ".CardBits", SnapshotCardReuse.BitsReused), (SnapshotCardReuse.Name + ".UpgradeBits", SnapshotCardReuse.UpgradeBitsPatched), (SnapshotCardReuse.Name + ".PileBits", SnapshotCardReuse.PileBitsReused + SnapshotCardReuse.PileBitsComposed),
                         (LimitlessHookSkip.Name, LimitlessHookSkip.Dropped), (LimitlessHookSkip.Name + ".Saved", LimitlessHookSkip.NotesFromSaved), (LimitlessCloneMemo.Name, LimitlessCloneMemo.Reused), (TextPoolReuse.Name, TextPoolReuse.Served), (ThemeColorSkip.Name, ThemeColorSkip.Skipped), (ReplayStateSkip.Name, ReplayStateSkip.Skipped),
                         (GcPacing.Name, GcPacing.Regions), (RelicFlashMerge.Name, RelicFlashMerge.Merged), (CardFlightLimit.Name, CardFlightLimit.Skipped), (TypePlaqueSkip.Name, TypePlaqueSkip.Skipped),
-                        (ControllerActionSkip.Name, ControllerActionSkip.Skipped), (RoomCollect.Name, RoomCollect.Background), (PooledCardRelease.Name, PooledCardRelease.Released), (SavedPropertyLookup.Name, SavedPropertyLookup.Served), (RelicStateReuse.Name, RelicStateReuse.Reused), ("InlineGuard", InlineGuard.Protected),
+                        (ControllerActionSkip.Name, ControllerActionSkip.Skipped), (RoomCollect.Name, RoomCollect.Background), (PooledCardRelease.Name, PooledCardRelease.Released), (SavedPropertyLookup.Name, SavedPropertyLookup.Served), (RelicStateReuse.Name, RelicStateReuse.Reused), (RelicStateReuse.ScalarName, RelicStateReuse.ScalarReused), (RichTextEnvRelease.Name, RichTextEnvRelease.Released), ("InlineGuard", InlineGuard.Protected),
                     })
                     {
                         Say($"EFFECT {name} {count}");
@@ -838,6 +881,8 @@ public static partial class AutoTest
                     Say("PILE READS " + string.Join(", ", SnapshotCardReuse.WhyRead.OrderByDescending(p => p.Value).Select(p => $"{p.Key} {p.Value}")));
                     Say("WRITES " + string.Join(", ", SnapshotCardReuse.WritesByMethod.OrderByDescending(p => p.Value).Select(p => $"{p.Key} {p.Value}")));
                     Say("PILE BITS " + string.Join(", ", SnapshotCardReuse.WhyPileBits.OrderByDescending(p => p.Value).Select(p => $"{p.Key} {p.Value}")));
+                    lock (SnapshotCardReuse.PileTimes) Say("PILE TIMES " + string.Join(", ", SnapshotCardReuse.PileTimes.OrderByDescending(p => p.Value.Ms).Select(p => $"{p.Key}: {p.Value.Calls} calls {p.Value.Ms:F0} ms {p.Value.Cards / Math.Max(1, p.Value.Calls)} cards avg")));
+                    Say("NO UPGRADE BITS " + string.Join(", ", SnapshotCardReuse.WhyNoUpgradeBits.OrderByDescending(p => p.Value).Select(p => $"{p.Key} {p.Value}")));
                     // Nothing runs here: what a patch opens before a method and closes after it must be closed.
                     Say($"BALANCE {nameof(ListenerCache)}.OpenScopes {ListenerCache.OpenScopes}");
                     Say($"BALANCE {nameof(FastListeners)}.OpenShuffles {FastListeners.OpenShuffles}");
@@ -1015,6 +1060,26 @@ public static partial class AutoTest
             int round = int.Parse(parts[1]);
             return Until(node, () => !CombatManager.Instance.IsInProgress
                 || (CombatManager.Instance.DebugOnlyGetState()?.RoundNumber >= round && IsIdle()), parts.Length > 2 ? double.Parse(parts[2]) : 120, "round " + round);
+        }
+        if (parts[0] == "room")
+        {
+            // waitfor room <type> [timeout]: that room is the current one and its node is in the tree (a co-op peer following the host's
+            // cmd room / cmd event, or the map's travel).
+            MegaCrit.Sts2.Core.Rooms.RoomType wanted = Enum.Parse<MegaCrit.Sts2.Core.Rooms.RoomType>(parts[1], ignoreCase: true);
+            // The room's own node, by the name the game's handlers look for: in co-op the jump is queued, and until it runs the previous
+            // room's node is still there (a script acting on it then finds it freed).
+            string? roomNode = wanted switch
+            {
+                MegaCrit.Sts2.Core.Rooms.RoomType.Shop => "MerchantRoom",
+                MegaCrit.Sts2.Core.Rooms.RoomType.RestSite => "RestSiteRoom",
+                MegaCrit.Sts2.Core.Rooms.RoomType.Treasure => "TreasureRoom",
+                MegaCrit.Sts2.Core.Rooms.RoomType.Event => "EventRoom",
+                _ => null,
+            };
+            return Until(node, () => RunManager.Instance.DebugOnlyGetState()?.CurrentRoom?.RoomType == wanted
+                && NRun.Instance?.GetNodeOrNull("RoomContainer") is { } rooms && rooms.GetChildCount() > 0
+                && (roomNode == null || rooms.GetNodeOrNull(roomNode) is { } room && room.IsInsideTree() && !room.IsQueuedForDeletion()),
+                parts.Length > 2 ? double.Parse(parts[2]) : 120, "room " + wanted);
         }
         double timeout = parts.Length > 1 ? double.Parse(parts[1]) : 120;
         Func<bool> condition = parts[0] switch
@@ -1364,7 +1429,10 @@ public static partial class AutoTest
         string[] parts = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         CharacterModel character = ModelDb.GetById<CharacterModel>(new ModelId(ModelId.SlugifyCategory<CharacterModel>(), parts[0].ToUpperInvariant()));
         string seed = parts.Length > 1 ? parts[1] : "BDTEST";
-        _selector ??= PushSelector(new FirstCardsSelector());
+        if (!_uiSelection)
+        {
+            _selector ??= PushSelector(new FirstCardsSelector());
+        }
         // Fresh test profile: no tutorials (the combat one throws when combat is entered with the fight command).
         SaveManager.Instance.Progress.EnableFtues = false;
         // The character select screen stops the menu music before starting a run; without it, it keeps playing under

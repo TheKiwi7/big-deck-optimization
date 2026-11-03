@@ -38,6 +38,8 @@ public static class RelicStateReuse
 #if BENCH
     /// <summary>Saved properties taken as unchanged (bdperf relicreuse blind): shows that the snapshot checks see a stale relic.</summary>
     public static bool BlindForTest { get; set; }
+    /// <summary>Every relic of a scalar plan taken as unchanged without reading it (bdperf relicreuse scalarblind): the checks must see it.</summary>
+    public static bool ScalarBlindForTest { get; set; }
 #endif
 
     /// <summary>v0.107.1 (and v0.111): <c>new SerializableRelic { Id, Props = SavedProperties.From(this), FloorAddedToDeck }</c> after AssertMutable.</summary>
@@ -107,6 +109,199 @@ public static class RelicStateReuse
             throw new PatchSkippedException("FromRun no longer serializes relics this way");
         }
         Applied = true;
+        try
+        {
+            ApplyScalar();
+        }
+        catch (Exception e) when (e is PatchSkippedException or MissingMemberException)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: relics' saved properties read by the game each time ({e.Message})");
+        }
+    }
+
+    // --- Scalar part: an unchanged relic recognized without SavedProperties.From ---
+
+    public const string ScalarName = "RelicStateReuse.Scalar";
+    public static bool ScalarEnabled { get; set; } = true;
+    public static bool ScalarApplied { get; private set; }
+    /// <summary>Relics given again without the game's <c>SavedProperties.From</c>, and how many of those were checked against it.</summary>
+    public static long ScalarReused { get; private set; }
+    public static long ScalarVerified { get; private set; }
+#if BENCH
+    internal static int ScalarVerifyEvery = 16;
+#else
+    private const int ScalarVerifyEvery = 256;
+#endif
+
+    /// <summary>v0.107.1 <c>FromInternal</c> (v0.111's in EquivalentFingerprints: only its property lookup moved).</summary>
+    private const string FromInternalFingerprint = "F73EEC2208D6E517";
+    /// <summary><c>SerializationConditionExtensions.ShouldSerialize</c> and <c>GetTypeDefaultValue</c>, v0.107.1 and v0.111.</summary>
+    private const string ShouldSerializeFingerprint = "DA2DAEE9D953EEDD";
+    private const string TypeDefaultFingerprint = "9E99D152BAEC2E1E";
+
+    private static MethodInfo? _fromInternal, _shouldSerialize;
+    private static Func<Type, List<PropertyInfo>?>? _jsonProperties;
+
+    private static void ApplyScalar()
+    {
+        _fromInternal = AccessTools.Method(typeof(SavedProperties), nameof(SavedProperties.FromInternal))
+            ?? throw new MissingMethodException(nameof(SavedProperties), nameof(SavedProperties.FromInternal));
+        PatchSafety.RequireFingerprint(_fromInternal, FromInternalFingerprint);
+        _shouldSerialize = AccessTools.Method(typeof(SerializationConditionExtensions), nameof(SerializationConditionExtensions.ShouldSerialize))
+            ?? throw new MissingMethodException(nameof(SerializationConditionExtensions), nameof(SerializationConditionExtensions.ShouldSerialize));
+        PatchSafety.RequireFingerprint(_shouldSerialize, ShouldSerializeFingerprint);
+        PatchSafety.RequireFingerprint(AccessTools.Method(typeof(SerializationConditionExtensions), "GetTypeDefaultValue")
+            ?? throw new MissingMethodException(nameof(SerializationConditionExtensions), "GetTypeDefaultValue"), TypeDefaultFingerprint);
+        _jsonProperties = LimitlessReserialize.JsonPropertiesLookup();
+        ScalarApplied = true;
+    }
+
+    /// <summary>
+    /// What <c>FromInternal</c> does with a relic type whose saved properties are all <c>bool</c>, <c>int</c> or int-based enums,
+    /// saved always or when not their type's default (every relic of the game saves <c>IsWax</c> and <c>IsMelted</c> that way; 47 of
+    /// its relic properties are counters): each one read in order, kept when saved, its value (an enum's as <c>Convert.ToInt32</c>
+    /// gives it) appended to <c>ints</c> or <c>bools</c>. Null: a property this doesn't mirror, so the game's call.
+    /// </summary>
+    private sealed class ScalarPlan
+    {
+        public List<PropertyInfo>? Properties;
+        public string[] Names = Array.Empty<string>();
+        public Func<object, int>[] Getters = Array.Empty<Func<object, int>>();
+        public bool[] IsBool = Array.Empty<bool>();
+        public bool[] Always = Array.Empty<bool>();
+    }
+
+    private static readonly Dictionary<Type, ScalarPlan?> _scalarPlans = new();
+
+    private static ScalarPlan? ScalarPlanOf(Type type)
+    {
+        List<PropertyInfo>? properties = _jsonProperties!(type);
+        if (_scalarPlans.TryGetValue(type, out ScalarPlan? plan) && (plan == null || ReferenceEquals(plan.Properties, properties)))
+        {
+            return plan;
+        }
+        plan = BuildScalarPlan(type, properties);
+        _scalarPlans[type] = plan;
+        return plan;
+    }
+
+    private static ScalarPlan? BuildScalarPlan(Type type, List<PropertyInfo>? properties)
+    {
+        var plan = new ScalarPlan { Properties = properties };
+        if (properties == null)
+        {
+            return plan; // FromInternal iterates nothing: null.
+        }
+        int count = properties.Count;
+        plan.Names = new string[count];
+        plan.Getters = new Func<object, int>[count];
+        plan.IsBool = new bool[count];
+        plan.Always = new bool[count];
+        ParameterExpression model = Expression.Parameter(typeof(object));
+        for (int i = 0; i < count; i++)
+        {
+            PropertyInfo property = properties[i];
+            SavedPropertyAttribute? attribute = property.GetCustomAttribute<SavedPropertyAttribute>();
+            Type valueType = property.PropertyType;
+            if (attribute == null || attribute.defaultBehaviour is not (SerializationCondition.AlwaysSave or SerializationCondition.SaveIfNotTypeDefault)
+                || property.GetMethod is not { IsStatic: false } || property.GetIndexParameters().Length != 0
+                || !(valueType == typeof(bool) || valueType == typeof(int) || (valueType.IsEnum && Enum.GetUnderlyingType(valueType) == typeof(int))))
+            {
+                return null;
+            }
+            Expression read = Expression.Property(Expression.Convert(model, type), property);
+            Expression asInt = valueType == typeof(bool) ? Expression.Condition(read, Expression.Constant(1), Expression.Constant(0))
+                : valueType == typeof(int) ? read : Expression.Convert(read, typeof(int));
+            plan.Names[i] = property.Name;
+            plan.Getters[i] = Expression.Lambda<Func<object, int>>(asInt, model).Compile();
+            plan.IsBool[i] = valueType == typeof(bool);
+            // SaveIfNotTypeDefault: !Equals(value, default of the property's type): false, 0, the enum's 0.
+            plan.Always[i] = attribute.defaultBehaviour == SerializationCondition.AlwaysSave;
+        }
+        return plan;
+    }
+
+    private static long _scalarHits;
+
+    /// <summary>
+    /// The previous object of a relic whose id, floor and saved properties would come out of <c>ToSerializable</c> the same: what
+    /// <see cref="Same"/> would conclude after the game's <c>From</c>, read here without reflection, boxing or allocation. One answer
+    /// in <see cref="ScalarVerifyEvery"/> is checked against the game's call; a difference turns this part off.
+    /// </summary>
+    private static bool ScalarSame(RelicModel relic, out SerializableRelic? same)
+    {
+        same = null;
+        if (!ScalarEnabled || !_scalarGuardsPass || !_last.TryGetValue(relic, out SerializableRelic? previous)
+            || previous.Id != relic.Id || previous.FloorAddedToDeck != relic.FloorAddedToDeck
+            || FieldTargeted(relic.GetType())
+            || ScalarPlanOf(relic.GetType()) is not { } plan)
+        {
+#if BENCH
+            ScalarWhy = !ScalarEnabled || !_scalarGuardsPass ? "off or patched" : !_last.TryGetValue(relic, out SerializableRelic? p) ? "no previous" : p.Id != relic.Id || p.FloorAddedToDeck != relic.FloorAddedToDeck ? "id/floor"
+                : PatchSafety.IsPatchedByOthers(_fromInternal!, _allowedOnFromInternal) ? "FromInternal patched" : PatchSafety.IsPatchedByOthers(_shouldSerialize!) ? "ShouldSerialize patched"
+                : FieldTargeted(relic.GetType()) ? "BaseLib field on " + relic.GetType().Name : "no plan " + relic.GetType().Name;
+#endif
+            return false;
+        }
+        SavedProperties? props = previous.Props;
+        if (props != null && (props.strings != null || props.intArrays != null || props.modelIds != null || props.cards != null || props.cardArrays != null))
+        {
+            return false;
+        }
+        List<SavedProperties.SavedProperty<int>>? ints = props?.ints;
+        List<SavedProperties.SavedProperty<bool>>? bools = props?.bools;
+        int intsAt = 0, boolsAt = 0;
+        bool blind = false;
+#if BENCH
+        blind = ScalarBlindForTest;
+#endif
+        for (int i = 0; !blind && i < plan.Getters.Length; i++)
+        {
+            int value = plan.Getters[i](relic);
+            if (value == 0 && !plan.Always[i])
+            {
+                continue;
+            }
+            if (plan.IsBool[i])
+            {
+                if (bools == null || boolsAt >= bools.Count || bools[boolsAt].value != (value != 0) || !string.Equals(bools[boolsAt].name, plan.Names[i], StringComparison.Ordinal))
+                {
+                    return false;
+                }
+                boolsAt++;
+            }
+            else
+            {
+                if (ints == null || intsAt >= ints.Count || ints[intsAt].value != value || !string.Equals(ints[intsAt].name, plan.Names[i], StringComparison.Ordinal))
+                {
+                    return false;
+                }
+                intsAt++;
+            }
+        }
+        if (!blind && ((ints?.Count ?? 0) != intsAt || (bools?.Count ?? 0) != boolsAt))
+        {
+            return false;
+        }
+        if (++_scalarHits % ScalarVerifyEvery == 0)
+        {
+            ScalarVerified++;
+            if (!Same(previous.Props, SavedProperties.From(relic)))
+            {
+                ScalarFail(new InvalidOperationException($"{relic.Id}: taken as unchanged, but the game's saved properties differ"));
+                return false;
+            }
+        }
+        ScalarReused++;
+        same = previous;
+        return true;
+    }
+
+    private static void ScalarFail(Exception e)
+    {
+        ScalarEnabled = false;
+        PatchSafety.Fault(ScalarName);
+        Log.Error($"[{ModEntry.Id}] {ScalarName} disabled, relics' saved properties read by the game: {e}");
     }
 
     private static void OnAssemblyLoad(object? sender, AssemblyLoadEventArgs args)
@@ -143,6 +338,9 @@ public static class RelicStateReuse
         AllowOnSerialize();
     }
 
+    /// <summary>Unlimited's list-width transpiler once its code is the known one (SnapshotCardReuse's upgrade bits allow it too).</summary>
+    internal static MethodInfo? UnlimitedTranspilerMethod => _unlimitedTranspiler;
+
     private static void AllowOnSerialize() =>
         _allowedOnSerialize = new[] { _baseLibWrite, _unlimitedTranspiler }.Where(m => m != null).ToArray()!;
 
@@ -162,6 +360,62 @@ public static class RelicStateReuse
         _allowedOnToSerializable = new[] { postfix };
         _baseLibWrite = write;
         AllowOnSerialize();
+        try
+        {
+            ResolveBaseLibFields();
+        }
+        catch (Exception e) when (e is PatchSkippedException or MissingMemberException)
+        {
+            Log.Info($"[{ModEntry.Id}] {ScalarName}: BaseLib's saved fields not understood, relics' saved properties read by the game: {e.Message}");
+        }
+    }
+
+    /// <summary>
+    /// BaseLib 3.4.7 postfixes <c>FromInternal</c>: each of its registered "SavedSpireFields" whose target type the model has exports
+    /// into the result, nothing else (a new object is only kept when one did). None registered: the game's result unchanged.
+    /// </summary>
+    private const string BaseLibFieldsPostfix = "BaseLib.Patches.Utils.SavedSpireFieldPatch:PostfixFromInternal";
+    private const string BaseLibFieldsPostfixFingerprint = "860274C6B3FA909C";
+    private const string BaseLibFieldsTargetsFingerprint = "791D9757ACB7F0A0";
+    private static MethodInfo[] _allowedOnFromInternal = Array.Empty<MethodInfo>();
+    private static Func<IList>? _baseLibFields;
+    /// <summary>Relic types some registered field targets (its <c>TargetType.IsInstanceOfType</c>), for the fields counted then.</summary>
+    private static readonly Dictionary<Type, bool> _fieldTargeted = new();
+    private static int _fieldsCounted = -1;
+    private static List<Type> _fieldTargets = new();
+
+    private static void ResolveBaseLibFields()
+    {
+        MethodInfo postfix = AccessTools.Method(BaseLibFieldsPostfix) ?? throw new PatchSkippedException("BaseLib has no " + BaseLibFieldsPostfix);
+        PatchSafety.RequireFingerprint(postfix, BaseLibFieldsPostfixFingerprint);
+        PatchSafety.RequireFingerprint(AccessTools.Method(postfix.DeclaringType, "GetFieldsForModel")
+            ?? throw new MissingMethodException(postfix.DeclaringType!.Name, "GetFieldsForModel"), BaseLibFieldsTargetsFingerprint);
+        FieldInfo fields = AccessTools.Field(postfix.DeclaringType, "RegisteredFields") ?? throw new MissingFieldException(postfix.DeclaringType!.Name, "RegisteredFields");
+        _baseLibFields = Expression.Lambda<Func<IList>>(Expression.Convert(Expression.Field(null, fields), typeof(IList))).Compile();
+        _allowedOnFromInternal = new[] { postfix };
+    }
+
+    /// <summary>Whether BaseLib's postfix would export a field into this relic type's saved properties (Limitless: Fur Coat, Golden Compass).</summary>
+    private static bool FieldTargeted(Type type)
+    {
+        if (_baseLibFields == null)
+        {
+            return false;
+        }
+        IList fields = _baseLibFields();
+        if (fields.Count != _fieldsCounted)
+        {
+            // Fields are only ever added (Register): their targets are read again when the count changes.
+            _fieldTargets = fields.Cast<object>().Select(f => (Type)f.GetType().GetProperty("TargetType")!.GetValue(f)!).ToList();
+            _fieldsCounted = fields.Count;
+            _fieldTargeted.Clear();
+        }
+        if (!_fieldTargeted.TryGetValue(type, out bool targeted))
+        {
+            targeted = _fieldTargets.Any(t => t.IsAssignableFrom(type));
+            _fieldTargeted[type] = targeted;
+        }
+        return targeted;
     }
 
     private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
@@ -183,12 +437,21 @@ public static class RelicStateReuse
     private static SerializableRelic Serialize(RelicModel relic)
     {
         // Inside RunVanilla the result is the reference this is compared with (SnapshotVerifier, bdperf): the game's own.
-        if (!Enabled || ListenerCache.IsSuspended || !relic.IsMutable || Environment.CurrentManagedThreadId != _mainThread
-            || (_registeredSaves != null && _registeredSaves().Count != 0)
-            || PatchSafety.IsPatchedByOthers(_toSerializable, _allowedOnToSerializable) || PatchSafety.IsPatchedByOthers(_serialize, _allowedOnSerialize)
-            || PatchSafety.IsPatchedByOthers(_savedPropertiesFrom))
+        if (!Enabled || ListenerCache.IsSuspended || !relic.IsMutable || Environment.CurrentManagedThreadId != _mainThread || !GuardsPass())
         {
             return relic.ToSerializable();
+        }
+        try
+        {
+            if (ScalarSame(relic, out SerializableRelic? same))
+            {
+                Reused++;
+                return same!;
+            }
+        }
+        catch (Exception e)
+        {
+            ScalarFail(e);
         }
         SavedProperties? props;
         try
@@ -222,6 +485,33 @@ public static class RelicStateReuse
             return relic.ToSerializable();
         }
     }
+
+    private static long _guardsAt = long.MinValue;
+    private static bool _guardsPass, _scalarGuardsPass;
+
+    /// <summary>
+    /// BaseLib's relic saves and other mods' patches on what this mirrors, read once per tick of <c>Environment.TickCount64</c> (one
+    /// snapshot's hundreds of relics, not each of them): PatchSafety's answers are themselves reused for a while.
+    /// </summary>
+    private static bool GuardsPass()
+    {
+        long now = Environment.TickCount64;
+        if (now != _guardsAt)
+        {
+            _guardsPass = !(_registeredSaves != null && _registeredSaves().Count != 0)
+                && !PatchSafety.IsPatchedByOthers(_toSerializable, _allowedOnToSerializable) && !PatchSafety.IsPatchedByOthers(_serialize, _allowedOnSerialize)
+                && !PatchSafety.IsPatchedByOthers(_savedPropertiesFrom);
+            _scalarGuardsPass = ScalarApplied && !PatchSafety.IsPatchedByOthers(_fromInternal!, _allowedOnFromInternal) && !PatchSafety.IsPatchedByOthers(_shouldSerialize!);
+            _guardsAt = now;
+        }
+        return _guardsPass;
+    }
+
+#if BENCH
+    internal static SerializableRelic SerializeForBench(RelicModel relic) => Serialize(relic);
+    /// <summary>Why the scalar part last let the game's call run.</summary>
+    internal static string ScalarWhy = "";
+#endif
 
     private static void Fail(Exception e)
     {

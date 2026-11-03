@@ -1,0 +1,56 @@
+# Piles trusted while pure cost or keyword listeners stand (SnapshotCardReuse Reads.Listeners): every co-op snapshot compared
+# with the game's own (bdperf verify all). Curious (cost of power cards, by its amount) applied, its amount raised, Corruption
+# (skills free) added, cards drawn and played between, then the next turn. The last line fails the session on any difference;
+# EFFECT SnapshotCardReuse.Hooks shows piles were kept with listeners active.
+timeout 600
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+enemyhp 999999
+speed instant
+immortal
+cmd godmode
+cmd fight CULTISTS_NORMAL
+waitfor idle 120
+cmd bdperf verify all
+setenergy 20
+checksum start
+checksum trusted
+cmd power CURIOUS_POWER 1 0
+waitfor idle 60
+checksum curious 1
+checksum curious 1 again
+checksum curious 1 trusted
+cmd power CURIOUS_POWER 1 0
+waitfor idle 60
+checksum curious 2
+checksum curious 2 again
+cmd draw 2
+waitfor idle 60
+checksum drawn with curious
+play 2
+waitfor idle 60
+checksum played with curious
+cmd power CORRUPTION_POWER 1 0
+waitfor idle 60
+checksum corruption
+checksum corruption again
+cmd draw 2
+waitfor idle 60
+checksum drawn with both
+play 2
+waitfor idle 60
+checksum played with both
+endturn
+waitfor idle 120
+checksum next turn
+checksum next turn again
+effects end
+cmd bdperf verify
+cmd bdperf verify check
+quit

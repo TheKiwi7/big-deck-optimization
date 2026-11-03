@@ -1,0 +1,45 @@
+# dirtyreads off (A/B with snapcheck-freeturn). Cards made free this turn (Bullet Time: every hand card's SetThisTurnOrUntilPlayed) after the hand was read: every co-op
+# snapshot compared with the game's own (bdperf verify all). The hand's cards changed cost with no other change to the pile.
+# The last line fails the session on any difference.
+timeout 600
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+enemyhp 999999
+speed instant
+immortal
+cmd godmode
+cmd fight CULTISTS_NORMAL
+waitfor idle 120
+cmd bdperf verify all
+cmd bdperf dirtyreads off
+emptyhand
+setenergy 20
+cmd draw 4
+waitfor idle 60
+cmd bdperf costwrites
+cmd bdperf costwrites
+checksum hand read
+checksum hand trusted
+cmd card BULLET_TIME hand
+waitfor idle 60
+checksum bullet time in hand
+playcard BULLET_TIME free
+waitfor idle 60
+checksum after bullet time
+checksum after bullet time again
+cmd card FASTEN hand
+waitfor idle 60
+playcard FASTEN
+waitfor idle 60
+checksum after fasten
+effects end
+patchlist
+cmd bdperf verify
+cmd bdperf verify check
+quit

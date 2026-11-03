@@ -1,0 +1,88 @@
+# Outside combat in co-op, host (with outside-coop-client.txt, parcoop.ps1): both peers ~1,900 cards and the reference run's 368
+# relics, enemies at 1 HP. The game's own auto player plays each room on both peers (autoroom), card choices through the game's
+# screens (selector ui): rewards after a combat, map votes, a shop with card removal, rest sites, a treasure, events changing the
+# deck. Barriers keep both peers in the same room until both are done. Pass: both peers log the same STATE lines (every player's
+# gold, HP, potions, relics and deck), no divergence. The off pair (outside-coopoff-*) has the mod off on both: same STATE lines.
+timeout 3000
+mplobby NECROBINDER 2
+waitfor run 240
+wait 8
+cmd bigdeck import ref all all {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd gold 5000
+enemyhp 1
+selector ui
+barrier start
+runstate start
+barrier read1
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+barrier fight
+wait 3
+runstate after fight
+barrier read2
+automap
+autoroom 900
+barrier map1
+wait 3
+runstate map 1
+barrier read3
+automap
+autoroom 900
+barrier map2
+wait 3
+runstate map 2
+barrier read4
+automap
+autoroom 900
+barrier map3
+wait 3
+runstate map 3
+barrier read5
+cmd room Shop
+waitfor room Shop 300
+autoroom remove 900
+barrier shop
+wait 3
+runstate shop local
+barrier read6
+cmd room RestSite
+waitfor room RestSite 300
+autoroom SmithRestSiteOption 900
+barrier smith
+wait 3
+runstate smith
+barrier read7
+cmd room Treasure
+waitfor room Treasure 300
+autoroom 300
+barrier treasure
+wait 3
+runstate treasure
+barrier read8
+cmd event AROMA_OF_CHAOS
+waitfor event 300
+autoroom 900
+barrier aroma
+wait 3
+runstate aroma of chaos
+barrier read9
+cmd event ZEN_WEAVER
+waitfor event 300
+autoroom 900
+barrier zen
+wait 3
+runstate zen weaver
+barrier read10
+cmd event WOOD_CARVINGS
+waitfor event 300
+autoroom 900
+barrier wood
+wait 3
+runstate wood carvings
+barrier read11
+barrier end
+counters end
+wait 20
+quit

@@ -29,6 +29,10 @@ $bad = 0
 foreach ($r in $runs) {
     Write-Output ("{0,-28} {1,-8} {2,5} s{3}{4}" -f $r.Name, $r.State, $r.Seconds, $(if ($r.Restarts) { "  started over $($r.Restarts)x" } else { "" }), $(if ($r.Failed.Count) { "  " + $r.Failed[0] } else { "" }))
     if ($r.State -notin "done", "cached") { $bad++ }
+    # A failed line ended the script (no 'onfail continue'): what came after never ran, even if an A/B of it says identical.
+    elseif ($r.Failed.Count -and (Test-Path (Join-Path $out "$($r.Name).log")) -and (Select-String -Path (Join-Path $out "$($r.Name).log") -Pattern "ABORT: first failed line" -SimpleMatch -Quiet)) { $bad++; Write-Output "  $($r.Name): aborted at its first failed line" }
+    # 'cmd bdperf verify check' only prints its failure (a console command's result doesn't end the script): a snapshot differed.
+    elseif ((Test-Path (Join-Path $out "$($r.Name).log")) -and (Select-String -Path (Join-Path $out "$($r.Name).log") -Pattern "FAILED: verified \d+, mismatches [1-9]" -Quiet)) { $bad++; Write-Output "  $($r.Name): snapshots differed from the game's own (verify check)" }
 }
 foreach ($name in $Names | Where-Object { $_ -match '-off$' }) {
     $on = $name -replace '-off$', '-on'
