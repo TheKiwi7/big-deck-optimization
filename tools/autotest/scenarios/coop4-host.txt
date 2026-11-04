@@ -1,0 +1,35 @@
+# Four players (coop4.ps1), host: ~1,900 cards each, a fight of four rounds with plays on every peer. Pass: the same enemy states on
+# all four, no divergence. Other co-op tests stop at two players.
+timeout 1100
+mplobby NECROBINDER 4
+waitfor run 240
+cmd bdperf checks off
+wait 10
+cmd bigdeck import ref all all {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+enemyhp 300
+immortal until 4
+barrier imported
+cmd fight CULTISTS_NORMAL
+waitfor idle 900
+state t1
+play 3
+endturn
+waitfor turn 300
+state t2
+play 3
+endturn
+waitfor turn 300
+state t3
+play 3
+endturn
+waitfor turn 300
+state t4
+play 3
+endturn
+waitfor turn 300
+state t5
+counters end
+effects
+wait 3
+quit

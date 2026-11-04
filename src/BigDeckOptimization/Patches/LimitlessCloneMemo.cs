@@ -1,7 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
-using System.Runtime.CompilerServices;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Models;
@@ -15,15 +15,16 @@ namespace BigDeckOptimization.Patches;
 /// <c>CardModel.FromSerializable(c).MutableClone().ToSerializable()</c>, for every card of the deck at each combat start
 /// (~210 ms with 2 x 10,000 cards). That result depends only on the saved card's content, never changed once made (no code of the
 /// game, Limitless or BaseLib writes to a <c>SerializableCard</c> after making it), and on BaseLib's registered saves
-/// (<see cref="LimitlessReserialize.MemoStamp"/>; -1 when unknown, then always rebuilt). The deck's clones are cloned from the same
-/// saved objects combat after combat: the result made for one is given again, read-only like any saved card.
+/// (<see cref="LimitlessReserialize.MemoStamp"/>; -1 when unknown, then always rebuilt). The result made for a content is given for the
+/// same content again, read-only like any saved card: a big deck holds few different inner cards, a first combat gains as much as the
+/// next ones, and so do other players' decks, rebuilt as new objects at each co-op combat. A saved card with real BaseLib data isn't kept.
 ///
 /// One answer in <see cref="VerifyEvery"/> is rebuilt and both serialized: a byte difference turns it off for the session.
 /// </summary>
 public static class LimitlessCloneMemo
 {
     public const string Name = "LimitlessCloneMemo";
-    public const int VerifyEvery = 256;
+    internal static int VerifyEvery { get; set; } = 256;
 
     public static bool Enabled { get; set; } = true;
     public static bool Applied { get; private set; }
@@ -34,13 +35,21 @@ public static class LimitlessCloneMemo
     private const string DeepCloneFieldsFingerprint = "B0598AD4D39BD71C";
     private const string LambdaFingerprint = "70B31715ABF34F7B";
 
-    private sealed class Memo
+    /// <summary>A saved card by content, and what BaseLib holds for it (<see cref="LimitlessReserialize.StoredDataState"/>).</summary>
+    private readonly record struct Key(SerializableCard Saved, int Data);
+
+    private sealed class ContentComparer : IEqualityComparer<Key>
     {
-        public long Stamp;
-        public SerializableCard Result = null!;
+        public bool Equals(Key a, Key b) => a.Data == b.Data && (ReferenceEquals(a.Saved, b.Saved) || LimitlessReserialize.SameContent(a.Saved, b.Saved));
+
+        public int GetHashCode(Key key) =>
+            HashCode.Combine(key.Saved.Id, key.Saved.CurrentUpgradeLevel, key.Saved.FloorAddedToDeck, key.Saved.Enchantment?.Id, key.Saved.Enchantment?.Amount, key.Data);
     }
 
-    private static readonly ConditionalWeakTable<SerializableCard, Memo> _memo = new();
+    /// <summary>Holds saved cards only, no model. Main thread.</summary>
+    private static readonly Dictionary<Key, SerializableCard> _memo = new(new ContentComparer());
+    private const int MaxContents = 16384;
+    private static long _memoStamp = -1;
     private static MethodInfo? _lambda;
     private static int _sinceVerify;
     [ThreadStatic] private static PacketWriter? _memoWriter, _freshWriter;
@@ -70,7 +79,7 @@ public static class LimitlessCloneMemo
     /// <summary>The stamp memos are valid for, or -1 when this can't answer (then the lambda runs and nothing is kept).</summary>
     private static long Stamp()
     {
-        if (!Enabled || ListenerCache.IsSuspended || LimitlessReserialize.Faulted || LimitlessReserialize.PatchedByOthers()
+        if (!Enabled || ListenerCache.IsSuspended || LimitlessReserialize.Faulted || !LimitlessReserialize.CanCompareHere || LimitlessReserialize.PatchedByOthers()
             || PatchSafety.IsPatchedByOthers(_lambda))
         {
             return -1;
@@ -78,7 +87,7 @@ public static class LimitlessCloneMemo
         return LimitlessReserialize.MemoStamp();
     }
 
-    private static bool Prefix(SerializableCard __0, ref SerializableCard __result, out long __state)
+    private static bool Prefix(SerializableCard __0, ref SerializableCard __result, out int __state)
     {
         __state = -1;
         try
@@ -88,8 +97,13 @@ public static class LimitlessCloneMemo
             {
                 return true;
             }
-            __state = stamp;
-            if (!_memo.TryGetValue(__0, out Memo? memo) || memo.Stamp != stamp)
+            if (stamp != _memoStamp)
+            {
+                _memo.Clear();
+                _memoStamp = stamp;
+            }
+            __state = LimitlessReserialize.StoredDataState(__0);
+            if (__state < 0 || !_memo.TryGetValue(new Key(__0, __state), out SerializableCard? memo))
             {
                 return true;
             }
@@ -100,7 +114,7 @@ public static class LimitlessCloneMemo
                 return true;
             }
             Reused++;
-            __result = memo.Result;
+            __result = memo;
             return false;
         }
         catch (Exception e)
@@ -111,7 +125,7 @@ public static class LimitlessCloneMemo
         }
     }
 
-    private static void Postfix(SerializableCard __0, SerializableCard __result, long __state, bool __runOriginal)
+    private static void Postfix(SerializableCard __0, SerializableCard __result, int __state, bool __runOriginal)
     {
         if (!__runOriginal || __state < 0 || __0 == null || __result == null)
         {
@@ -119,16 +133,21 @@ public static class LimitlessCloneMemo
         }
         try
         {
-            if (_memo.TryGetValue(__0, out Memo? memo) && memo.Stamp == __state)
+            Key key = new(__0, __state);
+            if (_memo.TryGetValue(key, out SerializableCard? memo))
             {
                 Verified++;
-                if (!SameBytes(memo.Result, __result))
+                if (!SameBytes(memo, __result))
                 {
                     Fail($"a kept inner card differs from a rebuilt one ({__0.Id})");
                 }
                 return;
             }
-            _memo.AddOrUpdate(__0, new Memo { Stamp = __state, Result = __result });
+            if (_memo.Count >= MaxContents)
+            {
+                _memo.Clear();
+            }
+            _memo[key] = __result;
         }
         catch (Exception e)
         {
@@ -151,6 +170,7 @@ public static class LimitlessCloneMemo
     private static void Fail(string details)
     {
         Enabled = false;
+        _memo.Clear();
         PatchSafety.Fault(Name);
         Log.Error($"[{ModEntry.Id}] {Name} disabled, inner cards rebuilt at every clone as Limitless does: {details}");
     }

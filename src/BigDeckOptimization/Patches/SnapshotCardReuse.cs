@@ -8,6 +8,7 @@ using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
+using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Multiplayer.Serialization;
@@ -67,6 +68,10 @@ public static class SnapshotCardReuse
     public static bool Applied { get; private set; }
 
     public static long Reused { get; private set; }
+    internal static bool ReleaseCombats { get; set; } = true;
+
+    /// <summary>Entries of finished combats that let go of their card.</summary>
+    public static long CombatCardsReleased { get; private set; }
     public static long Built { get; private set; }
     public static long Verified { get; private set; }
     public static long Mismatches { get; private set; }
@@ -231,6 +236,44 @@ public static class SnapshotCardReuse
         public byte[]? SpareBits;
         public int[]? SpareOffsets;
 
+        /// <summary>Nothing of a finished combat is kept: the next read of this pile, if any, starts over.</summary>
+        public void Release()
+        {
+            ReleaseEntries(Lasts);
+            ReleaseEntries(Spare);
+            Lasts = Array.Empty<Last?>();
+            Spare = Array.Empty<Last?>();
+            Count = 0;
+            LiveCount = 0;
+            Cards = null;
+            BitsFor = null;
+            Bits = null;
+            BitCount = 0;
+            Offsets = null;
+            SpareBits = null;
+            SpareOffsets = null;
+            WritesAt = -1;
+            ListenersAt = null;
+            Dirty.Clear();
+            DirtyOverflow = false;
+        }
+
+        private static void ReleaseEntries(Last?[] entries)
+        {
+            foreach (Last? entry in entries)
+            {
+                if (entry is { Card: not null })
+                {
+                    CombatCardsReleased++;
+                    entry.Card = null!;
+                    entry.Enchantment = null;
+                    entry.In = null;
+                    entry.MemoStamp = -1;
+                    entry.Dirty = false;
+                }
+            }
+        }
+
         /// <summary>The game's bits before the first card of a list of <see cref="HeaderCards"/> cards.</summary>
         public byte[]? Header;
         public int HeaderBits;
@@ -285,6 +328,7 @@ public static class SnapshotCardReuse
             _storedVersion = AccessTools.FieldRefAccess<List<SerializableCard>, int>("_version");
             ApplyFastReads();
             PatchGuard.Patch(harmony, _pileFrom, prefix: new HarmonyMethod(typeof(SnapshotCardReuse), nameof(PilePrefix)));
+            PatchGuard.Patch(harmony, AccessTools.Method(typeof(Player), nameof(Player.AfterCombatEnd)), postfix: new HarmonyMethod(typeof(SnapshotCardReuse), nameof(ReleaseCombat)));
             ApplyBits(harmony);
             ApplyTrust(harmony);
         }
@@ -1017,6 +1061,32 @@ public static class SnapshotCardReuse
         Register(entry, saved);
         LightBuilt++;
         return saved;
+    }
+
+    /// <summary>
+    /// A combat is over: its piles' entries let go of the cards. The game keeps its last 20 checksum states, whose lists and saved cards
+    /// lead here (<see cref="_byList"/>, <see cref="_bySaved"/>), so a finished combat's cards would stay alive through the next one.
+    /// </summary>
+    private static void ReleaseCombat(Player __instance)
+    {
+        try
+        {
+            if (!ReleaseCombats || __instance.PlayerCombatState is not { } state)
+            {
+                return;
+            }
+            foreach (CardPile pile in state.AllPiles)
+            {
+                if (_piles.TryGetValue(pile, out PileLast? last))
+                {
+                    last.Release();
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Disable("releasing a finished combat", e.ToString());
+        }
     }
 
     private static void Register(Last entry, SerializableCard saved)

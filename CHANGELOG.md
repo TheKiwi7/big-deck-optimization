@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.12.0
+
+- Co-op runs no longer get heavier with every combat: the game kept a full copy of every other player's deck in memory at each combat, for the rest of the run, and this mod kept a finished combat's cards until the next one. In my tests with two players at 10,300 cards each, memory after 8 combats is about 530 MB instead of 1.3 GB, and the longest freeze when starting the 8th combat is about 0.6 s instead of 2 s. The more players, the bigger the difference.
+- Combat start with Limitless is much shorter, from the first combat of a session and for every player's deck: in my tests with two players at 10,300 cards each, the longest freeze is about 0.5 s instead of 0.9 s. Solo with 10,300 cards, no room took longer than about 0.3 s to enter over a whole run.
+- Shorter memory cleanups at every deck size: the game's animated texts create much less temporary data. In my tests on the map, they take about 0.01 s instead of 0.02 to 0.03 s, and a third of the time overall.
+- Squeeze, Perfected Strike and Crescent Spear no longer count your whole deck each time their value is shown.
+- Now tested with four players: 10,300 cards each (41,000 in one combat) with no desync, and about 320 fps while nothing happens on the PC used for the tests.
+- Better protection against game updates: two more optimizations now turn themselves off if the game code they rely on changes.
+
 ## v0.11.0
 
 - Shorter freezes everywhere, even with a small deck: the game's animated texts now free their temporary memory right away. In my tests on the map, the memory cleanups take about 0.02 to 0.03 s instead of 0.07 to 0.09 s, and the slowest frame went from about 85 ms to 29 ms (your numbers will differ on another PC).

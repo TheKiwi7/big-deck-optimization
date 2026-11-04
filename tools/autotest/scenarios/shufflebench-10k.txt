@@ -1,0 +1,26 @@
+# bdperf shufflebench at ~10,300 cards + 368 relics: the sort of StableShuffle and the deck-wide counts of three cards
+timeout 1200
+newrun NECROBINDER
+waitfor run 120
+wait 2
+uncap
+framedetail
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf segments verify off
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 3
+cmd bdperf shufflebench 5
+quit

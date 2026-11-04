@@ -1,0 +1,75 @@
+# See coopfights10kold-host.txt.
+timeout 1400
+mplobby IRONCLAD 2
+waitfor run 240
+forcefocus
+cmd bigdeck import ref all all {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+cmd bdperf release off
+wait 30
+enemyhp 1
+selector ui
+barrier start
+gcfull start
+waitfor combat 600
+autoroom 900
+barrier fight1
+wait 3
+gcfull fight 1
+barrier read1
+waitfor combat 600
+autoroom 900
+barrier fight2
+wait 3
+gcfull fight 2
+barrier read2
+waitfor combat 600
+autoroom 900
+barrier fight3
+wait 3
+gcfull fight 3
+barrier read3
+waitfor combat 600
+autoroom 900
+barrier fight4
+wait 3
+gcfull fight 4
+barrier read4
+waitfor combat 600
+autoroom 900
+barrier fight5
+wait 3
+gcfull fight 5
+barrier read5
+waitfor combat 600
+autoroom 900
+barrier fight6
+wait 3
+gcfull fight 6
+barrier read6
+waitfor combat 600
+autoroom 900
+barrier fight7
+wait 3
+gcfull fight 7
+barrier read7
+waitfor combat 600
+autoroom 900
+barrier fight8
+wait 3
+gcfull fight 8
+barrier read8
+wait 2
+quit

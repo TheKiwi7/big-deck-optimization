@@ -1,0 +1,60 @@
+# Two players at ~10,300 cards each, what the player who is not hosting sees (coop4.ps1 -Peers 2 -RenderedClient): host headless.
+timeout 1100
+mplobby NECROBINDER 2
+waitfor run 240
+immortal until 99
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref 1 relics {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+wait 30
+enemyhp 999999
+barrier imported
+wait 15
+cmd fight CULTISTS_NORMAL
+waitfor idle 900
+wait 8
+avoid APOTHEOSIS,CASCADE
+cmd energy 50
+wait 0.5
+play 4
+waitfor idle 300
+endturn
+waitfor idle 900
+cmd energy 50
+wait 0.5
+play 4
+waitfor idle 300
+endturn
+waitfor idle 900
+cmd energy 50
+wait 0.5
+play 4
+waitfor idle 300
+endturn
+waitfor idle 900
+cmd energy 50
+wait 0.5
+play 4
+waitfor idle 300
+endturn
+waitfor idle 900
+cmd energy 50
+wait 0.5
+play 4
+waitfor idle 300
+endturn
+waitfor idle 900
+wait 5
+quit

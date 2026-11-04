@@ -477,6 +477,13 @@ public static partial class AutoTest
         }
     }
 
+    /// <summary>Cards the run holds on to (<c>RunState._allCards</c>), for gcfull's line: what a co-op sync replaced stays there in the game.</summary>
+    private static string RunCardCount()
+    {
+        object? run = RunManager.Instance.DebugOnlyGetState();
+        return run == null ? "" : $", run cards {(HarmonyLib.AccessTools.Field(run.GetType(), "_allCards")?.GetValue(run) as System.Collections.ICollection)?.Count}";
+    }
+
     private static void Say(string text) => Log.Info($"[{ModEntry.Id}] {Name} {_clock.Elapsed.TotalSeconds,7:F1}s {text}");
 
     private static bool _continueOnFail, _turnLoopDied, _coopDiverged;
@@ -638,7 +645,7 @@ public static partial class AutoTest
         };
         string[] lines = File.ReadAllLines(_script!);
         Say($"script {_script} ({lines.Length} lines)");
-        await Until(tree, () => NGame.Instance?.MainMenu != null && ModEntry.AllApplied, 300, "menu");
+        await Until(tree, () => NGame.Instance?.MainMenu != null && ModEntry.Ready, 300, "menu");
         await Frames(tree, 60);
         NGame game = NGame.Instance!;
         if (DisplayServer.GetName() == "headless")
@@ -789,7 +796,7 @@ public static partial class AutoTest
                     GC.WaitForPendingFinalizers();
                     GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
                     Say($"  GCFULL {arg.Trim()}: live heap {GC.GetTotalMemory(false) / (1024.0 * 1024):F1} MB"
-                        + (_leftRuns.Count == 0 ? "" : $", left runs alive {_leftRuns.Count(r => r.IsAlive)}/{_leftRuns.Count}"));
+                        + (_leftRuns.Count == 0 ? "" : $", left runs alive {_leftRuns.Count(r => r.IsAlive)}/{_leftRuns.Count}") + RunCardCount());
                     break;
                 case "autoslayfirst":
                     // A console command run as the auto player enters its first room: at the same point whatever the session's
@@ -869,11 +876,11 @@ public static partial class AutoTest
                         (FastListeners.Name + ".Cache", FastListeners.SegmentHits + FastListeners.SegmentMoveHits), (FastListeners.Name + ".Moves", FastListeners.SegmentMoveHits + FastListeners.SnapshotCatchUps),
                         (FastListeners.Name + ".Kinds", FastListeners.KindsSkipped), (FastListeners.Name + ".Others", FastListeners.OthersDropped),
                         (HookSkip.Name, HookSkip.FilteredWalks), (LimitlessReserialize.Name, LimitlessReserialize.Kept), (LimitlessRecalcSkip.Name + ".Memos", LimitlessRecalcSkip.Skipped), (LimitlessRecalcSkip.Name + ".Passes", LimitlessRecalcSkip.PassesSkipped),
-                        (SnapshotCardReuse.Name + ".Cards", SnapshotCardReuse.Reused), (SnapshotCardReuse.Name + ".Piles", SnapshotCardReuse.PilesReused + SnapshotCardReuse.PilesTrusted), (SnapshotCardReuse.Name + ".Trust", SnapshotCardReuse.PilesTrusted), (SnapshotCardReuse.Name + ".Moved", SnapshotCardReuse.MovedReused), (SnapshotCardReuse.Name + ".Dirty", SnapshotCardReuse.DirtyPiles), (SnapshotCardReuse.Name + ".Hooks", SnapshotCardReuse.PilesWithHooks), (SnapshotCardReuse.Name + ".Blocks", SnapshotCardReuse.BlockCopiedCards),
+                        (SnapshotCardReuse.Name + ".Cards", SnapshotCardReuse.Reused), (SnapshotCardReuse.Name + ".Release", SnapshotCardReuse.CombatCardsReleased), (SnapshotCardReuse.Name + ".Piles", SnapshotCardReuse.PilesReused + SnapshotCardReuse.PilesTrusted), (SnapshotCardReuse.Name + ".Trust", SnapshotCardReuse.PilesTrusted), (SnapshotCardReuse.Name + ".Moved", SnapshotCardReuse.MovedReused), (SnapshotCardReuse.Name + ".Dirty", SnapshotCardReuse.DirtyPiles), (SnapshotCardReuse.Name + ".Hooks", SnapshotCardReuse.PilesWithHooks), (SnapshotCardReuse.Name + ".Blocks", SnapshotCardReuse.BlockCopiedCards),
                         (SnapshotCardReuse.Name + ".CardBits", SnapshotCardReuse.BitsReused), (SnapshotCardReuse.Name + ".UpgradeBits", SnapshotCardReuse.UpgradeBitsPatched), (SnapshotCardReuse.Name + ".PileBits", SnapshotCardReuse.PileBitsReused + SnapshotCardReuse.PileBitsComposed),
-                        (LimitlessHookSkip.Name, LimitlessHookSkip.Dropped), (LimitlessHookSkip.Name + ".Saved", LimitlessHookSkip.NotesFromSaved), (LimitlessCloneMemo.Name, LimitlessCloneMemo.Reused), (TextPoolReuse.Name, TextPoolReuse.Served), (ThemeColorSkip.Name, ThemeColorSkip.Skipped), (ReplayStateSkip.Name, ReplayStateSkip.Skipped),
+                        (DeckCountMemo.Name, DeckCountMemo.Kept + DeckCountMemo.Updated), (DeckCountMemo.Name + ".Checks", DeckCountMemo.Checks), (LimitlessHookSkip.Name, LimitlessHookSkip.Dropped), (LimitlessHookSkip.Name + ".Saved", LimitlessHookSkip.NotesFromSaved), (LimitlessCloneMemo.Name, LimitlessCloneMemo.Reused), (TextPoolReuse.Name, TextPoolReuse.Served), (ThemeColorSkip.Name, ThemeColorSkip.Skipped), (ReplayStateSkip.Name, ReplayStateSkip.Skipped),
                         (GcPacing.Name, GcPacing.Regions), (RelicFlashMerge.Name, RelicFlashMerge.Merged), (CardFlightLimit.Name, CardFlightLimit.Skipped), (TypePlaqueSkip.Name, TypePlaqueSkip.Skipped),
-                        (ControllerActionSkip.Name, ControllerActionSkip.Skipped), (RoomCollect.Name, RoomCollect.Background), (PooledCardRelease.Name, PooledCardRelease.Released), (SavedPropertyLookup.Name, SavedPropertyLookup.Served), (RelicStateReuse.Name, RelicStateReuse.Reused), (RelicStateReuse.ScalarName, RelicStateReuse.ScalarReused), (RichTextEnvRelease.Name, RichTextEnvRelease.Released), ("InlineGuard", InlineGuard.Protected),
+                        (ControllerActionSkip.Name, ControllerActionSkip.Skipped), (RoomCollect.Name, RoomCollect.Background), (PooledCardRelease.Name, PooledCardRelease.Released), (SyncedCardRelease.Name, SyncedCardRelease.Released), (SavedPropertyLookup.Name, SavedPropertyLookup.Served), (RelicStateReuse.Name, RelicStateReuse.Reused), (RelicStateReuse.ScalarName, RelicStateReuse.ScalarReused), (RichTextEnvRelease.Name, RichTextEnvRelease.Released), (RichTextEnvRelease.Name + ".Untracked", RichTextEnvRelease.Untracked), ("InlineGuard", InlineGuard.Protected),
                     })
                     {
                         Say($"EFFECT {name} {count}");

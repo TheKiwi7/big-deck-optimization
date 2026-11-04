@@ -1,0 +1,211 @@
+# deckcards-10k at ~950 cards: what those plays cost without the deck
+timeout 280
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref 1 relics
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf segments verify off
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 200
+cmd bigdeck tank
+wait 1
+speed instant
+enemyhp 999998
+wait 8
+emptyhand
+setenergy 5
+cmd card CATASTROPHE hand
+wait 0.3
+playcard CATASTROPHE 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card CATASTROPHE hand
+wait 0.3
+playcard CATASTROPHE 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card CATASTROPHE hand
+wait 0.3
+playcard CATASTROPHE 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card HIDDEN_GEM hand
+wait 0.3
+playcard HIDDEN_GEM 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card HIDDEN_GEM hand
+wait 0.3
+playcard HIDDEN_GEM 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card HIDDEN_GEM hand
+wait 0.3
+playcard HIDDEN_GEM 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card UPROAR hand
+wait 0.3
+playcard UPROAR 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card UPROAR hand
+wait 0.3
+playcard UPROAR 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card UPROAR hand
+wait 0.3
+playcard UPROAR 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card ANOINTED hand
+wait 0.3
+playcard ANOINTED 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card ANOINTED hand
+wait 0.3
+playcard ANOINTED 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card ANOINTED hand
+wait 0.3
+playcard ANOINTED 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card REBOOT hand
+wait 0.3
+playcard REBOOT 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card REBOOT hand
+wait 0.3
+playcard REBOOT 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card REBOOT hand
+wait 0.3
+playcard REBOOT 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card CASCADE hand
+wait 0.3
+playcard CASCADE 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card CASCADE hand
+wait 0.3
+playcard CASCADE 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card CASCADE hand
+wait 0.3
+playcard CASCADE 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card ALL_FOR_ONE hand
+wait 0.3
+playcard ALL_FOR_ONE 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card ALL_FOR_ONE hand
+wait 0.3
+playcard ALL_FOR_ONE 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card ALL_FOR_ONE hand
+wait 0.3
+playcard ALL_FOR_ONE 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card SEEKER_STRIKE hand
+wait 0.3
+playcard SEEKER_STRIKE 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card SEEKER_STRIKE hand
+wait 0.3
+playcard SEEKER_STRIKE 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card SEEKER_STRIKE hand
+wait 0.3
+playcard SEEKER_STRIKE 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card HAVOC hand
+wait 0.3
+playcard HAVOC 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card HAVOC hand
+wait 0.3
+playcard HAVOC 0 free
+waitfor idle 100
+wait 0.2
+emptyhand
+setenergy 5
+cmd card HAVOC hand
+wait 0.3
+playcard HAVOC 0 free
+waitfor idle 100
+wait 0.2
+wait 1
+effects end
+wait 1
+quit

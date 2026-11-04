@@ -1,0 +1,30 @@
+# Limitless's inner card rebuilt at each clone against the kept result for its content: every answer compared byte for byte
+# (bdperf clonememo verify 1), over three combats at ~1,900 cards. Pass: verified about as many as cards with stacked enchantments,
+# enabled True (a difference turns it off).
+timeout 600
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdperf clonememo verify 1
+cmd bdperf checks off
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 300
+cmd bdperf clonememo
+cmd kill all
+waitfor nocombat 300
+wait 3
+cmd fight CULTISTS_NORMAL
+waitfor idle 300
+cmd kill all
+waitfor nocombat 300
+wait 3
+cmd fight CULTISTS_NORMAL
+waitfor idle 300
+cmd bdperf clonememo
+cmd kill all
+waitfor nocombat 300
+wait 2
+quit

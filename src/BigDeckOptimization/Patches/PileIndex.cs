@@ -171,6 +171,39 @@ public static class PileIndex
         return !_entries.TryGetValue(card, out Entry? entry) || (entry.Count == 0 && !entry.Unknown);
     }
 
+    /// <summary>How many of these piles hold the card (0 or 1), or -1 when unsure.</summary>
+    internal static int PlacesIn(CardModel card, IReadOnlyList<CardPile> piles)
+    {
+        if (!Enabled || !Applied || _selfCheck)
+        {
+            return -1;
+        }
+        if (!_entries.TryGetValue(card, out Entry? entry))
+        {
+            return 0;
+        }
+        if (entry.Unknown || entry.Count > 1)
+        {
+            return -1;
+        }
+        if (entry.Count == 0)
+        {
+            return 0;
+        }
+        if (entry.Pile == null)
+        {
+            return -1;
+        }
+        for (int i = 0; i < piles.Count; i++)
+        {
+            if (ReferenceEquals(piles[i], entry.Pile))
+            {
+                return 1;
+            }
+        }
+        return 0;
+    }
+
     private static bool _duplicateCheckPatched;
     private static System.Reflection.MethodInfo? _containsCard;
     private static AccessTools.FieldRef<RunState, List<CardModel>>? _allCards;

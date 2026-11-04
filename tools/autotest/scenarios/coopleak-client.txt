@@ -1,0 +1,196 @@
+# Co-op memory over several combats, client: see coopleak-host.txt.
+timeout 1500
+mplobby IRONCLAD 2
+waitfor run 240
+wait 8
+cmd bigdeck import ref all all {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bdperf checks off
+enemyhp 1
+selector ui
+barrier start
+gcfull start
+waitfor combat 600
+autoroom 900
+barrier fight1
+wait 3
+gcfull fight 1
+runstate fight 1
+barrier read1
+waitfor combat 600
+autoroom 900
+barrier fight2
+wait 3
+gcfull fight 2
+runstate fight 2
+barrier read2
+waitfor combat 600
+autoroom 900
+barrier fight3
+wait 3
+gcfull fight 3
+runstate fight 3
+barrier read3
+waitfor combat 600
+autoroom 900
+barrier fight4
+wait 3
+gcfull fight 4
+runstate fight 4
+barrier read4
+waitfor combat 600
+autoroom 900
+barrier fight5
+wait 3
+gcfull fight 5
+runstate fight 5
+barrier read5
+waitfor combat 600
+autoroom 900
+barrier fight6
+wait 3
+gcfull fight 6
+runstate fight 6
+barrier read6
+waitfor combat 600
+autoroom 900
+barrier fight7
+wait 3
+gcfull fight 7
+runstate fight 7
+barrier read7
+waitfor combat 600
+autoroom 900
+barrier fight8
+wait 3
+gcfull fight 8
+runstate fight 8
+barrier read8
+waitfor combat 600
+autoroom 900
+barrier fight9
+wait 3
+gcfull fight 9
+runstate fight 9
+barrier read9
+waitfor combat 600
+autoroom 900
+barrier fight10
+wait 3
+gcfull fight 10
+runstate fight 10
+barrier read10
+waitfor combat 600
+autoroom 900
+barrier fight11
+wait 3
+gcfull fight 11
+runstate fight 11
+barrier read11
+waitfor combat 600
+autoroom 900
+barrier fight12
+wait 3
+gcfull fight 12
+runstate fight 12
+barrier read12
+waitfor combat 600
+autoroom 900
+barrier fight13
+wait 3
+gcfull fight 13
+runstate fight 13
+barrier read13
+waitfor combat 600
+autoroom 900
+barrier fight14
+wait 3
+gcfull fight 14
+runstate fight 14
+barrier read14
+waitfor combat 600
+autoroom 900
+barrier fight15
+wait 3
+gcfull fight 15
+runstate fight 15
+barrier read15
+waitfor combat 600
+autoroom 900
+barrier fight16
+wait 3
+gcfull fight 16
+runstate fight 16
+barrier read16
+waitfor combat 600
+autoroom 900
+barrier fight17
+wait 3
+gcfull fight 17
+runstate fight 17
+barrier read17
+waitfor combat 600
+autoroom 900
+barrier fight18
+wait 3
+gcfull fight 18
+runstate fight 18
+barrier read18
+waitfor combat 600
+autoroom 900
+barrier fight19
+wait 3
+gcfull fight 19
+runstate fight 19
+barrier read19
+waitfor combat 600
+autoroom 900
+barrier fight20
+wait 3
+gcfull fight 20
+runstate fight 20
+barrier read20
+waitfor combat 600
+autoroom 900
+barrier fight21
+wait 3
+gcfull fight 21
+runstate fight 21
+barrier read21
+waitfor combat 600
+autoroom 900
+barrier fight22
+wait 3
+gcfull fight 22
+runstate fight 22
+barrier read22
+waitfor combat 600
+autoroom 900
+barrier fight23
+wait 3
+gcfull fight 23
+runstate fight 23
+barrier read23
+waitfor combat 600
+autoroom 900
+barrier fight24
+wait 3
+gcfull fight 24
+runstate fight 24
+barrier read24
+waitfor combat 600
+autoroom 900
+barrier fight25
+wait 3
+gcfull fight 25
+runstate fight 25
+barrier read25
+waitfor combat 600
+autoroom 900
+barrier fight26
+wait 3
+gcfull fight 26
+runstate fight 26
+barrier read26
+wait 2
+quit

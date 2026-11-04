@@ -78,6 +78,30 @@ public class PerfConsoleCmd : AbstractConsoleCmd
             case "gcmin" when args.Length >= 2 && int.TryParse(args[1], out int minCards) && minCards >= 0:
                 GcPacing.MinCards = minCards;
                 return new CmdResult(success: true, $"{GcPacing.Name}: combats from {minCards} cards; regions {GcPacing.Regions}, collections {GcPacing.Collections}.");
+            case "release" when args.Length >= 2:
+                // What a finished combat or a co-op sync leaves behind, kept as before: comparison sessions.
+                SyncedCardRelease.Enabled = args[1] != "off";
+                SnapshotCardReuse.ReleaseCombats = args[1] != "off";
+                return new CmdResult(success: true, $"releases {args[1]}");
+            case "clonememo":
+                if (args.Length >= 3 && args[1] == "verify" && int.TryParse(args[2], out int cloneEvery) && cloneEvery > 0)
+                {
+                    LimitlessCloneMemo.VerifyEvery = cloneEvery;
+                }
+                return new CmdResult(success: LimitlessCloneMemo.Enabled, $"CLONEMEMO enabled {LimitlessCloneMemo.Enabled}, reused {LimitlessCloneMemo.Reused}, verified {LimitlessCloneMemo.Verified}");
+            case "deckcount":
+                if (args.Length >= 3 && args[1] == "verify" && int.TryParse(args[2], out int countEvery) && countEvery > 0)
+                {
+                    DeckCountMemo.VerifyEvery = countEvery;
+                }
+                else if (args.Length >= 2 && args[1] == "wrong")
+                {
+                    DeckCountMemo.WrongForTest = 1;
+                }
+                return new CmdResult(success: DeckCountMemo.Mismatches == 0, $"DECKCOUNT enabled {DeckCountMemo.Enabled}, kept {DeckCountMemo.Kept}, updated {DeckCountMemo.Updated}, walks {DeckCountMemo.Walks}, "
+                    + $"unsure {DeckCountMemo.Unsure}, checks {DeckCountMemo.Checks}, mismatches {DeckCountMemo.Mismatches}");
+            case "shufflebench":
+                return ShuffleBench.Run(args.Length >= 2 && int.TryParse(args[1], out int shufflePasses) && shufflePasses > 0 ? shufflePasses : 5);
             case "upgradebench":
                 return UpgradeBench.Run(args.Length >= 2 && int.TryParse(args[1], out int upgradePasses) && upgradePasses > 0 ? upgradePasses : 20);
             case "relics":

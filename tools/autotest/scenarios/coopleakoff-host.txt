@@ -1,0 +1,66 @@
+# Co-op memory over several combats, host (with coopleak-client.txt, parcoop.ps1): both peers ~1,900 cards, enemies at 1 HP, six
+# fights played by the game's auto player. Each combat the game rebuilds every peer's deck from the sync message (Player.
+# SyncWithSerializedPlayer) and the cards replaced stay in RunState._allCards: GCFULL shows that list and the live heap.
+timeout 1500
+mplobby NECROBINDER 2
+waitfor run 240
+wait 8
+cmd bdopt off
+cmd bigdeck import ref all all {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bdperf checks off
+enemyhp 1
+selector ui
+barrier start
+gcfull start
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+barrier fight1
+wait 3
+gcfull fight 1
+runstate fight 1
+barrier read1
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+barrier fight2
+wait 3
+gcfull fight 2
+runstate fight 2
+barrier read2
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+barrier fight3
+wait 3
+gcfull fight 3
+runstate fight 3
+barrier read3
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+barrier fight4
+wait 3
+gcfull fight 4
+runstate fight 4
+barrier read4
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+barrier fight5
+wait 3
+gcfull fight 5
+runstate fight 5
+barrier read5
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+barrier fight6
+wait 3
+gcfull fight 6
+runstate fight 6
+barrier read6
+effects
+wait 2
+quit

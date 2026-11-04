@@ -51,9 +51,11 @@ public static class ModEntry
         (ControllerActionSkip.Name, ControllerActionSkip.Apply),
         (RoomCollect.Name, RoomCollect.Apply),
         (PooledCardRelease.Name, PooledCardRelease.Apply),
+        (SyncedCardRelease.Name, SyncedCardRelease.Apply),
         (SavedPropertyLookup.Name, SavedPropertyLookup.Apply),
         (RelicStateReuse.Name, RelicStateReuse.Apply),
         (RichTextEnvRelease.Name, RichTextEnvRelease.Apply),
+        (DeckCountMemo.Name, DeckCountMemo.Apply),
     });
 
     /// <summary>Time given to patching per frame: each patched method takes ~1.5 ms, ~400 ms in all.</summary>
@@ -121,7 +123,7 @@ public static class ModEntry
         {
             if (!StartedOff)
             {
-                InlineGuard.RecompileInliners(new Harmony(Harmony.Id + "." + nameof(InlineGuard)));
+                frames += await RecompileOverFrames();
             }
         }
         catch (Exception e)
@@ -131,7 +133,36 @@ public static class ModEntry
         Log.Info($"[{Id}] Patches applied: {spent:F0} ms of work over {frames} frames, {System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds:F0} ms after the start");
 #if BENCH
         Log.Info($"[{Id}] Load time: {MethodFingerprint.LoadBreakdown()}");
+        Ready = true;
 #endif
+    }
+
+    /// <summary>
+    /// <see cref="InlineGuard.RecompileInliners"/> a few methods per frame, at once when a run is under way: what it fixes only
+    /// matters to cards in a run. The frames it took.
+    /// </summary>
+    private static async System.Threading.Tasks.Task<int> RecompileOverFrames()
+    {
+        Godot.SceneTree? tree = Godot.Engine.GetMainLoop() as Godot.SceneTree;
+        int frames = 0;
+        using IEnumerator<bool> steps = InlineGuard.RecompileInliners(new Harmony(Harmony.Id + "." + nameof(InlineGuard))).GetEnumerator();
+        long last = System.Diagnostics.Stopwatch.GetTimestamp();
+        while (true)
+        {
+            double frameMs = System.Diagnostics.Stopwatch.GetElapsedTime(last).TotalMilliseconds;
+            double budget = tree == null || MegaCrit.Sts2.Core.Runs.RunManager.Instance.IsInProgress ? double.MaxValue : Math.Max(ApplyBudgetMs, frameMs * ApplyFrameShare);
+            long start = System.Diagnostics.Stopwatch.GetTimestamp();
+            while (System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds < budget)
+            {
+                if (!steps.MoveNext())
+                {
+                    return frames;
+                }
+            }
+            last = System.Diagnostics.Stopwatch.GetTimestamp();
+            await tree!.ToSignal(tree, Godot.SceneTree.SignalName.ProcessFrame);
+            frames++;
+        }
     }
 
     /// <summary>Applies patches until the budget is spent: the time it took.</summary>
@@ -161,9 +192,12 @@ public static class ModEntry
         }
     }
 
-#if BENCH
-    /// <summary>Every patch of the start is applied (the test runner waits for it).</summary>
+    /// <summary>Every patch of the start has been tried.</summary>
     internal static bool AllApplied => _toApply.Count == 0;
+
+#if BENCH
+    /// <summary>Patches and their callers' recompilation are done (the test runner waits for it).</summary>
+    internal static bool Ready { get; private set; }
 #endif
 
     /// <summary>

@@ -1,0 +1,117 @@
+# Two players at ~10,300 cards each, client, rendered: see coopclient10k-host.txt.
+timeout 1100
+mplobby CHARACTER 2
+waitfor run 240
+uncap
+framedetail
+forcefocus
+immortal until 99
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref 1 relics {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+wait 30
+enemyhp 999999
+barrier imported
+fpsstat
+gcstat
+waitfor combat 900
+waitfor idle 900
+fpsstat combat start
+gcstat combat start
+wait 8
+fpsstat idle
+avoid APOTHEOSIS,CASCADE
+cmd energy 50
+wait 0.5
+fpsstat
+gcstat
+mouseplay 4
+waitfor idle 300
+fpsstat mouse plays t1
+fpsstat
+play 4
+waitfor idle 300
+fpsstat plays t1
+gcstat plays t1
+fpsstat
+endturn
+waitfor idle 900
+fpsstat end of turn t1
+cmd energy 50
+wait 0.5
+fpsstat
+gcstat
+mouseplay 4
+waitfor idle 300
+fpsstat mouse plays t2
+fpsstat
+play 4
+waitfor idle 300
+fpsstat plays t2
+gcstat plays t2
+fpsstat
+endturn
+waitfor idle 900
+fpsstat end of turn t2
+cmd energy 50
+wait 0.5
+fpsstat
+gcstat
+mouseplay 4
+waitfor idle 300
+fpsstat mouse plays t3
+fpsstat
+play 4
+waitfor idle 300
+fpsstat plays t3
+gcstat plays t3
+fpsstat
+endturn
+waitfor idle 900
+fpsstat end of turn t3
+cmd energy 50
+wait 0.5
+fpsstat
+gcstat
+mouseplay 4
+waitfor idle 300
+fpsstat mouse plays t4
+fpsstat
+play 4
+waitfor idle 300
+fpsstat plays t4
+gcstat plays t4
+fpsstat
+endturn
+waitfor idle 900
+fpsstat end of turn t4
+cmd energy 50
+wait 0.5
+fpsstat
+gcstat
+mouseplay 4
+waitfor idle 300
+fpsstat mouse plays t5
+fpsstat
+play 4
+waitfor idle 300
+fpsstat plays t5
+gcstat plays t5
+fpsstat
+endturn
+waitfor idle 900
+fpsstat end of turn t5
+wait 5
+quit

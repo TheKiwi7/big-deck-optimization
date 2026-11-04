@@ -20,6 +20,10 @@ public static class IdleButtonInput
 {
     public const string Name = "IdleButtonInput";
 
+    /// <summary>v0.107.1 and v0.111: <c>_Input</c> only calls this check, which only acts on a pressed button.</summary>
+    private const string InputFingerprint = "78557E27E72174AF";
+    private const string DragCheckFingerprint = "60208EA15DC82512";
+
     public static bool Enabled { get; set; } = true;
 
     private static readonly ConcurrentDictionary<Type, bool> _eligibleByType = new();
@@ -32,6 +36,10 @@ public static class IdleButtonInput
 
     public static void Apply(Harmony harmony)
     {
+        PatchSafety.RequireFingerprint(AccessTools.DeclaredMethod(typeof(NButton), "_Input", new[] { typeof(InputEvent) })
+            ?? throw new MissingMethodException(nameof(NButton), "_Input"), InputFingerprint);
+        PatchSafety.RequireFingerprint(AccessTools.Method(typeof(NClickableControl), "CheckMouseDragThreshold")
+            ?? throw new MissingMethodException(nameof(NClickableControl), "CheckMouseDragThreshold"), DragCheckFingerprint);
         _isPressed = AccessTools.FieldRefAccess<NClickableControl, bool>("_isPressed");
         _isEnabled = AccessTools.FieldRefAccess<NClickableControl, bool>("_isEnabled");
         PatchGuard.Patch(harmony, AccessTools.Method(typeof(Node), nameof(Node.SetProcessInput)),

@@ -107,7 +107,7 @@ public static class LimitlessHookSkip
     private const string EnchantmentFromSerializableFingerprint = "F59AC9E4E33F6805";
     private static AccessTools.FieldRef<object, List<CardModel>?>? _built;
     private static AccessTools.FieldRef<object, List<SerializableCard>?>? _saved;
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(ModelId Card, ModelId Enchantment), byte> _seenPairs = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(ModelId Card, ModelId Enchantment), Type> _seenPairs = new();
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<List<SerializableCard>, object> _pairsRecorded = new();
 
     /// <summary>Notes answered from the saved list, without building the inner cards.</summary>
@@ -228,7 +228,7 @@ public static class LimitlessHookSkip
                 if (inner[i].Enchantment is { } built && saved[i] is { Id: { } cardId, Enchantment.Id: { } enchantmentId }
                     && cardId == inner[i].Id && enchantmentId == built.Id)
                 {
-                    _seenPairs.TryAdd((cardId, enchantmentId), 0);
+                    _seenPairs.TryAdd((cardId, enchantmentId), built.GetType());
                 }
             }
         }
@@ -274,6 +274,20 @@ public static class LimitlessHookSkip
     /// <summary>Whether one of this MultiEnchantment's inner enchantment types answers yes.</summary>
     internal static bool AnyInner(AbstractModel multi, Func<Type, bool> overrides)
     {
+        // Not built yet, and every pair seen: the types are known without building anything. A combat's clones start unbuilt, and this
+        // runs on all of them at its first walk (~17 MB of 83 at 10,000 cards); nothing else needs those cards until one is played.
+        List<SerializableCard>? saved = _saved?.Invoke(multi);
+        if (saved != null && _built!(multi) == null && AllSeen(saved))
+        {
+            for (int i = 0; i < saved.Count; i++)
+            {
+                if (saved[i] is { Id: { } cardId, Enchantment.Id: { } enchantmentId } && overrides(_seenPairs[(cardId, enchantmentId)]))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
         List<CardModel> inner = _inner!(multi);
         for (int i = 0; i < inner.Count; i++)
         {

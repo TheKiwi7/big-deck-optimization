@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using HarmonyLib;
@@ -38,6 +39,10 @@ public static class FastCombatStart
 {
     public const string Name = "FastCombatStart";
 
+    /// <summary>v0.107.1 and v0.111: the state machines of <c>Cmd.Wait</c> and <c>Cmd.CustomScaledWait</c>.</summary>
+    private const string WaitFingerprint = "3A639D986AA66976";
+    private const string ScaledWaitFingerprint = "D5717F5FE3E04BAA";
+
     public static bool Enabled { get; set; } = true;
 
     /// <summary>The option, or in co-op the master switch alone (every player must start at the same pace).</summary>
@@ -57,16 +62,19 @@ public static class FastCombatStart
 
     public static void Apply(Harmony harmony)
     {
+        MethodInfo wait = AccessTools.Method(typeof(Cmd), nameof(Cmd.Wait), new[] { typeof(float), typeof(CancellationToken), typeof(bool) })
+            ?? throw new MissingMethodException("Cmd.Wait");
+        MethodInfo scaledWait = AccessTools.Method(typeof(Cmd), nameof(Cmd.CustomScaledWait)) ?? throw new MissingMethodException("Cmd.CustomScaledWait");
+        // Skipping them must lose nothing but the time: their code only waits.
+        PatchSafety.RequireFingerprint(AccessTools.AsyncMoveNext(wait), WaitFingerprint);
+        PatchSafety.RequireFingerprint(AccessTools.AsyncMoveNext(scaledWait), ScaledWaitFingerprint);
         PatchGuard.Patch(harmony, AccessTools.Method(typeof(CombatRoom), nameof(CombatRoom.EnterInternal)) ?? throw new MissingMethodException("CombatRoom.EnterInternal"),
             prefix: new HarmonyMethod(typeof(FastCombatStart), nameof(OpenWindow)));
         // The first turn starting ends the loading (by name: game v0.111 added a parameter).
         PatchGuard.Patch(harmony, AccessTools.Method(typeof(CombatManager), "StartTurn") ?? throw new MissingMethodException("CombatManager.StartTurn"),
             prefix: new HarmonyMethod(typeof(FastCombatStart), nameof(TurnStarting)));
-        PatchGuard.Patch(harmony, AccessTools.Method(typeof(Cmd), nameof(Cmd.Wait), new[] { typeof(float), typeof(CancellationToken), typeof(bool) })
-                ?? throw new MissingMethodException("Cmd.Wait"),
-            prefix: new HarmonyMethod(typeof(FastCombatStart), nameof(WaitPrefix)));
-        PatchGuard.Patch(harmony, AccessTools.Method(typeof(Cmd), nameof(Cmd.CustomScaledWait)) ?? throw new MissingMethodException("Cmd.CustomScaledWait"),
-            prefix: new HarmonyMethod(typeof(FastCombatStart), nameof(ScaledWaitPrefix)));
+        PatchGuard.Patch(harmony, wait, prefix: new HarmonyMethod(typeof(FastCombatStart), nameof(WaitPrefix)));
+        PatchGuard.Patch(harmony, scaledWait, prefix: new HarmonyMethod(typeof(FastCombatStart), nameof(ScaledWaitPrefix)));
     }
 
     private static void OpenWindow()

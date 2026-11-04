@@ -1,0 +1,57 @@
+# Co-op memory over several combats, client: see coopleak-host.txt.
+timeout 1500
+mplobby IRONCLAD 2
+waitfor run 240
+wait 8
+cmd bdopt off
+cmd bigdeck import ref all all {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bdperf checks off
+enemyhp 1
+selector ui
+barrier start
+gcfull start
+waitfor combat 600
+autoroom 900
+barrier fight1
+wait 3
+gcfull fight 1
+runstate fight 1
+barrier read1
+waitfor combat 600
+autoroom 900
+barrier fight2
+wait 3
+gcfull fight 2
+runstate fight 2
+barrier read2
+waitfor combat 600
+autoroom 900
+barrier fight3
+wait 3
+gcfull fight 3
+runstate fight 3
+barrier read3
+waitfor combat 600
+autoroom 900
+barrier fight4
+wait 3
+gcfull fight 4
+runstate fight 4
+barrier read4
+waitfor combat 600
+autoroom 900
+barrier fight5
+wait 3
+gcfull fight 5
+runstate fight 5
+barrier read5
+waitfor combat 600
+autoroom 900
+barrier fight6
+wait 3
+gcfull fight 6
+runstate fight 6
+barrier read6
+wait 2
+quit

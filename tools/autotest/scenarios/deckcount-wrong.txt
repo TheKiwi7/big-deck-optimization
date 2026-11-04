@@ -1,0 +1,23 @@
+# Positive control of deckcount-on: answers made wrong on purpose must be caught.
+timeout 300
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 200
+emptyhand
+cmd card SQUEEZE hand
+cmd card PERFECTED_STRIKE hand
+cmd card CRESCENT_SPEAR hand
+cmd bdperf deckcount verify 1
+cmd bdperf deckcount wrong
+playcard PERFECTED_STRIKE 0 free
+waitfor idle 60
+wait 1
+onfail continue
+cmd bdperf deckcount
+quit

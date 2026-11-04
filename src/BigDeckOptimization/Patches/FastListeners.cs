@@ -1176,6 +1176,38 @@ public static class FastListeners
         UnscopedVersion++;
     }
 
+    /// <summary>Pile changes all go through <see cref="PileVersion"/> and this is the main thread, outside a shuffle (which reorders a pile's list unseen).</summary>
+    internal static bool PilesKnown => _tracking && _shuffling == 0 && Thread.CurrentThread.ManagedThreadId == _mainThread;
+
+    /// <summary>
+    /// Adds to <paramref name="count"/> what the changes since <paramref name="version"/> did to the number of cards of
+    /// <paramref name="piles"/> that <paramref name="counted"/> accepts. False, nothing to rely on: not every change is in <see cref="_moves"/>.
+    /// </summary>
+    internal static bool ApplyMoves(long version, IReadOnlyList<CardPile> piles, Func<CardModel, bool> counted, ref int count)
+    {
+        int first = MovesSince(version);
+        if (first < 0)
+        {
+            return false;
+        }
+        for (int i = first; i < _moves.Count; i++)
+        {
+            Move move = _moves[i];
+            for (int p = 0; p < piles.Count; p++)
+            {
+                if (ReferenceEquals(piles[p], move.Pile))
+                {
+                    if (counted(move.Card))
+                    {
+                        count += move.Add ? 1 : -1;
+                    }
+                    break;
+                }
+            }
+        }
+        return true;
+    }
+
     /// <summary><see cref="PileVersion"/> at the last move of a pile entry of each type id.</summary>
     private static long[] _typeChanged = new long[256];
 

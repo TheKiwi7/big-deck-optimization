@@ -416,6 +416,54 @@ public static class LimitlessReserialize
         }
     }
 
+    /// <summary>
+    /// What BaseLib holds for a saved card and its enchantment, for <see cref="LimitlessCloneMemo"/>'s content key: 0 nothing, 1 only data
+    /// known to be empty, more for each such enchantment state, -1 anything else (real saved data: no key).
+    /// </summary>
+    internal static int StoredDataState(SerializableCard saved)
+    {
+        int card = StateOf(_cardData!, saved);
+        if (card < 0 || saved.Enchantment == null)
+        {
+            return card;
+        }
+        int enchantment = StateOf(_enchantmentData!, saved.Enchantment);
+        return enchantment < 0 ? -1 : card + 2 * enchantment;
+    }
+
+    private static int StateOf(ExtendedData data, object saved)
+    {
+        object? stored = data.Stored(saved);
+        if (stored == null)
+        {
+            return 0;
+        }
+        if (!data.KnownWithoutBuilding(out Type? onlyKey, out object? emptyList))
+        {
+            return -1;
+        }
+        foreach ((Type type, IDictionary dictionary) in data.Dictionaries(stored))
+        {
+            if (dictionary.Count != 0 && (type != onlyKey || dictionary.Count != 1 || !dictionary.Contains(ExtendedData.KnownEmptyId)
+                || !SameValue(emptyList, dictionary[ExtendedData.KnownEmptyId])))
+            {
+                return -1;
+            }
+        }
+        return 1;
+    }
+
+    /// <summary>Saved cards holding the same thing: ids, levels, floor, amounts, saved properties (cards in them by reference).</summary>
+    internal static bool SameContent(SerializableCard a, SerializableCard b)
+    {
+        if (!Equals(a.Id, b.Id) || a.CurrentUpgradeLevel != b.CurrentUpgradeLevel || a.FloorAddedToDeck != b.FloorAddedToDeck || !SameProps(a.Props, b.Props))
+        {
+            return false;
+        }
+        SerializableEnchantment? x = a.Enchantment, y = b.Enchantment;
+        return x == null || y == null ? x == y : Equals(x.Id, y.Id) && x.Amount == y.Amount && SameProps(x.Props, y.Props);
+    }
+
     /// <summary>Main thread, outside a comparison: where <see cref="LimitlessRecalcSkip"/> may skip or verify.</summary>
     internal static bool CanCompareHere => !_comparing && Environment.CurrentManagedThreadId == _mainThread;
 

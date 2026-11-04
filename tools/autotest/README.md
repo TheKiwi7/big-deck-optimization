@@ -68,7 +68,8 @@ Useful `bdperf` commands inside scenarios: `probe reset|log` (per-method times +
 `dirtyreads on|off`, `purehooks on|off|blind` (written piles read only for their written cards; piles kept with pure listeners; blind: a positive control),
 `costwrites` (does a cost change reach the write prefix, directly and through `SetToFreeThisTurn`), `upgradebench [n]` (an upgrade's steps per card, for Apotheosis).
 Debug builds count card writes per method (`WRITES` line, with each card's pile) only with `BD_WRITES=1` in the environment or `--bdwrites`: the count costs a method lookup per write.
-`ladder.ps1 -Probe` also logs `bdperf piletimes` and `costhooks` after each turn's plays.
+`ladder.ps1 -Probe` also logs `bdperf piletimes` and `costhooks` after each turn's plays. `-ProbeStart`: the probed methods of the combat start.
+`coop4.ps1 -Name coop4|coop4leak|coop4-10k|coopclient10k [-Peers 4] [-Rendered|-RenderedClient]`: more than two players, or a rendered client; `CHARACTER` in the client's script is set per peer. `coopleak` (parcoop, 26 fights) and `coopfights10k` (coop.ps1 -ClientHeadless -WithMods): what a run's next combats inherit; `gcfull` logs the live heap and `RunState._allCards`. The game keeps its last 20 checksum states: a heap climbing until then isn't a leak, fights with few actions take long to fill them. `bdperf release off`: the releases of Step U off, for comparison.
 Snapshot scenarios ending in `cmd bdperf verify check` fail in par.ps1 when a snapshot differed (`snapcheck-freeturn` and `-old`, `snapcheck-purehooks`; `snapcheck-purehooks-wrong` is the positive control, one problem expected).
 
 Version check protocol (CLAUDE.md): `python -I tools/check_versions.py [--log <log>] [--accept]` compares the installed game/BaseLib/Limitless with `tools/versions.json` and lists what a session left vanilla.

@@ -7,7 +7,7 @@
 # Headless rendering would hide what this is for: never run it through par.ps1.
 # -TraceSec: a trace of the host, as coop.ps1 and run.ps1 record it. The game's card ids are 16 bits on the network: two peers above
 # 32,768 cards each make it play the wrong cards and diverge (it can't go above 35 imports in co-op, 70 solo).
-param([Parameter(Mandatory)][string]$GameDir, [string]$Sizes = "1,2,5,11,22,35", [switch]$Coop, [switch]$Plain, [int]$Turns = 5, [string]$Tag = "", [int]$TimeoutSec = 900, [int]$TraceSec = 0, [int]$TraceDelaySec = 0, [string]$TraceProfile = "cpu-sampling", [string]$TraceProviders = "", [switch]$Party5, [string]$Avoid = "", [switch]$Probe, [switch]$Verify, [string[]]$Extra = @(), [switch]$PlaysOnly, [int]$Plays = 10, [ValidateSet("all", "cards", "relics")][string]$What = "all", [string]$RelicsFrom = "all")
+param([Parameter(Mandatory)][string]$GameDir, [string]$Sizes = "1,2,5,11,22,35", [switch]$Coop, [switch]$Plain, [int]$Turns = 5, [string]$Tag = "", [int]$TimeoutSec = 900, [int]$TraceSec = 0, [int]$TraceDelaySec = 0, [string]$TraceProfile = "cpu-sampling", [string]$TraceProviders = "", [switch]$Party5, [string]$Avoid = "", [switch]$Probe, [switch]$Verify, [string[]]$Extra = @(), [switch]$PlaysOnly, [int]$Plays = 10, [ValidateSet("all", "cards", "relics")][string]$What = "all", [string]$RelicsFrom = "all", [switch]$ProbeStart)
 $scenarioDir = Join-Path $PSScriptRoot "scenarios"
 
 # -Avoid APOTHEOSIS,...: cards neither play picks (Apotheosis upgrades the whole deck: one play of it isn't a typical play).
@@ -90,6 +90,9 @@ function Get-CoopImports([int]$n, [bool]$isHost) {
 }
 
 $setup = @("cmd bdperf checks off", "cmd bdperf probe off", "cmd bdperf segments verify off")
+# -ProbeStart: the probed methods of a combat start, logged once the first turn is idle (probes off afterwards).
+$probeBefore = if ($ProbeStart) { @("cmd bdperf probe on", "cmd bdperf probe reset") } else { @() }
+$probeAfter = if ($ProbeStart) { @("cmd bdperf probe log", "cmd bdperf probe off") } else { @() }
 $fight = if ($Party5) { "SOUL_NEXUS_ELITE" } else { "CULTISTS_NORMAL" }
 foreach ($n in ($Sizes -split ',' | ForEach-Object { [int]$_ })) {
     $wait = 10 + 2 * $n
@@ -97,7 +100,7 @@ foreach ($n in ($Sizes -split ',' | ForEach-Object { [int]$_ })) {
         $name = "lad-$($Tag)c$n"
         # Each peer ends by itself when its script does, whatever the other does: the rule of immortal until is tied to the round.
         $hostLines = @("timeout $($TimeoutSec - 60)", "mplobby NECROBINDER 2", "waitfor run 240", "uncap", "framedetail", "forcefocus", "immortal until 99") + (Get-CoopImports $n $true) + $setup +
-            @("wait $wait", "enemyhp 999999", "wait 25", "fpsstat", "gcstat", "cmd fight $fight", "waitfor idle 900", "fpsstat combat start", "gcstat combat start", "wait 8", "fpsstat idle") + (Get-Body) + $(if ($Probe) { @("cmd bdperf probe log") } else { @() }) + $(if ($Verify) { @("cmd bdperf verify", "counters verified") } else { @() }) + @("effects end", "wait 15", "quit")
+            @("wait $wait", "enemyhp 999999", "wait 25") + $probeBefore + @("fpsstat", "gcstat", "cmd fight $fight", "waitfor idle 900", "fpsstat combat start", "gcstat combat start") + $probeAfter + @("wait 8", "fpsstat idle") + (Get-Body) + $(if ($Probe) { @("cmd bdperf probe log") } else { @() }) + $(if ($Verify) { @("cmd bdperf verify", "counters verified") } else { @() }) + @("effects end", "wait 15", "quit")
         $clientLines = @("timeout $($TimeoutSec - 60)", "mplobby IRONCLAD 2", "waitfor run 240", "immortal until 99", "forcefocus") + (Get-CoopImports $n $false) + $setup +
             @("wait $($wait + 6)", "enemyhp 999999", "waitfor combat 900", "waitfor idle 900", "wait 8") + (Get-Body) + $(if ($Verify) { @("wait 1500") } else { @() }) + @("wait 15", "quit")
         [IO.File]::WriteAllLines((Join-Path $scenarioDir "$name-host.txt"), [string[]]$hostLines)

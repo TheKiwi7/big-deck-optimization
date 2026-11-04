@@ -58,6 +58,23 @@ var mutations = new Dictionary<string, (string What, Action<ModuleDefinition> Ap
         il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Ldfld, cards); il.Emit(OpCodes.Callvirt, reverse); il.Emit(OpCodes.Ret);
         pile.Methods.Add(added);
     }),
+    ["sync-body"] = ("Player.SyncWithSerializedPlayer changed (SyncedCardRelease relies on what it does with the old deck)", m =>
+        Prepend(Method(m, "MegaCrit.Sts2.Core.Entities.Players.Player", "SyncWithSerializedPlayer"), OpCodes.Ldarg_0, OpCodes.Pop)),
+    ["allcards-reader"] = ("a new RunState method reading _allCards (SyncedCardRelease removes from that list because nothing but ContainsCard reads it)", m =>
+    {
+        TypeDefinition run = Type(m, "MegaCrit.Sts2.Core.Runs.RunState");
+        FieldDefinition cards = run.Fields.Single(f => f.Name == "_allCards");
+        var added = new MethodDefinition("AllCardsForTest", MethodAttributes.Public | MethodAttributes.HideBySig, cards.FieldType);
+        ILProcessor il = added.Body.GetILProcessor();
+        il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Ldfld, cards); il.Emit(OpCodes.Ret);
+        run.Methods.Add(added);
+    }),
+    ["squeeze-count"] = ("what Squeeze counts changed (DeckCountMemo mirrors it)", m =>
+        Prepend(Type(m, "MegaCrit.Sts2.Core.Models.Cards.Squeeze").NestedTypes.First(t => t.Name == "<>c").Methods.First(x => x.Name.Contains("get_CanonicalVars") && x.ReturnType.Name == "Decimal"), OpCodes.Ldarg_0, OpCodes.Pop)),
+    ["button-input"] = ("NButton._Input changed (IdleButtonInput keeps idle buttons from receiving input)", m =>
+        Prepend(Method(m, "MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton", "_Input"), OpCodes.Ldarg_0, OpCodes.Pop)),
+    ["wait-body"] = ("Cmd.Wait's state machine changed (FastCombatStart skips the call)", m =>
+        Prepend(Type(m, "MegaCrit.Sts2.Core.Commands.Cmd").NestedTypes.First(t => t.Name.StartsWith("<Wait>d__")).Methods.First(x => x.Name == "MoveNext"), OpCodes.Ldarg_0, OpCodes.Pop)),
     ["rename-method"] = ("CardPile.RemoveInternal renamed (the game's own callers follow)", m =>
         Method(m, "MegaCrit.Sts2.Core.Entities.Cards.CardPile", "RemoveInternal").Name = "RemoveInternalRenamed"),
     ["rename-field"] = ("CombatState._allies renamed (FastListeners reads it by name)", m =>
@@ -108,6 +125,8 @@ var mutations = new Dictionary<string, (string What, Action<ModuleDefinition> Ap
     // --- mods ---
     ["limitless-body"] = ("Limitless: MultiEnchantment.SetSerializableCards changed (LimitlessReserialize mirrors it)", m =>
         Prepend(m.GetTypes().Where(t => t.Name == "MultiEnchantment").SelectMany(t => t.Methods).First(x => x.Name == "SetSerializableCards"), OpCodes.Ldarg_0, OpCodes.Pop)),
+    ["limitless-clone"] = ("Limitless: MultiEnchantment.DeepCloneFields changed (LimitlessCloneMemo stands in for what it rebuilds)", m =>
+        Prepend(m.GetTypes().Where(t => t.Name == "MultiEnchantment").SelectMany(t => t.Methods).First(x => x.Name == "DeepCloneFields"), OpCodes.Ldarg_0, OpCodes.Pop)),
     ["limitless-tabs"] = ("Limitless: CardExtensions.UpdateEnchantmentVisuals changed (EnchantmentTabReuse mirrors it)", m =>
         Prepend(m.GetTypes().SelectMany(t => t.Methods).First(x => x.Name == "UpdateEnchantmentVisuals" && x.HasBody), OpCodes.Ldarg_0, OpCodes.Pop)),
     ["limitless-forward"] = ("Limitless: MultiEnchantment.AfterCardPlayed changed (LimitlessHookSkip relies on it only forwarding)", m =>

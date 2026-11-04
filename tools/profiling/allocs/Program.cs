@@ -1,13 +1,16 @@
 // Allocation sampling (GCAllocationTick, ~100 KB each) of a gc-verbose nettrace: bytes per type, per allocating
 // game frame (first non-System frame) and per inclusive game frame, within [from, to] seconds of the trace.
 // Record: tools/autotest/run.ps1 -Name <scenario> -TraceSec 30 -TraceProfile gc-verbose
-// Usage: dotnet run --project tools/profiling/allocs -- <file.nettrace> <from s> <to s> [top]
+// Usage: dotnet run --project tools/profiling/allocs -- <file.nettrace> <from s> <to s> [top] [--under <frame text>]
+// --under: only allocations with a frame containing that text in their stack (a method, whatever the time window).
 using Microsoft.Diagnostics.Tracing.Etlx;
 using Microsoft.Diagnostics.Tracing.Parsers.Clr;
 
 string etlx = TraceLog.CreateFromEventPipeDataFile(args[0]);
-double from = double.Parse(args[1]), to = double.Parse(args[2]);
-int top = args.Length > 3 ? int.Parse(args[3]) : 30;
+double from = double.Parse(args[1], System.Globalization.CultureInfo.InvariantCulture), to = double.Parse(args[2], System.Globalization.CultureInfo.InvariantCulture);
+int underAt = Array.IndexOf(args, "--under");
+string? under = underAt >= 0 ? args[underAt + 1] : null;
+int top = args.Length > 3 && int.TryParse(args[3], out int wanted) ? wanted : 30;
 using var log = new TraceLog(etlx);
 if (args.Contains("--gc"))
 {
@@ -65,6 +68,18 @@ foreach (var ev in log.Events)
     if (ev is not GCAllocationTickTraceData a)
     {
         continue;
+    }
+    if (under != null)
+    {
+        bool found = false;
+        for (TraceCallStack? s = ev.CallStack(); s != null && !found; s = s.Caller)
+        {
+            found = s.CodeAddress.FullMethodName?.Contains(under) == true;
+        }
+        if (!found)
+        {
+            continue;
+        }
     }
     long bytes = a.AllocationAmount64;
     total += bytes;

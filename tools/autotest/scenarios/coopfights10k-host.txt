@@ -1,0 +1,118 @@
+# Co-op rendered, several combats at 10,295 cards per player (with coopfights10k-client.txt, coop.ps1 -ClientHeadless -WithMods): what
+# each next combat start costs as a run goes on. Enemies at 1 HP, played by the game's auto player.
+timeout 1400
+mplobby NECROBINDER 2
+waitfor run 240
+uncap
+framedetail
+forcefocus
+cmd bigdeck import ref all all {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+wait 30
+enemyhp 1
+selector ui
+barrier start
+gcfull start
+fpsstat
+gcstat
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+fpsstat combat start 1
+gcstat combat start 1
+barrier fight1
+wait 3
+gcfull fight 1
+barrier read1
+fpsstat
+gcstat
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+fpsstat combat start 2
+gcstat combat start 2
+barrier fight2
+wait 3
+gcfull fight 2
+barrier read2
+fpsstat
+gcstat
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+fpsstat combat start 3
+gcstat combat start 3
+barrier fight3
+wait 3
+gcfull fight 3
+barrier read3
+fpsstat
+gcstat
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+fpsstat combat start 4
+gcstat combat start 4
+barrier fight4
+wait 3
+gcfull fight 4
+barrier read4
+fpsstat
+gcstat
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+fpsstat combat start 5
+gcstat combat start 5
+barrier fight5
+wait 3
+gcfull fight 5
+barrier read5
+fpsstat
+gcstat
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+fpsstat combat start 6
+gcstat combat start 6
+barrier fight6
+wait 3
+gcfull fight 6
+barrier read6
+fpsstat
+gcstat
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+fpsstat combat start 7
+gcstat combat start 7
+barrier fight7
+wait 3
+gcfull fight 7
+barrier read7
+fpsstat
+gcstat
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+fpsstat combat start 8
+gcstat combat start 8
+barrier fight8
+wait 3
+gcfull fight 8
+barrier read8
+effects
+wait 2
+quit

@@ -119,36 +119,39 @@ public static class InlineGuard
     /// methods it calls possibly inlined: there a counted write isn't counted (BaseLib's postfix on <c>SetToFreeThisTurn</c>
     /// had <c>SetThisTurnOrUntilPlayed</c>'s body in it, so Bullet Time changed hand costs unseen). Once every patch is in,
     /// each patched method whose code calls a protected one (directly or through small callees) gets its replacement built
-    /// again by Harmony, the same patches in the same order: now compiled with the flags set.
+    /// again by Harmony, the same patches in the same order: now compiled with the flags set. One step per patched method: ~300 ms
+    /// in all, spread over frames by <see cref="ModEntry"/> (only what a run does needs it done).
     /// </summary>
-    public static void RecompileInliners(Harmony harmony)
+    public static IEnumerable<bool> RecompileInliners(Harmony harmony)
     {
         if (!Available || _protected.Count == 0)
         {
-            return;
+            yield break;
         }
-        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        double spent = 0;
         int failed = 0;
         Dictionary<MethodBase, bool> reaches = new();
         foreach (MethodBase patched in Harmony.GetAllPatchedMethods().ToList())
         {
+            long start = System.Diagnostics.Stopwatch.GetTimestamp();
             try
             {
-                if (!Reaches(patched, CalleeDepth, reaches))
+                if (Reaches(patched, CalleeDepth, reaches))
                 {
-                    continue;
+                    new PatchProcessor(harmony, patched).Patch();
+                    Recompiled++;
                 }
-                new PatchProcessor(harmony, patched).Patch();
-                Recompiled++;
             }
             catch (Exception e)
             {
                 failed++;
                 Log.Info($"[{ModEntry.Id}] {nameof(InlineGuard)}: {patched.DeclaringType?.Name}.{patched.Name} left as compiled: {e.Message}");
             }
+            spent += System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+            yield return true;
         }
         Log.Info($"[{ModEntry.Id}] {nameof(InlineGuard)}: {Recompiled} patched methods calling protected ones compiled again"
-            + (failed > 0 ? $", {failed} failed" : "") + $" ({System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds:F0} ms)");
+            + (failed > 0 ? $", {failed} failed" : "") + $" ({spent:F0} ms)");
     }
 
     /// <summary>Whether this method's own code calls a protected method, or a small non-virtual callee does (up to this depth).</summary>

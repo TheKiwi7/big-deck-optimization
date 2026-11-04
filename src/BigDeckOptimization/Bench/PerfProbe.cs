@@ -72,6 +72,15 @@ public static class PerfProbe
         Probe(harmony, AccessTools.Method(typeof(NCombatCardPile), "RemoveCard"), "NCombatCardPile.RemoveCard");
         Probe(harmony, AccessTools.Method(typeof(Player), nameof(Player.AfterCombatEnd)), "Player.AfterCombatEnd");
         Probe(harmony, AccessTools.Method(typeof(CombatManager), nameof(CombatManager.SetUpCombat)), "CombatManager.SetUpCombat");
+        Probe(harmony, AccessTools.Method(typeof(Player), nameof(Player.PopulateCombatState)), "Player.PopulateCombatState");
+        Probe(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Combat.CombatState), nameof(MegaCrit.Sts2.Core.Combat.CombatState.CloneCard)), "clone: CombatState.CloneCard");
+        Probe(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Localization.DynamicVars.DynamicVarSet), nameof(MegaCrit.Sts2.Core.Localization.DynamicVars.DynamicVarSet.Clone)), "clone: DynamicVarSet.Clone");
+        Probe(harmony, AccessTools.Method(typeof(CardPile), "RandomizeOrderInternal"), "clone: CardPile.RandomizeOrderInternal");
+        Probe(harmony, AccessTools.Method(typeof(Player), nameof(Player.SyncWithSerializedPlayer)), "sync: Player.SyncWithSerializedPlayer");
+        Probe(harmony, AccessTools.Method(typeof(Player), nameof(Player.ToSerializable)), "sync: Player.ToSerializable");
+        Probe(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Multiplayer.CombatStateSynchronizer), nameof(MegaCrit.Sts2.Core.Multiplayer.CombatStateSynchronizer.StartSync)), "sync: StartSync");
+        Probe(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Multiplayer.Messages.Game.SyncPlayerDataMessage), nameof(MegaCrit.Sts2.Core.Multiplayer.Messages.Game.SyncPlayerDataMessage.Deserialize)), "sync: message Deserialize");
+        Probe(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Multiplayer.Messages.Game.SyncPlayerDataMessage), nameof(MegaCrit.Sts2.Core.Multiplayer.Messages.Game.SyncPlayerDataMessage.Serialize)), "sync: message Serialize");
         Probe(harmony, AccessTools.Method(typeof(NCardGrid), nameof(NCardGrid.SetCards)), "NCardGrid.SetCards");
         Probe(harmony, AccessTools.Method(typeof(NCard), nameof(NCard.FindOnTable)), "NCard.FindOnTable");
         Probe(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Entities.Multiplayer.NetFullCombatState), "FromRun"), "NetFullCombatState.FromRun (co-op checksum)");

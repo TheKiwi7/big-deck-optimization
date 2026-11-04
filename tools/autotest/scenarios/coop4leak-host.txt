@@ -1,0 +1,48 @@
+# Four players (coop4.ps1), host: several combats in a row, what the game rebuilds at each (three other decks) and what it keeps
+# (gcfull). Pass: the same run states on all four, no divergence, run cards about flat.
+timeout 1100
+mplobby NECROBINDER 4
+waitfor run 240
+wait 10
+cmd bigdeck import ref all all {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bdperf checks off
+enemyhp 1
+selector ui
+barrier start
+gcfull start
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+barrier fight1
+wait 3
+gcfull fight 1
+runstate fight 1
+barrier read1
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+barrier fight2
+wait 3
+gcfull fight 2
+runstate fight 2
+barrier read2
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+barrier fight3
+wait 3
+gcfull fight 3
+runstate fight 3
+barrier read3
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+barrier fight4
+wait 3
+gcfull fight 4
+runstate fight 4
+barrier read4
+effects
+wait 2
+quit
