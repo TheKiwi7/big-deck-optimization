@@ -31,7 +31,9 @@ function Add-TestMods([string]$gameDir) {
     if (Test-Path $own) { return }
     if (Test-Path $testMods) { throw "$testMods already exists (left over or not ours): remove it first" }
     $settings = Get-Content (Join-Path (Get-SteamAccountDir) "settings.save") -Raw | ConvertFrom-Json
-    $wanted = @($settings.mod_settings.mod_list | Where-Object { $_.is_enabled -and $_.source -eq "steam_workshop" -and $_.id -ne "BigDeckOptimization" } | ForEach-Object { $_.id })
+    # BDTEST_EXTRA_MODS=SpeedX,ModConfig,...: Workshop mods on disk that the account doesn't enable, loaded too (what players combine with this mod).
+    $extra = @($env:BDTEST_EXTRA_MODS -split "," | Where-Object { $_ })
+    $wanted = @($extra) + @($settings.mod_settings.mod_list | Where-Object { $_.is_enabled -and $_.source -eq "steam_workshop" -and $_.id -ne "BigDeckOptimization" } | ForEach-Object { $_.id })
     New-Item -ItemType Directory $testMods | Out-Null
     Set-Content $own "created by tools/autotest/parlib.ps1"
     foreach ($item in Get-ChildItem $Workshop -Directory) {
@@ -272,7 +274,8 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                     $state = "done"
                     # Gone before the script's end, without a word: a native crash, rare on Godot's dummy renderer (seen after a texture
                     # load outside the cache). Its log compares as a shorter session: it starts over, the first log kept beside it.
-                    if ((Select-String -Path $run.Job.Log -Pattern "AutoTest\s+[\d.]+s > " -Quiet -ErrorAction SilentlyContinue) -and -not (Select-String -Path $run.Job.Log -Pattern "AutoTest\s+[\d.]+s > quit|ABORT|TIMEOUT: script|\[AutoSlay\] Action: Quitting" -Quiet -ErrorAction SilentlyContinue)) {
+                    # Also gone before its script's first line: the session ran nothing (seen once at a launch, 8 s in, an 8,400-card A/B then compared nothing).
+                    if (-not (Select-String -Path $run.Job.Log -Pattern "AutoTest\s+[\d.]+s > quit|ABORT|TIMEOUT: script|\[AutoSlay\] Action: Quitting" -Quiet -ErrorAction SilentlyContinue)) {
                         $name = $run.Job.Name
                         $retries[$name] = 1 + [int]$retries[$name]
                         Copy-Item $run.Job.Log "$($run.Job.Log).early" -Force

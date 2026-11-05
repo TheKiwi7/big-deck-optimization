@@ -79,31 +79,43 @@ public static class DeckCountMemo
 
     public static void Apply(Harmony harmony)
     {
-        _targets[SqueezeKind] = Target(typeof(Squeeze), nameof(SqueezePrefix), harmony, SqueezeFingerprint);
-        Require(typeof(Squeeze), "<>c__DisplayClass6_0", typeof(bool), SqueezeCountsFingerprint);
-        _targets[StrikeKind] = Target(typeof(PerfectedStrike), nameof(StrikePrefix), harmony, StrikeFingerprint);
-        Require(typeof(PerfectedStrike), "<>c", typeof(bool), StrikeCountsFingerprint);
-        _targets[SpearKind] = Target(typeof(CrescentSpear), nameof(SpearPrefix), harmony, SpearFingerprint);
-        Require(typeof(CrescentSpear), "<>c", typeof(bool), SpearCountsFingerprint);
+        bool squeeze = Card(SqueezeKind, typeof(Squeeze), nameof(SqueezePrefix), harmony, SqueezeFingerprint, SqueezeCountsFingerprint);
+        bool strike = Card(StrikeKind, typeof(PerfectedStrike), nameof(StrikePrefix), harmony, StrikeFingerprint, StrikeCountsFingerprint);
+        bool spear = Card(SpearKind, typeof(CrescentSpear), nameof(SpearPrefix), harmony, SpearFingerprint, SpearCountsFingerprint);
+        if (!squeeze && !strike && !spear)
+        {
+            throw new PatchSkippedException("none of its cards has the known code");
+        }
         Applied = true;
     }
 
-    private static MethodBase Target(Type card, string prefix, Harmony harmony, string fingerprint)
+    /// <summary>One card, on its own: a card that changed only leaves that card to the game.</summary>
+    private static bool Card(int kind, Type card, string prefix, Harmony harmony, string fingerprint, string countsFingerprint)
     {
-        MethodInfo multiplier = Lambda(card, "<>c", typeof(decimal));
-        PatchSafety.RequireFingerprint(multiplier, fingerprint);
-        PatchGuard.Patch(harmony, multiplier, prefix: new HarmonyMethod(typeof(DeckCountMemo), prefix), postfix: new HarmonyMethod(typeof(DeckCountMemo), nameof(Postfix)));
-        return multiplier;
+        try
+        {
+            MethodInfo multiplier = Lambda(card, typeof(decimal));
+            PatchSafety.RequireFingerprint(multiplier, fingerprint);
+            PatchSafety.RequireFingerprint(Lambda(card, typeof(bool)), countsFingerprint);
+            PatchGuard.Patch(harmony, multiplier, prefix: new HarmonyMethod(typeof(DeckCountMemo), prefix), postfix: new HarmonyMethod(typeof(DeckCountMemo), nameof(Postfix)));
+            _targets[kind] = multiplier;
+            return true;
+        }
+        catch (Exception e) when (e is PatchSkippedException or MissingMemberException)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: {card.Name} left vanilla: {e.Message}");
+            return false;
+        }
     }
 
-    private static void Require(Type card, string nested, Type returns, string fingerprint) =>
-        PatchSafety.RequireFingerprint(Lambda(card, nested, returns), fingerprint);
-
-    /// <summary>The compiler's method for a lambda of the card's variables, found by what it takes and returns.</summary>
-    private static MethodInfo Lambda(Type card, string nested, Type returns)
+    /// <summary>
+    /// The compiler's method for a lambda of the card's variables, found by what it returns in whichever generated class holds it: their
+    /// names carry a number that shifts when the game adds a member, with the same code.
+    /// </summary>
+    private static MethodInfo Lambda(Type card, Type returns)
     {
-        Type holder = card.GetNestedType(nested, BindingFlags.NonPublic) ?? throw new MissingMemberException(card.Name, nested);
-        MethodInfo[] found = holder.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
+        MethodInfo[] found = card.GetNestedTypes(BindingFlags.NonPublic)
+            .SelectMany(holder => holder.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
             .Where(m => m.Name.Contains("get_CanonicalVars") && m.ReturnType == returns).ToArray();
         return found.Length == 1 ? found[0] : throw new MissingMethodException(card.Name, "CanonicalVars lambda");
     }

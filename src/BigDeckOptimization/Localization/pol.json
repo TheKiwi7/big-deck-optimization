@@ -10,6 +10,7 @@
   "why.baselib": "Niedostępne: aktualizacja BaseLib zmieniła to, co ta optymalizacja przyspiesza. Pozostaje wyłączona (zwykła gra) do czasu aktualizacji moda.",
   "why.fault": "Wyłączona na tę sesję po błędzie (zamiast niej zwykła gra, szczegóły w logu). Wróci przy następnym uruchomieniu gry.",
   "why.started_off": "Nieaktywna: mod był wyłączony przy uruchomieniu gry, więc nic z niego nie zostało wczytane. Włącz mod, a potem uruchom grę ponownie.",
+  "parts_off": "Częściowo nieaktywna: część tej optymalizacji wyłączyła się lub nie ma tu zastosowania (dla tej części normalna gra, szczegóły w logu).",
   "conflict": "Częściowo nieaktywna: {mods} również zmienia to, co ta optymalizacja przyspiesza (zwykła gra w tej części).",
   "coop_checksum.title": "Sprawdzanie stanu w co-opie",
   "coop_checksum.desc": "Szybsze sprawdzanie stanu po każdej akcji w co-opie (największy lag co-opa przy ogromnych taliach).",

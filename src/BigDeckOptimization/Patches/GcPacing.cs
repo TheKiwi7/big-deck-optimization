@@ -204,7 +204,15 @@ public static class GcPacing
             _inRegion = false;
             if (GCSettings.LatencyMode == GCLatencyMode.NoGCRegion)
             {
-                GC.EndNoGCRegion();
+                try
+                {
+                    GC.EndNoGCRegion();
+                }
+                catch (InvalidOperationException)
+                {
+                    // Another thread used up the budget since the line above: .NET left the region itself, as a Tick sees below.
+                    Exhausted++;
+                }
             }
             // A switch during the region couldn't change the mode: the region restores what it found.
             RoomCollect.SyncLatency();

@@ -54,14 +54,35 @@ public static class RelicFlashMerge
             ?? throw new MissingMethodException(nameof(NRelicInventoryHolder), "OnRelicFlashed");
         _playerFlash = AccessTools.Method(typeof(Player), "OnRelicFlashed")
             ?? throw new MissingMethodException(nameof(Player), "OnRelicFlashed");
-        PatchSafety.RequireFingerprint(_holderFlash, HolderFlashFingerprint);
-        PatchSafety.RequireFingerprint(AccessTools.Method(typeof(NRelicInventoryHolder), "DoFlash")
-            ?? throw new MissingMethodException(nameof(NRelicInventoryHolder), "DoFlash"), HolderDoFlashFingerprint);
-        PatchSafety.RequireFingerprint(_playerFlash, PlayerFlashFingerprint);
         _mainThread = Thread.CurrentThread.ManagedThreadId;
-        PatchGuard.Patch(harmony, _holderFlash, prefix: new HarmonyMethod(typeof(RelicFlashMerge), nameof(HolderPrefix)));
-        PatchGuard.Patch(harmony, _playerFlash, prefix: new HarmonyMethod(typeof(RelicFlashMerge), nameof(PlayerPrefix)));
+        System.Reflection.MethodInfo? doFlash = AccessTools.Method(typeof(NRelicInventoryHolder), "DoFlash");
+        bool holder = doFlash != null && Known(_holderFlash, HolderFlashFingerprint) && Known(doFlash, HolderDoFlashFingerprint);
+        bool player = Known(_playerFlash, PlayerFlashFingerprint);
+        if (!holder && !player)
+        {
+            throw new PatchSkippedException("neither handler has the known code");
+        }
+        if (holder)
+        {
+            PatchGuard.Patch(harmony, _holderFlash, prefix: new HarmonyMethod(typeof(RelicFlashMerge), nameof(HolderPrefix)));
+        }
+        if (player)
+        {
+            PatchGuard.Patch(harmony, _playerFlash, prefix: new HarmonyMethod(typeof(RelicFlashMerge), nameof(PlayerPrefix)));
+        }
         Applied = true;
+    }
+
+    /// <summary>The two effects don't depend on each other: a changed one only leaves that one to the game.</summary>
+    private static bool Known(System.Reflection.MethodInfo method, string fingerprint)
+    {
+        string actual = MethodFingerprint.Of(method);
+        if (PatchSafety.FingerprintMatches(actual, fingerprint))
+        {
+            return true;
+        }
+        Log.Info($"[{ModEntry.Id}] {Name}: {method.DeclaringType?.Name}.{method.Name} changed (fingerprint {actual}, expected {fingerprint}): left vanilla");
+        return false;
     }
 
     /// <summary>The relic bar effect: once per holder per frame.</summary>

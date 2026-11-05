@@ -89,7 +89,8 @@ def workshop(version: str) -> None:
         "appid": APP_ID,
         "publishedfileid": published_id,
         "contentfolder": str(content),
-        "changenote": f"{version}\n{changenote(version)}",
+        # SteamCMD ends a value at a double quote, escaped or not: v0.12.1's note was cut there.
+        "changenote": f"{version}\n{changenote(version)}".replace('"', "'"),
     }
     if published_id == "0":
         # First upload: hidden until the page is checked; title/description are then edited on the page itself.

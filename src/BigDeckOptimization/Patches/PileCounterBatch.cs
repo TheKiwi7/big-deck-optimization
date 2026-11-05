@@ -35,6 +35,7 @@ public static class PileCounterBatch
     public static int OpenClears => _clearDepth;
 #endif
 
+    private static System.Reflection.MethodInfo? _removeCard;
     private static AccessTools.FieldRef<NCombatCardPile, CardPile?>? _pile;
     private static AccessTools.FieldRef<NCombatCardPile, int>? _currentCount;
     private static AccessTools.FieldRef<NCombatCardPile, MegaCrit.Sts2.addons.mega_text.MegaLabel>? _countLabel;
@@ -43,6 +44,7 @@ public static class PileCounterBatch
     {
         var removeCard = AccessTools.Method(typeof(NCombatCardPile), "RemoveCard") ?? throw new MissingMethodException("NCombatCardPile.RemoveCard");
         PatchSafety.RequireFingerprint(removeCard, RemoveCardFingerprint);
+        _removeCard = removeCard;
         _pile = AccessTools.FieldRefAccess<NCombatCardPile, CardPile?>("_pile");
         _currentCount = AccessTools.FieldRefAccess<NCombatCardPile, int>("_currentCount");
         _countLabel = AccessTools.FieldRefAccess<NCombatCardPile, MegaCrit.Sts2.addons.mega_text.MegaLabel>("_countLabel");
@@ -86,7 +88,7 @@ public static class PileCounterBatch
     /// <summary>Vanilla: <c>_currentCount = Math.Max(_currentCount - 1, _pile.Cards.Count)</c>, then fits the label.</summary>
     private static bool RemoveCardPrefix(NCombatCardPile __instance)
     {
-        if (!Enabled || _clearDepth == 0)
+        if (!Enabled || _clearDepth == 0 || PatchSafety.IsPatchedByOthers(_removeCard))
         {
             return true;
         }

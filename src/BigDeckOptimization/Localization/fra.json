@@ -10,6 +10,7 @@
   "why.baselib": "Indisponible : une mise à jour de BaseLib a changé ce que cette optimisation accélère. Elle reste désactivée (jeu normal) jusqu'à une mise à jour du mod.",
   "why.fault": "Désactivée pour cette session après une erreur (jeu normal à la place, détails dans le log). Revient au prochain lancement du jeu.",
   "why.started_off": "Inactive : le mod était désactivé au lancement du jeu, rien n'en est chargé. Réactivez le mod, puis relancez le jeu.",
+  "parts_off": "Partiellement inactive : une partie de cette optimisation s'est désactivée ou ne s'applique pas ici (jeu normal pour cette partie, détails dans le journal).",
   "conflict": "Partiellement inactive : {mods} modifie aussi ce que cette optimisation accélère (jeu normal pour cette partie).",
   "coop_checksum.title": "Vérification d'état en co-op",
   "coop_checksum.desc": "Vérification d'état plus rapide après chaque action en co-op (le plus gros lag du co-op avec un énorme deck).",

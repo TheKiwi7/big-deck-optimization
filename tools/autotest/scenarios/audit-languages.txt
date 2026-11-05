@@ -1,0 +1,54 @@
+# Audit: the text and the sort orders the mod changes, in every game language: card texts formatted with TextPoolReuse on and off,
+# and the deck view's sort orders, tabs and node recycling, each compared with the game's own (a difference fails the line).
+timeout 900
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 300
+wait 1
+language fra
+cmd bdperf text
+cmd bdperf grid 40
+language deu
+cmd bdperf text
+cmd bdperf grid 40
+language esp
+cmd bdperf text
+cmd bdperf grid 40
+language ita
+cmd bdperf text
+cmd bdperf grid 40
+language jpn
+cmd bdperf text
+cmd bdperf grid 40
+language kor
+cmd bdperf text
+cmd bdperf grid 40
+language pol
+cmd bdperf text
+cmd bdperf grid 40
+language ptb
+cmd bdperf text
+cmd bdperf grid 40
+language rus
+cmd bdperf text
+cmd bdperf grid 40
+language spa
+cmd bdperf text
+cmd bdperf grid 40
+language tha
+cmd bdperf text
+cmd bdperf grid 40
+language tur
+cmd bdperf text
+cmd bdperf grid 40
+language zhs
+cmd bdperf text
+cmd bdperf grid 40
+language eng
+cmd bdperf text
+cmd bdperf grid 40
+quit

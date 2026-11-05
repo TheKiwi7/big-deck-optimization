@@ -99,6 +99,15 @@ public static class PooledCardRelease
                     continue;
                 }
                 Delegate[] list = handlers.GetInvocationList();
+                bool anyFreed = false;
+                foreach (Delegate handler in list)
+                {
+                    anyFreed |= handler.Target is GodotObject target && !GodotObject.IsInstanceValid(target);
+                }
+                if (!anyFreed)
+                {
+                    continue; // Nearly always: nothing to build again.
+                }
                 Action<CardModel?>? kept = null;
                 foreach (Delegate handler in list)
                 {
@@ -109,10 +118,7 @@ public static class PooledCardRelease
                     }
                     kept += (Action<CardModel?>)handler;
                 }
-                if (kept == null || kept.GetInvocationList().Length != list.Length)
-                {
-                    handlers = kept;
-                }
+                handlers = kept;
             }
         }
         catch (Exception e)

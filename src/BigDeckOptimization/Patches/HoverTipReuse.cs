@@ -80,8 +80,9 @@ public static class HoverTipReuse
                 return true;
             }
             List<IHoverTip> tips = __instance.Entity.HoverTips.ToList();
-            List<HoverTip>? text = IHoverTip.RemoveDupes(tips).All(t => t is HoverTip)
-                ? IHoverTip.RemoveDupes(tips).Cast<HoverTip>().ToList()
+            List<IHoverTip> unique = IHoverTip.RemoveDupes(tips).ToList();
+            List<HoverTip>? text = unique.All(t => t is HoverTip)
+                ? unique.Cast<HoverTip>().ToList()
                 : null; // Card previews: no field-by-field comparison, always rebuilt.
             HoverTipAlignment alignment = HoverTip.GetHoverTipAlignment(__instance, 0.5f);
             Control hitbox = __instance.Hitbox;

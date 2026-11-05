@@ -49,6 +49,27 @@ public class PerfConsoleCmd : AbstractConsoleCmd
 
     public override bool IsNetworked => false;
 
+    private static int _spins;
+
+    /// <summary>A loop pacing itself on Cmd.Wait, as the transform preview: with waits skipped it must still give the frame back.</summary>
+    private static CmdResult WaitSpin()
+    {
+        _spins = 0;
+        ulong frame = Godot.Engine.GetProcessFrames();
+        System.Threading.Tasks.Task spin = Spin(frame);
+        return new CmdResult(success: !spin.IsCompleted, $"WAITSPIN {_spins} waits returned at once, then {(spin.IsCompleted ? "NEVER gave the frame back" : "the frame was given back")}");
+    }
+
+    private static async System.Threading.Tasks.Task Spin(ulong frame)
+    {
+        using var cancel = new System.Threading.CancellationTokenSource();
+        while (_spins < 200000 && Godot.Engine.GetProcessFrames() == frame)
+        {
+            _spins++;
+            await MegaCrit.Sts2.Core.Commands.Cmd.Wait(0.2f, cancel.Token, ignoreCombatEnd: true);
+        }
+    }
+
     public override CmdResult Process(Player? issuingPlayer, string[] args)
     {
         string sub = args.Length > 0 ? args[0].ToLowerInvariant() : "";
@@ -106,6 +127,11 @@ public class PerfConsoleCmd : AbstractConsoleCmd
                 return UpgradeBench.Run(args.Length >= 2 && int.TryParse(args[1], out int upgradePasses) && upgradePasses > 0 ? upgradePasses : 20);
             case "relics":
                 return RelicBench.Run(args.Length >= 2 && int.TryParse(args[1], out int passes) && passes > 0 ? passes : 20);
+            case "waitspin":
+                return WaitSpin();
+            case "relicreuse" when args.Length >= 3 && args[1] == "verify" && int.TryParse(args[2], out int relicEvery) && relicEvery > 0:
+                RelicStateReuse.ScalarVerifyEvery = relicEvery;
+                return new CmdResult(success: true, $"{RelicStateReuse.ScalarName}: one answer in {relicEvery} compared with the game's.");
             case "relicreuse" when args.Length >= 3 && args[1] == "scalarblind":
                 RelicStateReuse.ScalarBlindForTest = args[2] == "on";
                 return new CmdResult(success: true, $"{RelicStateReuse.ScalarName}: relics {(RelicStateReuse.ScalarBlindForTest ? "taken as unchanged without reading them (test)" : "read")}; reused {RelicStateReuse.ScalarReused}, verified {RelicStateReuse.ScalarVerified}.");

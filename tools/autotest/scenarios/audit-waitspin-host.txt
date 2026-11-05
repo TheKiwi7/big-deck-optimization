@@ -1,0 +1,19 @@
+# Audit (parcoop -Plain: Limitless's own Cmd.Wait patch yields a frame first): a loop pacing itself on Cmd.Wait, as the transform preview does, in a combat with
+# instant_combats. With waits skipped it must still give the frame back: WAITSPIN says how many returned at once, about FastCombatStart.MaxSkipsPerFrame.
+timeout 300
+mplobby NECROBINDER 2
+waitfor run 240
+wait 8
+enemyhp 999999
+immortal until 9
+cmd bdopt instant_combats on
+wait 6
+cmd fight CULTISTS_NORMAL
+waitfor idle 120
+wait 8
+cmd bdperf waitspin
+wait 3
+state after spin
+cmd bdopt instant_combats off
+wait 6
+quit

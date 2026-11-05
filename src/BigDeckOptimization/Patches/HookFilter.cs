@@ -33,16 +33,21 @@ public static class HookFilter
 
     private sealed class FilteredHook
     {
-        public readonly MethodInfo BaseMethod;
-        private readonly MethodInfo _hookMethod;
+        /// <summary>Null when it no longer exists as one method: this hook then stays vanilla.</summary>
+        public readonly MethodInfo? BaseMethod;
+        private readonly MethodInfo? _hookMethod;
         /// <summary>The AbstractModel default still has the no-op code the filtering skips (checked once).</summary>
         private readonly bool _defaultHolds;
 
-        public FilteredHook(string baseMethodName, string defaultFingerprint, MethodInfo hookMethod)
+        public FilteredHook(string baseMethodName, string defaultFingerprint, MethodInfo? hookMethod)
         {
-            BaseMethod = AccessTools.Method(typeof(AbstractModel), baseMethodName)
-                ?? throw new MissingMethodException(nameof(AbstractModel), baseMethodName);
+            BaseMethod = Find(typeof(AbstractModel), baseMethodName);
             _hookMethod = hookMethod;
+            if (BaseMethod == null)
+            {
+                Log.Info($"[{ModEntry.Id}] {Name}: AbstractModel.{baseMethodName} not found as one method: its hook left vanilla");
+                return;
+            }
             string actual = MethodFingerprint.Of(BaseMethod);
             _defaultHolds = actual == defaultFingerprint;
             if (!_defaultHolds)
@@ -55,6 +60,10 @@ public static class HookFilter
 
         public bool IsOverriddenBy(Type type)
         {
+            if (BaseMethod == null)
+            {
+                return true;
+            }
             try
             {
                 // Reflection collapses overridden virtuals: only the most-derived implementation is returned.
@@ -141,11 +150,12 @@ public static class HookFilter
 
     public static void Apply(Harmony harmony)
     {
-        MethodInfo energyHook = Require(AccessTools.Method(typeof(Hook), nameof(Hook.ModifyEnergyCostInCombat)));
-        MethodInfo keywordsHook = Require(AccessTools.Method(typeof(Hook), nameof(Hook.ModifyKeywordsInCombat)));
-        MethodInfo shouldPlayHook = Require(AccessTools.Method(typeof(Hook), nameof(Hook.ShouldPlay)));
-        MethodInfo damageHook = Require(AccessTools.Method(typeof(Hook), "ModifyDamageInternal"));
-        MethodInfo hittingHook = Require(AccessTools.Method(typeof(Hook), nameof(Hook.ShouldAllowHitting)));
+        // One gone only leaves that hook vanilla (Mirror says so).
+        MethodInfo? energyHook = Find(typeof(Hook), nameof(Hook.ModifyEnergyCostInCombat));
+        MethodInfo? keywordsHook = Find(typeof(Hook), nameof(Hook.ModifyKeywordsInCombat));
+        MethodInfo? shouldPlayHook = Find(typeof(Hook), nameof(Hook.ShouldPlay));
+        MethodInfo? damageHook = Find(typeof(Hook), "ModifyDamageInternal");
+        MethodInfo? hittingHook = Find(typeof(Hook), nameof(Hook.ShouldAllowHitting));
         // Optional: a missing or changed cost color helper only leaves that helper vanilla.
         MethodInfo? energyColor = AccessTools.Method(typeof(MegaCrit.Sts2.Core.Helpers.Models.CardCostHelper), "TryModifyEnergyCostWithHooks");
         MethodInfo? starColor = AccessTools.Method(typeof(MegaCrit.Sts2.Core.Helpers.Models.CardCostHelper), "TryModifyStarCostWithHooks");
@@ -168,6 +178,10 @@ public static class HookFilter
         // methods through delegates made at load, so this class compiles and loads on both versions.
         try
         {
+            if (damageHook == null)
+            {
+                throw new MissingMethodException(nameof(Hook), "ModifyDamageInternal");
+            }
             PatchSafety.RequireResolvable(typeof(HookFilterDamage));
             PatchGuard.Register(Name, typeof(HookFilterDamage), Array.Empty<PatchGuard.Installed>());
             if (HookFilterDamage.Init())
@@ -245,8 +259,18 @@ public static class HookFilter
         return false;
     }
 
-    private static MethodInfo Require(MethodInfo? method) =>
-        method ?? throw new MissingMethodException("HookFilter target not found (game update?)");
+    /// <summary>The only method of that name, or null: gone, or overloaded since.</summary>
+    private static MethodInfo? Find(Type type, string name)
+    {
+        try
+        {
+            return AccessTools.Method(type, name);
+        }
+        catch (AmbiguousMatchException)
+        {
+            return null;
+        }
+    }
 
     internal static bool Active => Enabled && ListenerCache.IsCaching;
 
@@ -358,7 +382,8 @@ public static class HookFilter
             {
                 return false;
             }
-            _pileFilters ??= _hooks.Select(h => FastListeners.PileFilter.Overriding(false, h.BaseMethod.Name)).ToArray();
+            // No filter for a hook that isn't safe: Walked never reaches it.
+            _pileFilters ??= _hooks.Select(h => h.BaseMethod == null ? null! : FastListeners.PileFilter.Overriding(false, h.BaseMethod.Name)).ToArray();
             return true;
         }
     }

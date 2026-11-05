@@ -51,6 +51,7 @@ public static class CardDbScan
 
     private static readonly ConditionalWeakTable<CardPile, Pending> _pending = new();
     private static AccessTools.FieldRef<NetCombatCardDb, Dictionary<CardModel, uint>>? _cardToId;
+    private static MethodInfo? _walk;
 
     public static void Apply(Harmony harmony)
     {
@@ -61,6 +62,7 @@ public static class CardDbScan
         var add = AccessTools.Method(typeof(CardPile), nameof(CardPile.AddInternal))
             ?? throw new MissingMethodException("CardPile.AddInternal");
         PatchSafety.RequireFingerprint(walk, WalkFingerprint);
+        _walk = walk;
         PatchSafety.RequireFingerprint(id, IdFingerprint);
         MethodInfo startCombat = AccessTools.Method(typeof(NetCombatCardDb), nameof(NetCombatCardDb.StartCombat))
             ?? throw new MissingMethodException("NetCombatCardDb.StartCombat");
@@ -138,7 +140,7 @@ public static class CardDbScan
     private static bool WalkPrefix(NetCombatCardDb __instance, CardPile pile)
     {
         Walks++;
-        if (!Enabled)
+        if (!Enabled || PatchSafety.IsPatchedByOthers(_walk))
         {
             return true;
         }
@@ -202,7 +204,10 @@ public static class CardDbScan
                 }
                 return;
             }
-            pending.Cards.RemoveAll(card => ids.ContainsKey(card));
+            if (pending.Cards.Count != 0)
+            {
+                pending.Cards.RemoveAll(card => ids.ContainsKey(card));
+            }
         }
         catch (Exception e)
         {

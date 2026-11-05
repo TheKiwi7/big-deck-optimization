@@ -10,6 +10,7 @@
   "why.baselib": "Non disponibile: un aggiornamento di BaseLib ha cambiato ciò che questa ottimizzazione accelera. Resta disattivata (gioco normale) finché la mod non viene aggiornata.",
   "why.fault": "Disattivata per questa sessione dopo un errore (gioco normale al suo posto, dettagli nel log). Torna attiva al prossimo avvio del gioco.",
   "why.started_off": "Inattiva: la mod era disattivata all'avvio del gioco, quindi non ne è stato caricato nulla. Attiva la mod, poi riavvia il gioco.",
+  "parts_off": "Parzialmente inattiva: una parte di questa ottimizzazione si è disattivata o qui non si applica (gioco normale per quella parte, dettagli nel log).",
   "conflict": "Parzialmente inattiva: anche {mods} modifica ciò che questa ottimizzazione accelera (gioco normale per quella parte).",
   "coop_checksum.title": "Verifica dello stato in co-op",
   "coop_checksum.desc": "Verifica dello stato più rapida dopo ogni azione in co-op (il lag più grande del co-op con mazzi enormi).",

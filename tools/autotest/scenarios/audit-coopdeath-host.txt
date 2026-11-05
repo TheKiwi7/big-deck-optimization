@@ -1,0 +1,40 @@
+# Audit: co-op, the client dies on its second turn (cmd die) and the host plays on alone: the dead player's cards leave the hooks
+# (IsActiveForHooks), the caches with them. Peers must agree on every enemy state. See audit-coopdeath-client.txt.
+timeout 2400
+mplobby NECROBINDER 2
+waitfor run 240
+cmd bdperf checks off
+wait 8
+cmd bigdeck import ref all all {hash:ref}
+enemyhp 999999
+immortal until 9
+wait 25
+cmd fight CULTISTS_NORMAL
+waitfor idle 900
+cmd bdperf combatstart
+state t1
+play 5
+endturn
+waitfor turn 300
+state t2
+play 5
+endturn
+waitfor turn 300
+state t3
+play 5
+endturn
+waitfor turn 300
+state t4
+play 5
+endturn
+waitfor turn 300
+state t5
+play 5
+endturn
+waitfor turn 300
+state t6
+play 5
+endturn
+waitfor turn 300
+wait 20
+quit

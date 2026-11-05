@@ -1,0 +1,21 @@
+# Audit: what bdopt says of a part off. fakeconflict on a part's method and a fault of one part: the option stays on and says which part isn't running.
+timeout 300
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+fakeconflict MegaCrit.Sts2.Core.Multiplayer.Replay.CombatReplayWriter:RecordChecksum
+cmd fight CULTISTS_NORMAL
+waitfor idle 300
+wait 1
+cmd bdperf deckcount wrong
+cmd card PERFECTED_STRIKE hand
+wait 1
+hover 0
+play 2
+waitfor idle 120
+checksum t1
+wait 3
+cmd bdopt
+quit

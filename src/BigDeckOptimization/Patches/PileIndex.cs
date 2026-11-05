@@ -429,9 +429,23 @@ public static class PileIndex
         }
     }
 
+    private static int _getterCheckCalls;
+    private static bool _getterPatched;
+
+    /// <summary>Another mod's patch on the getter this replaces. Read millions of times a turn: rechecked every 1,024 calls, no clock read per call.</summary>
+    private static bool GetterPatched()
+    {
+        if (--_getterCheckCalls < 0)
+        {
+            _getterCheckCalls = 1023;
+            _getterPatched = PatchSafety.IsPatchedByOthers(_getter);
+        }
+        return _getterPatched;
+    }
+
     private static bool PilePrefix(CardModel __instance, ref CardPile? __result)
     {
-        if (!Enabled || _vanilla)
+        if (!Enabled || _vanilla || GetterPatched())
         {
             return true;
         }

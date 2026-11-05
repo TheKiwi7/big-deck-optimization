@@ -354,6 +354,8 @@ public static partial class AutoTest
     }
 
     private static IDisposable? _selector;
+    /// <summary>The current room when this peer's last cmd room / cmd event ran, until a waitfor room saw it replaced.</summary>
+    private static WeakReference<object>? _roomBeforeJump;
     /// <summary>Script <c>selector ui</c>: card choices go through the game's screens; a new run pushes no selector.</summary>
     private static bool _uiSelection;
 
@@ -927,6 +929,11 @@ public static partial class AutoTest
                     await MpLobby(tree, arg);
                     break;
                 case "cmd":
+                    if (System.Text.RegularExpressions.Regex.IsMatch(arg, @"^\s*(room|event)\s"))
+                    {
+                        // The room this peer leaves: waitfor room must not take it for the one asked (both shops: the map drew one before).
+                        _roomBeforeJump = new WeakReference<object>(RunManager.Instance.DebugOnlyGetState()?.CurrentRoom ?? new object());
+                    }
                     await Command(arg);
                     break;
                 case "play":
@@ -1083,7 +1090,10 @@ public static partial class AutoTest
                 MegaCrit.Sts2.Core.Rooms.RoomType.Event => "EventRoom",
                 _ => null,
             };
-            return Until(node, () => RunManager.Instance.DebugOnlyGetState()?.CurrentRoom?.RoomType == wanted
+            WeakReference<object>? before = _roomBeforeJump;
+            _roomBeforeJump = null;
+            return Until(node, () => RunManager.Instance.DebugOnlyGetState()?.CurrentRoom is { } current && current.RoomType == wanted
+                && !(before != null && before.TryGetTarget(out object? left) && ReferenceEquals(left, current))
                 && NRun.Instance?.GetNodeOrNull("RoomContainer") is { } rooms && rooms.GetChildCount() > 0
                 && (roomNode == null || rooms.GetNodeOrNull(roomNode) is { } room && room.IsInsideTree() && !room.IsQueuedForDeletion()),
                 parts.Length > 2 ? double.Parse(parts[2]) : 120, "room " + wanted);

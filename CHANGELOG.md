@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.0.0
+
+- Version 1.0: the goal set for this mod is reached. In my tests with two players at 11,000 cards each and 189 relics, waiting, hovering, playing cards with the mouse and ending the turn all stay above 120 fps almost all the time. Starting a combat is a single pause of about half a second (your numbers will differ on another PC).
+- The mod's version now shows at the top right of its settings page: every co-op player needs the same one.
+- A game or mod update now turns off only the part of an optimization it really touches. If part of one stops working, its settings tooltip and `bdopt` say so.
+- Better compatibility: the mod steps aside for more of the game's code when another mod changes it.
+- 'Instant combat animations' can no longer freeze the game on a screen that waits for its own animations (the same kind of freeze v0.12.1 fixed).
+
 ## v0.12.1
 
 - Fixed a crash: after quitting once a fight was won and continuing the run, a screen previewing a card transformation before the next fight (Aroma of Chaos, for example) froze the game, then crashed it.

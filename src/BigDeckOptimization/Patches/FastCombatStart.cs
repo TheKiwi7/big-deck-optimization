@@ -70,9 +70,14 @@ public static class FastCombatStart
         MethodInfo wait = AccessTools.Method(typeof(Cmd), nameof(Cmd.Wait), new[] { typeof(float), typeof(CancellationToken), typeof(bool) })
             ?? throw new MissingMethodException("Cmd.Wait");
         MethodInfo scaledWait = AccessTools.Method(typeof(Cmd), nameof(Cmd.CustomScaledWait)) ?? throw new MissingMethodException("Cmd.CustomScaledWait");
-        // Skipping them must lose nothing but the time: their code only waits.
-        PatchSafety.RequireFingerprint(AccessTools.AsyncMoveNext(wait), WaitFingerprint);
-        PatchSafety.RequireFingerprint(AccessTools.AsyncMoveNext(scaledWait), ScaledWaitFingerprint);
+        // Skipping them must lose nothing but the time: their code only waits. One that changed only stays the game's. No back-off from
+        // other mods' patches on them (Limitless, SpeedX): a wait holds no logic to keep, and the combat start must stay fast in co-op.
+        bool waitKnown = Known(wait, WaitFingerprint);
+        bool scaledKnown = Known(scaledWait, ScaledWaitFingerprint);
+        if (!waitKnown && !scaledKnown)
+        {
+            throw new PatchSkippedException("neither wait has the known code");
+        }
         PatchGuard.Patch(harmony, AccessTools.Method(typeof(CombatRoom), nameof(CombatRoom.EnterInternal)) ?? throw new MissingMethodException("CombatRoom.EnterInternal"),
             prefix: new HarmonyMethod(typeof(FastCombatStart), nameof(OpenWindow)));
         // The first turn starting ends the loading (by name: game v0.111 added a parameter).
@@ -87,8 +92,25 @@ public static class FastCombatStart
         {
             Log.Info($"[{ModEntry.Id}] {Name}: CombatManager.Reset not found");
         }
-        PatchGuard.Patch(harmony, wait, prefix: new HarmonyMethod(typeof(FastCombatStart), nameof(WaitPrefix)));
-        PatchGuard.Patch(harmony, scaledWait, prefix: new HarmonyMethod(typeof(FastCombatStart), nameof(ScaledWaitPrefix)));
+        if (waitKnown)
+        {
+            PatchGuard.Patch(harmony, wait, prefix: new HarmonyMethod(typeof(FastCombatStart), nameof(WaitPrefix)));
+        }
+        if (scaledKnown)
+        {
+            PatchGuard.Patch(harmony, scaledWait, prefix: new HarmonyMethod(typeof(FastCombatStart), nameof(ScaledWaitPrefix)));
+        }
+    }
+
+    private static bool Known(MethodInfo method, string fingerprint)
+    {
+        string actual = MethodFingerprint.Of(AccessTools.AsyncMoveNext(method));
+        if (PatchSafety.FingerprintMatches(actual, fingerprint))
+        {
+            return true;
+        }
+        Log.Info($"[{ModEntry.Id}] {Name}: Cmd.{method.Name} changed (fingerprint {actual}, expected {fingerprint}): left vanilla");
+        return false;
     }
 
     private static void OpenWindow(CombatRoom __instance)
@@ -153,9 +175,32 @@ public static class FastCombatStart
         return true;
     }
 
+    /// <summary>
+    /// More than any combat start asks in one frame. Past it, code is looping on a wait to pace itself (the transform preview, a mod's): an
+    /// instant wait there would never give the frame back, so this one really waits, and the next frame starts over.
+    /// </summary>
+    private const int MaxSkipsPerFrame = 2000;
+    private static ulong _skipFrame;
+    private static int _skipsThisFrame;
+
+    private static bool LoopingOnWaits()
+    {
+        ulong frame = Godot.Engine.GetProcessFrames();
+        if (frame != _skipFrame)
+        {
+            _skipFrame = frame;
+            _skipsThisFrame = 0;
+        }
+        return ++_skipsThisFrame > MaxSkipsPerFrame;
+    }
+
     /// <summary>Whether this wait returns at once: combat loading (counted), or any combat wait with <see cref="InstantCombats"/>.</summary>
     private static bool Skip(Func<double> seconds)
     {
+        if ((_window || InstantCombats) && LoopingOnWaits())
+        {
+            return false;
+        }
         if (Loading())
         {
             SkippedWaits++;

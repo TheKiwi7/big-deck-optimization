@@ -102,6 +102,10 @@ public static class PatchGuard
     public static MethodInfo Patch(Harmony harmony, MethodBase original, HarmonyMethod? prefix = null, HarmonyMethod? postfix = null,
         HarmonyMethod? transpiler = null, HarmonyMethod? finalizer = null)
     {
+        if (original == null)
+        {
+            throw new MissingMethodException("a method to patch wasn't found (game or mod update?)");
+        }
         InlineGuard.Protect(original);
         PatchProcessor processor = harmony.CreateProcessor(original);
         if (prefix != null) processor.AddPrefix(prefix);

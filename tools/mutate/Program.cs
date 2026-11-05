@@ -71,6 +71,19 @@ var mutations = new Dictionary<string, (string What, Action<ModuleDefinition> Ap
     }),
     ["squeeze-count"] = ("what Squeeze counts changed (DeckCountMemo mirrors it)", m =>
         Prepend(Type(m, "MegaCrit.Sts2.Core.Models.Cards.Squeeze").NestedTypes.First(t => t.Name == "<>c").Methods.First(x => x.Name.Contains("get_CanonicalVars") && x.ReturnType.Name == "Decimal"), OpCodes.Ldarg_0, OpCodes.Pop)),
+    ["renumber-cards"] = ("compiler renumbering: Squeeze's <>c__DisplayClass6_0 becomes 13_0 (a member added above it), same code", m =>
+    {
+        foreach (TypeDefinition t in Type(m, "MegaCrit.Sts2.Core.Models.Cards.Squeeze").NestedTypes.Where(t => t.Name.Contains("DisplayClass")))
+        {
+            t.Name = "<>c__DisplayClass13_0";
+        }
+    }),
+    ["hook-rename"] = ("Hook.ShouldAllowHitting renamed (the game's own callers follow): HookFilter's other hooks stay", m =>
+        Method(m, "MegaCrit.Sts2.Core.Hooks.Hook", "ShouldAllowHitting").Name = "ShouldAllowHittingRenamed"),
+    ["setup-turn"] = ("CombatManager.SetupPlayerTurn changed: only the first-turn filters leave, BetterSpire2's scope stays", m =>
+        Prepend(Type(m, "MegaCrit.Sts2.Core.Combat.CombatManager").NestedTypes.First(t => t.Name.StartsWith("<SetupPlayerTurn>d__")).Methods.First(x => x.Name == "MoveNext"), OpCodes.Ldarg_0, OpCodes.Pop)),
+    ["relic-holder"] = ("NRelicInventoryHolder.OnRelicFlashed changed: the relic bar's merge leaves, the sound's stays", m =>
+        Prepend(Method(m, "MegaCrit.Sts2.Core.Nodes.Relics.NRelicInventoryHolder", "OnRelicFlashed"), OpCodes.Ldarg_0, OpCodes.Pop)),
     ["button-input"] = ("NButton._Input changed (IdleButtonInput keeps idle buttons from receiving input)", m =>
         Prepend(Method(m, "MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton", "_Input"), OpCodes.Ldarg_0, OpCodes.Pop)),
     ["wait-body"] = ("Cmd.Wait's state machine changed (FastCombatStart skips the call)", m =>

@@ -10,6 +10,7 @@
   "why.baselib": "Nicht verfügbar: Ein BaseLib-Update hat geändert, was diese Optimierung beschleunigt. Sie bleibt aus (normales Spiel), bis der Mod aktualisiert wird.",
   "why.fault": "Für diese Sitzung nach einem Fehler deaktiviert (stattdessen normales Spiel, Details im Log). Beim nächsten Spielstart wieder aktiv.",
   "why.started_off": "Inaktiv: Der Mod war beim Spielstart ausgeschaltet, daher ist nichts davon geladen. Schalte den Mod ein und starte das Spiel neu.",
+  "parts_off": "Teilweise inaktiv: Ein Teil dieser Optimierung hat sich abgeschaltet oder gilt hier nicht (normales Spiel für diesen Teil, Details im Log).",
   "conflict": "Teilweise inaktiv: {mods} ändert ebenfalls, was diese Optimierung beschleunigt (normales Spiel für diesen Teil).",
   "coop_checksum.title": "Koop-Zustandsprüfung",
   "coop_checksum.desc": "Schnellere Zustandsprüfung nach jeder Aktion im Koop (der größte Koop-Lag bei riesigen Decks).",

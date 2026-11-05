@@ -1,0 +1,31 @@
+# See audit-coopdeath-host.txt.
+timeout 2400
+mplobby IRONCLAD 2
+waitfor run 240
+cmd bdopt
+cmd bdperf checks off
+wait 14
+cmd bigdeck import ref all cards {hash:ref}
+enemyhp 999999
+immortal until 9
+waitfor combat 900
+waitfor idle 900
+state t1
+play 3
+endturn
+waitfor turn 300
+state t2
+cmd die
+wait 3
+state dead
+waitfor round 3 900
+state t3
+waitfor round 4 900
+state t4
+waitfor round 5 900
+state t5
+waitfor round 6 900
+state t6
+waitfor round 7 900
+wait 5
+quit

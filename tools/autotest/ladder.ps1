@@ -7,13 +7,16 @@
 # Headless rendering would hide what this is for: never run it through par.ps1.
 # -TraceSec: a trace of the host, as coop.ps1 and run.ps1 record it. The game's card ids are 16 bits on the network: two peers above
 # 32,768 cards each make it play the wrong cards and diverge (it can't go above 35 imports in co-op, 70 solo).
-param([Parameter(Mandatory)][string]$GameDir, [string]$Sizes = "1,2,5,11,22,35", [switch]$Coop, [switch]$Plain, [int]$Turns = 5, [string]$Tag = "", [int]$TimeoutSec = 900, [int]$TraceSec = 0, [int]$TraceDelaySec = 0, [string]$TraceProfile = "cpu-sampling", [string]$TraceProviders = "", [switch]$Party5, [string]$Avoid = "", [switch]$Probe, [switch]$Verify, [string[]]$Extra = @(), [switch]$PlaysOnly, [int]$Plays = 10, [ValidateSet("all", "cards", "relics")][string]$What = "all", [string]$RelicsFrom = "all", [switch]$ProbeStart)
+param([Parameter(Mandatory)][string]$GameDir, [string]$Sizes = "1,2,5,11,22,35", [switch]$Coop, [switch]$Plain, [int]$Turns = 5, [string]$Tag = "", [int]$TimeoutSec = 900, [int]$TraceSec = 0, [int]$TraceDelaySec = 0, [string]$TraceProfile = "cpu-sampling", [string]$TraceProviders = "", [switch]$Party5, [string]$Avoid = "", [switch]$Probe, [switch]$Verify, [string[]]$Extra = @(), [switch]$PlaysOnly, [int]$Plays = 10, [ValidateSet("all", "cards", "relics")][string]$What = "all", [string]$RelicsFrom = "all", [switch]$ProbeStart, [switch]$ReleaseLike, [switch]$BothRendered)
 $scenarioDir = Join-Path $PSScriptRoot "scenarios"
 
 # -Avoid APOTHEOSIS,...: cards neither play picks (Apotheosis upgrades the whole deck: one play of it isn't a typical play).
+# -ReleaseLike: the sampled checks at a Release build's rates (Debug compares some 16 times as often); the test tooling itself can't leave.
+# -BothRendered: the client renders too, on this same GPU and CPU: what real co-op can't be split from here, the other extreme of -Coop's headless client.
 # -Probe: every frame over 8 ms logged with the probed methods that ran in it (PerfProbe hitch lines), and the probe report at the end.
 function Get-Body([string]$label) {
     if ($Avoid) { "avoid $Avoid" }
+    if ($ReleaseLike) { "cmd bdperf deckcount verify 256"; "cmd bdperf relicreuse verify 256" }
     if ($Probe) { "cmd bdperf probe on"; "cmd bdperf probe hitch 8"; "cmd bdperf probe reset" }
     # -Verify: every co-op snapshot compared with the game's own (SnapshotVerifier), the counts logged at the end. Slower: no timings.
     if ($Verify) { "cmd bdperf verify all" }
@@ -108,7 +111,7 @@ foreach ($n in ($Sizes -split ',' | ForEach-Object { [int]$_ })) {
         Write-Output "START $name $(Get-Date -Format HH:mm:ss)"
         $env:STS2_GAME_DIR = $GameDir
         $mods = if ($Plain) { @{} } else { @{ WithMods = $true } }
-        & (Join-Path $PSScriptRoot "coop.ps1") -Name $name -ClientHeadless -TimeoutSec $TimeoutSec -TraceSec $TraceSec -TraceDelaySec $TraceDelaySec -TraceProfile $TraceProfile -TraceProviders $TraceProviders @mods
+        & (Join-Path $PSScriptRoot "coop.ps1") -Name $name -ClientHeadless:(-not $BothRendered) -TimeoutSec $TimeoutSec -TraceSec $TraceSec -TraceDelaySec $TraceDelaySec -TraceProfile $TraceProfile -TraceProviders $TraceProviders @mods
         Remove-Item (Join-Path $scenarioDir "$name-host.txt"), (Join-Path $scenarioDir "$name-client.txt")
     }
     else {

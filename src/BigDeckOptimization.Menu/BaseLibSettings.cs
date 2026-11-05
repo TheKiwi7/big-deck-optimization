@@ -140,6 +140,27 @@ public sealed class BaseLibSettings : SimpleModConfig
         {
             Log.Warn($"[{ModEntry.Id}] {Name}: could not add the co-op note: {e.Message}");
         }
+        try
+        {
+            AddVersion(optionContainer);
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"[{ModEntry.Id}] {Name}: could not add the version: {e.Message}");
+        }
+    }
+
+    /// <summary>The version on its own line at the top right of the page: co-op needs the same one on every player.</summary>
+    private static void AddVersion(Control optionContainer)
+    {
+        string version = "v" + typeof(Settings).Assembly.GetName().Version?.ToString(3);
+        var label = ModConfig.CreateRawLabelControl($"[right]{version}[/right]", 20);
+        label.Name = "ModVersion";
+        label.FitContent = true;
+        label.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        label.Modulate = new Color(1f, 1f, 1f, 0.6f);
+        optionContainer.AddChild(label);
+        optionContainer.MoveChild(label, 0);
     }
 
     public const string CoopNote =
@@ -256,8 +277,8 @@ public sealed class BaseLibSettings : SimpleModConfig
                     string slug = option.Key.ToUpperInvariant();
                     texts[$"{Prefix}-{slug}.title"] = Translations.Get(language, option.Key + ".title", option.Label);
                     string description = Translations.Get(language, option.Key + ".desc", option.Description);
-                    // Greyed out (Why), or still switchable but partly vanilla because of another mod (Conflict).
-                    texts[$"{Prefix}-{slug}.hover.desc"] = (Settings.Why(option, language) ?? Settings.Conflict(option, language)) is { } why
+                    // Greyed out (Why), or still switchable but part of it doesn't run (PartlyOff) or is vanilla because of another mod (Conflict).
+                    texts[$"{Prefix}-{slug}.hover.desc"] = (Settings.Why(option, language) ?? Settings.PartlyOff(option, language) ?? Settings.Conflict(option, language)) is { } why
                         ? $"[color=#e0a040]{why}[/color]\n{description}"
                         : description;
                 }

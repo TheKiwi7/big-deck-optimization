@@ -10,6 +10,7 @@
   "why.baselib": "Kullanılamıyor: bir BaseLib güncellemesi bu optimizasyonun hızlandırdığı şeyi değiştirdi. Mod güncellenene kadar kapalı kalır (normal oyun).",
   "why.fault": "Bir hatadan sonra bu oturum için kapatıldı (yerine normal oyun, ayrıntılar logda). Oyunu bir sonraki başlatışınızda yeniden açılır.",
   "why.started_off": "Etkin değil: oyun başlarken mod kapalıydı, bu yüzden hiçbir parçası yüklenmedi. Modu açın, ardından oyunu yeniden başlatın.",
+  "parts_off": "Kısmen devre dışı: bu optimizasyonun bir bölümü kendini kapattı veya burada geçerli değil (o bölüm için normal oyun, ayrıntılar günlükte).",
   "conflict": "Kısmen devre dışı: {mods} da bu optimizasyonun hızlandırdığı şeyi değiştiriyor (o kısım için normal oyun).",
   "coop_checksum.title": "Co-op durum kontrolü",
   "coop_checksum.desc": "Co-op'ta her eylemden sonra daha hızlı durum kontrolü (devasa destelerle co-op'taki en büyük gecikme).",

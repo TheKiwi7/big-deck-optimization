@@ -92,7 +92,8 @@ public static class LimitlessHookSkip
 
     /// <summary>A copy of <see cref="_known"/>, never changed once published (replaced on each new type): read without the lock.</summary>
     private static volatile HashSet<Type> _knownRead = new();
-    private static readonly HashSet<string> _forwarded = new(Forwarders.Select(f => f.Method));
+    /// <summary>The hooks whose forwarding has the known code.</summary>
+    private static HashSet<string> _forwarded = new();
     private static Func<object, List<CardModel>>? _inner;
     private static MethodBase? _addEnchantment;
 
@@ -122,14 +123,29 @@ public static class LimitlessHookSkip
         Type multi = AccessTools.TypeByName(LimitlessReserialize.MultiEnchantmentType)
             ?? throw new PatchSkippedException("Limitless has no " + LimitlessReserialize.MultiEnchantmentType);
         var watched = new List<MethodBase>();
+        var forwarded = new HashSet<string>();
         foreach ((string method, string fingerprint, bool isAsync) in Forwarders)
         {
-            MethodInfo target = AccessTools.Method(multi, method) ?? throw new MissingMethodException(LimitlessReserialize.MultiEnchantmentType, method);
-            MethodBase body = isAsync ? AccessTools.AsyncMoveNext(target) ?? throw new MissingMethodException(method + " state machine") : target;
-            PatchSafety.RequireFingerprint(body, fingerprint);
-            watched.Add(target);
-            watched.Add(body);
+            // A forwarder that changed only keeps that hook's calls: the others are still known to do nothing.
+            try
+            {
+                MethodInfo target = AccessTools.Method(multi, method) ?? throw new MissingMethodException(LimitlessReserialize.MultiEnchantmentType, method);
+                MethodBase body = isAsync ? AccessTools.AsyncMoveNext(target) ?? throw new MissingMethodException(method + " state machine") : target;
+                PatchSafety.RequireFingerprint(body, fingerprint);
+                forwarded.Add(method);
+                watched.Add(target);
+                watched.Add(body);
+            }
+            catch (Exception e) when (e is PatchSkippedException or MissingMemberException)
+            {
+                Log.Info($"[{ModEntry.Id}] {Name}: {method} left vanilla: {e.Message}");
+            }
         }
+        if (forwarded.Count == 0)
+        {
+            throw new PatchSkippedException("none of the forwarding hooks has the known code");
+        }
+        _forwarded = forwarded;
         watched.Add(AccessTools.Method(multi, "SetSerializableCards", new[] { typeof(List<CardModel>) })
             ?? throw new MissingMethodException(LimitlessReserialize.MultiEnchantmentType, "SetSerializableCards"));
         _watched = watched.Distinct().ToArray();

@@ -38,7 +38,14 @@ public static class ExtraScopes
 
     public static void Apply(Harmony harmony)
     {
-        ApplyFirstTurn(harmony);
+        try
+        {
+            ApplyFirstTurn(harmony);
+        }
+        catch (Exception e) when (e is PatchSkippedException or MissingMemberException)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: first-turn filters left vanilla: {e.Message}");
+        }
         if (AppDomain.CurrentDomain.GetAssemblies().Any(a => a.GetName().Name == BetterSpireAssembly))
         {
             ModEntry.TryApply(Name + ".BetterSpire2", ApplyBetterSpire);

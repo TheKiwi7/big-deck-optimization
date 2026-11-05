@@ -61,6 +61,8 @@ public static class FastListeners
 
     private static System.Reflection.MethodInfo? _combatIterate;
     private static System.Reflection.MethodInfo? _runIterate;
+    /// <summary>What the mirrors also reproduce: each walk's state machine, its <c>Contains</c>, the mod subscriber walk and its state machine.</summary>
+    private static MethodBase? _combatBody, _combatContains, _runBody, _runContains, _subscribersMethod, _subscribersBody;
     private static AccessTools.FieldRef<CombatState, List<Creature>>? _allies;
     private static AccessTools.FieldRef<CombatState, List<Creature>>? _enemies;
 
@@ -439,7 +441,7 @@ public static class FastListeners
         private long _multiStamp = long.MinValue;
 
         /// <summary>After a new inner enchantment type (or a switch): the MultiEnchantment type is judged again.</summary>
-        private void SyncMulti()
+        internal void SyncMulti()
         {
             long stamp = LimitlessHookSkip.Stamp;
             if (stamp == _multiStamp)
@@ -678,9 +680,9 @@ public static class FastListeners
         public bool Keeps(AbstractModel model)
         {
             Type type = model.GetType();
-            if ((!_tracking || !Enabled) && ReferenceEquals(type, LimitlessHookSkip.Multi))
+            if (!_tracking && ReferenceEquals(type, LimitlessHookSkip.Multi))
             {
-                // No snapshot records its inner enchantments then (the game's walk, see KeptOnly).
+                // No snapshot or card move records its inner enchantments then.
                 NoteMulti(model);
                 SyncMulti();
             }
@@ -1752,8 +1754,10 @@ public static class FastListeners
         {
             MethodInfo combatIterate = AccessTools.Method(typeof(CombatState), nameof(CombatState.IterateHookListeners))
                 ?? throw new MissingMethodException("CombatState.IterateHookListeners");
-            PatchSafety.RequireFingerprint(AccessTools.EnumeratorMoveNext(combatIterate), CombatIterateFingerprint);
-            PatchSafety.RequireFingerprint(AccessTools.Method(typeof(CombatState), "Contains"), CombatContainsFingerprint);
+            _combatBody = AccessTools.EnumeratorMoveNext(combatIterate);
+            _combatContains = AccessTools.Method(typeof(CombatState), "Contains");
+            PatchSafety.RequireFingerprint(_combatBody, CombatIterateFingerprint);
+            PatchSafety.RequireFingerprint(_combatContains, CombatContainsFingerprint);
             _allies = AccessTools.FieldRefAccess<CombatState, List<Creature>>("_allies");
             _enemies = AccessTools.FieldRefAccess<CombatState, List<Creature>>("_enemies");
             ApplySubscribers();
@@ -1770,8 +1774,10 @@ public static class FastListeners
         {
             MethodInfo runIterate = AccessTools.Method(typeof(RunState), nameof(RunState.IterateHookListeners), new[] { typeof(ICombatState) })
                 ?? throw new MissingMethodException("RunState.IterateHookListeners");
-            PatchSafety.RequireFingerprint(AccessTools.EnumeratorMoveNext(runIterate), RunIterateFingerprint);
-            PatchSafety.RequireFingerprint(AccessTools.Method(typeof(RunState), "Contains"), RunContainsFingerprint);
+            _runBody = AccessTools.EnumeratorMoveNext(runIterate);
+            _runContains = AccessTools.Method(typeof(RunState), "Contains");
+            PatchSafety.RequireFingerprint(_runBody, RunIterateFingerprint);
+            PatchSafety.RequireFingerprint(_runContains, RunContainsFingerprint);
             _runIterate = runIterate;
             PatchGuard.Patch(harmony, runIterate, prefix: new HarmonyMethod(typeof(FastListeners), nameof(RunPrefix)) { priority = Priority.Last });
             RunMirrored = true;
@@ -1786,7 +1792,9 @@ public static class FastListeners
     {
         try
         {
-            PatchSafety.RequireFingerprint(AccessTools.EnumeratorMoveNext(AccessTools.Method(typeof(ModHelper), nameof(ModHelper.IterateAllCombatStateSubscribers))), SubscribersFingerprint);
+            _subscribersMethod = AccessTools.Method(typeof(ModHelper), nameof(ModHelper.IterateAllCombatStateSubscribers));
+            _subscribersBody = AccessTools.EnumeratorMoveNext(_subscribersMethod);
+            PatchSafety.RequireFingerprint(_subscribersBody, SubscribersFingerprint);
             // Everything resolved and typed before use: AccessTools returns null for a renamed member, which would only
             // fail later, inside every walk.
             var subscribers = AccessTools.Field(typeof(ModHelper), "_combatHookSubscribers")?.GetValue(null) as System.Collections.IList
@@ -1814,9 +1822,16 @@ public static class FastListeners
         }
     }
 
+    /// <summary>Another mod's patch on what the combat mirror reproduces: its patch must run, so the game's walk does.</summary>
+    private static bool CombatWalkPatched() =>
+        PatchSafety.IsPatchedByOthers(_combatIterate) || PatchSafety.IsPatchedByOthers(_combatBody) || PatchSafety.IsPatchedByOthers(_combatContains);
+
+    private static bool RunWalkPatched() =>
+        PatchSafety.IsPatchedByOthers(_runIterate) || PatchSafety.IsPatchedByOthers(_runBody) || PatchSafety.IsPatchedByOthers(_runContains);
+
     private static bool CombatPrefix(CombatState __instance, ref IEnumerable<AbstractModel> __result, bool __runOriginal)
     {
-        if (!__runOriginal || !Enabled || PatchSafety.IsPatchedByOthers(_combatIterate))
+        if (!__runOriginal || !Enabled || CombatWalkPatched())
         {
             return __runOriginal;
         }
@@ -1831,7 +1846,7 @@ public static class FastListeners
     {
         PileFilter? filter = PendingRunFilter;
         PendingRunFilter = null;
-        if (!__runOriginal || PatchSafety.IsPatchedByOthers(_runIterate))
+        if (!__runOriginal || RunWalkPatched())
         {
             return __runOriginal;
         }
@@ -1848,11 +1863,11 @@ public static class FastListeners
 
     /// <summary>Combat listeners as vanilla yields them, minus the pile entries the filter drops. Option off: the game's own walk, none of this class's lists.</summary>
     internal static IEnumerable<AbstractModel> Filtered(CombatState state, PileFilter filter) =>
-        CombatMirrored && Enabled ? Combat(state, filter) : KeptOnly(state.IterateHookListeners(), filter);
+        CombatMirrored && Enabled && !CombatWalkPatched() ? Combat(state, filter) : KeptOnly(state.IterateHookListeners(), filter);
 
     /// <summary>Run (and child combat) listeners as vanilla yields them, minus the pile entries the filter drops.</summary>
     internal static IEnumerable<AbstractModel> Filtered(RunState run, ICombatState? child, PileFilter filter) =>
-        RunMirrored && Enabled ? Run(run, child, filter) : KeptOnly(run.IterateHookListeners(child), filter);
+        RunMirrored && Enabled && !RunWalkPatched() ? Run(run, child, filter) : KeptOnly(run.IterateHookListeners(child), filter);
 
     /// <summary>
     /// The game's own walk, whatever it became, minus what a filter drops: cards, enchantments and afflictions (wherever they
@@ -1862,6 +1877,12 @@ public static class FastListeners
     {
         foreach (AbstractModel model in walk)
         {
+            if (ReferenceEquals(model.GetType(), LimitlessHookSkip.Multi))
+            {
+                // No snapshot records its inner enchantments on this path, whatever the tracking.
+                NoteMulti(model);
+                filter.SyncMulti();
+            }
             if (model is not (CardModel or EnchantmentModel or AfflictionModel) || filter.Keeps(model))
             {
                 yield return model;
@@ -2001,7 +2022,7 @@ public static class FastListeners
     /// </summary>
     private static IEnumerable<AbstractModel> Subscribers(CombatState state)
     {
-        var snapshot = _combatSubscribers == null ? null : SubscriberSnapshot();
+        var snapshot = _combatSubscribers == null || PatchSafety.IsPatchedByOthers(_subscribersMethod) || PatchSafety.IsPatchedByOthers(_subscribersBody) ? null : SubscriberSnapshot();
         if (snapshot == null)
         {
             foreach (AbstractModel item in ModHelper.IterateAllCombatStateSubscribers(state))

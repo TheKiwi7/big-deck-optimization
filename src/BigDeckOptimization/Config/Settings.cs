@@ -15,8 +15,14 @@ namespace BigDeckOptimization.Config;
 /// </summary>
 public static class Settings
 {
+    /// <summary>A part of an option with its own patch or fault. <paramref name="NeedsMods"/>: it can only apply with Limitless and BaseLib.</summary>
+    public readonly record struct OptionPart(string Name, bool NeedsMods = false);
+
+    /// <param name="parts">What runs under this option apart from its main patch (<paramref name="faults"/>).</param>
+    /// <param name="setParts">Switches the parts: they don't depend on the main patch, so its fault or absence leaves them on.</param>
+    /// <param name="wholeFaults">Those of <paramref name="faults"/> that take the parts away too.</param>
     public sealed class Option(string key, string label, string description, string[] faults, Action<bool> setEnabled,
-        Func<string?>? unavailable = null, bool defaultOn = true)
+        Func<string?>? unavailable = null, bool defaultOn = true, OptionPart[]? parts = null, Action<bool>? setParts = null, string[]? wholeFaults = null)
     {
         /// <summary>The state before any choice (BaseLib's "restore defaults" goes back to it).</summary>
         public bool DefaultOn { get; } = defaultOn;
@@ -31,6 +37,45 @@ public static class Settings
         public bool Wanted { get; internal set; } = defaultOn;
         public string? Fault => Faults.FirstOrDefault(PatchSafety.IsFaulted);
         public bool Effective => Master && Wanted && Fault == null;
+        public OptionPart[] Parts { get; } = parts ?? Array.Empty<OptionPart>();
+        public Action<bool>? SetParts { get; } = setParts;
+        public bool PartsEffective => Master && Wanted && !(wholeFaults ?? Array.Empty<string>()).Any(PatchSafety.IsFaulted);
+
+        /// <summary>Its parts still run though the main patch is off after a fault: switching the option still means something.</summary>
+        public bool PartsOutliveFault => SetParts != null && !(wholeFaults ?? Array.Empty<string>()).Any(PatchSafety.IsFaulted);
+
+        /// <summary>
+        /// What of this option doesn't run although the option is on: parts that failed or didn't apply (one needing Limitless counts only
+        /// with Limitless there), or the main patch when its parts run without it. Empty when nothing is missing.
+        /// </summary>
+        public IEnumerable<string> PartsOff()
+        {
+            if (SetParts != null)
+            {
+                foreach (string name in Faults)
+                {
+                    if (PatchSafety.IsFaulted(name))
+                    {
+                        yield return name + " (error)";
+                    }
+                    else if (ModEntry.NotApplied(name))
+                    {
+                        yield return name + " (not applied)";
+                    }
+                }
+            }
+            foreach (OptionPart part in Parts)
+            {
+                if (PatchSafety.IsFaulted(part.Name))
+                {
+                    yield return part.Name + " (error)";
+                }
+                else if (ModEntry.NotApplied(part.Name) && (!part.NeedsMods || LimitlessReason() == LimitlessChanged))
+                {
+                    yield return part.Name + " (not applied)";
+                }
+            }
+        }
     }
 
     public const string MasterKey = "enabled";
@@ -40,6 +85,12 @@ public static class Settings
 
     /// <summary>Patches apply over the first frames: until they all did, a flag still down says nothing.</summary>
     private static string? Missing(bool applied) => applied || !ModEntry.AllApplied ? null : GameChanged;
+
+    /// <summary>The same for a patch that needs another mod: <paramref name="reason"/> says what's missing.</summary>
+    private static string? MissingMod(bool applied, Func<string> reason) => applied || !ModEntry.AllApplied ? null : reason();
+
+    /// <summary>An option with parts is only unavailable when none of them applied.</summary>
+    private static string? NoneApplied(params string[] names) => names.All(ModEntry.NotApplied) ? GameChanged : null;
     public const string LimitlessMissing = "not applied (Limitless absent or changed)";
     public const string LimitlessChanged = "not applied (game or Limitless code changed)";
 
@@ -62,7 +113,7 @@ public static class Settings
             "Unavailable: a BaseLib update changed what this optimization speeds up. It stays off (normal game) until the mod is updated."),
         { } => Translations.Get(language, "why.game",
             "Unavailable: a game update changed what this optimization speeds up. It stays off (normal game) until the mod is updated."),
-        null when option.Fault != null => Translations.Get(language, "why.fault",
+        null when option.Fault != null && !option.PartsOutliveFault => Translations.Get(language, "why.fault",
             "Turned off for this session after an error (normal game instead, details in the log). Back on next time you start the game."),
         null => null,
     };
@@ -76,7 +127,7 @@ public static class Settings
     /// The mods whose patches currently keep part of this optimization vanilla (it backs off from methods another mod
     /// patches); empty when none. Known once the optimization has checked those methods (when it first runs).
     /// </summary>
-    public static IReadOnlyList<string> ConflictingMods(Option option) => PatchSafety.ConflictingMods(option.Faults);
+    public static IReadOnlyList<string> ConflictingMods(Option option) => PatchSafety.ConflictingMods(option.Faults.Concat(option.Parts.Select(part => part.Name)));
 
     /// <summary>The menu's sentence about <see cref="ConflictingMods"/>, or null when there is none.</summary>
     public static string? Conflict(Option option, string? language)
@@ -86,6 +137,10 @@ public static class Settings
             : Translations.Get(language, "conflict",
                 "Partly inactive: {mods} also changes what this optimization speeds up (normal game for that part).").Replace("{mods}", string.Join(", ", mods));
     }
+
+    /// <summary>The menu's sentence when part of a switchable optimization doesn't run, or null.</summary>
+    public static string? PartlyOff(Option option, string? language) => !option.PartsOff().Any() ? null
+        : Translations.Get(language, "parts_off", "Partly inactive: part of this optimization turned itself off or doesn't apply here (normal game for that part, details in the log).");
 
     public static bool Master { get; private set; } = true;
 
@@ -124,18 +179,27 @@ public static class Settings
             new[] { FastCombatStart.Name }, on => FastCombatStart.Enabled = on),
         new("coop_checksum", "Co-op state check",
             "Faster state check after every action in co-op (the biggest co-op lag with huge decks).",
-            new[] { ListenerCache.Name, ListenerCache.SnapshotFault }, on => { ListenerCache.SnapshotEnabled = on; SnapshotCardReuse.Enabled = Part(on, SnapshotCardReuse.Name); ReplayStateSkip.Enabled = Part(on, ReplayStateSkip.Name); SavedPropertyLookup.Enabled = Part(on, SavedPropertyLookup.Name); RelicStateReuse.Enabled = Part(on, RelicStateReuse.Name); RelicStateReuse.ScalarEnabled = Part(on, RelicStateReuse.ScalarName); },
-            () => ModEntry.NotApplied(ListenerCache.Name) ? GameChanged : null),
+            new[] { ListenerCache.Name, ListenerCache.SnapshotFault }, on => ListenerCache.SnapshotEnabled = on,
+            () => NoneApplied(ListenerCache.Name, ReplayStateSkip.Name, SavedPropertyLookup.Name, RelicStateReuse.Name, SnapshotCardReuse.Name),
+            parts: new OptionPart[] { new(SnapshotCardReuse.Name, NeedsMods: true), new(ReplayStateSkip.Name), new(SavedPropertyLookup.Name), new(RelicStateReuse.Name), new(RelicStateReuse.ScalarName) },
+            setParts: on => { SnapshotCardReuse.Enabled = Part(on, SnapshotCardReuse.Name); ReplayStateSkip.Enabled = Part(on, ReplayStateSkip.Name); SavedPropertyLookup.Enabled = Part(on, SavedPropertyLookup.Name); RelicStateReuse.Enabled = Part(on, RelicStateReuse.Name); RelicStateReuse.ScalarEnabled = Part(on, RelicStateReuse.ScalarName); },
+            // A snapshot that differed from the game's: anything of the state check may be why.
+            wholeFaults: new[] { ListenerCache.SnapshotFault }),
         new("combat_refresh", "Combat refresh",
             "Faster card and UI refresh after every action in combat.",
-            new[] { ListenerCache.Name }, on => { ListenerCache.RefreshEnabled = on; TextPoolReuse.Enabled = on; ThemeColorSkip.Enabled = Part(on, ThemeColorSkip.Name); DeckCountMemo.Enabled = Part(on, DeckCountMemo.Name); },
-            () => ModEntry.NotApplied(ListenerCache.Name) ? GameChanged : null),
+            new[] { ListenerCache.Name }, on => ListenerCache.RefreshEnabled = on,
+            () => NoneApplied(ListenerCache.Name, TextPoolReuse.Name, ThemeColorSkip.Name, DeckCountMemo.Name),
+            parts: new OptionPart[] { new(TextPoolReuse.Name), new(ThemeColorSkip.Name), new(DeckCountMemo.Name), new(ListenerCache.ReuseFault) },
+            setParts: on => { TextPoolReuse.Enabled = on; ThemeColorSkip.Enabled = Part(on, ThemeColorSkip.Name); DeckCountMemo.Enabled = Part(on, DeckCountMemo.Name); }),
         new("hook_filter", "Skip empty hooks",
             "Inside the two optimizations above, only asks the cards and relics that actually react to each check.",
             new[] { HookFilter.Name }, on => HookFilter.Enabled = on),
         new("relic_input", "Relic bar input",
             "Stops hundreds of idle relic buttons from processing every mouse move. Also skips old controller actions that no longer exist and wrote an error to the log at every input.",
-            new[] { IdleButtonInput.Name }, on => { IdleButtonInput.Enabled = on; ControllerActionSkip.Enabled = Part(on, ControllerActionSkip.Name); }),
+            new[] { IdleButtonInput.Name }, on => IdleButtonInput.Enabled = on,
+            () => NoneApplied(IdleButtonInput.Name, ControllerActionSkip.Name),
+            parts: new OptionPart[] { new(ControllerActionSkip.Name) },
+            setParts: on => ControllerActionSkip.Enabled = Part(on, ControllerActionSkip.Name)),
         new("relic_flashes", "Merge repeated relic flashes",
             "Visual: a relic flashing several times in the same frame (Bing Bong copying each cloned card...) shows one flash instead of thousands stacked on the same spot, which could black out the screen or crash the game. Same results.",
             new[] { RelicFlashMerge.Name }, on => RelicFlashMerge.Enabled = on),
@@ -145,7 +209,10 @@ public static class Settings
             () => Missing(CardFlightLimit.Applied)),
         new("gc_pacing", "Memory cleanups at quiet moments",
             "In combats with 1,000 cards or more, .NET's memory cleanups (the short freezes while cards are played) wait for a moment when nothing is animating. The cleanup after each room loads runs in the background, and finished combats are freed from memory (with BaseLib they stayed until the end of the run). Animated texts also free their temporary memory right away, which shortens the cleanups everywhere. Uses a few hundred MB more memory during those combats. Same results.",
-            new[] { GcPacing.Name }, on => { GcPacing.Enabled = on; RoomCollect.Enabled = Part(on, RoomCollect.Name); PooledCardRelease.Enabled = Part(on, PooledCardRelease.Name); SyncedCardRelease.Enabled = Part(on, SyncedCardRelease.Name); RichTextEnvRelease.Enabled = Part(on, RichTextEnvRelease.Name); }),
+            new[] { GcPacing.Name }, on => GcPacing.Enabled = on,
+            () => NoneApplied(GcPacing.Name, RoomCollect.Name, PooledCardRelease.Name, SyncedCardRelease.Name, RichTextEnvRelease.Name),
+            parts: new OptionPart[] { new(RoomCollect.Name), new(PooledCardRelease.Name), new(SyncedCardRelease.Name), new(RichTextEnvRelease.Name) },
+            setParts: on => { RoomCollect.Enabled = Part(on, RoomCollect.Name); PooledCardRelease.Enabled = Part(on, PooledCardRelease.Name); SyncedCardRelease.Enabled = Part(on, SyncedCardRelease.Name); RichTextEnvRelease.Enabled = Part(on, RichTextEnvRelease.Name); }),
         new("grid_sort", "Card grid sorting",
             "Faster sorting of the deck view and other card grids.",
             new[] { GridSortCache.Name }, on => GridSortCache.Enabled = on),
@@ -180,15 +247,16 @@ public static class Settings
         new("limitless_tabs", "Limitless enchantment tabs",
             "With Limitless: reuses enchantment tabs instead of rebuilding them on every card render.",
             new[] { EnchantmentTabReuse.Name }, on => EnchantmentTabReuse.Enabled = on,
-            () => EnchantmentTabReuse.Applied ? null : LimitlessReason()),
+            () => MissingMod(EnchantmentTabReuse.Applied, LimitlessReason)),
         new("limitless_saves", "Limitless enchantment copies",
             "With Limitless: keeps the saved copy of stacked enchantments when rebuilding it would give the same content, instead of rebuilding it after every action or each time a card is copied at the start of a combat.",
             new[] { LimitlessReserialize.Name }, on => { LimitlessReserialize.Enabled = on; LimitlessRecalcSkip.Enabled = Part(on, LimitlessRecalcSkip.Name); LimitlessHookSkip.Enabled = Part(on, LimitlessHookSkip.Name); LimitlessCloneMemo.Enabled = Part(on, LimitlessCloneMemo.Name); },
-            () => LimitlessReserialize.Applied ? null : LimitlessReason()),
+            () => MissingMod(LimitlessReserialize.Applied, LimitlessReason),
+            parts: new OptionPart[] { new(LimitlessRecalcSkip.Name, NeedsMods: true), new(LimitlessHookSkip.Name, NeedsMods: true), new(LimitlessCloneMemo.Name, NeedsMods: true) }),
         new("card_type_line", "BaseLib card type line",
             "With BaseLib: shows each card's type line without searching every card in combat for mods that change it, while no installed mod does (scrolling the draw pile, refreshing the hand). Same text.",
             new[] { TypePlaqueSkip.Name }, on => TypePlaqueSkip.Enabled = on,
-            () => TypePlaqueSkip.Applied ? null : BaseLibMissing),
+            () => MissingMod(TypePlaqueSkip.Applied, () => BaseLibMissing)),
     };
 
     /// <summary>
@@ -235,6 +303,7 @@ public static class Settings
         foreach (Option option in Options)
         {
             option.SetEnabled(option.Effective);
+            option.SetParts?.Invoke(option.PartsEffective);
         }
     }
 
@@ -250,12 +319,16 @@ public static class Settings
         foreach (Option option in Options)
         {
             string state = option.Unavailable() is { } why ? why
-                : option.Fault is { } fault ? $"OFF, disabled after an error ({fault}), see log"
+                : option.Fault is { } fault ? $"OFF, disabled after an error ({fault}), see log" + (option.PartsOutliveFault && Master && option.Wanted ? ", its other parts still on" : "")
                 : !option.Wanted ? (option.Key == "fast_combat_start" && Master ? "OFF in solo (setting), always on in co-op" : "OFF (setting)")
                 : Master ? "on" : "off";
             if (ConflictingMods(option) is { Count: > 0 } mods && option.Unavailable() == null && option.Fault == null)
             {
                 state += $" (partly vanilla: also patched by {string.Join(", ", mods)})";
+            }
+            if (option.Unavailable() == null && option.Fault == null && option.PartsOff().ToList() is { Count: > 0 } off)
+            {
+                state += $" (partly off: {string.Join(", ", off)})";
             }
             sb.Append($"  {option.Label} [{option.Key}]: {state}\n");
             if (option.Key == "fast_combat_start")

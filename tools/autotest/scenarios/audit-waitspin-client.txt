@@ -1,0 +1,12 @@
+# See audit-waitspin-host.txt.
+timeout 300
+mplobby IRONCLAD 2
+waitfor run 240
+enemyhp 999999
+immortal until 9
+waitfor combat 120
+waitfor idle 120
+wait 8
+state after spin
+wait 12
+quit

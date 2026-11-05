@@ -11,8 +11,6 @@ Why: with a huge deck, the mod speeds the game up so much that a player without 
 
 **Want a settings menu?** Install [BaseLib](https://steamcommunity.com/sharedfiles/filedetails/?id=3737335127) (optional) to turn each improvement on or off from the game's settings.
 
-> **Early development.** The mod gets regular updates to fix problems and speed things up further.
-
 ## What it changes
 
 With a huge deck, the game slows down more and more until every action freezes it. With the mod:
