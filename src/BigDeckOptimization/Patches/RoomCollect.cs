@@ -32,7 +32,7 @@ public static class RoomCollect
         set
         {
             _enabled = value;
-            SetLatency();
+            SyncLatency();
         }
     }
 
@@ -64,11 +64,11 @@ public static class RoomCollect
         }
         _bigMemory = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes >= MinMemory;
         Applied = true;
-        SetLatency();
+        SyncLatency();
     }
 
     /// <summary>Only between Interactive (.NET's default here) and SustainedLowLatency: a no-GC region (<see cref="GcPacing"/>) restores what it found.</summary>
-    private static void SetLatency()
+    internal static void SyncLatency()
     {
         if (!Applied || !_bigMemory)
         {

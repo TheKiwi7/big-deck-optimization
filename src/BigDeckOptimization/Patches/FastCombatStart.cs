@@ -34,6 +34,11 @@ namespace BigDeckOptimization.Patches;
 /// still apply): the game drops combat
 /// actions that reach a player still starting the combat, so a player starting ~70 s later than the others (option off)
 /// would desync or freeze the run as soon as someone plays (`coopsolo1/2` scenarios).
+///
+/// The window must never outlive its combat: outside one, the game has waits that nothing else paces. <c>NTransformPreview</c> loops on
+/// <c>Cmd.Wait</c> (only its Instant branch uses <c>Task.Delay</c>), so an instant wait there never gives the frame back: a frozen game,
+/// then a crash. A won combat is entered again as pre-finished when a run is continued, and that never reaches a first turn: no window
+/// then. <c>CombatManager.Reset</c> (the room left, the run left) closes one still open.
 /// </summary>
 public static class FastCombatStart
 {
@@ -73,17 +78,26 @@ public static class FastCombatStart
         // The first turn starting ends the loading (by name: game v0.111 added a parameter).
         PatchGuard.Patch(harmony, AccessTools.Method(typeof(CombatManager), "StartTurn") ?? throw new MissingMethodException("CombatManager.StartTurn"),
             prefix: new HarmonyMethod(typeof(FastCombatStart), nameof(TurnStarting)));
+        // Without it only leaving a combat while it loads keeps the window open until the next combat.
+        if (AccessTools.Method(typeof(CombatManager), nameof(CombatManager.Reset)) is { } reset)
+        {
+            PatchGuard.Patch(harmony, reset, postfix: new HarmonyMethod(typeof(FastCombatStart), nameof(CombatReset)));
+        }
+        else
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: CombatManager.Reset not found");
+        }
         PatchGuard.Patch(harmony, wait, prefix: new HarmonyMethod(typeof(FastCombatStart), nameof(WaitPrefix)));
         PatchGuard.Patch(harmony, scaledWait, prefix: new HarmonyMethod(typeof(FastCombatStart), nameof(ScaledWaitPrefix)));
     }
 
-    private static void OpenWindow()
+    private static void OpenWindow(CombatRoom __instance)
     {
         try
         {
             int relics = RunManager.Instance.DebugOnlyGetState()?.Players.Sum(p => p.Relics.Count) ?? 0;
             bool coop = RunManager.Instance is { IsSingleplayerOrFakeMultiplayer: false };
-            _window = On && (coop || relics >= RelicThreshold);
+            _window = On && !__instance.IsPreFinished && (coop || relics >= RelicThreshold);
             SkippedWaits = 0;
             SkippedSeconds = 0;
         }
@@ -108,6 +122,9 @@ public static class FastCombatStart
             Fail(e);
         }
     }
+
+    /// <summary>The room or the run was left, possibly before the first turn.</summary>
+    private static void CombatReset() => _window = false;
 
     private static void CloseWindow()
     {

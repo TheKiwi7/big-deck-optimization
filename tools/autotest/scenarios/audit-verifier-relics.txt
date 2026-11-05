@@ -1,0 +1,33 @@
+# Audit: what stays on after SnapshotVerifier finds a difference. A stale relic (relicreuse blind, the positive control) must be seen, and then
+# EFFECT RelicStateReuse must stop growing: the verifier says every snapshot optimization is off.
+timeout 600
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+enemyhp 999999
+immortal
+cmd relic add PEN_NIB
+cmd relic add NUNCHAKU
+cmd fight CULTISTS_NORMAL
+waitfor idle 120
+wait 1
+cmd bdperf verify all
+checksum start
+effects start
+cmd bdperf relicreuse blind on
+cmd energy 50
+play 3
+waitfor idle 120
+checksum t1
+cmd bdperf verify
+effects after mismatch
+cmd bdopt
+endturn
+waitfor idle 120
+checksum t2
+play 2
+waitfor idle 120
+checksum t3
+effects later
+cmd bdperf verify
+quit

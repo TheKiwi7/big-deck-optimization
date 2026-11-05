@@ -1,0 +1,29 @@
+# Audit, A/B of audit-finished-room-on: the fast combat start switched off, same steps. No crash expected if it is the cause.
+timeout 600
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bdopt fast_combat_start off
+enemyhp 1
+selector ui
+cmd fight CULTISTS_NORMAL
+waitfor combat 120
+autoroom 300
+automap
+autoroom 300
+runstate before leaving
+effects after map room
+tomenu
+continuerun 120
+wait 3
+runstate continued
+effects continued
+cmd room RestSite
+waitfor room RestSite
+autoroom SmithRestSiteOption 120
+effects after rest site
+cmd event AROMA_OF_CHAOS
+waitfor event 120
+autoroom 120
+effects after event
+quit

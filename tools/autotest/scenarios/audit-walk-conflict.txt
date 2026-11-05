@@ -1,0 +1,22 @@
+# Audit: another mod patching CombatState/RunState.IterateHookListeners. FastListeners' own prefix backs off from it; do HookSkip's filtered walks?
+# FastListeners.Cache going up after the conflict means those walks still run this mod's mirror, without that mod's patch.
+timeout 600
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+fakeconflict MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners
+cmd fight CULTISTS_NORMAL
+waitfor idle 300
+wait 3
+effects start
+play 3
+waitfor idle 120
+endturn
+waitfor idle 120
+play 3
+waitfor idle 120
+effects end
+cmd bdopt
+quit

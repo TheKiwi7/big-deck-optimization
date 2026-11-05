@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.12.1
+
+- Fixed a crash: after quitting once a fight was won and continuing the run, a screen previewing a card transformation before the next fight (Aroma of Chaos, for example) froze the game, then crashed it.
+- Fixed: after continuing a run that way, waits outside combat (rest sites, events) were skipped until the next fight.
+- Turning off "Effect listener lists" now turns all of it off, and turning off "Memory cleanups at quiet moments" during a fight fully restores the normal memory settings.
+- Better safety nets: if the co-op state check ever finds a difference, every part of it now turns off at once, and the Squeeze, Perfected Strike and Crescent Spear counts go back to the game's own after an error.
+
 ## v0.12.0
 
 - Co-op runs no longer get heavier with every combat: the game kept a full copy of every other player's deck in memory at each combat, for the rest of the run, and this mod kept a finished combat's cards until the next one. In my tests with two players at 10,300 cards each, memory after 8 combats is about 530 MB instead of 1.3 GB, and the longest freeze when starting the 8th combat is about 0.6 s instead of 2 s. The more players, the bigger the difference.

@@ -1,0 +1,22 @@
+# Audit: what "listeners off" leaves running. Filtered walks are FastListeners' code: with the option off they should stop using its cached entries.
+timeout 600
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+cmd bdopt listeners off
+cmd bdopt
+cmd fight CULTISTS_NORMAL
+waitfor idle 300
+wait 1
+effects start
+play 3
+waitfor idle 120
+endturn
+waitfor idle 120
+play 3
+waitfor idle 120
+effects end
+counters end
+quit

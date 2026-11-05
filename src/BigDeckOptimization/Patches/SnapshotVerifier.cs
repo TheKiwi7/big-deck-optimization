@@ -123,6 +123,8 @@ public static class SnapshotVerifier
                 PatchSafety.Fault(ListenerCache.SnapshotFault);
                 PatchSafety.Fault(HookFilter.Name);
                 PatchSafety.Fault(SnapshotCardReuse.Name);
+                // The option's other parts (RelicStateReuse...) go with it, now.
+                Config.Settings.ApplyAll();
                 Log.Error($"[{ModEntry.Id}] {Name}: optimized snapshot differs from vanilla at byte {diffAt} "
                     + $"(lengths {optimizedLength} vs {vanillaLength}, action {justFinishedAction}). "
                     + "Using vanilla snapshot; snapshot optimizations disabled for this session. Please report this log.");

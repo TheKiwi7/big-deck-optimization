@@ -1,0 +1,144 @@
+# Audit: every switch flipped off and back on in the middle of a combat, with every cached state compared to the game's (ab-2k-off must give the same CHECKSUM and STATE lines).
+# A cache that goes stale while its switch is off shows up at the first checksum after it comes back on.
+timeout 2400
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd bdperf verify all
+cmd bdperf segments verify all
+cmd bdperf pile verify 1
+cmd bdperf deckcount verify 1
+checksum start
+fpsstat
+gcstat
+cmd bdopt hook_skip off
+cmd bdopt listeners off
+play 4
+waitfor idle 120
+fpsstat plays t1
+cmd bdopt hook_skip on
+cmd bdopt listeners on
+checksum t1 plays
+fpsstat
+cmd bdopt coop_checksum off
+cmd bdopt card_ids off
+endturn
+waitfor idle 300
+fpsstat end of turn t1
+gcstat turn t1
+cmd bdopt coop_checksum on
+cmd bdopt card_ids on
+checksum t1 end
+state t1
+fpsstat
+gcstat
+cmd bdopt pile_lookup off
+cmd bdopt combat_refresh off
+play 4
+waitfor idle 120
+fpsstat plays t2
+cmd bdopt pile_lookup on
+cmd bdopt combat_refresh on
+checksum t2 plays
+fpsstat
+cmd bdopt limitless_saves off
+cmd bdopt hook_filter off
+endturn
+waitfor idle 300
+fpsstat end of turn t2
+gcstat turn t2
+cmd bdopt limitless_saves on
+cmd bdopt hook_filter on
+checksum t2 end
+state t2
+fpsstat
+gcstat
+cmd bdopt limitless_saves off
+cmd bdopt coop_checksum off
+play 4
+waitfor idle 120
+fpsstat plays t3
+cmd bdopt limitless_saves on
+cmd bdopt coop_checksum on
+checksum t3 plays
+fpsstat
+cmd bdopt pile_counters off
+cmd bdopt card_flights off
+cmd bdopt listeners off
+endturn
+waitfor idle 300
+fpsstat end of turn t3
+gcstat turn t3
+cmd bdopt pile_counters on
+cmd bdopt card_flights on
+cmd bdopt listeners on
+checksum t3 end
+state t3
+fpsstat
+gcstat
+cmd bdopt gc_pacing off
+cmd bdopt relic_flashes off
+cmd bdopt relic_input off
+cmd bdopt hover_tips off
+cmd bdopt limitless_tabs off
+cmd bdopt card_type_line off
+play 4
+waitfor idle 120
+fpsstat plays t4
+cmd bdopt gc_pacing on
+cmd bdopt relic_flashes on
+cmd bdopt relic_input on
+cmd bdopt hover_tips on
+cmd bdopt limitless_tabs on
+cmd bdopt card_type_line on
+checksum t4 plays
+fpsstat
+cmd bdopt off
+endturn
+waitfor idle 300
+fpsstat end of turn t4
+gcstat turn t4
+cmd bdopt on
+checksum t4 end
+state t4
+fpsstat
+gcstat
+cmd bdopt off
+play 4
+waitfor idle 120
+fpsstat plays t5
+cmd bdopt on
+checksum t5 plays
+fpsstat
+cmd bdopt hook_skip off
+cmd bdopt pile_lookup off
+cmd bdopt coop_checksum off
+cmd bdopt limitless_saves off
+endturn
+waitfor idle 300
+fpsstat end of turn t5
+gcstat turn t5
+cmd bdopt hook_skip on
+cmd bdopt pile_lookup on
+cmd bdopt coop_checksum on
+cmd bdopt limitless_saves on
+checksum t5 end
+state t5
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+effects end
+cmd bdopt
+cmd bdperf verify
+cmd bdperf deckcount
+counters end
+cmd bdperf verify check
+quit

@@ -1,0 +1,24 @@
+# Audit: gc_pacing switched off while a no-GC region is open (a quiet moment of a big combat), then outside one. Off must give .NET's default mode back (Interactive).
+timeout 600
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 300
+wait 8
+counters in region
+cmd bdopt gc_pacing off
+wait 2
+cmd bdperf gcprobe
+cmd bdopt gc_pacing on
+wait 1
+cmd kill all
+waitfor nocombat 120
+wait 3
+cmd bdopt gc_pacing off
+wait 1
+cmd bdperf gcprobe
+quit

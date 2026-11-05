@@ -678,9 +678,9 @@ public static class FastListeners
         public bool Keeps(AbstractModel model)
         {
             Type type = model.GetType();
-            if (!_tracking && ReferenceEquals(type, LimitlessHookSkip.Multi))
+            if ((!_tracking || !Enabled) && ReferenceEquals(type, LimitlessHookSkip.Multi))
             {
-                // No snapshot or card move records its inner enchantments then.
+                // No snapshot records its inner enchantments then (the game's walk, see KeptOnly).
                 NoteMulti(model);
                 SyncMulti();
             }
@@ -1176,8 +1176,11 @@ public static class FastListeners
         UnscopedVersion++;
     }
 
-    /// <summary>Pile changes all go through <see cref="PileVersion"/> and this is the main thread, outside a shuffle (which reorders a pile's list unseen).</summary>
-    internal static bool PilesKnown => _tracking && _shuffling == 0 && Thread.CurrentThread.ManagedThreadId == _mainThread;
+    /// <summary>
+    /// Pile changes all go through <see cref="PileVersion"/> and this is the main thread, outside a shuffle (which reorders a pile's list
+    /// unseen). Not after a fault: <see cref="PatchGuard"/> may have removed what bumps the version.
+    /// </summary>
+    internal static bool PilesKnown => _tracking && _shuffling == 0 && Thread.CurrentThread.ManagedThreadId == _mainThread && !PatchSafety.IsFaulted(Name);
 
     /// <summary>
     /// Adds to <paramref name="count"/> what the changes since <paramref name="version"/> did to the number of cards of
@@ -1832,29 +1835,24 @@ public static class FastListeners
         {
             return __runOriginal;
         }
-#if BENCH
-        RunWalks++;
-#endif
-        if (filter != null)
-        {
-            __result = Run(__instance, childCombatState, filter);
-            return false;
-        }
         if (!Enabled)
         {
             return true;
         }
-        __result = Run(__instance, childCombatState, null);
+#if BENCH
+        RunWalks++;
+#endif
+        __result = Run(__instance, childCombatState, filter);
         return false;
     }
 
-    /// <summary>Combat listeners as vanilla yields them, minus the pile entries the filter drops.</summary>
+    /// <summary>Combat listeners as vanilla yields them, minus the pile entries the filter drops. Option off: the game's own walk, none of this class's lists.</summary>
     internal static IEnumerable<AbstractModel> Filtered(CombatState state, PileFilter filter) =>
-        CombatMirrored ? Combat(state, filter) : KeptOnly(state.IterateHookListeners(), filter);
+        CombatMirrored && Enabled ? Combat(state, filter) : KeptOnly(state.IterateHookListeners(), filter);
 
     /// <summary>Run (and child combat) listeners as vanilla yields them, minus the pile entries the filter drops.</summary>
     internal static IEnumerable<AbstractModel> Filtered(RunState run, ICombatState? child, PileFilter filter) =>
-        RunMirrored ? Run(run, child, filter) : KeptOnly(run.IterateHookListeners(child), filter);
+        RunMirrored && Enabled ? Run(run, child, filter) : KeptOnly(run.IterateHookListeners(child), filter);
 
     /// <summary>
     /// The game's own walk, whatever it became, minus what a filter drops: cards, enchantments and afflictions (wherever they

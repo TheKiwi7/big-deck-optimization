@@ -1,0 +1,92 @@
+# Audit: co-op, each peer flipping its own switches in the middle of the combat (the menu's note says they can change freely): no divergence expected. Other side: audit-cooptoggle-host.txt.
+timeout 2400
+mplobby IRONCLAD 2
+waitfor run 240
+cmd bdopt
+cmd bdperf checks off
+wait 14
+cmd bigdeck import ref all cards {hash:ref}
+enemyhp 300
+immortal until 4
+waitfor combat 900
+waitfor idle 900
+state t1
+cmd bdopt coop_checksum off
+cmd bdopt limitless_saves off
+play 3
+endturn
+waitfor turn 300
+cmd bdopt coop_checksum on
+cmd bdopt limitless_saves on
+state t2
+cmd bdopt hook_skip off
+cmd bdopt hook_filter off
+play 3
+endturn
+waitfor turn 300
+cmd bdopt hook_skip on
+cmd bdopt hook_filter on
+state t3
+cmd bdopt pile_lookup off
+cmd bdopt listeners off
+play 3
+endturn
+waitfor turn 300
+cmd bdopt pile_lookup on
+cmd bdopt listeners on
+state t4
+cmd bdopt off
+play 3
+endturn
+waitfor turn 300
+cmd bdopt on
+state t5
+play 3
+endturn
+waitfor turn 300
+state t6
+play 3
+endturn
+waitfor turn 300
+waitfor nocombat 600
+cmd bdperf verify
+waitfor combat 900
+waitfor idle 900
+state f2t1
+cmd bdopt card_ids off
+cmd bdopt combat_refresh off
+play 3
+endturn
+waitfor turn 300
+cmd bdopt card_ids on
+cmd bdopt combat_refresh on
+state f2t2
+cmd bdopt coop_checksum off
+cmd bdopt listeners off
+play 3
+endturn
+waitfor turn 300
+cmd bdopt coop_checksum on
+cmd bdopt listeners on
+state f2t3
+cmd bdopt off
+play 3
+endturn
+waitfor turn 300
+cmd bdopt on
+state f2t4
+play 3
+endturn
+waitfor turn 300
+state f2t5
+play 3
+endturn
+waitfor turn 300
+state f2t6
+play 3
+endturn
+waitfor turn 300
+waitfor nocombat 600
+cmd bdperf verify
+wait 25
+quit

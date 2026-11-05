@@ -206,6 +206,8 @@ public static class GcPacing
             {
                 GC.EndNoGCRegion();
             }
+            // A switch during the region couldn't change the mode: the region restores what it found.
+            RoomCollect.SyncLatency();
         }
     }
 }
