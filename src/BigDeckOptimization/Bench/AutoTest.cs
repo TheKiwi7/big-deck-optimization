@@ -151,6 +151,21 @@ public static partial class AutoTest
             AccessTools.Method(typeof(CardPile), "RemoveInternal")!.Invoke(me.Deck, new object[] { card, true });
             (me.RunState as ICardScope)?.RemoveCard(card);
         }
+        // The silent removal raises no event: the top bar's deck count would keep the old size.
+        var nodes = new Stack<Node>();
+        nodes.Push(((SceneTree)Engine.GetMainLoop()).Root);
+        while (nodes.Count > 0)
+        {
+            Node node = nodes.Pop();
+            if (node is MegaCrit.Sts2.Core.Nodes.TopBar.NTopBarDeckButton button)
+            {
+                button.Call("OnPileContentsChanged");
+            }
+            foreach (Node child in node.GetChildren())
+            {
+                nodes.Push(child);
+            }
+        }
         Say($"  deckfilter: removed {removed.Count} cards ({removed.Count(c => ids.Contains(c.Id.Entry))} by id), deck {me.Deck.Cards.Count} cards");
     }
 
@@ -994,7 +1009,14 @@ public static partial class AutoTest
                     _continueOnFail = arg.Trim() == "continue";
                     break;
                 default:
-                    throw new ArgumentException("unknown script command: " + parts[0]);
+                    // Commands of local, untracked tooling (another partial file implements this; without it, nothing).
+                    bool handled = false;
+                    LocalCommand(tree, parts[0], arg, ref handled);
+                    if (!handled)
+                    {
+                        throw new ArgumentException("unknown script command: " + parts[0]);
+                    }
+                    break;
             }
             }
             catch (Exception e) when (e is not OutOfMemoryException)
@@ -1436,6 +1458,9 @@ public static partial class AutoTest
         SaveManager.Instance.PrefsSave.FastMode = speed;
         Say($"  animation speed {speed}");
     }
+
+    /// <summary>A script command of a local tool file (untracked): sets <paramref name="handled"/> when it knows it.</summary>
+    static partial void LocalCommand(SceneTree tree, string command, string arg, ref bool handled);
 
     private static Player? Me() => RunManager.Instance.DebugOnlyGetState() is { } state ? LocalContext.GetMe(state) : null;
 
