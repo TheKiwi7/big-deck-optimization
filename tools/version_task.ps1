@@ -26,7 +26,9 @@ if ($Remove) {
 }
 if ($Install) {
     $py = if ($Python) { $Python } else { (Get-Command python).Source }
-    $action = New-ScheduledTaskAction -Execute "powershell.exe" -WorkingDirectory $Root -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Python `"$py`""
+    # -WindowStyle Hidden alone still flashes a console before PowerShell hides it; a headless conhost never shows one
+    # (Python and the toast notification work the same).
+    $action = New-ScheduledTaskAction -Execute "conhost.exe" -WorkingDirectory $Root -Argument "--headless powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Python `"$py`""
     $trigger = New-ScheduledTaskTrigger -Daily -At $At
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
