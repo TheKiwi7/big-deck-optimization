@@ -6,7 +6,8 @@ public-beta branches (SteamCMD, anonymous login) and the last update of the Base
 Web API). A published update players already get but this machine hasn't downloaded yet shows up here too.
 
 Usage (repo root, python -I):
-  python -I tools/check_versions.py                  versions only (exit code 1 when one differs)
+  python -I tools/check_versions.py                  versions only (exit code 1 when one differs); with nothing
+                                                     changed and Steam reached, records the date (LAST_CHECK)
   python -I tools/check_versions.py --local          without asking Steam
   python -I tools/check_versions.py --log <log>      also lists patches/hooks a session left vanilla (fingerprint
                                                      changed, patch skipped or failed, other mods patching a method)
@@ -31,6 +32,9 @@ WORKSHOP = GAME.parent.parent / "workshop" / "content" / "2868840"
 MODS = ("BaseLib", "Limitless")
 APP_ID = "2868840"
 STEAMCMD = Path(os.environ.get("STEAMCMD", r"C:\steamcmd\steamcmd.exe"))
+# Last full check (Steam asked, every row checked) that found the verified versions: machine-local, so the daily task
+# (tools/version_task.ps1) doesn't change a tracked file. versions.json's "verified" stays the date the patches were proven.
+LAST_CHECK = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "BigDeckOptimization" / "last-check.json"
 
 # Log lines of this mod saying a part of it runs the unmodified game (or another mod's version) instead.
 VANILLA = re.compile(r"\[BigDeckOptimization\].*(Patch \w+ skipped|could not be applied|changed \(fingerprint|left vanilla"
@@ -140,15 +144,19 @@ def main() -> int:
         KNOWN.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
         print(f"recorded as verified: {current}")
         return 0
-    changed = []
+    changed, unchecked = [], []
     print(f"{'':20} {'verified':>14} {'installed':>14}")
     for key in ("game", "game_assembly_hash") + MODS:
         mark = "" if known.get(key) == current.get(key) else "   <-- CHANGED"
         if mark:
             changed.append(key)
         print(f"{key:20} {str(known.get(key)):>14} {str(current.get(key)):>14}{mark}")
-    print(f"last verified: {known.get('verified', 'never')}")
-    if remote:
+    try:
+        last_check = json.loads(LAST_CHECK.read_text(encoding="utf-8")).get("checked", "never")
+    except (OSError, ValueError, AttributeError):
+        last_check = "never"
+    print(f"last verified (patches proven): {known.get('verified', 'never')}; last checked unchanged: {last_check}")
+    if "--local" not in args:
         print()
         print(f"{'published on Steam':20} {'verified':>16} {'published':>16} {'downloaded here':>16}")
         rows = [("game (public)", "game_buildid", False), ("game (public-beta)", "beta_buildid", False)]
@@ -159,6 +167,7 @@ def main() -> int:
             notes = []
             if r is None:
                 notes.append("not checked")
+                unchecked.append(key)
             elif v != r:
                 notes.append("<-- PUBLISHED UPDATE NOT VERIFIED")
                 changed.append(key)
@@ -180,6 +189,14 @@ def main() -> int:
     if changed:
         print("\nVersions changed: follow the version check protocol (CLAUDE.md) before relying on the optimizations.")
         return 1
+    if "--local" not in args and not unchecked:
+        LAST_CHECK.parent.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        LAST_CHECK.write_text(json.dumps({"checked": stamp, "versions": {k: known.get(k) for k in sorted(known)}}, indent=2) + "\n",
+                              encoding="utf-8")
+        print(f"recorded as last checked unchanged: {stamp}")
+    elif unchecked:
+        print(f"\nNOT CHECKED: {', '.join(unchecked)} (Steam not reached): a published update there would go unseen.")
     return 0
 
 
