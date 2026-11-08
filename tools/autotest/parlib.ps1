@@ -25,6 +25,9 @@ function Resolve-GameCopy([string]$dir) {
 # whatever APPDATA says, and parallel sessions of one account make cloud conflicts. So no Workshop either: the mods go in the
 # copy's mods_STEAMTEST, as for co-op sessions, for as long as the script runs.
 function Add-TestMods([string]$gameDir) {
+    # Never on the Steam install: a normal launch reads its mods_STEAMTEST before the Workshop, so a copy left there
+    # (a session stopped from outside) shadows the Workshop mods, and their updates, in the user's own games.
+    if ($gameDir -match 'steamapps' -or -not (Test-Path (Join-Path $gameDir "steam_appid.txt"))) { throw "Add-TestMods: $gameDir is not a game copy (no steam_appid.txt, or under steamapps)" }
     Set-CopyOverrides $gameDir
     $testMods = Join-Path $gameDir "mods_STEAMTEST"
     $own = Join-Path $testMods ".bdtest-created"
