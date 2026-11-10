@@ -121,11 +121,21 @@ public static class InlineGuard
     /// each patched method whose code calls a protected one (directly or through small callees) gets its replacement built
     /// again by Harmony, the same patches in the same order: now compiled with the flags set. One step per patched method: ~300 ms
     /// in all, spread over frames by <see cref="ModEntry"/> (only what a run does needs it done).
+    ///
+    /// A rebuild can fail, and a failed one used to leave the method with no patches of any mod (v1.0.0: BaseLib's postfix
+    /// on <c>NGlobalUi._Ready</c> gone, see <see cref="HarmonyRebuild"/>): each goes through <see cref="HarmonyRebuild.Run{T}"/>,
+    /// which refuses what can't be rebuilt and puts the previous code back after a failure. Without its Harmony internals
+    /// nothing is rebuilt: inlined callees are a smaller loss than another mod's patches.
     /// </summary>
     public static IEnumerable<bool> RecompileInliners(Harmony harmony)
     {
         if (!Available || _protected.Count == 0)
         {
+            yield break;
+        }
+        if (!HarmonyRebuild.Available)
+        {
+            Log.Warn($"[{ModEntry.Id}] {nameof(InlineGuard)}: Harmony's detour table not as expected, patched callers not compiled again");
             yield break;
         }
         double spent = 0;
@@ -136,22 +146,35 @@ public static class InlineGuard
             long start = System.Diagnostics.Stopwatch.GetTimestamp();
             try
             {
-                if (Reaches(patched, CalleeDepth, reaches))
+                bool rebuild = Reaches(patched, CalleeDepth, reaches);
+#if BENCH
+                // BDTEST_REBUILD_ALL=1 or a list of Type.Method: rebuilt whatever they call (a friend's game rebuilt
+                // NGlobalUi._Ready, this machine's doesn't). BDTEST_REBUILD_RAW=1: straight through Harmony, as v1.0.0 did.
+                string? forced = Environment.GetEnvironmentVariable("BDTEST_REBUILD_ALL");
+                rebuild |= forced == "1" || (forced?.Split(',').Contains(HarmonyRebuild.Describe(patched)) ?? false);
+                if (rebuild && Environment.GetEnvironmentVariable("BDTEST_REBUILD_RAW") == "1")
                 {
                     new PatchProcessor(harmony, patched).Patch();
+                    Recompiled++;
+                    rebuild = false;
+                }
+#endif
+                if (rebuild)
+                {
+                    HarmonyRebuild.Run(patched, "compiling it again", () => new PatchProcessor(harmony, patched).Patch());
                     Recompiled++;
                 }
             }
             catch (Exception e)
             {
                 failed++;
-                Log.Info($"[{ModEntry.Id}] {nameof(InlineGuard)}: {patched.DeclaringType?.Name}.{patched.Name} left as compiled: {e.Message}");
+                Log.Info($"[{ModEntry.Id}] {nameof(InlineGuard)}: {HarmonyRebuild.Describe(patched)} not compiled again, its patches as they were: {e.Message}");
             }
             spent += System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
             yield return true;
         }
         Log.Info($"[{ModEntry.Id}] {nameof(InlineGuard)}: {Recompiled} patched methods calling protected ones compiled again"
-            + (failed > 0 ? $", {failed} failed" : "") + $" ({spent:F0} ms)");
+            + (failed > 0 ? $", {failed} not" : "") + $" ({spent:F0} ms)");
     }
 
     /// <summary>Whether this method's own code calls a protected method, or a small non-virtual callee does (up to this depth).</summary>

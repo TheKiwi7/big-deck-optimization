@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.0.1
+
+- Fixed: with Limitless, opening a player's profile in co-op could leave the back button stuck, with no way back to the map. At startup this mod could accidentally undo another mod's changes to a few game screens (here BaseLib's, which Limitless's relic bar needs). It no longer can, and if something ever goes wrong there it now puts the other mod's changes back.
+
 ## v1.0.0
 
 - Version 1.0: the goal set for this mod is reached. In my tests with two players at 11,000 cards each and 189 relics, waiting, hovering, playing cards with the mouse and ending the turn all stay above 120 fps almost all the time. Starting a combat is a single pause of about half a second (your numbers will differ on another PC).

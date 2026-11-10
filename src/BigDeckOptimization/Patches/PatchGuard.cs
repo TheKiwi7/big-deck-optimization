@@ -137,10 +137,10 @@ public static class PatchGuard
 #endif
         try
         {
-            MethodInfo replacement = processor.Patch();
+            MethodInfo replacement = HarmonyRebuild.Run(original, "patching it", processor.Patch);
             if (guard && finalizer != null)
             {
-                replacement = harmony.CreateProcessor(original).AddFinalizer(new HarmonyMethod(_guard)).Patch();
+                replacement = HarmonyRebuild.Run(original, "adding the guard", () => harmony.CreateProcessor(original).AddFinalizer(new HarmonyMethod(_guard)).Patch());
             }
 #if BENCH
             CheckInstalled(original, prefix, postfix, transpiler, finalizer);
@@ -233,7 +233,7 @@ public static class PatchGuard
         }
         try
         {
-            ModEntry.Harmony.Patch(original, finalizer: new HarmonyMethod(_guard));
+            HarmonyRebuild.Run(original, "adding the guard", () => ModEntry.Harmony.Patch(original, finalizer: new HarmonyMethod(_guard)));
         }
         catch (Exception e)
         {
@@ -250,7 +250,7 @@ public static class PatchGuard
             originals.Add(p.Original);
             try
             {
-                ModEntry.Harmony.Unpatch(p.Original, p.Patch);
+                HarmonyRebuild.Run(p.Original, "removing a patch", () => ModEntry.Harmony.Unpatch(p.Original, p.Patch));
             }
             catch (Exception e)
             {
@@ -269,7 +269,7 @@ public static class PatchGuard
             }
             try
             {
-                ModEntry.Harmony.Unpatch(original, _guard);
+                HarmonyRebuild.Run(original, "removing the guard", () => ModEntry.Harmony.Unpatch(original, _guard));
             }
             catch (Exception e)
             {

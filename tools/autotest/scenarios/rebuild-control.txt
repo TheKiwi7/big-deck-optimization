@@ -1,0 +1,14 @@
+# Control of rebuild-check: the same rebuilds straight through Harmony, as v1.0.0 did. Each must report PATCHES LOST,
+# and the checks after them must fail: what rebuild-check passing means.
+onfail continue
+timeout 300
+wait 3
+rebuildcheck againraw NRewardButton._Ready
+rebuildcheck forceraw NRelicInventory.AnimShow
+rebuildcheck againraw NGlobalUi._Ready
+rebuildcheck
+newrun NECROBINDER
+waitfor run 120
+wait 2
+rebuildcheck
+quit

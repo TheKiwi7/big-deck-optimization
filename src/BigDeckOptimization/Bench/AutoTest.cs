@@ -922,6 +922,9 @@ public static partial class AutoTest
                         Say($"  PATCHED {patched.DeclaringType?.FullName}::{patched.Name} {kinds}il {patched.GetMethodBody()?.GetILAsByteArray()?.Length} by {(info == null ? "" : string.Join(",", info.Owners.Select(o => o.Split('.')[0]).Distinct()))} finalizers {(info == null ? "" : string.Join(",", info.Finalizers.Select(f => f.PatchMethod.DeclaringType?.Name + "." + f.PatchMethod.Name)))}");
                     }
                     break;
+                case "rebuildcheck":
+                    RebuildCheck.Run(arg, Say);
+                    break;
                 case "marker":
                     // A line the profiling scripts look for to cut traces into phases.
                     Say("MARKER " + arg);

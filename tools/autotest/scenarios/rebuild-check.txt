@@ -1,0 +1,23 @@
+# Every mod's patches still run after this mod's Harmony rebuilds (HarmonyRebuild). v1.0.0: InlineGuard rebuilt
+# NGlobalUi._Ready, the rebuild failed (BaseLib's postfix is declared in a generic interface) and Harmony had already undone
+# the method's detour: BaseLib's postfix gone, Limitless's relic bar left outside its scroll container, and its
+# AnimShow/AnimHide postfixes threw on the co-op profile's back button (no way back to the map).
+# BDTEST_REBUILD_ALL=1 (or a list of Type.Method) rebuilds those methods at load; with BDTEST_REBUILD_RAW=1 too, as v1.0.0
+# did: then this scenario must fail (the control).
+timeout 300
+wait 3
+rebuildcheck
+rebuildcheck again NGlobalUi._Ready
+rebuildcheck again NRewardButton._Ready
+rebuildcheck force NRelicInventory.AnimShow
+rebuildcheck
+newrun NECROBINDER
+waitfor run 120
+wait 2
+rebuildcheck
+cmd fight CULTISTS_NORMAL
+waitfor idle 60
+play 1
+waitfor idle 60
+rebuildcheck
+quit

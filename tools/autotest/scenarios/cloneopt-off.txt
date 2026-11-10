@@ -1,0 +1,20 @@
+# StS2 Clone Optimizer with this mod off: run before cloneopt-on (see there). bdopt off: the game's code, plus that mod.
+timeout 1200
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all all
+cmd bdopt off
+rebuildcheck owners CloneRestSiteOption.OnSelect
+checksum before
+state before
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 10
+checksum after
+state after
+counters clone
+quit

@@ -130,6 +130,14 @@ public static class ModEntry
         {
             Log.Warn($"[{Id}] {nameof(InlineGuard)}: patched callers not compiled again: {e}");
         }
+        try
+        {
+            HarmonyRebuild.CheckAll("applying the patches");
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"[{Id}] {nameof(HarmonyRebuild)}: {e}");
+        }
         Log.Info($"[{Id}] Patches applied: {spent:F0} ms of work over {frames} frames, {System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds:F0} ms after the start");
 #if BENCH
         Log.Info($"[{Id}] Load time: {MethodFingerprint.LoadBreakdown()}");

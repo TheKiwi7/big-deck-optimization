@@ -159,6 +159,11 @@ public static class EnchantmentTabReuse
 
         IReadOnlyList<EnchantmentModel> inner = _innerEnchantments!(enchantment);
         Control template = _enchantmentTab!(nCard);
+        // The tabs are duplicates of it: a template of another shape (another mod, a Limitless update) is Limitless's to render.
+        if (!GodotObject.IsInstanceValid(template) || !IsTab(template))
+        {
+            return false;
+        }
         TextureRect templateIcon = (TextureRect)template.GetChild(0);
         MegaLabel templateLabel = (MegaLabel)template.GetChild(1);
         Vector2 size = _tabStride!(template);

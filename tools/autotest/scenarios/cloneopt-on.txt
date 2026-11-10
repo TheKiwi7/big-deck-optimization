@@ -1,0 +1,25 @@
+# StS2 Clone Optimizer (Workshop 3747573917) with this mod: campfire clone A/B. Run with
+# BDTEST_EXTRA_MODS=Sts2CloneOptimizer, cloneopt-off then cloneopt-on: the CHECKSUM and STATE lines must match line for line
+# (and match clone-off without that mod: it clones in chunks over frames instead of one by one, same deck expected).
+# ~1,870 cards, ~1,500 Clone enchantments: above its 50-card threshold, so its batched path runs. It adds the clones over
+# frames: the deck count is waited for until it stops growing.
+timeout 1200
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all all
+cmd bdperf segments verify all
+rebuildcheck owners CloneRestSiteOption.OnSelect
+checksum before
+state before
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 10
+checksum after
+state after
+counters clone
+rebuildcheck
+quit
