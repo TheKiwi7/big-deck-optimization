@@ -25,7 +25,7 @@ context.Resolving += (ctx, name) =>
 // The mod's DLL in its own context, so its game references resolve against the chosen folder.
 Assembly mod = context.LoadFromAssemblyPath(Path.GetFullPath(args[0]));
 const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
-int problems = 0;
+int problems = 0, parts = 0;
 foreach (Type type in mod.GetTypes())
 {
     List<MethodBase> methods;
@@ -47,9 +47,20 @@ foreach (Type type in mod.GetTypes())
         }
         catch (Exception e)
         {
+            // A [PatchPart] method is checked on its own before that part is used (another version's code): it only
+            // leaves that part off, not its patch.
+            string? part = method.GetCustomAttributesData().FirstOrDefault(a => a.AttributeType.Name == "PatchPartAttribute")?.ConstructorArguments[0].Value as string;
+            if (part != null)
+            {
+                parts++;
+                // Fine when the part is another version's code (never used here); where this version needs that part,
+                // what uses it stays vanilla (RequirePartResolvable throws there): check which.
+                Console.WriteLine($"  part \"{part}\" unresolved (fine if it is another version's code, else what needs it stays vanilla): {type.FullName}.{method.Name}: {e.Message}");
+                continue;
+            }
             problems++;
             Console.WriteLine($"{type.FullName}.{method.Name}: {e.Message}");
         }
     }
 }
-Console.WriteLine($"{problems} problem(s)");
+Console.WriteLine($"{problems} problem(s){(parts > 0 ? $", {parts} [PatchPart] method(s) unresolved (see above)" : "")}");

@@ -342,7 +342,8 @@ public static partial class AutoTest
     /// <summary>One rest site option, clicked like the game's handler clicks its random pick; its screen, if any, is left to the drain.</summary>
     private static async Task RestSiteOption(SceneTree tree, string optionType, CancellationToken ct)
     {
-        NRestSiteRoom room = await WaitHelper.ForNode<NRestSiteRoom>(tree.Root, "/root/Game/RootSceneContainer/Run/RoomContainer/RestSiteRoom", ct);
+        await Until(tree, () => NRestSiteRoom.Instance is { } site && site.IsInsideTree(), 60, "rest site room");
+        NRestSiteRoom room = NRestSiteRoom.Instance!;
         await WaitHelper.Until(() => UiHelper.FindAll<NRestSiteButton>(room).Count > 0, ct, TimeSpan.FromSeconds(10), "no rest site buttons");
         List<NRestSiteButton> buttons = UiHelper.FindAll<NRestSiteButton>(room);
         NRestSiteButton? button = buttons.FirstOrDefault(b => b.Option.IsEnabled && b.Option.GetType().Name == optionType);
@@ -362,7 +363,9 @@ public static partial class AutoTest
     /// </summary>
     private static async Task Shop(SceneTree tree, bool remove, CancellationToken ct)
     {
-        NMerchantRoom room = await WaitHelper.ForNode<NMerchantRoom>(tree.Root, "/root/Game/RootSceneContainer/Run/RoomContainer/MerchantRoom", ct);
+        // The room the game's own shop handler waits for in v0.113 (its node path changed there; same property before).
+        await Until(tree, () => NMerchantRoom.Instance?.Visible ?? false, 60, "merchant room");
+        NMerchantRoom room = NMerchantRoom.Instance!;
         room.OpenInventory();
         await Frames(tree, 30);
         if (remove)
@@ -375,7 +378,7 @@ public static partial class AutoTest
             else
             {
                 int deck = Me()!.Deck.Cards.Count;
-                await DrainScreens(removal.Entry.OnTryPurchaseWrapper(room.Inventory.Inventory), ct);
+                await DrainScreens(TryPurchase(removal.Entry, room.Inventory.Inventory), ct);
                 Say($"  card removal bought: deck {deck} -> {Me()!.Deck.Cards.Count}");
             }
         }
@@ -389,7 +392,7 @@ public static partial class AutoTest
             }
             NMerchantSlot slot = _roomRng!.NextItem(affordable)!;
             bought.Add($"{slot.Entry.GetType().Name.Replace("Merchant", "").Replace("Entry", "")} {slot.Entry.Cost}");
-            await DrainScreens(slot.Entry.OnTryPurchaseWrapper(room.Inventory.Inventory), ct);
+            await DrainScreens(TryPurchase(slot.Entry, room.Inventory.Inventory), ct);
             await Frames(tree, 10);
         }
         Say($"  bought: {string.Join(", ", bought)}");
@@ -408,7 +411,7 @@ public static partial class AutoTest
         // room, its rewards. Each played in turn until a proceed option or the map shows.
         for (int pass = 0; pass < 12; pass++)
         {
-            Node? eventRoom = tree.Root.GetNodeOrNull("/root/Game/RootSceneContainer/Run/RoomContainer/EventRoom");
+            Node? eventRoom = NEventRoom.Instance is { } current && current.IsInsideTree() ? current : null;
             if (eventRoom == null || (NMapScreen.Instance?.IsOpen ?? false))
             {
                 return;

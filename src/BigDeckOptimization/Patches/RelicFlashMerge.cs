@@ -62,6 +62,14 @@ public static class RelicFlashMerge
         {
             throw new PatchSkippedException("neither handler has the known code");
         }
+        // What a merged flash skips calling: another mod's patch there keeps every flash.
+        _holderSkipped = new System.Reflection.MethodBase?[] { _holderFlash, doFlash };
+        _playerSkipped = new System.Reflection.MethodBase?[]
+        {
+            _playerFlash,
+            AccessTools.Method(typeof(MegaCrit.Sts2.Core.Commands.SfxCmd), nameof(MegaCrit.Sts2.Core.Commands.SfxCmd.Play), new[] { typeof(string), typeof(float) }),
+            AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Vfx.NRelicFlashVfx), nameof(MegaCrit.Sts2.Core.Nodes.Vfx.NRelicFlashVfx.Create), new[] { typeof(RelicModel), typeof(Creature) }),
+        };
         if (holder)
         {
             PatchGuard.Patch(harmony, _holderFlash, prefix: new HarmonyMethod(typeof(RelicFlashMerge), nameof(HolderPrefix)));
@@ -90,7 +98,7 @@ public static class RelicFlashMerge
     {
         try
         {
-            if (!Usable(_holderFlash))
+            if (!Usable(_holderSkipped))
             {
                 return true;
             }
@@ -108,7 +116,7 @@ public static class RelicFlashMerge
     {
         try
         {
-            if (!Usable(_playerFlash) || SingleTarget(targets) is not { } target)
+            if (!Usable(_playerSkipped) || SingleTarget(targets) is not { } target)
             {
                 return true;
             }
@@ -121,8 +129,24 @@ public static class RelicFlashMerge
         }
     }
 
-    private static bool Usable(System.Reflection.MethodBase? method) =>
-        Enabled && Thread.CurrentThread.ManagedThreadId == _mainThread && !PatchSafety.IsPatchedByOthers(method);
+    private static System.Reflection.MethodBase?[] _holderSkipped = Array.Empty<System.Reflection.MethodBase?>(), _playerSkipped = Array.Empty<System.Reflection.MethodBase?>();
+
+    /// <summary>On, on the main thread, and no other mod patches the handler or what it calls (a missing one counts as patched).</summary>
+    private static bool Usable(System.Reflection.MethodBase?[] skipped)
+    {
+        if (!Enabled || Thread.CurrentThread.ManagedThreadId != _mainThread)
+        {
+            return false;
+        }
+        foreach (System.Reflection.MethodBase? method in skipped)
+        {
+            if (PatchSafety.IsPatchedByOthers(method))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
 
     private static Creature? SingleTarget(IEnumerable<Creature> targets)
     {

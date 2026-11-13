@@ -374,8 +374,8 @@ public static class RelicStateReuse
     /// BaseLib 3.4.7 postfixes <c>FromInternal</c>: each of its registered "SavedSpireFields" whose target type the model has exports
     /// into the result, nothing else (a new object is only kept when one did). None registered: the game's result unchanged.
     /// </summary>
-    private const string BaseLibFieldsPostfix = "BaseLib.Patches.Utils.SavedSpireFieldPatch:PostfixFromInternal";
-    private const string BaseLibFieldsPostfixFingerprint = "860274C6B3FA909C";
+    internal const string BaseLibFieldsPostfix = "BaseLib.Patches.Utils.SavedSpireFieldPatch:PostfixFromInternal";
+    internal const string BaseLibFieldsPostfixFingerprint = "860274C6B3FA909C";
     private const string BaseLibFieldsTargetsFingerprint = "791D9757ACB7F0A0";
     private static MethodInfo[] _allowedOnFromInternal = Array.Empty<MethodInfo>();
     private static Func<IList>? _baseLibFields;

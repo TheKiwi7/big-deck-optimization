@@ -65,6 +65,8 @@ public static class ModEntry
     public static void Init()
     {
         long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        // First of this mod's assembly-load handlers: the ones added later (BaseLibTypes', FastListeners') see its count.
+        Patches.BaseLibTypes.StartCountingLoads();
 #if BENCH
         // Before the game's own start goes further: the test runner sets the window and the sound up.
         TryApply(Bench.CombatStartTimer.Name, Bench.CombatStartTimer.Apply);

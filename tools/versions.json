@@ -1,11 +1,11 @@
 {
   "game": "v0.107.1",
   "game_assembly_hash": -1555940892,
-  "BaseLib": "v3.4.7",
-  "Limitless": "v1.1.7",
+  "BaseLib": "v3.4.8",
+  "Limitless": "v1.2.1",
   "game_buildid": "23811903",
-  "beta_buildid": "24724944",
-  "BaseLib_updated": "1789149503",
-  "Limitless_updated": "1788569388",
-  "verified": "2026-11-10"
+  "beta_buildid": "26625880",
+  "BaseLib_updated": "1794487315",
+  "Limitless_updated": "1794546498",
+  "verified": "2026-11-14"
 }

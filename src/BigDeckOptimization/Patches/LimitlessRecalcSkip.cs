@@ -72,6 +72,7 @@ public static class LimitlessRecalcSkip
 
     private static long _quiet;
     private static long _quietAt = -1;
+    private static long _quietData = -1;
     // Weak: a strong one would keep the whole last run alive once the player has left it.
     private static readonly WeakReference<PlayerCombatState?> _quietState = new(null);
     private static int _sincePassCheck;
@@ -194,7 +195,10 @@ public static class LimitlessRecalcSkip
             {
                 return true;
             }
-            bool wasQuiet = _quietAt == _quiet && _quietState.TryGetTarget(out PlayerCombatState? quietState) && ReferenceEquals(quietState, __instance);
+            // Also what BaseLib's data depends on (a save registered, a type loaded): a skipped pass would miss it.
+            long dataStamp = LimitlessReserialize.DataVersion();
+            bool wasQuiet = _quietAt == _quiet && dataStamp >= 0 && dataStamp == _quietData
+                && _quietState.TryGetTarget(out PlayerCombatState? quietState) && ReferenceEquals(quietState, __instance);
             if (wasQuiet && ++_sincePassCheck < PassVerifyEvery)
             {
                 PassesSkipped++;
@@ -247,6 +251,7 @@ public static class LimitlessRecalcSkip
                 Log.Error($"[{ModEntry.Id}] {Name}: a stacked enchantment changed unseen between recalculations, every pass runs from now on");
             }
             _quietAt = quiet && version == _quiet ? version : -1;
+            _quietData = dataStamp;
             _quietState.SetTarget(__instance);
             return false;
         }
@@ -324,8 +329,16 @@ public static class LimitlessRecalcSkip
     /// <summary>Per enchantment or card type: saves no property, and (enchantments) keeps the empty RecalculateValues.</summary>
     private static readonly Dictionary<Type, bool> _plainTypes = new();
 
+    private static int _plainSpireFields = -1;
+
     private static bool Plain(Type type, bool enchantment)
     {
+        int spireFields = BaseLibTypes.SpireFieldCount();
+        if (spireFields != _plainSpireFields)
+        {
+            _plainTypes.Clear(); // A SavedSpireField registered since may target one of these types.
+            _plainSpireFields = spireFields;
+        }
         if (!_plainTypes.TryGetValue(type, out bool plain))
         {
             plain = LimitlessReserialize.SavesNoProperty(type) && (!enchantment

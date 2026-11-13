@@ -39,7 +39,20 @@ public static class CardFlightLimit
     public static bool Applied { get; private set; }
     public static long Skipped { get; private set; }
 
-    private static System.Reflection.MethodInfo? _create;
+    private static System.Reflection.MethodInfo? _create, _addCard;
+    /// <summary>What a skipped soul never runs: its _Ready, its flight, its sound and trail.</summary>
+    private static System.Reflection.MethodBase?[] _skipped = Array.Empty<System.Reflection.MethodBase?>();
+    private static System.Reflection.MethodInfo[]? _allowedOnReady;
+    private static AccessTools.FieldRef<CardPile, Action?>? _cardAddFinished;
+
+    /// <summary>
+    /// Other mods' patches on the soul's _Ready a skipped soul may leave out: SpeedX's, which only speeds that soul up
+    /// (fingerprinted). Any other patch there keeps every soul.
+    /// </summary>
+    private static readonly (string Method, string Fingerprint)[] AllowedReadyPatches =
+    {
+        ("SpeedX.Scripts.Patches.CardFlyShuffleSpeedPatch:Postfix", "9F8A3DE9AFF615B7"),
+    };
     private static AccessTools.FieldRef<NCombatCardPile, int>? _currentCount;
     private static int _mainThread;
     private static double _tokens = Burst;
@@ -61,6 +74,17 @@ public static class CardFlightLimit
         var addCard = AccessTools.Method(typeof(NCombatCardPile), "AddCard") ?? throw new MissingMethodException(nameof(NCombatCardPile), "AddCard");
         PatchSafety.RequireFingerprint(addCard, AddCardFingerprint);
         _currentCount = AccessTools.FieldRefAccess<NCombatCardPile, int>("_currentCount");
+        _addCard = addCard;
+        _cardAddFinished = AccessTools.FieldRefAccess<CardPile, Action?>("CardAddFinished");
+        System.Reflection.MethodInfo ready = AccessTools.Method(typeof(NCardFlyShuffleVfx), "_Ready")!;
+        System.Reflection.MethodInfo playAnim = AccessTools.Method(typeof(NCardFlyShuffleVfx), "PlayAnim")!;
+        _skipped = new System.Reflection.MethodBase?[]
+        {
+            playAnim, AccessTools.AsyncMoveNext(playAnim),
+            AccessTools.Method(typeof(MegaCrit.Sts2.Core.Commands.SfxCmd), "PlayCardSwooshSfx"),
+            AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Vfx.NCardTrailVfx), "Create"),
+        };
+        _readyMethod = ready;
         _mainThread = Thread.CurrentThread.ManagedThreadId;
         PatchGuard.Patch(harmony, _create, prefix: new HarmonyMethod(typeof(CardFlightLimit), nameof(CreatePrefix)));
         PatchGuard.Patch(harmony, addCard, prefix: new HarmonyMethod(typeof(CardFlightLimit), nameof(AddCardPrefix)));
@@ -72,7 +96,7 @@ public static class CardFlightLimit
         try
         {
             if (!Enabled || targetPile.Type is not (PileType.Draw or PileType.Discard)
-                || Thread.CurrentThread.ManagedThreadId != _mainThread || PatchSafety.IsPatchedByOthers(_create))
+                || Thread.CurrentThread.ManagedThreadId != _mainThread || PatchSafety.IsPatchedByOthers(_create) || SkippedPatched())
             {
                 return true;
             }
@@ -94,6 +118,38 @@ public static class CardFlightLimit
             Disable(e);
             return true;
         }
+    }
+
+    private static System.Reflection.MethodInfo? _readyMethod;
+
+    private static bool SkippedPatched()
+    {
+        _allowedOnReady ??= AllowedReady();
+        if (PatchSafety.IsPatchedByOthers(_readyMethod, _allowedOnReady))
+        {
+            return true;
+        }
+        foreach (System.Reflection.MethodBase? method in _skipped)
+        {
+            if (PatchSafety.IsPatchedByOthers(method))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static System.Reflection.MethodInfo[] AllowedReady()
+    {
+        var allowed = new List<System.Reflection.MethodInfo>();
+        foreach ((string name, string fingerprint) in AllowedReadyPatches)
+        {
+            if (AccessTools.Method(name) is { } method && PatchSafety.FingerprintMatches(MethodFingerprint.Of(method), fingerprint))
+            {
+                allowed.Add(method);
+            }
+        }
+        return allowed.ToArray();
     }
 
     private static void Count(CardPile pile)
@@ -118,10 +174,26 @@ public static class CardFlightLimit
     {
         try
         {
-            foreach ((CardPile pile, int count) in _pending)
+            // A copy: the events run other code (another mod's listener) that may move cards and skip souls again, which
+            // then queues them for the next flush instead of changing this list.
+            (CardPile Pile, int Count)[] pending = _pending.ToArray();
+            _pending.Clear();
+            foreach ((CardPile pile, int count) in pending)
             {
-                _extra = count - 1;
-                pile.InvokeCardAddFinished();
+                if (OnlyPileButtons(pile))
+                {
+                    _extra = count - 1;
+                    pile.InvokeCardAddFinished();
+                    _extra = 0;
+                }
+                else
+                {
+                    // Someone else listens (or AddCard is overridden or patched): one event per card, as the souls would.
+                    for (int i = 0; i < count; i++)
+                    {
+                        pile.InvokeCardAddFinished();
+                    }
+                }
             }
         }
         catch (Exception e)
@@ -131,8 +203,32 @@ public static class CardFlightLimit
         finally
         {
             _extra = 0;
-            _pending.Clear();
         }
+    }
+
+    /// <summary>
+    /// Whether the pile's CardAddFinished only reaches pile buttons' own <c>NCombatCardPile.AddCard</c> (not overridden,
+    /// not patched by another mod): one event then stands for several cards through <see cref="AddCardPrefix"/>.
+    /// </summary>
+    private static bool OnlyPileButtons(CardPile pile)
+    {
+        if (PatchSafety.IsPatchedByOthers(_addCard))
+        {
+            return false;
+        }
+        Action? handlers = _cardAddFinished!(pile);
+        if (handlers == null)
+        {
+            return true;
+        }
+        foreach (Delegate handler in handlers.GetInvocationList())
+        {
+            if (handler.Target is not NCombatCardPile || handler.Method.MethodHandle != _addCard!.MethodHandle)
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     /// <summary>Vanilla adds one to the count (capped by the pile's size); a flush for several cards adds the others first.</summary>

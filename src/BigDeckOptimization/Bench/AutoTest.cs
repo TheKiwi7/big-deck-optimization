@@ -357,7 +357,7 @@ public static partial class AutoTest
         await Until(tree, () => _lobbyScreen?.Lobby is { } lobby && LobbyPlayerCount(lobby) >= players, 300, $"lobby with {players} players");
         CharacterModel character = ModelDb.GetById<CharacterModel>(new ModelId(ModelId.SlugifyCategory<CharacterModel>(), parts[0].ToUpperInvariant()));
         var startLobby = _lobbyScreen!.Lobby;
-        startLobby.SetLocalCharacter(character);
+        SetLobbyCharacter(startLobby, character);
         await Frames(tree, 30);
         startLobby.SetReady(true);
         Say($"  ready as {character.Id.Entry} ({LobbyPlayerCount(startLobby)} players)");
@@ -376,13 +376,95 @@ public static partial class AutoTest
 
     /// <summary>
     /// CardSelectCmd.PushSelector through reflection: game v0.111 added an optional parameter (localOnly), which changes
-    /// the method's signature; called with its default values on any version.
+    /// the method's signature; called with its default values on any version. Game v0.113 moved the selectors to
+    /// per-player stacks of the run (<c>RunManager.CardSelectorStack</c>); its static test selector answers every player
+    /// like the old global stack: set there, a selector already set suspended until this one is disposed.
     /// </summary>
     private static IDisposable PushSelector(MegaCrit.Sts2.Core.TestSupport.ICardSelector selector)
     {
-        MethodInfo push = typeof(CardSelectCmd).GetMethods().Single(m => m.Name == nameof(CardSelectCmd.PushSelector));
-        object?[] args = push.GetParameters().Select((p, i) => i == 0 ? selector : p.Name == "localOnly" ? _localSelector : p.DefaultValue).ToArray();
-        return (IDisposable)push.Invoke(null, args)!;
+        MethodInfo? push = typeof(CardSelectCmd).GetMethods().FirstOrDefault(m => m.Name == "PushSelector");
+        if (push != null)
+        {
+            object?[] args = push.GetParameters().Select((p, i) => i == 0 ? selector : p.Name == "localOnly" ? _localSelector : p.DefaultValue).ToArray();
+            return (IDisposable)push.Invoke(null, args)!;
+        }
+        if (_localSelector)
+        {
+            throw new NotSupportedException("this game version has no local-only card selector before the run starts");
+        }
+        return SelectorStack.Push(selector);
+    }
+
+    /// <summary>
+    /// Game v0.113: the test tooling's own stack of selectors, answering through the game's one static test selector,
+    /// set while the stack holds any (another test selector set meanwhile, e.g. AutoSlay's, is suspended until then). A
+    /// scope removes its own selector wherever it is, as the old global stack's scopes did.
+    /// </summary>
+    private sealed class SelectorStack : MegaCrit.Sts2.Core.TestSupport.ICardSelector
+    {
+        private static readonly SelectorStack Instance = new();
+        private readonly List<MegaCrit.Sts2.Core.TestSupport.ICardSelector> _items = new();
+        private IDisposable? _registered;
+
+        public static IDisposable Push(MegaCrit.Sts2.Core.TestSupport.ICardSelector selector)
+        {
+            if (Instance._items.Count == 0)
+            {
+                Type stack = AccessTools.TypeByName("MegaCrit.Sts2.Core.CardSelection.CardSelectorStack") ?? throw new MissingMethodException("CardSelectCmd", "PushSelector");
+                MethodInfo set = AccessTools.Method(stack, "SetTestSelector") ?? throw new MissingMethodException(stack.Name, "SetTestSelector");
+                MethodInfo suspend = AccessTools.Method(stack, "SuspendTestSelector") ?? throw new MissingMethodException(stack.Name, "SuspendTestSelector");
+                bool already = AccessTools.Field(stack, "_testSelector")?.GetValue(null) != null;
+                IDisposable? suspended = already ? (IDisposable)suspend.Invoke(null, null)! : null;
+                IDisposable scope = (IDisposable)set.Invoke(null, new object[] { Instance })!;
+                Instance._registered = new Scopes(scope, suspended);
+            }
+            Instance._items.Add(selector);
+            return new Scopes(new Removal(selector));
+        }
+
+        private sealed class Removal(MegaCrit.Sts2.Core.TestSupport.ICardSelector selector) : IDisposable
+        {
+            public void Dispose()
+            {
+                int at = Instance._items.LastIndexOf(selector);
+                if (at < 0)
+                {
+                    return;
+                }
+                Instance._items.RemoveAt(at);
+                if (Instance._items.Count == 0)
+                {
+                    Instance._registered?.Dispose();
+                    Instance._registered = null;
+                }
+            }
+        }
+
+        public Task<IEnumerable<CardModel>> GetSelectedCards(IEnumerable<CardModel> options, int minSelect, int maxSelect) =>
+            _items[^1].GetSelectedCards(options, minSelect, maxSelect);
+
+        public MegaCrit.Sts2.Core.TestSupport.CardRewardSelection GetSelectedCardReward(
+            IReadOnlyList<CardCreationResult> options,
+            IReadOnlyList<MegaCrit.Sts2.Core.Entities.CardRewardAlternatives.CardRewardAlternative> alternatives) =>
+            _items[^1].GetSelectedCardReward(options, alternatives);
+    }
+
+    /// <summary>Disposes its scopes in order, once.</summary>
+    private sealed class Scopes : IDisposable
+    {
+        private IDisposable?[]? _scopes;
+
+        public Scopes(params IDisposable?[] scopes) => _scopes = scopes;
+
+        public void Dispose()
+        {
+            IDisposable?[]? scopes = _scopes;
+            _scopes = null;
+            foreach (IDisposable? scope in scopes ?? Array.Empty<IDisposable?>())
+            {
+                scope?.Dispose();
+            }
+        }
     }
 
     /// <summary>
@@ -541,6 +623,11 @@ public static partial class AutoTest
             PatchGuard.Patch(ModEntry.Harmony, until, prefix: new HarmonyMethod(typeof(AutoTest), lazyMessage ? nameof(LongerAutoSlayWaitLazyMessage) : nameof(LongerAutoSlayWait)));
         }
         PatchGuard.Patch(ModEntry.Harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.AutoSlay.Helpers.WaitHelper), "WithTimeout"), prefix: new HarmonyMethod(typeof(AutoTest), nameof(LongerAutoSlayRoom)));
+        // v0.113's map handler waits for the room through ForTask (30 s): a combat start with the mod off at ~2,000 cards is longer.
+        if (AccessTools.Method(typeof(MegaCrit.Sts2.Core.AutoSlay.Helpers.WaitHelper), "ForTask") is { } forTask)
+        {
+            PatchGuard.Patch(ModEntry.Harmony, forTask, prefix: new HarmonyMethod(typeof(AutoTest), nameof(LongerAutoSlayTask)));
+        }
         // The character screen clears the seed AutoSlay asked for (public version), and the run takes one from the clock, in seconds:
         // only sessions started together played the same run.
         PatchGuard.Patch(ModEntry.Harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Helpers.SeedHelper), nameof(MegaCrit.Sts2.Core.Helpers.SeedHelper.GetRandomSeed)), prefix: new HarmonyMethod(typeof(AutoTest), nameof(AutoSlayRunSeed)));
@@ -584,6 +671,8 @@ public static partial class AutoTest
     // Its limits are only guards against a stuck game: no caller goes on after one. A fixed value, as one overload calls the other on
     // the beta. Not the end of the run: with Limitless neither the game over screen nor the main menu comes (its last event goes on),
     // and 30 s are enough.
+    private static void LongerAutoSlayTask(ref TimeSpan? timeout) => timeout = TimeSpan.FromMinutes(10);
+
     private static void LongerAutoSlayWait(ref Func<bool> condition, ref TimeSpan? timeout, string? timeoutMessage)
     {
         timeout = timeoutMessage != null && (timeoutMessage.StartsWith("Main menu") || timeoutMessage.StartsWith("Game over")) ? TimeSpan.FromSeconds(30) : TimeSpan.FromMinutes(10);
@@ -755,7 +844,7 @@ public static partial class AutoTest
                     break;
                 case "selector":
                     _localSelector = arg.Trim() == "local";
-                    bool supported = typeof(CardSelectCmd).GetMethods().Any(m => m.Name == nameof(CardSelectCmd.PushSelector) && m.GetParameters().Any(p => p.Name == "localOnly"));
+                    bool supported = typeof(CardSelectCmd).GetMethods().Any(m => m.Name == "PushSelector" && m.GetParameters().Any(p => p.Name == "localOnly"));
                     Say(_localSelector && !supported ? "  FAILED: this game version has no local-only card selector" : $"  card selector: {(_localSelector ? "local player only" : "global")}");
                     break;
                 case "faultprobe":
@@ -830,13 +919,16 @@ public static partial class AutoTest
                     {
                         LogTurnStates();
                     }
-                    new MegaCrit.Sts2.Core.AutoSlay.AutoSlayer().Start(slayArgs[0]);
+                    StartAutoSlayer(slayArgs[0]);
                     break;
                 case "tomenu":
                     // Leaves the run as the game does; the next gcfull says how many of the left runs something still holds.
                     _leftRuns.Add(new WeakReference(RunManager.Instance.DebugOnlyGetState()));
                     await game.ReturnToMainMenu();
-                    // CleanUp emptied the game's selector stack: newrun must push ours again, or the next card choice waits forever.
+                    // CleanUp emptied the game's selector stack (before v0.113; v0.113's test selector outlives the run): drop
+                    // ours either way. newrun must push one again, or the next card choice waits forever.
+                    _selector?.Dispose();
+                    _combatSelector?.Dispose();
                     _selector = null;
                     _combatSelector = null;
                     Say("  on the main menu");
@@ -1107,12 +1199,13 @@ public static partial class AutoTest
             MegaCrit.Sts2.Core.Rooms.RoomType wanted = Enum.Parse<MegaCrit.Sts2.Core.Rooms.RoomType>(parts[1], ignoreCase: true);
             // The room's own node, by the name the game's handlers look for: in co-op the jump is queued, and until it runs the previous
             // room's node is still there (a script acting on it then finds it freed).
-            string? roomNode = wanted switch
+            // Through NRun's typed accessors (the room scene of that kind): the node's name changed in v0.113.
+            Func<Node?>? roomNode = wanted switch
             {
-                MegaCrit.Sts2.Core.Rooms.RoomType.Shop => "MerchantRoom",
-                MegaCrit.Sts2.Core.Rooms.RoomType.RestSite => "RestSiteRoom",
-                MegaCrit.Sts2.Core.Rooms.RoomType.Treasure => "TreasureRoom",
-                MegaCrit.Sts2.Core.Rooms.RoomType.Event => "EventRoom",
+                MegaCrit.Sts2.Core.Rooms.RoomType.Shop => () => NRun.Instance?.MerchantRoom,
+                MegaCrit.Sts2.Core.Rooms.RoomType.RestSite => () => NRun.Instance?.RestSiteRoom,
+                MegaCrit.Sts2.Core.Rooms.RoomType.Treasure => () => NRun.Instance?.TreasureRoom,
+                MegaCrit.Sts2.Core.Rooms.RoomType.Event => () => NRun.Instance?.EventRoom,
                 _ => null,
             };
             WeakReference<object>? before = _roomBeforeJump;
@@ -1120,7 +1213,7 @@ public static partial class AutoTest
             return Until(node, () => RunManager.Instance.DebugOnlyGetState()?.CurrentRoom is { } current && current.RoomType == wanted
                 && !(before != null && before.TryGetTarget(out object? left) && ReferenceEquals(left, current))
                 && NRun.Instance?.GetNodeOrNull("RoomContainer") is { } rooms && rooms.GetChildCount() > 0
-                && (roomNode == null || rooms.GetNodeOrNull(roomNode) is { } room && room.IsInsideTree() && !room.IsQueuedForDeletion()),
+                && (roomNode == null || roomNode() is { } room && GodotObject.IsInstanceValid(room) && room.IsInsideTree() && !room.IsQueuedForDeletion()),
                 parts.Length > 2 ? double.Parse(parts[2]) : 120, "room " + wanted);
         }
         double timeout = parts.Length > 1 ? double.Parse(parts[1]) : 120;
@@ -1483,8 +1576,7 @@ public static partial class AutoTest
         // The character select screen stops the menu music before starting a run; without it, it keeps playing under
         // the act music.
         MegaCrit.Sts2.Core.Nodes.Audio.NAudioManager.Instance?.StopMusic();
-        await game.StartNewSingleplayerRun(character, shouldSave: true, ActModel.GetDefaultList().ToList(),
-            Array.Empty<ModifierModel>(), seed, GameMode.Standard);
+        await StartSingleplayerRun(game, character, seed);
         Say($"  run started: {character.Id.Entry}, seed {seed}");
     }
 

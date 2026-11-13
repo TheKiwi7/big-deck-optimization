@@ -75,10 +75,18 @@ public static class DeckCountMemo
     /// <summary>Tied to the combat's piles: nothing here outlives them.</summary>
     private static readonly ConditionalWeakTable<PlayerCombatState, Counts> _counts = new();
     private static readonly MethodBase?[] _targets = new MethodBase?[3];
+    /// <summary>Per card, what a kept count skips calling: the count lambda, the piles' card list, what it reads of each card.</summary>
+    private static readonly MethodBase?[][] _skipped = new MethodBase?[3][];
     private static int _untilCheck;
 
     public static void Apply(Harmony harmony)
     {
+        MethodBase? allCards = AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState), "AllCards");
+        MethodBase? tags = AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.Tags));
+        _readers[SqueezeKind] = new[] { allCards, tags };
+        _readers[StrikeKind] = new[] { allCards, tags };
+        _readers[SpearKind] = new[] { allCards, AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.CanonicalStarCost)),
+            AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.HasStarCostX)) };
         bool squeeze = Card(SqueezeKind, typeof(Squeeze), nameof(SqueezePrefix), harmony, SqueezeFingerprint, SqueezeCountsFingerprint);
         bool strike = Card(StrikeKind, typeof(PerfectedStrike), nameof(StrikePrefix), harmony, StrikeFingerprint, StrikeCountsFingerprint);
         bool spear = Card(SpearKind, typeof(CrescentSpear), nameof(SpearPrefix), harmony, SpearFingerprint, SpearCountsFingerprint);
@@ -96,7 +104,9 @@ public static class DeckCountMemo
         {
             MethodInfo multiplier = Lambda(card, typeof(decimal));
             PatchSafety.RequireFingerprint(multiplier, fingerprint);
-            PatchSafety.RequireFingerprint(Lambda(card, typeof(bool)), countsFingerprint);
+            MethodInfo counts = Lambda(card, typeof(bool));
+            PatchSafety.RequireFingerprint(counts, countsFingerprint);
+            _skipped[kind] = _readers[kind].Append(counts).ToArray();
             PatchGuard.Patch(harmony, multiplier, prefix: new HarmonyMethod(typeof(DeckCountMemo), prefix), postfix: new HarmonyMethod(typeof(DeckCountMemo), nameof(Postfix)));
             _targets[kind] = multiplier;
             return true;
@@ -126,10 +136,25 @@ public static class DeckCountMemo
 
     private static bool SpearPrefix(CardModel __0, ref decimal __result, out decimal? __state) => Answer(SpearKind, __0, ref __result, out __state);
 
+    private static readonly MethodBase?[][] _readers = new MethodBase?[3][];
+
+    /// <summary>Another mod patches what a kept count skips (a missing one counts as patched).</summary>
+    private static bool SkippedPatched(int kind)
+    {
+        foreach (MethodBase? method in _skipped[kind])
+        {
+            if (PatchSafety.IsPatchedByOthers(method))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static bool Answer(int kind, CardModel card, ref decimal result, out decimal? expected)
     {
         expected = null;
-        if (!Enabled || !FastListeners.PilesKnown || PatchSafety.IsPatchedByOthers(_targets[kind]))
+        if (!Enabled || !FastListeners.PilesKnown || PatchSafety.IsPatchedByOthers(_targets[kind]) || SkippedPatched(kind))
         {
             return true;
         }

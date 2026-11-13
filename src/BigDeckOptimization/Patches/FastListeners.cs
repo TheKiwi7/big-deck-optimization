@@ -44,11 +44,33 @@ public static class FastListeners
 {
     public const string Name = "FastListeners";
 
-    /// <summary>v0.107.1 code mirrored: both iterators (their state machines) and both Contains.</summary>
+    /// <summary>v0.107.1 code mirrored: both iterators (their state machines) and both Contains (same in v0.111).</summary>
     private const string CombatIterateFingerprint = "58F9C719E3433DE5";
     private const string RunIterateFingerprint = "3E3597C01EA54DE8";
     private const string CombatContainsFingerprint = "210F9D7CC594C500";
     private const string RunContainsFingerprint = "78124E08E9E87556";
+
+    /// <summary>
+    /// v0.113 (beta): the same code, except the end of each walk (after the badges, the run models then the dominion if
+    /// any, instead of the multiplayer scaling model, now one of the run models) and the types Contains always accepts
+    /// (RunModel and DominionModel instead of MultiplayerScalingModel; all disjoint from the others it tests). Mirrored by
+    /// <see cref="_combatTail"/>, <see cref="_runTail"/> and the contained types, chosen at load from the fingerprint.
+    /// </summary>
+    private const string CombatIterateFingerprintV113 = "4ED0482DB5F55E7A";
+    private const string RunIterateFingerprintV113 = "3A1368FDBD84F656";
+    private const string CombatContainsFingerprintV113 = "F733811AD9608DD9";
+    private const string RunContainsFingerprintV113 = "965E872BDA8DF0C4";
+
+    /// <summary>What each walk adds after the badges, for this game version (members of another version never JIT-compiled).</summary>
+    private static Action<List<AbstractModel>, CombatState, PileFilter?>? _combatTail;
+    private static Action<List<AbstractModel>, RunState, PileFilter?>? _runTail;
+    /// <summary>The model types each Contains accepts without condition, for this game version.</summary>
+    private static Type[] _combatAlwaysContained = Array.Empty<Type>();
+    private static Type[] _runAlwaysContained = Array.Empty<Type>();
+    private static Func<CombatState, IReadOnlyList<AbstractModel>>? _combatRunModels;
+    private static Func<CombatState, AbstractModel?>? _combatDominion;
+    private static Func<RunState, IReadOnlyList<AbstractModel>>? _runRunModels;
+    private static Func<RunState, AbstractModel?>? _runDominion;
 
     public static bool Enabled { get; set; } = true;
 
@@ -103,6 +125,52 @@ public static class FastListeners
             }
         }
 
+        /// <summary>
+        /// Whether the assembly may hold model types: the game's, or one depending on it directly or through other
+        /// loaded assemblies (a type deriving from another mod's model base type needs no reference to the game). An
+        /// assembly loading later marks the kinds stale, so a dependency not loaded yet is looked at again then.
+        /// </summary>
+        private static bool DefinesModels(Assembly assembly, Dictionary<string, bool> known)
+        {
+            try
+            {
+                return assembly == typeof(AbstractModel).Assembly || DependsOnGame(assembly, known, 0);
+            }
+            catch
+            {
+                return true; // Can't tell: scan it.
+            }
+        }
+
+        private static bool DependsOnGame(Assembly assembly, Dictionary<string, bool> known, int depth)
+        {
+            string name = assembly.GetName().Name!;
+            if (known.TryGetValue(name, out bool depends))
+            {
+                return depends;
+            }
+            known[name] = false; // Cycles (none expected) end here.
+            string game = typeof(AbstractModel).Assembly.GetName().Name!;
+            foreach (AssemblyName reference in assembly.GetReferencedAssemblies())
+            {
+                if (reference.Name == game)
+                {
+                    depends = true;
+                    break;
+                }
+                if (depth < 16 && _loadedByName != null && reference.Name != null && _loadedByName.TryGetValue(reference.Name, out Assembly? loaded)
+                    && DependsOnGame(loaded, known, depth + 1))
+                {
+                    depends = true;
+                    break;
+                }
+            }
+            known[name] = depends;
+            return depends;
+        }
+
+        private static Dictionary<string, Assembly>? _loadedByName;
+
         private static void Refresh()
         {
             if (!_stale)
@@ -121,9 +189,20 @@ public static class FastListeners
             {
                 found[i] = new List<Type>();
             }
-            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+            Assembly[] assemblies = AppDomain.CurrentDomain.GetAssemblies();
+            _loadedByName = new Dictionary<string, Assembly>();
+            foreach (Assembly loaded in assemblies)
             {
-                if (assembly.IsDynamic || assembly.FullName is not { } name || name.StartsWith("System", StringComparison.Ordinal) || name.StartsWith("Microsoft", StringComparison.Ordinal) || name.StartsWith("Godot", StringComparison.Ordinal))
+                if (!loaded.IsDynamic && loaded.GetName().Name is { } loadedName)
+                {
+                    _loadedByName.TryAdd(loadedName, loaded);
+                }
+            }
+            var dependsOnGame = new Dictionary<string, bool>();
+            foreach (Assembly assembly in assemblies)
+            {
+                // Model types are in the game's assembly or in one depending on it, whatever the assembly's name.
+                if (assembly.IsDynamic || !DefinesModels(assembly, dependsOnGame))
                 {
                     continue;
                 }
@@ -1635,6 +1714,7 @@ public static class FastListeners
     private static readonly ConcurrentDictionary<MethodInfo, bool> _emptyModifierLists = new();
     /// <summary>Null = unknown (recomputed when an assembly loads, which may add CardModifier types).</summary>
     private static bool? _noCardModifierTypes;
+    private static int _modifierLoads;
     public static long SkippedModifierWalks { get; private set; }
 
     public static void Apply(Harmony harmony)
@@ -1756,8 +1836,19 @@ public static class FastListeners
                 ?? throw new MissingMethodException("CombatState.IterateHookListeners");
             _combatBody = AccessTools.EnumeratorMoveNext(combatIterate);
             _combatContains = AccessTools.Method(typeof(CombatState), "Contains");
-            PatchSafety.RequireFingerprint(_combatBody, CombatIterateFingerprint);
-            PatchSafety.RequireFingerprint(_combatContains, CombatContainsFingerprint);
+            bool v113 = WalkVersion(_combatBody, _combatContains, CombatIterateFingerprint, CombatContainsFingerprint, CombatIterateFingerprintV113, CombatContainsFingerprintV113);
+            _combatAlwaysContained = AlwaysContainedTypes(v113);
+            if (v113)
+            {
+                _combatRunModels = Getter<CombatState, IReadOnlyList<AbstractModel>>("RunModels");
+                _combatDominion = Getter<CombatState, AbstractModel?>("Dominion");
+                _combatTail = CombatRunModelsTail;
+            }
+            else
+            {
+                PatchSafety.RequirePartResolvable(typeof(FastListeners), "scaling");
+                _combatTail = CombatScalingTail;
+            }
             _allies = AccessTools.FieldRefAccess<CombatState, List<Creature>>("_allies");
             _enemies = AccessTools.FieldRefAccess<CombatState, List<Creature>>("_enemies");
             ApplySubscribers();
@@ -1776,8 +1867,19 @@ public static class FastListeners
                 ?? throw new MissingMethodException("RunState.IterateHookListeners");
             _runBody = AccessTools.EnumeratorMoveNext(runIterate);
             _runContains = AccessTools.Method(typeof(RunState), "Contains");
-            PatchSafety.RequireFingerprint(_runBody, RunIterateFingerprint);
-            PatchSafety.RequireFingerprint(_runContains, RunContainsFingerprint);
+            bool v113 = WalkVersion(_runBody, _runContains, RunIterateFingerprint, RunContainsFingerprint, RunIterateFingerprintV113, RunContainsFingerprintV113);
+            _runAlwaysContained = AlwaysContainedTypes(v113);
+            if (v113)
+            {
+                _runRunModels = Getter<RunState, IReadOnlyList<AbstractModel>>("RunModels");
+                _runDominion = Getter<RunState, AbstractModel?>("Dominion");
+                _runTail = RunRunModelsTail;
+            }
+            else
+            {
+                PatchSafety.RequirePartResolvable(typeof(FastListeners), "scaling");
+                _runTail = RunScalingTail;
+            }
             _runIterate = runIterate;
             PatchGuard.Patch(harmony, runIterate, prefix: new HarmonyMethod(typeof(FastListeners), nameof(RunPrefix)) { priority = Priority.Last });
             RunMirrored = true;
@@ -1786,6 +1888,98 @@ public static class FastListeners
         {
             Log.Info($"[{ModEntry.Id}] {Name}: run walk left vanilla (filters drop its entries as they come): {e.Message}");
         }
+    }
+
+    /// <summary>Whether a walk and its Contains are v0.113's code (false: v0.107.1's); anything else leaves the walk vanilla.</summary>
+    private static bool WalkVersion(MethodBase? body, MethodBase? contains, string iterate, string containsFp, string iterateV113, string containsV113)
+    {
+        if (body == null || contains == null)
+        {
+            throw new MissingMethodException("IterateHookListeners/Contains");
+        }
+        string actualBody = MethodFingerprint.Of(body), actualContains = MethodFingerprint.Of(contains);
+        if (PatchSafety.FingerprintMatches(actualBody, iterate) && PatchSafety.FingerprintMatches(actualContains, containsFp))
+        {
+            return false;
+        }
+        if (actualBody == iterateV113 && actualContains == containsV113)
+        {
+            return true;
+        }
+        throw new PatchSkippedException($"{body.DeclaringType?.Name}.{body.Name} / {contains.DeclaringType?.Name}.Contains changed (fingerprints {actualBody}, {actualContains}): left vanilla");
+    }
+
+    /// <summary>The types Contains accepts without condition (all must exist in this version).</summary>
+    private static Type[] AlwaysContainedTypes(bool v113)
+    {
+        string[] names = v113
+            ? new[] { "MegaCrit.Sts2.Core.Models.RunModel", "MegaCrit.Sts2.Core.Models.Dread.DominionModel", "MegaCrit.Sts2.Core.Models.AchievementModel", "MegaCrit.Sts2.Core.Models.BadgeModel", "MegaCrit.Sts2.Core.Models.ModifierModel" }
+            : new[] { "MegaCrit.Sts2.Core.Models.AchievementModel", "MegaCrit.Sts2.Core.Models.BadgeModel", "MegaCrit.Sts2.Core.Models.ModifierModel", "MegaCrit.Sts2.Core.Models.Singleton.MultiplayerScalingModel" };
+        return names.Select(n => AccessTools.TypeByName(n) is { } t && typeof(AbstractModel).IsAssignableFrom(t) ? t : throw new TypeLoadException(n)).ToArray();
+    }
+
+    /// <summary>A compiled getter of a property this build can't name (another game version's), typed as <typeparamref name="TResult"/>.</summary>
+    private static Func<TOwner, TResult> Getter<TOwner, TResult>(string property)
+    {
+        PropertyInfo info = AccessTools.Property(typeof(TOwner), property) ?? throw new MissingMemberException(typeof(TOwner).Name, property);
+        var owner = System.Linq.Expressions.Expression.Parameter(typeof(TOwner));
+        return System.Linq.Expressions.Expression.Lambda<Func<TOwner, TResult>>(
+            System.Linq.Expressions.Expression.Convert(System.Linq.Expressions.Expression.Property(owner, info), typeof(TResult)), owner).Compile();
+    }
+
+    /// <summary>v0.107.1: <c>if (MultiplayerScalingModel != null) list.Add(MultiplayerScalingModel);</c> (a type v0.113 moved: checked on its own).</summary>
+    [PatchPart("scaling")]
+    private static void CombatScalingTail(List<AbstractModel> list, CombatState state, PileFilter? filter)
+    {
+        if (state.MultiplayerScalingModel != null && (filter == null || !KindSkipEnabled || filter.Keeps(state.MultiplayerScalingModel)))
+        {
+            list.Add(state.MultiplayerScalingModel);
+        }
+    }
+
+    /// <summary>v0.107.1: <c>list.Add(MultiplayerScalingModel);</c> (a type v0.113 moved: checked on its own).</summary>
+    [PatchPart("scaling")]
+    private static void RunScalingTail(List<AbstractModel> list, RunState run, PileFilter? filter)
+    {
+        if (filter == null || !KindSkipEnabled || filter.Keeps(run.MultiplayerScalingModel))
+        {
+            list.Add(run.MultiplayerScalingModel);
+        }
+    }
+
+    /// <summary>v0.113: every run model, then the dominion if any.</summary>
+    private static void CombatRunModelsTail(List<AbstractModel> list, CombatState state, PileFilter? filter)
+    {
+        AddReacting(list, _combatRunModels!(state), filter);
+        AddIfReacting(list, _combatDominion!(state), filter);
+    }
+
+    /// <summary>v0.113: every run model, then the dominion if any.</summary>
+    private static void RunRunModelsTail(List<AbstractModel> list, RunState run, PileFilter? filter)
+    {
+        AddReacting(list, _runRunModels!(run), filter);
+        AddIfReacting(list, _runDominion!(run), filter);
+    }
+
+    private static void AddIfReacting(List<AbstractModel> list, AbstractModel? model, PileFilter? filter)
+    {
+        if (model != null && (filter == null || !KindSkipEnabled || filter.Keeps(model)))
+        {
+            list.Add(model);
+        }
+    }
+
+    private static bool IsAny(AbstractModel model, Type[] types)
+    {
+        Type type = model.GetType();
+        for (int i = 0; i < types.Length; i++)
+        {
+            if (types[i].IsAssignableFrom(type))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void ApplySubscribers()
@@ -1808,9 +2002,11 @@ public static class FastListeners
             // and assemblies not referencing BaseLib can't). Runs inside that assembly's load: never throws.
             AppDomain.CurrentDomain.AssemblyLoad += (_, args) =>
             {
-                if (_noCardModifierTypes == true && BaseLibTypes.MayDefine(args.LoadedAssembly) && BaseLibTypes.Defines(args.LoadedAssembly, CardModifierType))
+                // Asked again on next use (all loaded assemblies): an earlier one may now hold types deriving through this one.
+                if (BaseLibTypes.MayDefine(args.LoadedAssembly))
                 {
-                    _noCardModifierTypes = false;
+                    System.Threading.Interlocked.Increment(ref _modifierLoads);
+                    _noCardModifierTypes = null;
                 }
             };
             (_subscriberId, _subscriberDelegate, _combatSubscribers) = (id, del, subscribers);
@@ -1994,10 +2190,7 @@ public static class FastListeners
             }
             AddReacting(list, state.Modifiers, filter);
             AddReacting(list, state.BadgeModels, filter);
-            if (state.MultiplayerScalingModel != null && (filter == null || !KindSkipEnabled || filter.Keeps(state.MultiplayerScalingModel)))
-            {
-                list.Add(state.MultiplayerScalingModel);
-            }
+            _combatTail!(list, state, filter);
             for (int i = 0; i < list.Count; i++)
             {
                 if (CombatContains(list[i]))
@@ -2095,8 +2288,17 @@ public static class FastListeners
         {
             return false;
         }
-        _noCardModifierTypes ??= !BaseLibTypes.AnyDefined(CardModifierType);
-        return _noCardModifierTypes.Value;
+        if (_noCardModifierTypes is { } known)
+        {
+            return known;
+        }
+        int loads = System.Threading.Volatile.Read(ref _modifierLoads);
+        bool none = !BaseLibTypes.AnyDefined(CardModifierType);
+        if (loads == System.Threading.Volatile.Read(ref _modifierLoads))
+        {
+            _noCardModifierTypes = none; // Kept only when no assembly loaded meanwhile.
+        }
+        return none;
     }
 
     /// <summary><c>RunState.IterateHookListeners</c>, pooled list.</summary>
@@ -2165,10 +2367,7 @@ public static class FastListeners
                 }
                 AddReacting(list, run.Modifiers, filter);
                 AddReacting(list, run.BadgeModels, filter);
-                if (filter == null || !KindSkipEnabled || filter.Keeps(run.MultiplayerScalingModel))
-                {
-                    list.Add(run.MultiplayerScalingModel);
-                }
+                _runTail!(list, run, filter);
             }
             for (int i = 0; i < list.Count; i++)
             {
@@ -2269,7 +2468,7 @@ public static class FastListeners
         PotionModel potion => !potion.HasBeenRemovedFromState && potion.Owner.IsActiveForHooks,
         OrbModel orb => !orb.HasBeenRemovedFromState && orb.Owner.IsActiveForHooks,
         MonsterModel monster => monster.Creature.CombatState != null,
-        AchievementModel or BadgeModel or ModifierModel or MultiplayerScalingModel => true,
+        _ when IsAny(model, _combatAlwaysContained) => true,
         _ => throw new ArgumentOutOfRangeException("model", model, $"Invalid model type {model.GetType()} ({model})"),
     };
 
@@ -2280,7 +2479,7 @@ public static class FastListeners
         EnchantmentModel enchantment => enchantment.HasCard && !enchantment.Card.HasBeenRemovedFromState && enchantment.Card.Owner.IsActiveForHooks,
         RelicModel relic => !relic.HasBeenRemovedFromState && relic.Owner.IsActiveForHooks,
         PotionModel potion => !potion.HasBeenRemovedFromState && potion.Owner.IsActiveForHooks,
-        AchievementModel or BadgeModel or ModifierModel or MultiplayerScalingModel => true,
+        _ when IsAny(model, _runAlwaysContained) => true,
         _ => throw new ArgumentOutOfRangeException("model", model, $"Invalid model type {model.GetType()} ({model})"),
     };
 

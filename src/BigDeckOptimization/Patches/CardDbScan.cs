@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using HarmonyLib;
@@ -51,7 +52,23 @@ public static class CardDbScan
 
     private static readonly ConditionalWeakTable<CardPile, Pending> _pending = new();
     private static AccessTools.FieldRef<NetCombatCardDb, Dictionary<CardModel, uint>>? _cardToId;
-    private static MethodInfo? _walk;
+    private static MethodInfo? _walk, _id;
+
+    /// <summary>
+    /// Other mods' patches on IdCardIfNecessary a skipped walk may leave out: Limitless 1.2.1's card id ledger (its
+    /// multiplayer test mode), which only logs the ids of cards it sees get one, and a skipped walk only skips calls for
+    /// cards that already have one. Fingerprinted; any other patch there leaves walks vanilla.
+    /// </summary>
+    private static readonly (string Method, string Fingerprint)[] AllowedIdPatches =
+    {
+        ("Limitless.LimitlessCode.MpTest.CardIdLedger:BeforeId", "D78D1C6778A103EC"),
+        ("Limitless.LimitlessCode.MpTest.CardIdLedger:AfterId", "927A9D1E6E3E08E9"),
+    };
+    private static MethodInfo[]? _allowedOnId;
+
+    private static MethodInfo[] AllowedOnId() => _allowedOnId ??= AllowedIdPatches
+        .Select(p => AccessTools.Method(p.Method) is { } m && PatchSafety.FingerprintMatches(MethodFingerprint.Of(m), p.Fingerprint) ? m : null)
+        .Where(m => m != null).ToArray()!;
 
     public static void Apply(Harmony harmony)
     {
@@ -64,6 +81,7 @@ public static class CardDbScan
         PatchSafety.RequireFingerprint(walk, WalkFingerprint);
         _walk = walk;
         PatchSafety.RequireFingerprint(id, IdFingerprint);
+        _id = id;
         MethodInfo startCombat = AccessTools.Method(typeof(NetCombatCardDb), nameof(NetCombatCardDb.StartCombat))
             ?? throw new MissingMethodException("NetCombatCardDb.StartCombat");
         PatchSafety.RequireFingerprint(startCombat, StartCombatFingerprint);
@@ -140,7 +158,7 @@ public static class CardDbScan
     private static bool WalkPrefix(NetCombatCardDb __instance, CardPile pile)
     {
         Walks++;
-        if (!Enabled || PatchSafety.IsPatchedByOthers(_walk))
+        if (!Enabled || PatchSafety.IsPatchedByOthers(_walk) || PatchSafety.IsPatchedByOthers(_id, AllowedOnId()))
         {
             return true;
         }

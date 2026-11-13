@@ -141,7 +141,7 @@ public static partial class PatchSafety
                 // methods compiled that way skip tiered compilation.)
                 foreach (MemberInfo member in MethodFingerprint.UsedMembers(method))
                 {
-                    if (!Accessible(member, patchClass.Assembly))
+                    if (!Accessible(member, patchClass.Assembly, method.DeclaringType))
                     {
                         throw new MemberAccessException($"{member.DeclaringType?.Name}.{member.Name} is not accessible");
                     }
@@ -170,7 +170,7 @@ public static partial class PatchSafety
             {
                 foreach (MemberInfo member in MethodFingerprint.UsedMembers(method))
                 {
-                    if (!Accessible(member, patchClass.Assembly))
+                    if (!Accessible(member, patchClass.Assembly, method.DeclaringType))
                     {
                         throw new MemberAccessException($"{member.DeclaringType?.Name}.{member.Name} is not accessible");
                     }
@@ -187,7 +187,7 @@ public static partial class PatchSafety
     /// Whether code of this mod may use the member directly: its own members, or public ones (protected for overrides
     /// and base calls) of public types. This mod reaches non-public game members through reflection only.
     /// </summary>
-    private static bool Accessible(MemberInfo member, Assembly own)
+    private static bool Accessible(MemberInfo member, Assembly own, Type? user)
     {
         Type? owner = member as Type ?? member.DeclaringType;
         if (owner == null || owner.Assembly == own || owner.IsGenericParameter)
@@ -195,12 +195,31 @@ public static partial class PatchSafety
             return true;
         }
         bool visible = member is Type type ? IsVisible(type, own) : IsVisible(owner, own);
+        // Protected only from a class of this mod deriving from the owner (or nested in one): an update making a used
+        // public member protected is then a clean "skipped" instead of a MethodAccessException at the call.
+        bool family = Derives(user, owner);
         return visible && member switch
         {
-            MethodBase m => m.IsPublic || m.IsFamily || m.IsFamilyOrAssembly,
-            FieldInfo f => f.IsPublic || f.IsFamily || f.IsFamilyOrAssembly,
+            MethodBase m => m.IsPublic || ((m.IsFamily || m.IsFamilyOrAssembly) && family),
+            FieldInfo f => f.IsPublic || ((f.IsFamily || f.IsFamilyOrAssembly) && family),
             _ => true,
         };
+    }
+
+    private static bool Derives(Type? user, Type owner)
+    {
+        Type definition = owner.IsGenericType ? owner.GetGenericTypeDefinition() : owner;
+        for (Type? outer = user; outer != null; outer = outer.DeclaringType)
+        {
+            for (Type? t = outer.BaseType; t != null; t = t.BaseType)
+            {
+                if (t == owner || (t.IsGenericType && t.GetGenericTypeDefinition() == definition))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /// <summary>Public all the way out (nested types included); array, pointer and generic arguments checked too.</summary>
@@ -281,7 +300,13 @@ public static partial class PatchSafety
             return true;
         }
         long now = Environment.TickCount64;
-        if (_patchedBeyondAllowed.TryGetValue(method, out var cached) && now - cached.CheckedAt < RecheckAfterMs)
+        // Keyed by the allowed set too: two patches may allow different patches on the same method.
+        long allowedKey = 0;
+        foreach (MethodInfo allowed in allowedPatches)
+        {
+            allowedKey += allowed.MethodHandle.Value.ToInt64() * 31 + 7;
+        }
+        if (_patchedBeyondAllowed.TryGetValue((method, allowedKey), out var cached) && now - cached.CheckedAt < RecheckAfterMs)
         {
             return cached.Patched;
         }
@@ -290,7 +315,7 @@ public static partial class PatchSafety
             : info.Prefixes.Concat(info.Postfixes).Concat(info.Transpilers).Concat(info.Finalizers)
                 .Where(p => !PatchGuard.IsOurs(p.owner) && !allowedPatches.Any(a => a.MethodHandle == p.PatchMethod.MethodHandle));
         bool patched = Record(caller, method, others);
-        _patchedBeyondAllowed[method] = (patched, now);
+        _patchedBeyondAllowed[(method, allowedKey)] = (patched, now);
         return patched;
     }
 
@@ -349,5 +374,5 @@ public static partial class PatchSafety
 
     private const long RecheckAfterMs = 2000;
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<MethodBase, (bool Patched, long CheckedAt)> _patchedByOthers = new();
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<MethodBase, (bool Patched, long CheckedAt)> _patchedBeyondAllowed = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(MethodBase, long), (bool Patched, long CheckedAt)> _patchedBeyondAllowed = new();
 }

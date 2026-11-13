@@ -72,7 +72,8 @@ public static class LimitlessReserialize
     private static MethodInfo? _original;
     private static MethodInfo? _cardToSerializable;
     private static MethodInfo? _enchantmentToSerializable;
-    private static MethodInfo? _savedPropertiesFrom;
+    private static MethodInfo? _savedPropertiesFrom, _fromInternal;
+    private static MethodInfo[] _allowedOnFromInternal = Array.Empty<MethodInfo>();
     /// <summary>A MultiEnchantment's stored list (<c>SerializableEnchantmentsOnCards</c>).</summary>
     internal static AccessTools.FieldRef<object, List<SerializableCard>?>? Stored;
     private static ExtendedData? _cardData;
@@ -111,7 +112,12 @@ public static class LimitlessReserialize
         PatchSafety.RequireFingerprint(_enchantmentToSerializable, EnchantmentToSerializableFingerprint);
         _savedPropertiesFrom = AccessTools.Method(typeof(SavedProperties), nameof(SavedProperties.From));
         PatchSafety.RequireFingerprint(_savedPropertiesFrom, SavedPropertiesFromFingerprint);
-        PatchSafety.RequireFingerprint(AccessTools.Method(typeof(SavedProperties), nameof(SavedProperties.FromInternal)), SavedPropertiesFromInternalFingerprint);
+        _fromInternal = AccessTools.Method(typeof(SavedProperties), nameof(SavedProperties.FromInternal));
+        PatchSafety.RequireFingerprint(_fromInternal, SavedPropertiesFromInternalFingerprint);
+        // BaseLib's SavedSpireField export (its fields' targets get no shortcut: PlanOf) is the only patch expected there.
+        _allowedOnFromInternal = AccessTools.Method(RelicStateReuse.BaseLibFieldsPostfix) is { } fieldsPostfix
+            && PatchSafety.FingerprintMatches(MethodFingerprint.Of(fieldsPostfix), RelicStateReuse.BaseLibFieldsPostfixFingerprint)
+            ? new[] { fieldsPostfix } : Array.Empty<MethodInfo>();
         _jsonProperties = JsonPropertiesLookup();
         Type handlers = AccessTools.TypeByName(HandlersType) ?? throw new PatchSkippedException("BaseLib has no " + HandlersType);
         _cardData = new ExtendedData(handlers, typeof(CardModel), typeof(SerializableCard),
@@ -324,7 +330,7 @@ public static class LimitlessReserialize
         }
     }
 
-    private static long _patchesCheckedAt = long.MinValue;
+    private static long _patchesCheckedAt = long.MinValue / 2; // So `now - at` can't overflow: the first check runs.
     private static bool _patchedByOthers;
 
     /// <summary>
@@ -337,8 +343,9 @@ public static class LimitlessReserialize
         if (now - _patchesCheckedAt >= 2000)
         {
             _patchedByOthers = (_original != null && PatchSafety.IsPatchedByOthers(_original)) || PatchSafety.IsPatchedByOthers(_savedPropertiesFrom)
-                || PatchSafety.IsPatchedByOthers(_cardToSerializable, new[] { _cardData!.Postfix })
-                || PatchSafety.IsPatchedByOthers(_enchantmentToSerializable, new[] { _enchantmentData!.Postfix });
+                || PatchSafety.IsPatchedByOthers(_fromInternal, _allowedOnFromInternal)
+                || PatchSafety.IsPatchedByOthers(_cardToSerializable, _cardData?.Postfix is { } cardPostfix ? new[] { cardPostfix } : Array.Empty<MethodInfo>())
+                || PatchSafety.IsPatchedByOthers(_enchantmentToSerializable, _enchantmentData?.Postfix is { } enchantmentPostfix ? new[] { enchantmentPostfix } : Array.Empty<MethodInfo>());
             _patchesCheckedAt = now;
         }
         return _patchedByOthers;
@@ -602,8 +609,21 @@ public static class LimitlessReserialize
     private static Type? _lastPlanType;
     private static PropsPlan? _lastPlan;
 
+    private static int _plansSpireFields = -1;
+
+    /// <summary>
+    /// What a type saves, from the game's property list; a type a BaseLib SavedSpireField targets gets no plan (neither
+    /// None nor the list: BaseLib's FromInternal postfix adds that field's value to what the game saves).
+    /// </summary>
     private static PropsPlan PlanOf(Type type)
     {
+        int spireFields = BaseLibTypes.SpireFieldCount();
+        if (spireFields != _plansSpireFields)
+        {
+            _propsPlans.Clear();
+            _lastPlanType = null;
+            _plansSpireFields = spireFields;
+        }
         if (ReferenceEquals(type, _lastPlanType))
         {
             return _lastPlan!;
@@ -612,8 +632,9 @@ public static class LimitlessReserialize
         {
             plan = new PropsPlan();
             List<System.Reflection.PropertyInfo>? properties = _jsonProperties!(type);
-            plan.None = properties == null;
-            if (properties is { Count: 1 } && properties[0].PropertyType == typeof(List<SerializableCard>) && properties[0].GetMethod is { } getter)
+            bool spireField = BaseLibTypes.SpireFieldTargets(type);
+            plan.None = properties == null && !spireField;
+            if (!spireField && properties is { Count: 1 } && properties[0].PropertyType == typeof(List<SerializableCard>) && properties[0].GetMethod is { } getter)
             {
                 ParameterExpression model = Expression.Parameter(typeof(object));
                 plan.ListName = properties[0].Name;
@@ -675,15 +696,20 @@ public static class LimitlessReserialize
     /// </summary>
     internal static long MemoStamp()
     {
-        if (_cardData == null || !_cardData.KnownWithoutBuilding(out _, out _) || !_enchantmentData!.KnownWithoutBuilding(out _, out _))
+        // Another mod's patch on what a memo hit skips (ToSerializable, SavedProperties.From/FromInternal): no memo.
+        if (_cardData == null || !_cardData.KnownWithoutBuilding(out _, out _) || !_enchantmentData!.KnownWithoutBuilding(out _, out _) || PatchedByOthers())
         {
             return -1;
         }
-        return ((long)BaseLibTypes.Changes << 24) | ((long)_cardData.SavesCount << 12) | (uint)_enchantmentData.SavesCount;
+        return DataVersion();
     }
 
+    /// <summary>Changes when a BaseLib save is registered or a type is loaded (what BaseLib's data can depend on); -1 before applied.</summary>
+    internal static long DataVersion() =>
+        _cardData == null ? -1 : ((long)(BaseLibTypes.SpireFieldCount() + 1) << 40) | ((long)BaseLibTypes.Changes << 24) | ((long)_cardData.SavesCount << 12) | (uint)_enchantmentData!.SavesCount;
+
     /// <summary>Whether models of this type save no property: <c>SavedProperties.From</c> then returns null without reading the model.</summary>
-    internal static bool SavesNoProperty(Type type) => _jsonProperties!(type) == null;
+    internal static bool SavesNoProperty(Type type) => _jsonProperties!(type) == null && !BaseLibTypes.SpireFieldTargets(type);
 
     /// <summary>
     /// The game's saved-property lookup that <c>SavedProperties.FromInternal</c> uses: SavedPropertiesTypeCache's in

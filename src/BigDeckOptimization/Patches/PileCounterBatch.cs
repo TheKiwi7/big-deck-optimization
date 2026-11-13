@@ -56,13 +56,19 @@ public static class PileCounterBatch
         Applied = true;
     }
 
-    private static void ClearPrefix()
+    /// <summary>Paired with the finalizer through __state: a prefix of another mod throwing before this one ran leaves the depth as it was.</summary>
+    private static void ClearPrefix(out bool __state)
     {
         _clearDepth++;
+        __state = true;
     }
 
-    private static Exception? ClearFinalizer(Exception? __exception)
+    private static Exception? ClearFinalizer(Exception? __exception, bool __state)
     {
+        if (!__state)
+        {
+            return __exception;
+        }
         if (--_clearDepth == 0 && _dirty is { Count: > 0 })
         {
             List<NCombatCardPile> dirty = _dirty;

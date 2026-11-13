@@ -134,7 +134,42 @@ public static partial class HookSkip
         });
     }
 
-    private static MethodInfo? _runWalk, _combatWalk, _combatHookWalk;
+    /// <summary>Per profile, the helper methods present in this game: a dropped listener skips its calls to them.</summary>
+    private static MethodBase[]?[]? _helperMethods;
+
+    private static bool[]? _helpersPatched;
+    private static long[]? _helpersCheckedAt;
+
+    /// <summary>Asked per walk: answered from a per-profile result rechecked each second.</summary>
+    private static bool HelpersPatched(int profile)
+    {
+        _helpersPatched ??= new bool[HelperProfiles.Length];
+        _helpersCheckedAt ??= Enumerable.Repeat(long.MinValue / 2, HelperProfiles.Length).ToArray();
+        long now = Environment.TickCount64;
+        if (now - _helpersCheckedAt[profile] >= 1000)
+        {
+            _helpersPatched[profile] = AnyHelperPatched(profile);
+            _helpersCheckedAt[profile] = now;
+        }
+        return _helpersPatched[profile];
+    }
+
+    private static bool AnyHelperPatched(int profile)
+    {
+        _helperMethods ??= new MethodBase[]?[HelperProfiles.Length];
+        MethodBase[] helpers = _helperMethods[profile] ??= HelperProfiles[profile].Keys
+            .Select(key => MethodFingerprint.Resolve(typeof(AbstractModel).Assembly, key)).Where(m => m != null).ToArray()!;
+        foreach (MethodBase helper in helpers)
+        {
+            if (PatchSafety.IsPatchedByOthers(helper))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static MethodInfo? _runWalk, _combatWalk, _combatHookWalk, _combatHookWalkBody;
     private static Func<ICombatState, IEnumerable<AbstractModel>>? _vanillaCombatHookWalk;
     private static MethodInfo? _redirectRun, _redirectCombat, _redirectCombatHook;
     private static readonly Dictionary<MethodBase, int> _indexByBody = new();
@@ -152,7 +187,8 @@ public static partial class HookSkip
         _redirectRun = AccessTools.Method(typeof(HookSkip), nameof(RunWalk));
         _redirectCombat = AccessTools.Method(typeof(HookSkip), nameof(CombatWalk));
         _redirectCombatHook = AccessTools.Method(typeof(HookSkip), nameof(CombatHookWalk));
-        PatchSafety.RequireFingerprint(AccessTools.EnumeratorMoveNext(_combatHookWalk), CombatHookWalkFingerprint);
+        _combatHookWalkBody = AccessTools.EnumeratorMoveNext(_combatHookWalk);
+        PatchSafety.RequireFingerprint(_combatHookWalkBody, CombatHookWalkFingerprint);
 
         // Entries of every classified game version: per hook, the first one whose code, defaults and helpers all match.
         int absent = 0;
@@ -325,7 +361,8 @@ public static partial class HookSkip
         // never sees it), so it turns HookSkip off and this walk runs vanilla.
         try
         {
-            if (PatchSafety.IsPatchedByOthers(entry.Method) || (entry.Body != entry.Method && PatchSafety.IsPatchedByOthers(entry.Body, AllowedBodyPatches())))
+            if (PatchSafety.IsPatchedByOthers(entry.Method, AllowedBodyPatches()) || (entry.Body != entry.Method && PatchSafety.IsPatchedByOthers(entry.Body, AllowedBodyPatches()))
+                || (entry.Profile >= 0 && HelpersPatched(entry.Profile)))
             {
                 return null;
             }
@@ -351,10 +388,13 @@ public static partial class HookSkip
     }
 
     /// <summary>
-    /// Other mods' patches on a hook's state machine that leave it filtered: they must not add listener walks to the code
-    /// this transpiler redirects. BaseLib 3.4.7 makes AfterEnergyReset and AfterCardPlayed first await a method of its own
-    /// (its resource reset, its pre-play hooks) through <c>AsyncMethodCall.Create</c>: no walk added. Transpilers and the
-    /// injector fingerprinted.
+    /// Other mods' patches on a hook (or its state machine) that leave it filtered: they must not add listener walks to
+    /// the code this transpiler redirects, nor depend on which listeners it walks. BaseLib 3.4.7 makes AfterEnergyReset
+    /// and AfterCardPlayed first await a method of its own (its resource reset, its pre-play hooks) through
+    /// <c>AsyncMethodCall.Create</c>: no walk added. BaseLib 3.4.8's ModifyBlock patches apply its card modifiers to the
+    /// block before the listener walks (a prefix on <c>block</c>, a transpiler inserting one call before the first walk):
+    /// no walk added, the result independent of the listeners walked. Patches, the injector and the methods the inserted
+    /// code calls fingerprinted.
     /// </summary>
     private static MethodInfo[] AllowedBodyPatches()
     {
@@ -368,14 +408,11 @@ public static partial class HookSkip
             MethodInfo? injector = AccessTools.Method("BaseLib.Utils.Patching.AsyncMethodCall:Create");
             if (injector != null && PatchSafety.FingerprintMatches(MethodFingerprint.Of(injector), BaseLibAsyncInjectorFingerprint))
             {
-                foreach ((string name, string fingerprint) in BaseLibAwaitTranspilers)
-                {
-                    MethodInfo? transpiler = AccessTools.Method(name);
-                    if (transpiler != null && PatchSafety.FingerprintMatches(MethodFingerprint.Of(transpiler), fingerprint))
-                    {
-                        allowed.Add(transpiler);
-                    }
-                }
+                AddMatching(allowed, BaseLibAwaitTranspilers);
+            }
+            if (BaseLibBlockCallees.All(c => AccessTools.Method(c.Method) is { } callee && PatchSafety.FingerprintMatches(MethodFingerprint.Of(callee), c.Fingerprint)))
+            {
+                AddMatching(allowed, BaseLibBlockPatches);
             }
         }
         catch (Exception e)
@@ -386,12 +423,38 @@ public static partial class HookSkip
         return _allowedBodyPatches = allowed.ToArray();
     }
 
+    private static void AddMatching(List<MethodInfo> allowed, (string Method, string Fingerprint)[] patches)
+    {
+        foreach ((string name, string fingerprint) in patches)
+        {
+            MethodInfo? patch = AccessTools.Method(name);
+            if (patch != null && PatchSafety.FingerprintMatches(MethodFingerprint.Of(patch), fingerprint))
+            {
+                allowed.Add(patch);
+            }
+        }
+    }
+
     private static MethodInfo[]? _allowedBodyPatches;
     private const string BaseLibAsyncInjectorFingerprint = "DF3A98C4301D8FE8";
     private static readonly (string Method, string Fingerprint)[] BaseLibAwaitTranspilers =
     {
         ("BaseLib.Abstracts.CustomResourcePatches:AfterPlay", "A55CDC6F853C8854"),
         ("BaseLib.Patches.Hooks.AfterCardPlayedPatch:AfterPlay", "B1ED9060E4BBD70B"),
+    };
+
+    /// <summary>BaseLib 3.4.8's patches on Hook.ModifyBlock (prefix, transpiler).</summary>
+    private static readonly (string Method, string Fingerprint)[] BaseLibBlockPatches =
+    {
+        ("BaseLib.Patches.Hooks.ModifyBaseBlockPatches+ModifyBlockCalc:AdjustBaseAdditive", "2477EB2DF4CD711C"),
+        ("BaseLib.Patches.Hooks.ModifyBaseBlockPatches+ModifyBlockCalc:AdjustBaseMultiplicative", "FFCF6B94FC51BC72"),
+    };
+
+    /// <summary>What they call: a loop over the card's own modifiers, no listener walk.</summary>
+    private static readonly (string Method, string Fingerprint)[] BaseLibBlockCallees =
+    {
+        ("BaseLib.Patches.Hooks.ModifyBaseBlockPatches:ModifyBaseBlockAdditive", "16CDB53A92498CB8"),
+        ("BaseLib.Patches.Hooks.ModifyBaseBlockPatches:ModifyBaseBlockMultiplicative", "D41C34C33D28709E"),
     };
 
     /// <summary>Replaces <c>runState.IterateHookListeners(combatState)</c> in a hook.</summary>
@@ -418,7 +481,15 @@ public static partial class HookSkip
     /// <summary>Replaces <c>Hook.IterateCombatHookListeners(combatState)</c> in a hook.</summary>
     public static IEnumerable<AbstractModel> CombatHookWalk(ICombatState combatState, int index)
     {
+        // The filtered walk mirrors this method: another mod's patch on it or on what it reads keeps the game's (never throws).
         PileFilter? filter = FilterFor(index);
+        if (filter != null && HookFilter.CombatHookWalkPatched())
+        {
+            filter = null;
+#if BENCH
+            FilteredWalks--; // Counted by FilterFor, run vanilla after all.
+#endif
+        }
         if (filter == null || combatState is not CombatState combat)
         {
             return _vanillaCombatHookWalk!(combatState);
@@ -445,7 +516,7 @@ public static partial class HookSkip
     /// </summary>
     private static class BaseLibHooks
     {
-        /// <summary>BaseLib 3.4.7 methods (GetMaxHandSize: the (Player, int) overload, which holds the loop).</summary>
+        /// <summary>BaseLib 3.4.7 methods, 3.4.8 equivalents in EquivalentFingerprints (GetMaxHandSize: the (Player, int) overload, which holds the loop).</summary>
         private static readonly (string Type, string Method, Type[]? Args, string Fingerprint, string Interface)[] Targets =
         {
             ("BaseLib.Patches.Hooks.MaxHandSizePatch", "GetMaxHandSize", new[] { typeof(MegaCrit.Sts2.Core.Entities.Players.Player), typeof(int) },

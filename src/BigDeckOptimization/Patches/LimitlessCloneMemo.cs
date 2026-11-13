@@ -76,15 +76,153 @@ public static class LimitlessCloneMemo
         Applied = true;
     }
 
+    /// <summary>
+    /// What a memo hit skips besides ToSerializable (LimitlessReserialize watches that): the lambda's
+    /// <c>CardModel.FromSerializable</c> (the card's creation, its saved properties, its enchantment and upgrades) and
+    /// <c>MutableClone</c> (its dynamic variables' copies). The known patches there only shape the clone, which the lambda
+    /// serializes and drops, from the saved card, the loaded types (in the stamp) and Limitless's uncapped options (in the
+    /// stamp): BaseLib's extended data, SavedSpireField, modifier, resource and dynamic variable patches, Limitless's
+    /// enchantment, upgrade and status scaling ones (fingerprinted). Any other patch there: no memo.
+    /// </summary>
+    private static readonly (Type Type, string Method, (string Patch, string Fingerprint)[] Allowed)[] Chain =
+    {
+        (typeof(CardModel), nameof(CardModel.FromSerializable), new[] { ("BaseLib.Patches.Saves.ExtendedSavePatches+LoadExtendedCardData:InsertLoad", "62A49D6ABB10527F") }),
+        (typeof(MegaCrit.Sts2.Core.Saves.SaveUtil), "CardOrDeprecated", Array.Empty<(string, string)>()),
+        (typeof(CardModel), nameof(CardModel.ToMutable), Array.Empty<(string, string)>()),
+        (typeof(SavedProperties), nameof(SavedProperties.Fill), Array.Empty<(string, string)>()),
+        (typeof(SavedProperties), "FillInternal", new[] { ("BaseLib.Patches.Utils.SavedSpireFieldPatch:PostfixFillInternal", "9CB88B5257A66DA1") }),
+        (typeof(CardModel), "set_FloorAddedToDeck", Array.Empty<(string, string)>()),
+        (typeof(CardModel), "AfterDeserialized", Array.Empty<(string, string)>()),
+        (typeof(EnchantmentModel), nameof(EnchantmentModel.FromSerializable), new[] { ("BaseLib.Patches.Saves.ExtendedSavePatches+LoadExtendedEnchantmentData:LoadExtendedData", "33677253623C472C") }),
+        (typeof(CardModel), "EnchantInternal", new[] { ("Limitless.LimitlessCode.UncappedEnchantments.CardModelPatches.Patch_EnchantInternal:Prefix", "62B7BA3E5675B36E") }),
+        (typeof(CardModel), "set_Enchantment", new[] { ("Limitless.LimitlessCode.UncappedEnchantments.CardModelPatches.Patch_set_Enchantment:Prefix", "A9E9749AE65A7B1A") }),
+        (typeof(EnchantmentModel), nameof(EnchantmentModel.ModifyCard), Array.Empty<(string, string)>()),
+        (typeof(CardModel), "UpgradeInternal", new[]
+        {
+            ("BaseLib.Abstracts.UpgradeModifiers:UpgradeModifiersOnCard", "0E5CD63A10E2CE93"),
+            ("BaseLib.Patches.Utils.UpgradeInternalPatch:InsertVarUpgrade", "7FFE6E867A734819"),
+        }),
+        (typeof(CardModel), "set_CurrentUpgradeLevel", new[] { ("Limitless.LimitlessCode.UncappedUpgrades.DynamicVarPatches.CardModelSetPreviousLevel:Prefix", "8BC779DEFF15A360") }),
+        (typeof(CardModel), "FinalizeUpgradeInternal", new[]
+        {
+            ("BaseLib.Abstracts.CustomResourcePatches:FinalizeAdditionalResourceUpgrades", "66100426C96AA720"),
+            ("BaseLib.Abstracts.FinalizeModifierUpgrade:FinalizeModifiersOnCard", "120EDCC5332F3B4F"),
+        }),
+        (typeof(AbstractModel), nameof(AbstractModel.MutableClone), new[]
+        {
+            ("BaseLib.Utils.ICloneableField+CloneSpireFields:ModifyResult", "F81AFBBAEBB315D5"),
+            ("Limitless.LimitlessCode.UncappedActs.AbstractModelPatches.Patch_MutableClone:Postfix", "4FCF0FF046F3588C"),
+        }),
+        (typeof(CardModel), "DeepCloneFields", Array.Empty<(string, string)>()),
+        (typeof(MegaCrit.Sts2.Core.Localization.DynamicVars.DynamicVar), "Clone", new[] { ("BaseLib.Extensions.DynamicVarExtensions+CloneTooltips:Copy", "443436F93886072A") }),
+        // Called by Limitless's set_Enchantment prefix when a card gets a second enchantment.
+        (typeof(MegaCrit.Sts2.Core.Commands.CardCmd), "Enchant", new[] { ("Limitless.LimitlessCode.UncappedEnchantments.CardCmdPatches.Patch_Enchant:Transpiler", "46E29C1A39F295FA") }),
+    };
+
+    private static (System.Reflection.MethodBase Method, System.Reflection.MethodInfo[] Allowed)[]? _chain;
+    private static long _chainCheckedAt = long.MinValue / 2;
+    private static bool _chainPatched;
+
+    /// <summary>Asked per stacked card: answered from a result rechecked each second.</summary>
+    private static bool ChainPatched()
+    {
+        long now = Environment.TickCount64;
+        if (now - _chainCheckedAt < 1000)
+        {
+            return _chainPatched;
+        }
+        _chainCheckedAt = now;
+        // Every overload of each method (FromSerializable, Fill): any of them patched counts. Plus the overrides the clone
+        // reaches in card and enchantment types (their own code, no known patch).
+        _chain ??= Chain.SelectMany(c => c.Type.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly)
+                .Where(m => m.Name == c.Method)
+                .Select(m => ((System.Reflection.MethodBase)m, c.Allowed.Select(a => Allowed(a.Patch, a.Fingerprint)).OfType<System.Reflection.MethodInfo>().ToArray())))
+            .Concat(Overrides().Select(m => (m, Array.Empty<System.Reflection.MethodInfo>())))
+            .ToArray();
+        _chainPatched = false;
+        foreach ((System.Reflection.MethodBase method, System.Reflection.MethodInfo[] allowed) in _chain)
+        {
+            if (PatchSafety.IsPatchedByOthers(method, allowed))
+            {
+                _chainPatched = true;
+                break;
+            }
+        }
+        return _chainPatched;
+    }
+
+    private static readonly string[] OverriddenOnTheWay = { "AfterDeserialized", "DeepCloneFields", "ModifyCard" };
+
+    /// <summary>The overrides of the chain's virtuals in the game's and mods' card and enchantment types.</summary>
+    private static IEnumerable<System.Reflection.MethodBase> Overrides()
+    {
+        string game = typeof(CardModel).Assembly.GetName().Name!;
+        var found = new List<System.Reflection.MethodBase>();
+        foreach (System.Reflection.Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            Type?[] types;
+            try
+            {
+                if (assembly.IsDynamic || (assembly != typeof(CardModel).Assembly && !assembly.GetReferencedAssemblies().Any(r => r.Name == game)))
+                {
+                    continue;
+                }
+                types = assembly.GetTypes();
+            }
+            catch (System.Reflection.ReflectionTypeLoadException e)
+            {
+                types = e.Types;
+            }
+            catch
+            {
+                continue;
+            }
+            foreach (Type? type in types)
+            {
+                if (type == null || type == typeof(CardModel) || type == typeof(EnchantmentModel)
+                    || !(typeof(CardModel).IsAssignableFrom(type) || typeof(EnchantmentModel).IsAssignableFrom(type)))
+                {
+                    continue;
+                }
+                found.AddRange(type.GetMethods(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.DeclaredOnly)
+                    .Where(m => OverriddenOnTheWay.Contains(m.Name) && m.GetParameters().Length == 0 && m.GetBaseDefinition() != m));
+            }
+        }
+        found.AddRange(typeof(EnchantmentModel).GetMethods(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.DeclaredOnly)
+            .Where(m => m.Name == "DeepCloneFields"));
+        return found;
+    }
+
+    /// <summary>The patch method when its code is the one checked, else null (not allowed).</summary>
+    private static System.Reflection.MethodInfo? Allowed(string patch, string fingerprint) =>
+        AccessTools.Method(patch) is { } method && PatchSafety.FingerprintMatches(MethodFingerprint.Of(method), fingerprint) ? method : null;
+
+    private static Func<bool>? _uncappedEnchantments, _uncappedUpgrades;
+
+    /// <summary>Limitless's options its patches on the chain read (fixed in a run, from the config outside one).</summary>
+    private static long OptionsStamp()
+    {
+        if (_uncappedEnchantments == null)
+        {
+            Type context = AccessTools.TypeByName("Limitless.LimitlessCode.Config.ContextManager") ?? throw new MissingMemberException("Limitless ContextManager");
+            _uncappedEnchantments = AccessTools.MethodDelegate<Func<bool>>(AccessTools.PropertyGetter(context, "UncappedEnchantmentsEnabled")
+                ?? throw new MissingMemberException("ContextManager", "UncappedEnchantmentsEnabled"));
+            _uncappedUpgrades = AccessTools.MethodDelegate<Func<bool>>(AccessTools.PropertyGetter(context, "UncappedUpgradesEnabled")
+                ?? throw new MissingMemberException("ContextManager", "UncappedUpgradesEnabled"));
+        }
+        return (_uncappedEnchantments() ? 1L : 0L) << 61 | (_uncappedUpgrades!() ? 1L : 0L) << 60;
+    }
+
     /// <summary>The stamp memos are valid for, or -1 when this can't answer (then the lambda runs and nothing is kept).</summary>
     private static long Stamp()
     {
         if (!Enabled || ListenerCache.IsSuspended || LimitlessReserialize.Faulted || !LimitlessReserialize.CanCompareHere || LimitlessReserialize.PatchedByOthers()
-            || PatchSafety.IsPatchedByOthers(_lambda))
+            || PatchSafety.IsPatchedByOthers(_lambda) || ChainPatched())
         {
             return -1;
         }
-        return LimitlessReserialize.MemoStamp();
+        long stamp = LimitlessReserialize.MemoStamp();
+        return stamp < 0 ? -1 : stamp | OptionsStamp();
     }
 
     private static bool Prefix(SerializableCard __0, ref SerializableCard __result, out int __state)

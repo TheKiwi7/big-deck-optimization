@@ -71,7 +71,11 @@ public static class SnapshotVerifier
 
     private static void FromRunPostfix(IRunState runState, GameAction? justFinishedAction, ref NetFullCombatState __result)
     {
-        if (_verifying || !ListenerCache.IsInSnapshot)
+        // Also when the listener cache backs off or faulted: the card and relic reuse in snapshots still run then.
+        // A snapshot (this is FromRun's postfix), not the vanilla reference (RunVanilla), with a snapshot optimization on
+        // (also when the listener cache backs off, faulted or never applied: the card and relic reuse still run then).
+        if (_verifying || ListenerCache.IsSuspended
+            || !(ListenerCache.IsInSnapshot || (SnapshotCardReuse.Applied && SnapshotCardReuse.Enabled) || (RelicStateReuse.Applied && RelicStateReuse.Enabled)))
         {
             return;
         }

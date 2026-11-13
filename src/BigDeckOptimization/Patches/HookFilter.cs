@@ -39,13 +39,16 @@ public static class HookFilter
         /// <summary>The AbstractModel default still has the no-op code the filtering skips (checked once).</summary>
         private readonly bool _defaultHolds;
 
-        public FilteredHook(string baseMethodName, string defaultFingerprint, MethodInfo? hookMethod)
+        public FilteredHook(string baseMethodName, string defaultFingerprint, MethodInfo? hookMethod, bool optional = false)
         {
             BaseMethod = Find(typeof(AbstractModel), baseMethodName);
             _hookMethod = hookMethod;
             if (BaseMethod == null)
             {
-                Log.Info($"[{ModEntry.Id}] {Name}: AbstractModel.{baseMethodName} not found as one method: its hook left vanilla");
+                if (!optional)
+                {
+                    Log.Info($"[{ModEntry.Id}] {Name}: AbstractModel.{baseMethodName} not found as one method: its hook left vanilla");
+                }
                 return;
             }
             string actual = MethodFingerprint.Of(BaseMethod);
@@ -56,13 +59,13 @@ public static class HookFilter
             }
         }
 
-        public bool IsSafe() => _defaultHolds && !PatchSafety.IsPatchedByOthers(BaseMethod) && !PatchSafety.IsPatchedByOthers(_hookMethod);
+        public bool IsSafe() => _defaultHolds && !PatchSafety.IsPatchedByOthers(BaseMethod) && !PatchSafety.IsPatchedByOthers(_hookMethod) && !CombatHookWalkPatched();
 
         public bool IsOverriddenBy(Type type)
         {
             if (BaseMethod == null)
             {
-                return true;
+                return false; // No such method here: its hook is never safe, no list is built for it.
             }
             try
             {
@@ -81,6 +84,71 @@ public static class HookFilter
                 // When in doubt, keep calling it.
                 return true;
             }
+        }
+    }
+
+    private static MethodBase?[]? _combatHookWalkParts;
+    private static bool? _combatHookWalkKnown;
+
+    /// <summary>v0.107.1 <c>Hook.IterateCombatHookListeners</c> (its state machine), equivalents in EquivalentFingerprints.</summary>
+    private const string CombatHookWalkFingerprint = "B3B83A82B69E17FC";
+
+    /// <summary>
+    /// v0.113 <c>CombatManager.ShouldSkipCombatEffect</c>: <c>IsOverOrEnding ? !IsStarting : false</c>, the walk's "combat
+    /// ending" check since v0.113 (mirrored as those two getters).
+    /// </summary>
+    private const string ShouldSkipCombatEffectFingerprint = "43E664940DA33607";
+
+    /// <summary>
+    /// The combat hooks mirrored here, and HookSkip's combat walk, go through <c>Hook.IterateCombatHookListeners</c> in the
+    /// game, whose "combat ending" check they mirror (<see cref="CombatHookListenersEmpty"/>): true when that code isn't the
+    /// one mirrored, or another mod patches it or the getters it reads (v0.113: <c>ShouldSkipCombatEffect</c>, which the
+    /// mirror reads as the two getters it combines): the game's hooks then.
+    /// </summary>
+    internal static bool CombatHookWalkPatched([System.Runtime.CompilerServices.CallerFilePath] string caller = "")
+    {
+        try
+        {
+            if (_combatHookWalkParts == null)
+            {
+                MethodInfo? walk = AccessTools.Method(typeof(Hook), "IterateCombatHookListeners");
+                MethodBase? body = walk == null ? null : AccessTools.EnumeratorMoveNext(walk);
+                _combatHookWalkKnown = body != null && PatchSafety.FingerprintMatches(MethodFingerprint.Of(body), CombatHookWalkFingerprint);
+                if (_combatHookWalkKnown != true)
+                {
+                    Log.Info($"[{ModEntry.Id}] {Name}: Hook.IterateCombatHookListeners changed: combat hooks left vanilla");
+                }
+                var parts = new List<MethodBase?> { walk, body,
+                    AccessTools.PropertyGetter(typeof(CombatManager), nameof(CombatManager.IsOverOrEnding)),
+                    AccessTools.PropertyGetter(typeof(CombatManager), nameof(CombatManager.IsStarting)) };
+                if (AccessTools.PropertyGetter(typeof(CombatManager), "ShouldSkipCombatEffect") is { } skip)
+                {
+                    parts.Add(skip);
+                    if (_combatHookWalkKnown == true && MethodFingerprint.Of(skip) != ShouldSkipCombatEffectFingerprint)
+                    {
+                        _combatHookWalkKnown = false;
+                        Log.Info($"[{ModEntry.Id}] {Name}: CombatManager.ShouldSkipCombatEffect changed: combat hooks left vanilla");
+                    }
+                }
+                _combatHookWalkParts = parts.ToArray();
+            }
+            if (_combatHookWalkKnown != true)
+            {
+                return true;
+            }
+            foreach (MethodBase? part in _combatHookWalkParts)
+            {
+                if (PatchSafety.IsPatchedByOthers(part, caller))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"[{ModEntry.Id}] {Name}: combat hook walk not checked ({e.Message}): game hooks");
+            return true;
         }
     }
 
@@ -104,6 +172,8 @@ public static class HookFilter
     internal const int EnergyCost = 0, EnergyCostLate = 1, Keywords = 2, ShouldPlay = 3;
     internal const int DamageAdditive = 4, DamageMultiplicative = 5, DamageCap = 6;
     internal const int AllowHitting = 7, StarCost = 8;
+    /// <summary>Game v0.113 (beta) only: a third multiplicative damage loop (absent before: never safe, never used).</summary>
+    internal const int DamageMultiplicativeLate = 9;
 
 #if BENCH
     public static long HittingChecks { get; internal set; }
@@ -123,6 +193,13 @@ public static class HookFilter
 
     /// <summary>Game v0.111 (beta) <c>Hook.ModifyDamageInternal</c>: the same loops passing a new <c>CardPlay</c> to each listener.</summary>
     private const string ModifyDamageInternalWithCardPlayFingerprint = "7E4311B76F856D7F";
+
+    /// <summary>
+    /// Game v0.113 (beta) <c>Hook.ModifyDamageInternal</c>: v0.111's, with a third loop after the multiplicative one,
+    /// in the same <c>Multiplicative</c> flag, over <c>ModifyDamageMultiplicativeLate</c> (default ×1, the same code as
+    /// <c>ModifyDamageMultiplicative</c>'s).
+    /// </summary>
+    private const string ModifyDamageInternalLateFingerprint = "F7ABF27EB7D96625";
 
     /// <summary>
     /// Code of the <see cref="AbstractModel"/> defaults the filtering skips (the same in v0.107.1 and v0.111): "try"
@@ -170,6 +247,7 @@ public static class HookFilter
             new FilteredHook(nameof(AbstractModel.ModifyDamageCap), DamageCapDefault, damageHook),
             new FilteredHook(nameof(AbstractModel.ShouldAllowHitting), TrueDefault, hittingHook),
             new FilteredHook(nameof(AbstractModel.TryModifyStarCost), TryOutDefault, starColor ?? hittingHook),
+            new FilteredHook("ModifyDamageMultiplicativeLate", DamageMultiplicativeDefault, damageHook, optional: true),
         };
         Mirror(harmony, typeof(HookFilterEnergyCost), energyHook, ModifyEnergyCostFingerprint, "ModifyEnergyCostPrefix");
         Mirror(harmony, typeof(HookFilterKeywords), keywordsHook, ModifyKeywordsFingerprint, "ModifyKeywordsPrefix");
@@ -186,8 +264,15 @@ public static class HookFilter
             PatchGuard.Register(Name, typeof(HookFilterDamage), Array.Empty<PatchGuard.Installed>());
             if (HookFilterDamage.Init())
             {
-                PatchIfUnchanged(harmony, damageHook, ModifyDamageInternalWithCardPlayFingerprint,
-                    new HarmonyMethod(typeof(HookFilterDamage), nameof(HookFilterDamage.PrefixWithCardPlay)));
+                if (HookFilterDamage.HasLate && MethodFingerprint.Of(damageHook) == ModifyDamageInternalLateFingerprint)
+                {
+                    PatchGuard.Patch(harmony, damageHook, prefix: new HarmonyMethod(typeof(HookFilterDamage), nameof(HookFilterDamage.PrefixWithLate)));
+                }
+                else
+                {
+                    PatchIfUnchanged(harmony, damageHook, ModifyDamageInternalWithCardPlayFingerprint,
+                        new HarmonyMethod(typeof(HookFilterDamage), nameof(HookFilterDamage.PrefixWithCardPlay)));
+                }
             }
             else
             {
@@ -209,6 +294,12 @@ public static class HookFilter
         {
             HookFilterCostColors.StarCostColor = starColor;
         }
+        ListenerCache.RunReleased += () =>
+        {
+            _filtered = null;
+            _filteredWith = null;
+            _walked?.Clear();
+        };
         ListenerCache.ScopeEnded += () =>
         {
             // Filtered lists stay valid for their source list (listener lists are immutable and reused across
@@ -471,6 +562,10 @@ internal static class HookFilterDamage
     private static Func<AbstractModel, Creature?, ValueProp, Creature?, CardModel?, decimal>? _cap;
     private static Func<AbstractModel, Creature?, decimal, ValueProp, Creature?, CardModel?, CardPlay?, decimal>? _additivePlay, _multiplicativePlay;
     private static Func<AbstractModel, Creature?, ValueProp, Creature?, CardModel?, CardPlay?, decimal>? _capPlay;
+    /// <summary>Game v0.113: <c>ModifyDamageMultiplicativeLate</c>.</summary>
+    private static Func<AbstractModel, Creature?, decimal, ValueProp, Creature?, CardModel?, CardPlay?, decimal>? _multiplicativeLatePlay;
+
+    internal static bool HasLate => _multiplicativeLatePlay != null;
 
     /// <summary>Makes the delegates (virtual calls, like the hook's); true when this game's damage methods take a CardPlay.</summary>
     internal static bool Init()
@@ -485,6 +580,10 @@ internal static class HookFilterDamage
                 AccessTools.Method(typeof(AbstractModel), nameof(AbstractModel.ModifyDamageMultiplicative), value.Append(typeof(CardPlay)).ToArray()));
             _capPlay = Make<Func<AbstractModel, Creature?, ValueProp, Creature?, CardModel?, CardPlay?, decimal>>(
                 AccessTools.Method(typeof(AbstractModel), nameof(AbstractModel.ModifyDamageCap), cap.Append(typeof(CardPlay)).ToArray()));
+            if (AccessTools.Method(typeof(AbstractModel), "ModifyDamageMultiplicativeLate", value.Append(typeof(CardPlay)).ToArray()) is { } late)
+            {
+                _multiplicativeLatePlay = Make<Func<AbstractModel, Creature?, decimal, ValueProp, Creature?, CardModel?, CardPlay?, decimal>>(late);
+            }
             return true;
         }
         _additive = Make<Func<AbstractModel, Creature?, decimal, ValueProp, Creature?, CardModel?, decimal>>(
@@ -511,6 +610,12 @@ internal static class HookFilterDamage
         ref List<AbstractModel> modifiers, ref decimal __result) =>
         Mirror(runState, combatState, target, dealer, damage, props, cardSource, cardPlay, modifyDamageHookType, ref modifiers, ref __result);
 
+    /// <summary>Game v0.113 (beta): v0.111's hook with the late multiplicative loop.</summary>
+    internal static bool PrefixWithLate(IRunState runState, ICombatState? combatState, Creature? target, Creature? dealer,
+        decimal damage, ValueProp props, CardModel? cardSource, CardPlay? cardPlay, ModifyDamageHookType modifyDamageHookType,
+        ref List<AbstractModel> modifiers, ref decimal __result) =>
+        Mirror(runState, combatState, target, dealer, damage, props, cardSource, cardPlay, modifyDamageHookType, ref modifiers, ref __result, late: true);
+
     private static decimal Additive(AbstractModel item, Creature? target, decimal num, ValueProp props, Creature? dealer, CardModel? cardSource, CardPlay? cardPlay) =>
         _additivePlay != null ? _additivePlay(item, target, num, props, dealer, cardSource, cardPlay) : _additive!(item, target, num, props, dealer, cardSource);
 
@@ -523,7 +628,7 @@ internal static class HookFilterDamage
     /// <summary>Mirrors <c>Hook.ModifyDamageInternal</c> over the filtered run listeners.</summary>
     private static bool Mirror(IRunState runState, ICombatState? combatState, Creature? target, Creature? dealer,
         decimal damage, ValueProp props, CardModel? cardSource, CardPlay? cardPlay, ModifyDamageHookType modifyDamageHookType,
-        ref List<AbstractModel> modifiers, ref decimal __result)
+        ref List<AbstractModel> modifiers, ref decimal __result, bool late = false)
     {
         if (!HookFilter.Active || runState is not RunState run)
         {
@@ -534,7 +639,8 @@ internal static class HookFilterDamage
             List<AbstractModel>? additive = HookFilter.ForRun(run, combatState, HookFilter.DamageAdditive);
             List<AbstractModel>? multiplicative = HookFilter.ForRun(run, combatState, HookFilter.DamageMultiplicative);
             List<AbstractModel>? cap = HookFilter.ForRun(run, combatState, HookFilter.DamageCap);
-            if (additive == null || multiplicative == null || cap == null)
+            List<AbstractModel>? multiplicativeLate = late ? HookFilter.ForRun(run, combatState, HookFilter.DamageMultiplicativeLate) : null;
+            if (additive == null || multiplicative == null || cap == null || (late && multiplicativeLate == null))
             {
                 return true;
             }
@@ -561,6 +667,18 @@ internal static class HookFilterDamage
                     if (factor != 1m)
                     {
                         list.Add(item);
+                    }
+                }
+                if (multiplicativeLate != null)
+                {
+                    foreach (AbstractModel item in multiplicativeLate)
+                    {
+                        decimal factor = _multiplicativeLatePlay!(item, target, num, props, dealer, cardSource, cardPlay);
+                        num *= factor;
+                        if (factor != 1m)
+                        {
+                            list.Add(item);
+                        }
                     }
                 }
             }

@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.0.2
+
+- Works with the game's current beta (v0.113): its new run and dominion effects are handled, and the optimizations stay on there. The same version still works on the public game.
+- Checked with BaseLib 3.4.8 and Limitless 1.2.1. With BaseLib 3.4.8, block calculations and its healing effects stay optimized.
+- Fixed rare cases that could have desynced a co-op game: turning on 'Limitless enchantment copies' during a combat, a content mod storing its own values on cards, or another mod changing how cards are saved. Safety checks meant to detect that last case never actually ran; they do now.
+- Turning the mod off now gives idle buttons their normal input right away (before, only after a click).
+- Better compatibility: the mod steps aside in more places when another mod changes the same game code, including some visual effects (hover tips, relic flashes, cards flying to their pile).
+
 ## v1.0.1
 
 - Fixed: with Limitless, opening a player's profile in co-op could leave the back button stuck, with no way back to the map. At startup this mod could accidentally undo another mod's changes to a few game screens (here BaseLib's, which Limitless's relic bar needs). It no longer can, and if something ever goes wrong there it now puts the other mod's changes back.

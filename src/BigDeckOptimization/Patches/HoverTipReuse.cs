@@ -47,6 +47,19 @@ public static class HoverTipReuse
     private static readonly ConditionalWeakTable<NCreature, Shown> _shown = new();
     private static Func<Dictionary<Control, NHoverTipSet>>? _activeHoverTips;
     private static System.Reflection.MethodInfo? _handler;
+    private static System.Reflection.MethodBase[] _skipped = Array.Empty<System.Reflection.MethodBase>();
+
+    private static bool SkippedPatched()
+    {
+        foreach (System.Reflection.MethodBase method in _skipped)
+        {
+            if (PatchSafety.IsPatchedByOthers(method))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
 
     public static void Apply(Harmony harmony)
     {
@@ -57,6 +70,16 @@ public static class HoverTipReuse
         PatchSafety.RequireFingerprint(AccessTools.Method(typeof(NCreature), nameof(NCreature.HideHoverTips)), HideFingerprint);
         PatchSafety.RequireFingerprint(AccessTools.Method(typeof(NHoverTipSet), "Init"), InitFingerprint);
         _handler = handler;
+        // What a reuse skips calling: another mod's patch there (e.g. adding content to the tips) keeps the rebuilds.
+        _skipped = new System.Reflection.MethodBase[]
+            {
+                AccessTools.Method(typeof(NCreature), nameof(NCreature.ShowHoverTips))!,
+                AccessTools.Method(typeof(NCreature), nameof(NCreature.HideHoverTips))!,
+                AccessTools.Method(typeof(NHoverTipSet), "Init")!,
+            }
+            .Concat(typeof(NHoverTipSet).GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
+                .Where(m => m.Name is "CreateAndShow" or "Remove"))
+            .ToArray();
         var field = AccessTools.Field(typeof(NHoverTipSet), "_activeHoverTips") ?? throw new MissingFieldException("NHoverTipSet._activeHoverTips");
         var active = (Dictionary<Control, NHoverTipSet>)field.GetValue(null)!;
         _activeHoverTips = () => active;
@@ -68,7 +91,7 @@ public static class HoverTipReuse
     private static bool Prefix(NCreature __instance)
     {
         // Asked at each call: a mod loading later may patch it too.
-        if (!Enabled || PatchSafety.IsPatchedByOthers(_handler))
+        if (!Enabled || PatchSafety.IsPatchedByOthers(_handler) || SkippedPatched())
         {
             return true;
         }

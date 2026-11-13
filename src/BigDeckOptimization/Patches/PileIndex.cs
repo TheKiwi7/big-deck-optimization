@@ -76,6 +76,33 @@ public static class PileIndex
 
     /// <summary>A method of <see cref="Fingerprints"/> changed: each call is checked by its effect.</summary>
     private static bool _selfCheck;
+    private static MethodBase?[] _listMethods = Array.Empty<MethodBase?>();
+    private static long _othersAt = long.MinValue / 2;
+    private static bool _others;
+
+    /// <summary>
+    /// Every add, remove and clear is checked by its effect: a list method changed (<see cref="_selfCheck"/>), or another
+    /// mod patches one (it could skip the original or change the list another way). Rechecked each second.
+    /// </summary>
+    private static bool SelfChecking()
+    {
+        if (_selfCheck)
+        {
+            return true;
+        }
+        long now = Environment.TickCount64;
+        if (now - _othersAt >= 1000)
+        {
+            _othersAt = now;
+            bool others = false;
+            foreach (MethodBase? method in _listMethods)
+            {
+                others |= PatchSafety.IsPatchedByOthers(method);
+            }
+            _others = others;
+        }
+        return _others;
+    }
     private static long _removes;
 
     private static readonly ConditionalWeakTable<CardModel, Entry> _entries = new();
@@ -88,9 +115,17 @@ public static class PileIndex
     /// <summary>Set by the verification and the bench to get the vanilla answer.</summary>
     [ThreadStatic] private static bool _vanilla;
 
+    private static MethodInfo? _playerPiles;
+
     public static void Apply(Harmony harmony)
     {
+        // The index starts empty: cards already in piles (a run that exists before this applies) would answer no pile.
+        if (MegaCrit.Sts2.Core.Runs.RunManager.Instance?.IsInProgress == true)
+        {
+            throw new PatchSkippedException("a run already exists: its cards aren't indexed");
+        }
         _getter = AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.Pile)) ?? throw new MissingMethodException("CardModel.Pile");
+        _playerPiles = AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Entities.Players.Player), "Piles") ?? throw new MissingMethodException("Player.Piles");
         PatchSafety.RequireFingerprint(_getter, GetterFingerprint);
         foreach ((string method, string fingerprint) in Fingerprints)
         {
@@ -127,13 +162,12 @@ public static class PileIndex
             prefix: new HarmonyMethod(typeof(PileIndex), nameof(BeforeRemove)) { priority = Priority.Last },
             finalizer: Method(nameof(AfterRemove)));
         PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), nameof(CardPile.Clear)), prefix: Method(nameof(BeforeClear)), finalizer: Method(nameof(ClearFinalizer)));
-        if (_selfCheck)
+        // Always: another mod patching a reorder (or a changed one) must not change the count unseen.
+        foreach (string reorder in new[] { nameof(CardPile.MoveToBottomInternal), nameof(CardPile.MoveToTopInternal) })
         {
-            foreach (string reorder in new[] { nameof(CardPile.MoveToBottomInternal), nameof(CardPile.MoveToTopInternal) })
-            {
-                PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), reorder), prefix: Method(nameof(BeforeReorder)), finalizer: Method(nameof(AfterReorder)));
-            }
+            PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), reorder), prefix: Method(nameof(BeforeReorder)), finalizer: Method(nameof(AfterReorder)));
         }
+        _listMethods = Fingerprints.Select(f => (MethodBase?)AccessTools.Method(typeof(CardPile), f.Method)).ToArray();
         PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), nameof(CardPile.RandomizeOrderInternal)),
             prefix: Method(nameof(BeforeRandomize)), postfix: Method(nameof(AfterRandomize)));
         PatchGuard.Patch(harmony, _getter, prefix: Method(nameof(PilePrefix)));
@@ -174,7 +208,7 @@ public static class PileIndex
     /// <summary>How many of these piles hold the card (0 or 1), or -1 when unsure.</summary>
     internal static int PlacesIn(CardModel card, IReadOnlyList<CardPile> piles)
     {
-        if (!Enabled || !Applied || _selfCheck)
+        if (!Enabled || !Applied || SelfChecking())
         {
             return -1;
         }
@@ -288,7 +322,7 @@ public static class PileIndex
             }
         }
 
-        public static Saved Of(Entry entry, CardPile pile) => new(entry, entry.Count, entry.Pile, entry.Unknown, _selfCheck ? pile.Cards.Count : 0);
+        public static Saved Of(Entry entry, CardPile pile) => new(entry, entry.Count, entry.Pile, entry.Unknown, pile.Cards.Count);
     }
 
     private static void BeforeAdd(CardPile __instance, CardModel card, bool __runOriginal, out Saved __state)
@@ -312,32 +346,67 @@ public static class PileIndex
         }
     }
 
-    /// <summary>AddInternal throws on duplicates or canonical cards: undone.</summary>
-    private static Exception? AfterAdd(Exception? __exception, CardPile __instance, Saved __state)
+    /// <summary>
+    /// AddInternal throws on duplicates or canonical cards (before the list changes): undone. A throw after the list
+    /// changed (an event handler) keeps the add, as the pile does; anything else can't be followed.
+    /// </summary>
+    private static Exception? AfterAdd(Exception? __exception, CardPile __instance, Saved __state, bool __runOriginal)
     {
         if (__exception != null)
         {
-            __state.Restore();
+            AfterThrow(__instance, __state, +1);
         }
-        else if (_selfCheck && __state.Set && Enabled && __instance.Cards.Count != __state.PileCount + 1)
+        else if (!__runOriginal)
+        {
+            // A prefix after ours skipped the original: it may have added the card itself. Judged by the pile, as a throw.
+            AfterThrow(__instance, __state, +1);
+        }
+        else if (SelfChecking() && __state.Set && Enabled && __instance.Cards.Count != __state.PileCount + 1)
         {
             Fail($"an add left the {__instance.Type} pile with {__instance.Cards.Count} cards, it had {__state.PileCount}");
         }
         return __exception;
     }
 
-    /// <summary>RemoveInternal throws on a card not in the pile: undone.</summary>
-    private static Exception? AfterRemove(Exception? __exception, CardPile __instance, Saved __state)
+    /// <summary>RemoveInternal throws on a card not in the pile (before the list changes): undone; see <see cref="AfterAdd"/>.</summary>
+    private static Exception? AfterRemove(Exception? __exception, CardPile __instance, Saved __state, bool __runOriginal)
     {
         if (__exception != null)
         {
-            __state.Restore();
+            AfterThrow(__instance, __state, -1);
         }
-        else if (_selfCheck && __state.Set && Enabled && __instance.Cards.Count != __state.PileCount - 1)
+        else if (!__runOriginal)
+        {
+            // A prefix after ours skipped the original: it may have removed the card itself. Judged by the pile, as a throw
+            // (an undone remove isn't one of those a Clear accounts for).
+            AfterThrow(__instance, __state, -1);
+        }
+        else if (SelfChecking() && __state.Set && Enabled && __instance.Cards.Count != __state.PileCount - 1)
         {
             Fail($"a remove left the {__instance.Type} pile with {__instance.Cards.Count} cards, it had {__state.PileCount}");
         }
         return __exception;
+    }
+
+    private static void AfterThrow(CardPile pile, Saved state, int delta)
+    {
+        if (!state.Set)
+        {
+            return;
+        }
+        int count = pile.Cards.Count;
+        if (count == state.PileCount)
+        {
+            state.Restore();
+            if (delta < 0)
+            {
+                _removes--;
+            }
+        }
+        else if (count != state.PileCount + delta)
+        {
+            Fail($"a failed {(delta > 0 ? "add" : "remove")} left the {pile.Type} pile with {count} cards, it had {state.PileCount}");
+        }
     }
 
     private static void BeforeReorder(CardPile __instance, out int __state) => __state = __instance.Cards.Count;
@@ -386,7 +455,7 @@ public static class PileIndex
     private readonly record struct ClearState(long Removes, int Cards);
 
     private static void BeforeClear(CardPile __instance, out ClearState __state) =>
-        __state = new ClearState(_removes, _selfCheck ? __instance.Cards.Count : 0);
+        __state = new ClearState(_removes, __instance.Cards.Count);
 
     /// <summary>A clear that throws midway empties the list without RemoveInternal for the rest: stop trusting the index.</summary>
     private static Exception? ClearFinalizer(Exception? __exception, ClearState __state)
@@ -395,7 +464,7 @@ public static class PileIndex
         {
             Fail("CardPile.Clear threw, the index may be stale: " + __exception.Message);
         }
-        else if (_selfCheck && Enabled && _removes - __state.Removes != __state.Cards)
+        else if (SelfChecking() && Enabled && _removes - __state.Removes != __state.Cards)
         {
             Fail($"a clear of {__state.Cards} cards made {_removes - __state.Removes} removes");
         }
@@ -438,7 +507,8 @@ public static class PileIndex
         if (--_getterCheckCalls < 0)
         {
             _getterCheckCalls = 1023;
-            _getterPatched = PatchSafety.IsPatchedByOthers(_getter);
+            // Also Player.Piles, which the answer reads the piles of directly (a mod adding a pile there).
+            _getterPatched = PatchSafety.IsPatchedByOthers(_getter) || PatchSafety.IsPatchedByOthers(_playerPiles);
         }
         return _getterPatched;
     }

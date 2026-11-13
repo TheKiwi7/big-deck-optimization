@@ -45,7 +45,7 @@ public static class GridSortCache
     };
 
     private static readonly ConditionalWeakTable<Dictionary<SortingOrders, Func<CardModel, CardModel, int>>, object> _wrapped = new();
-    private static readonly Dictionary<SortingOrders, bool> _fingerprintOk = new();
+    private static readonly Dictionary<(SortingOrders, System.Reflection.MethodInfo), bool> _fingerprintOk = new();
     private static AccessTools.FieldRef<NCardGrid, List<CardModel>>? _cards;
 
     /// <summary>Per-card values for the SetCards call in progress (main thread only).</summary>
@@ -148,12 +148,13 @@ public static class GridSortCache
 
     private static bool IsMirrored(SortingOrders order, Func<CardModel, CardModel, int> original, Mirrored mirrored)
     {
-        if (!_fingerprintOk.TryGetValue(order, out bool ok))
+        // Per order and comparer method: another mod may put its own comparer for some grids only.
+        if (!_fingerprintOk.TryGetValue((order, original.Method), out bool ok))
         {
             string actual = MethodFingerprint.Of(original.Method);
             ok = mirrored.Kind switch { Kind.Cost => _costLoads, Kind.Title => _titleLoads, _ => true }
                 && PatchSafety.FingerprintMatches(actual, mirrored.Fingerprint);
-            _fingerprintOk[order] = ok;
+            _fingerprintOk[(order, original.Method)] = ok;
             if (!ok)
             {
                 Log.Info($"[{ModEntry.Id}] {Name}: {order} comparer changed (fingerprint {actual}, expected {mirrored.Fingerprint}): left vanilla");

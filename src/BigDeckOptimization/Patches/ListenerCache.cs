@@ -72,6 +72,9 @@ public static class ListenerCache
     /// <summary>True while inside a checksum snapshot where the snapshot optimizations may run.</summary>
     public static bool IsInSnapshot => SnapshotEnabled && _snapshotDepth > 0 && _safe && !_suspended;
 
+    /// <summary>Inside a snapshot scope, whether or not its listener lists are cached (the snapshot reuse patches run either way).</summary>
+    public static bool InSnapshotScope => _snapshotDepth > 0 && !_suspended;
+
     /// <summary>True inside any scope (snapshot or refresh) where listener lists are cached.</summary>
     public static bool IsCaching => _safe && !_suspended
         && ((SnapshotEnabled && _snapshotDepth > 0) || (RefreshEnabled && _refreshDepth > 0));
@@ -121,6 +124,16 @@ public static class ListenerCache
         {
             PatchGuard.Patch(harmony, Require(target), postfix: Method(nameof(Invalidate)));
         }
+        // Game v0.113: the walks also yield the run's dominion. Every write goes through its setter (the field's only
+        // writer: checked), which invalidates. Absent before v0.113.
+        foreach (Type owner in new[] { typeof(RunState), typeof(CombatState) })
+        {
+            if (AccessTools.PropertySetter(owner, "Dominion") is { } setDominion)
+            {
+                PatchSafety.RequireFieldWriters(owner, "<Dominion>k__BackingField", "set_Dominion");
+                PatchGuard.Patch(harmony, setDominion, postfix: Method(nameof(Invalidate)));
+            }
+        }
         // A card's enchantment/affliction is only listed through a pile, and only owned cards sit in piles. Ownerless
         // cards are detached models, e.g. Limitless' enchantment storage cards rebuilt while rendering every card.
         PatchSafety.RequireFieldWriters(typeof(CardModel), "<Enchantment>k__BackingField", "set_Enchantment");
@@ -134,6 +147,11 @@ public static class ListenerCache
         _runIterate = Require(AccessTools.Method(typeof(RunState), nameof(RunState.IterateHookListeners), new[] { typeof(ICombatState) }));
         PatchGuard.Patch(harmony, _combatIterate, prefix: Method(nameof(CombatIteratePrefix)));
         PatchGuard.Patch(harmony, _runIterate, prefix: Method(nameof(RunIteratePrefix)));
+        // A left run: the lists kept for the next display scope (and HookFilter's filtered ones) would hold it until then.
+        if (AccessTools.Method(typeof(MegaCrit.Sts2.Core.Runs.RunManager), nameof(MegaCrit.Sts2.Core.Runs.RunManager.CleanUp)) is { } cleanUp)
+        {
+            PatchGuard.Patch(harmony, cleanUp, postfix: Method(nameof(RunCleanedUp)));
+        }
 
         // 3. Scopes. Each one is independent: a missing target only loses that scope.
         TryScope(harmony, AccessTools.Method(typeof(NetFullCombatState), nameof(NetFullCombatState.FromRun)), nameof(EnterSnapshot), nameof(ExitSnapshot));
@@ -332,13 +350,46 @@ public static class ListenerCache
         }
     }
 
+    [ThreadStatic] private static bool _releaseAtExit;
+
+    /// <summary>Raised after the game cleans a run up: caches holding its models drop them.</summary>
+    public static event Action? RunReleased;
+
+    private static void RunCleanedUp()
+    {
+        try
+        {
+            if (_snapshotDepth + _refreshDepth == 0)
+            {
+                _kept?.Clear();
+                _fromKept?.Clear();
+                _cache?.Clear();
+            }
+            else
+            {
+                _releaseAtExit = true; // Inside a scope: its exit hands nothing on.
+            }
+            RunReleased?.Invoke();
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"[{ModEntry.Id}] {Name}: releasing the left run's lists failed: {e.Message}");
+        }
+    }
+
     private static void ExitAny()
     {
         if (_snapshotDepth + _refreshDepth == 0)
         {
             // Refresh-only scopes hand their lists to the next refresh scope (valid while the version is unchanged).
             _kept?.Clear();
-            if (!_reuseBlocked && ReuseEnabled && _cache != null)
+            bool release = _releaseAtExit;
+            _releaseAtExit = false;
+            if (release)
+            {
+                RunReleased?.Invoke(); // Lists filtered later in that scope for the left run go too.
+            }
+            if (!release && !_reuseBlocked && ReuseEnabled && _cache != null)
             {
                 _kept ??= new Dictionary<(object, object?), (int, ReadOnlyCollection<AbstractModel>)>(new RefComparer());
                 foreach (var pair in _cache)

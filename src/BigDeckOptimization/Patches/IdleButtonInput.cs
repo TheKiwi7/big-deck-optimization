@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.Reflection;
 using Godot;
@@ -36,10 +37,12 @@ public static class IdleButtonInput
 
     public static void Apply(Harmony harmony)
     {
-        PatchSafety.RequireFingerprint(AccessTools.DeclaredMethod(typeof(NButton), "_Input", new[] { typeof(InputEvent) })
-            ?? throw new MissingMethodException(nameof(NButton), "_Input"), InputFingerprint);
-        PatchSafety.RequireFingerprint(AccessTools.Method(typeof(NClickableControl), "CheckMouseDragThreshold")
-            ?? throw new MissingMethodException(nameof(NClickableControl), "CheckMouseDragThreshold"), DragCheckFingerprint);
+        _input = AccessTools.DeclaredMethod(typeof(NButton), "_Input", new[] { typeof(InputEvent) })
+            ?? throw new MissingMethodException(nameof(NButton), "_Input");
+        _dragCheck = AccessTools.Method(typeof(NClickableControl), "CheckMouseDragThreshold")
+            ?? throw new MissingMethodException(nameof(NClickableControl), "CheckMouseDragThreshold");
+        PatchSafety.RequireFingerprint(_input, InputFingerprint);
+        PatchSafety.RequireFingerprint(_dragCheck, DragCheckFingerprint);
         _isPressed = AccessTools.FieldRefAccess<NClickableControl, bool>("_isPressed");
         _isEnabled = AccessTools.FieldRefAccess<NClickableControl, bool>("_isEnabled");
         PatchGuard.Patch(harmony, AccessTools.Method(typeof(Node), nameof(Node.SetProcessInput)),
@@ -55,7 +58,12 @@ public static class IdleButtonInput
             postfix: new HarmonyMethod(typeof(IdleButtonInput), nameof(SyncPostfix)));
     }
 
-    private static bool IsEligible(Node node) => Enabled && IsEligibleType(node);
+    private static System.Reflection.MethodInfo? _input, _dragCheck;
+
+    /// <summary>On, and nobody else patches what a muted button no longer runs.</summary>
+    private static bool Active => Enabled && !PatchSafety.IsPatchedByOthers(_input) && !PatchSafety.IsPatchedByOthers(_dragCheck);
+
+    private static bool IsEligible(Node node) => IsEligibleType(node) && Active;
 
     private static bool IsEligibleType(Node node)
     {
@@ -75,6 +83,7 @@ public static class IdleButtonInput
             if (enable && IsEligible(__instance) && !_isPressed!((NClickableControl)__instance))
             {
                 enable = false;
+                Track((NClickableControl)__instance);
 #if BENCH
                 Muted++;
 #endif
@@ -95,9 +104,9 @@ public static class IdleButtonInput
             {
                 return;
             }
-            if (!Enabled)
+            if (!Active)
             {
-                // Turned off at runtime: give buttons we muted their vanilla state back (input on while enabled).
+                // Turned off (or another mod patches _Input) at runtime: give buttons we muted their vanilla state back (input on while enabled).
                 if (!__instance.IsProcessingInput() && _isEnabled!(__instance))
                 {
                     __instance.SetProcessInput(true);
@@ -113,6 +122,69 @@ public static class IdleButtonInput
         catch (Exception e)
         {
             Disable(e);
+        }
+    }
+
+    /// <summary>Buttons kept from input, given it back as soon as this turns off (bdopt, a fault, another mod's patch).</summary>
+    private static readonly List<WeakReference<NClickableControl>> _muted = new();
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<NClickableControl, object> _mutedSet = new();
+    private static bool _watching;
+    private static int _frames;
+
+    private static void Track(NClickableControl button)
+    {
+        if (_mutedSet.TryGetValue(button, out _))
+        {
+            return;
+        }
+        _mutedSet.Add(button, _muted);
+        _muted.Add(new WeakReference<NClickableControl>(button));
+        if (_muted.Count > 1024)
+        {
+            _muted.RemoveAll(w => !w.TryGetTarget(out NClickableControl? b) || !GodotObject.IsInstanceValid(b));
+        }
+        if (!_watching && Engine.GetMainLoop() is SceneTree tree)
+        {
+            _watching = true;
+            tree.ProcessFrame += Tick;
+        }
+    }
+
+    /// <summary>Twice a second: once off, the muted buttons get the input vanilla gives an enabled button.</summary>
+    private static void Tick()
+    {
+        try
+        {
+            if (++_frames < 30 || _muted.Count == 0)
+            {
+                return;
+            }
+            _frames = 0;
+            if (Active)
+            {
+                return;
+            }
+            // A copy: giving input back runs our prefix again, which may track a button.
+            WeakReference<NClickableControl>[] muted = _muted.ToArray();
+            _muted.Clear();
+            foreach (WeakReference<NClickableControl> reference in muted)
+            {
+                if (reference.TryGetTarget(out NClickableControl? button) && GodotObject.IsInstanceValid(button)
+                    && !button.IsProcessingInput() && _isEnabled!(button))
+                {
+                    button.SetProcessInput(true);
+                }
+                if (button != null)
+                {
+                    _mutedSet.Remove(button);
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            _muted.Clear();
+            _mutedSet.Clear();
+            Log.Error($"[{ModEntry.Id}] {Name}: giving muted buttons their input back failed: {e}");
         }
     }
 

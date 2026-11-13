@@ -688,7 +688,7 @@ public static class SnapshotCardReuse
     private static Reads ReadsFor(CardPile pile)
     {
         long stamp = LimitlessReserialize.MemoStamp();
-        if (!_fastReads || !HookFilter.Active || PatchSafety.IsPatchedByOthers(_keywordsMethod) || PatchSafety.IsPatchedByOthers(_withModifiers)
+        if (!_fastReads || !HookFilter.Active || KeywordsPatched() || PatchSafety.IsPatchedByOthers(_withModifiers)
             || pile.Cards.Count == 0 || pile.Cards[0].Owner?.Creature.CombatState is not CombatState combat)
         {
             return new Reads(stamp, false, false, null);
@@ -707,7 +707,7 @@ public static class SnapshotCardReuse
     {
         // Inside RunVanilla the result is the reference this code is compared with (SnapshotVerifier, bdperf): the game's own.
         if (!Enabled || ListenerCache.IsSuspended || !LimitlessReserialize.CanCompareHere || LimitlessReserialize.Faulted
-            || PatchSafety.IsPatchedByOthers(_pileFrom) || PatchSafety.IsPatchedByOthers(_cardFrom))
+            || PatchSafety.IsPatchedByOthers(_pileFrom) || PatchSafety.IsPatchedByOthers(_cardFrom) || LimitlessReserialize.PatchedByOthers())
         {
             return true;
         }
@@ -1143,7 +1143,11 @@ public static class SnapshotCardReuse
         {
             return;
         }
-        last.PlainCard = cardList == null;
+        if (cardList != null)
+        {
+            return; // Only the enchantment's list is recorded (ListVersion): a card saving its own list is built each time.
+        }
+        last.PlainCard = true;
         last.Upgrade = card.CurrentUpgradeLevel;
         last.Floor = card.FloorAddedToDeck;
         last.Enchantment = enchantment;
@@ -1159,6 +1163,10 @@ public static class SnapshotCardReuse
     }
 
     private static HashSet<CardKeyword>? _keywordScratch;
+    private static readonly MethodInfo? _keywordsGetter = AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.Keywords));
+
+    /// <summary>Another mod patches what <c>card.Keywords</c> runs (the snapshot then reads it as the game does).</summary>
+    private static bool KeywordsPatched() => PatchSafety.IsPatchedByOthers(_keywordsMethod) || PatchSafety.IsPatchedByOthers(_keywordsGetter);
 
     /// <summary><c>card.Keywords</c> (<c>GetKeywordsWithSources(All)</c>) as the snapshot's enum-ordered list; null when empty.</summary>
     [PatchPart("piles")]
@@ -1169,7 +1177,7 @@ public static class SnapshotCardReuse
         {
             keywords = _localKeywords!(card); // No listener can add or remove any, in or out of combat.
         }
-        else if (_fastReads && card.CombatState is { } combat && !card.IsCanonical)
+        else if (_fastReads && card.CombatState is { } combat && !card.IsCanonical && !KeywordsPatched())
         {
             HashSet<CardKeyword> scratch = _keywordScratch ??= new HashSet<CardKeyword>();
             scratch.Clear();
@@ -1564,7 +1572,7 @@ public static class SnapshotCardReuse
         last.HeaderCards = state.cards.Count;
     }
 
-    private static long _pileOthersAt = long.MinValue;
+    private static long _pileOthersAt = long.MinValue / 2; // So `now - at` can't overflow: the first check runs.
     private static bool _pileOthers;
 
     /// <summary>As for a card's bits: only transpilers (their effect is in the bits) leave a pile's reusable.</summary>
@@ -1606,7 +1614,7 @@ public static class SnapshotCardReuse
 
     private static bool _capturing;
     private static PacketWriter? _bitWriter;
-    private static long _patchedCheckAt = long.MinValue;
+    private static long _patchedCheckAt = long.MinValue / 2; // So `now - at` can't overflow: the first check runs.
     private static bool _serializePatched;
     private static int _sinceBitCheck;
 
@@ -1724,7 +1732,7 @@ public static class SnapshotCardReuse
         return true;
     }
 
-    private static long _transpiledCheckAt = long.MinValue;
+    private static long _transpiledCheckAt = long.MinValue / 2; // So `now - at` can't overflow: the first check runs.
     private static bool _transpiled;
 
     /// <summary>

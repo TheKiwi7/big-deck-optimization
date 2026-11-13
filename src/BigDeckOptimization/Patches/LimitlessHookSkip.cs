@@ -23,7 +23,9 @@ namespace BigDeckOptimization.Patches;
 /// as not reacting, so moving such a card rebuilds nothing.
 ///
 /// Inner enchantments are recorded when a MultiEnchantment first shows up in a pile walk or card move, and when one is
-/// added (<c>AddEnchantment</c>, the only code adding to the list). Off with <c>limitless_saves</c> or a changed hook.
+/// added (<c>AddEnchantment</c>, the only code adding to the list). Off with <c>limitless_saves</c>, a changed hook, or
+/// LimitlessReserialize not applied (its fingerprint of <c>SetSerializableCards</c> is what "rebuilding gives what it holds"
+/// rests on).
 /// Known limit: an enchantment of a type no card has yet, reacting to a hook, added to a stacked enchantment during that
 /// very hook's walk, isn't called by that walk.
 /// </summary>
@@ -57,11 +59,33 @@ public static class LimitlessHookSkip
     /// <summary>The MultiEnchantment type, null until applied.</summary>
     internal static Type? Multi { get; private set; }
 
-    /// <summary>Whether MultiEnchantments may be dropped now.</summary>
-    internal static bool Active => Applied && _enabled && LimitlessReserialize.Enabled && !PatchedByOthers();
+    /// <summary>
+    /// Whether MultiEnchantments may be dropped now. Their inner types are noted only while this is on: turned on (or a
+    /// back-off lifted) during a combat, the stacked enchantments already in its piles are unknown, so it only arms
+    /// outside a combat (the next combat's piles are filled, and noted, while on). Also off while LimitlessReserialize
+    /// backs off: a dropped one skips the list it would rebuild.
+    /// </summary>
+    internal static bool Active
+    {
+        get
+        {
+            if (!Applied || !_enabled || !LimitlessReserialize.Applied || !LimitlessReserialize.Enabled || PatchedByOthers() || LimitlessReserialize.PatchedByOthers())
+            {
+                _armed = false;
+                return false;
+            }
+            if (!_armed && !(MegaCrit.Sts2.Core.Combat.CombatManager.Instance?.IsInProgress ?? false))
+            {
+                _armed = true;
+            }
+            return _armed;
+        }
+    }
+
+    private static bool _armed;
 
     private static MethodBase[] _watched = Array.Empty<MethodBase>();
-    private static long _patchesCheckedAt = long.MinValue;
+    private static long _patchesCheckedAt = long.MinValue / 2; // So `now - at` can't overflow: the first check runs.
     private static bool _patchedByOthers;
 
     /// <summary>
