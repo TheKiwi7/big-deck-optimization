@@ -73,6 +73,10 @@ If the problem is still there with the mod off, it doesn't come from this mod. O
 
 .NET 9 SDK, Slay the Spire 2 and [BaseLib](https://steamcommunity.com/sharedfiles/filedetails/?id=3737335127) installed (for the settings menu DLL; found in the Workshop folder, elsewhere set `<BaseLibDll>` in `Directory.Build.local.props`), then `dotnet build src/BigDeckOptimization/BigDeckOptimization.csproj -c Debug` (copies the mod into the game's `mods` folder). Debug builds also include test tools ([tools/autotest](tools/autotest/README.md)). `python tools/release/package.py` prepares a release. Design notes and measurements: [DESIGN.md](DESIGN.md).
 
+## Support
+
+The mod is free and stays free for everyone. If it saved your runs from the lag and you'd like to say thanks, you can [buy me a coffee on Ko-fi](https://ko-fi.com/thekiwi7) ☕
+
 ## License
 
 [MIT](LICENSE), for the code and documentation. The images (`src/BigDeckOptimization/mod_image.jpg`, `docs/workshop_preview.jpg`) contain card art from Slay the Spire 2 © Mega Crit, which the MIT license doesn't cover.
