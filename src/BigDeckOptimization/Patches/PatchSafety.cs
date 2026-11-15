@@ -129,9 +129,10 @@ public static partial class PatchSafety
         MethodBase? current = null;
         try
         {
+            Dictionary<MethodBase, string> partCode = PartCode(patchClass);
             foreach (MethodBase method in DeclaredMethods(patchClass))
             {
-                if (method.IsDefined(typeof(PatchPartAttribute), false))
+                if (method.IsDefined(typeof(PatchPartAttribute), false) || partCode.ContainsKey(method))
                 {
                     continue;
                 }
@@ -160,9 +161,22 @@ public static partial class PatchSafety
     /// </summary>
     public static void RequirePartResolvable(Type patchClass, string part)
     {
+        while (patchClass.DeclaringType != null)
+        {
+            patchClass = patchClass.DeclaringType;
+        }
+        Dictionary<MethodBase, string> partCode;
+        try
+        {
+            partCode = PartCode(patchClass);
+        }
+        catch (Exception e)
+        {
+            throw new PatchSkippedException($"{patchClass.Name}'s part {part} couldn't be checked, left vanilla: {e.Message}");
+        }
         foreach (MethodBase method in DeclaredMethods(patchClass))
         {
-            if (method.GetCustomAttribute<PatchPartAttribute>()?.Part != part)
+            if ((method.GetCustomAttribute<PatchPartAttribute>()?.Part ?? partCode.GetValueOrDefault(method)) != part)
             {
                 continue;
             }
@@ -184,82 +198,33 @@ public static partial class PatchSafety
     }
 
     /// <summary>
-    /// Whether code of this mod may use the member directly: its own members, or public ones (protected for overrides
-    /// and base calls) of public types. This mod reaches non-public game members through reflection only.
+    /// The compiler-generated code of each <see cref="PatchPartAttribute"/> method (its lambdas, local functions, state
+    /// machines: nested members that can't carry the attribute) -> that part. They are that part's code, checked with it:
+    /// checked with the whole class, another game version's member they use would skip the whole patch instead of the part.
+    /// Generated code also used by a method outside the part (or by two parts) stays with the whole class.
     /// </summary>
-    private static bool Accessible(MemberInfo member, Assembly own, Type? user)
+    private static Dictionary<MethodBase, string> PartCode(Type outermost)
     {
-        Type? owner = member as Type ?? member.DeclaringType;
-        if (owner == null || owner.Assembly == own || owner.IsGenericParameter)
+        lock (_partCode)
         {
-            return true;
-        }
-        bool visible = member is Type type ? IsVisible(type, own) : IsVisible(owner, own);
-        // Protected only from a class of this mod deriving from the owner (or nested in one): an update making a used
-        // public member protected is then a clean "skipped" instead of a MethodAccessException at the call.
-        bool family = Derives(user, owner);
-        return visible && member switch
-        {
-            MethodBase m => m.IsPublic || ((m.IsFamily || m.IsFamilyOrAssembly) && family),
-            FieldInfo f => f.IsPublic || ((f.IsFamily || f.IsFamilyOrAssembly) && family),
-            _ => true,
-        };
-    }
-
-    private static bool Derives(Type? user, Type owner)
-    {
-        Type definition = owner.IsGenericType ? owner.GetGenericTypeDefinition() : owner;
-        for (Type? outer = user; outer != null; outer = outer.DeclaringType)
-        {
-            for (Type? t = outer.BaseType; t != null; t = t.BaseType)
+            if (!_partCode.TryGetValue(outermost, out Dictionary<MethodBase, string>? known))
             {
-                if (t == owner || (t.IsGenericType && t.GetGenericTypeDefinition() == definition))
-                {
-                    return true;
-                }
+                _partCode[outermost] = known = FindPartCode(outermost);
             }
+            return known;
         }
-        return false;
     }
 
-    /// <summary>Public all the way out (nested types included); array, pointer and generic arguments checked too.</summary>
-    private static bool IsVisible(Type type, Assembly own)
-    {
-        if (type.HasElementType)
-        {
-            return IsVisible(type.GetElementType()!, own);
-        }
-        if (type.IsGenericParameter || type.Assembly == own)
-        {
-            return true;
-        }
-        if (type.IsGenericType && !type.IsGenericTypeDefinition && !type.GetGenericArguments().All(t => IsVisible(t, own)))
-        {
-            return false;
-        }
-        Type definition = type.IsGenericType ? type.GetGenericTypeDefinition() : type;
-        return definition.IsNested ? (definition.IsNestedPublic || definition.IsNestedFamily || definition.IsNestedFamORAssem) && IsVisible(definition.DeclaringType!, own) : definition.IsPublic;
-    }
+    /// <summary>Per patch class: the class and each of its parts are checked once each, at load.</summary>
+    private static readonly Dictionary<Type, Dictionary<MethodBase, string>> _partCode = new();
 
-    private static IEnumerable<MethodBase> DeclaredMethods(Type type)
-    {
-        const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
-        foreach (MethodInfo method in type.GetMethods(all))
-        {
-            yield return method;
-        }
-        foreach (ConstructorInfo constructor in type.GetConstructors(all))
-        {
-            yield return constructor;
-        }
-        foreach (Type nested in type.GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic))
-        {
-            foreach (MethodBase method in DeclaredMethods(nested))
-            {
-                yield return method;
-            }
-        }
-    }
+    private static Dictionary<MethodBase, string> FindPartCode(Type outermost) =>
+        MethodFingerprint.PartCode(outermost, method => method.GetCustomAttribute<PatchPartAttribute>()?.Part);
+
+    /// <summary>See <see cref="MethodFingerprint.Accessible"/> (shared with tools/compat).</summary>
+    private static bool Accessible(MemberInfo member, Assembly own, Type? user) => MethodFingerprint.Accessible(member, own, user);
+
+    private static IEnumerable<MethodBase> DeclaredMethods(Type type) => MethodFingerprint.DeclaredMethods(type);
 
     /// <summary>
     /// True when a mod other than us has Harmony patches on the method. Our replacements mirror vanilla bodies, so
@@ -279,14 +244,24 @@ public static partial class PatchSafety
         long now = Environment.TickCount64;
         if (_patchedByOthers.TryGetValue(method, out var cached) && now - cached.CheckedAt < RecheckAfterMs)
         {
+            if (cached.Patched || _anyConflict)
+            {
+                // Another patch may have filled the cache: this one's back-off (or its end) is recorded too (menu, bdopt).
+                RecordOnce(caller, method, cached.Mods);
+            }
             return cached.Patched;
         }
         HarmonyLib.Patches? info = Harmony.GetPatchInfo(method);
-        IEnumerable<Patch> others = info == null ? Enumerable.Empty<Patch>()
-            : info.Prefixes.Concat(info.Postfixes).Concat(info.Transpilers).Concat(info.Finalizers).Where(p => !PatchGuard.IsOurs(p.owner));
-        bool patched = Record(caller, method, others);
-        _patchedByOthers[method] = (patched, now);
-        return patched;
+        string[] mods = ModNames(info == null ? Enumerable.Empty<Patch>()
+            : AllPatches(info).Where(p => !PatchGuard.IsOurs(p.owner)));
+        if (mods.Length == 0)
+        {
+            // No other mod's patch at all: no patch backs off from it any more, whichever one filled the cache.
+            Forget(method);
+        }
+        RecordOnce(caller, method, mods);
+        _patchedByOthers[method] = (mods.Length > 0, now, mods);
+        return mods.Length > 0;
     }
 
     /// <summary>
@@ -308,35 +283,101 @@ public static partial class PatchSafety
         }
         if (_patchedBeyondAllowed.TryGetValue((method, allowedKey), out var cached) && now - cached.CheckedAt < RecheckAfterMs)
         {
+            if (cached.Patched || _anyConflict)
+            {
+                RecordOnce(caller, method, cached.Mods);
+            }
             return cached.Patched;
         }
         HarmonyLib.Patches? info = Harmony.GetPatchInfo(method);
-        IEnumerable<Patch> others = info == null ? Enumerable.Empty<Patch>()
-            : info.Prefixes.Concat(info.Postfixes).Concat(info.Transpilers).Concat(info.Finalizers)
-                .Where(p => !PatchGuard.IsOurs(p.owner) && !allowedPatches.Any(a => a.MethodHandle == p.PatchMethod.MethodHandle));
-        bool patched = Record(caller, method, others);
-        _patchedBeyondAllowed[(method, allowedKey)] = (patched, now);
-        return patched;
+        string[] mods = ModNames(info == null ? Enumerable.Empty<Patch>()
+            : AllPatches(info)
+                .Where(p => !PatchGuard.IsOurs(p.owner) && !allowedPatches.Any(a => a.MethodHandle == p.PatchMethod.MethodHandle)));
+        RecordOnce(caller, method, mods);
+        _patchedBeyondAllowed[(method, allowedKey)] = (mods.Length > 0, now, mods);
+        return mods.Length > 0;
     }
+
+    /// <summary>
+    /// Every patch on the method, Harmony 2.4's inner prefixes and postfixes included (they patch the calls the method makes:
+    /// code a mirror of the method would skip as surely as a prefix).
+    /// </summary>
+    private static IEnumerable<Patch> AllPatches(HarmonyLib.Patches info) =>
+        info.Prefixes.Concat(info.Postfixes).Concat(info.Transpilers).Concat(info.Finalizers).Concat(info.InnerPrefixes).Concat(info.InnerPostfixes);
 
     /// <summary>Other mods' patches on a method a patch backs off from, keyed by (patch name, method).</summary>
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Patch, MethodBase Method), string[]> _conflicts = new();
 
-    private static bool Record(string caller, MethodBase method, IEnumerable<Patch> others)
+    /// <summary>
+    /// The mods last recorded per call site (its source path) and method. Several patches can check the same method within
+    /// <see cref="RecheckAfterMs"/>: each records its back-off from the shared cached answer, once per answer (a new array at
+    /// each check), not at every hook call.
+    /// </summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Caller, MethodBase Method), string[]> _recordedFrom =
+        new(new CallSiteComparer());
+
+    /// <summary>Some back-off was recorded this session: only then can a cached "not patched" end one (hot path otherwise untouched).</summary>
+    private static bool _anyConflict;
+
+    /// <summary>
+    /// The caller path is a [CallerFilePath] literal, the same interned string at every call from a file: compared by
+    /// reference (cheap per hook call). Another string with the same text only means one more <see cref="Record"/>.
+    /// </summary>
+    private sealed class CallSiteComparer : IEqualityComparer<(string Caller, MethodBase Method)>
     {
-        string[] mods = others.Select(ModName).Distinct().OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToArray();
+        public bool Equals((string Caller, MethodBase Method) a, (string Caller, MethodBase Method) b) =>
+            ReferenceEquals(a.Caller, b.Caller) && a.Method == b.Method;
+
+        public int GetHashCode((string Caller, MethodBase Method) key) =>
+            HashCode.Combine(RuntimeHelpers.GetHashCode(key.Caller), key.Method);
+    }
+
+    private static string[] ModNames(IEnumerable<Patch> others) =>
+        others.Select(ModName).Distinct().OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToArray();
+
+    private static void RecordOnce(string caller, MethodBase method, string[] mods)
+    {
+        if (_recordedFrom.TryGetValue((caller, method), out string[]? recorded) && ReferenceEquals(recorded, mods))
+        {
+            return;
+        }
+        _recordedFrom[(caller, method)] = mods;
+        Record(caller, method, mods);
+    }
+
+    /// <summary>
+    /// Drops every patch's recorded back-off from this method (no other mod patches it any more). <see cref="_recordedFrom"/>
+    /// is kept: a cached answer from before isn't recorded again, the next one (a new array) is.
+    /// </summary>
+    private static void Forget(MethodBase method)
+    {
+        if (_conflicts.IsEmpty)
+        {
+            return;
+        }
+        foreach ((string Patch, MethodBase Method) key in _conflicts.Keys)
+        {
+            if (key.Method == method)
+            {
+                _conflicts.TryRemove(key, out _);
+            }
+        }
+    }
+
+    private static void Record(string caller, MethodBase method, string[] mods)
+    {
         string patch = System.IO.Path.GetFileNameWithoutExtension(caller.Replace('\\', '/'));
         if (mods.Length == 0)
         {
             _conflicts.TryRemove((patch, method), out _);
-            return false;
+            return;
         }
+        _anyConflict = true;
         if (!_conflicts.TryGetValue((patch, method), out string[]? known) || !known.SequenceEqual(mods))
         {
             _conflicts[(patch, method)] = mods;
             MegaCrit.Sts2.Core.Logging.Log.Info($"[{ModEntry.Id}] {patch}: {method.DeclaringType?.Name}.{method.Name} is also patched by {string.Join(", ", mods)}: normal game for that part");
         }
-        return true;
     }
 
     /// <summary>The loaded mod whose assembly holds the patch method (its display name), else the Harmony id.</summary>
@@ -373,6 +414,6 @@ public static partial class PatchSafety
     }
 
     private const long RecheckAfterMs = 2000;
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<MethodBase, (bool Patched, long CheckedAt)> _patchedByOthers = new();
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(MethodBase, long), (bool Patched, long CheckedAt)> _patchedBeyondAllowed = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<MethodBase, (bool Patched, long CheckedAt, string[] Mods)> _patchedByOthers = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(MethodBase, long), (bool Patched, long CheckedAt, string[] Mods)> _patchedBeyondAllowed = new();
 }

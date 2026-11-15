@@ -1,5 +1,6 @@
-"""Version check protocol: the game, BaseLib and Limitless versions installed vs the ones every optimization was last
-verified with (tools/versions.json), and what a game log says was left vanilla.
+"""Version check protocol: the game, BaseLib and Limitless versions installed (and BetterSpire2, SpeedX and Unlimited, which
+some patches are pinned to, when installed) vs the ones every optimization was last verified with (tools/versions.json),
+and what a game log says was left vanilla or which of those mods it didn't load.
 
 Also asks Steam what is PUBLISHED (not only what this machine downloaded): the build of the game's public and
 public-beta branches (SteamCMD, anonymous login) and the last update of the BaseLib and Limitless Workshop items (Steam
@@ -28,8 +29,33 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 KNOWN = ROOT / "tools" / "versions.json"
 GAME = Path(os.environ.get("STS2_GAME_DIR", r"C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2"))
-WORKSHOP = GAME.parent.parent / "workshop" / "content" / "2868840"
+
+
+def steamapps() -> Path:
+    """The steamapps folder holding the Workshop items and manifests: the game's own library, or, for a game copy outside
+    Steam's library (STS2_GAME_DIR, e.g. C:\\Games\\StS2-beta-0.111.0), Steam's main one (as tools/autotest/common.ps1)."""
+    library = GAME.parent.parent
+    if (library / "workshop").exists():
+        return library
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as key:
+            steam = Path(winreg.QueryValueEx(key, "SteamPath")[0])
+        if (steam / "steamapps").exists():
+            return steam / "steamapps"
+    except (ImportError, OSError):
+        pass
+    return library
+
+
+STEAMAPPS = steamapps()
+WORKSHOP = STEAMAPPS / "workshop" / "content" / "2868840"
 MODS = ("BaseLib", "Limitless")
+# Other mods some patches are pinned to (fingerprints or allowed patches: ExtraScopes' BetterSpire2 scope, SpeedX's soul
+# postfix, Unlimited's list-width transpiler): an update there leaves that part vanilla, so it is watched the same way.
+# Unlike BaseLib and Limitless, one that isn't installed is not a change.
+EXTRA_MODS = ("BetterSpire2", "SpeedX", "sts2unlimited")
+WATCHED = MODS + EXTRA_MODS
 APP_ID = "2868840"
 STEAMCMD = Path(os.environ.get("STEAMCMD", r"C:\steamcmd\steamcmd.exe"))
 # Last full check (Steam asked, every row checked) that found the verified versions: machine-local, so the daily task
@@ -51,7 +77,7 @@ def installed() -> dict:
         data = json.loads(info.read_text(encoding="utf-8-sig"))
         found["game"] = data.get("version")
         found["game_assembly_hash"] = data.get("main_assembly_hash")
-    for mod in MODS:
+    for mod in WATCHED:
         found[mod] = None
     # Workshop items first, then <game>/mods (a local copy overrides the Workshop one in game).
     for folder in (WORKSHOP, GAME / "mods"):
@@ -62,7 +88,7 @@ def installed() -> dict:
                 data = json.loads(manifest.read_text(encoding="utf-8-sig"))
             except (ValueError, OSError):
                 continue
-            if isinstance(data, dict) and data.get("id") in MODS:
+            if isinstance(data, dict) and data.get("id") in WATCHED:
                 found[data["id"]] = data.get("version")
     return found
 
@@ -78,7 +104,7 @@ def local_steam() -> dict:
     manifest = GAME.parent.parent / f"appmanifest_{APP_ID}.acf"
     if manifest.exists():
         found["game_buildid"] = acf_value(manifest.read_text(encoding="utf-8", errors="replace"), "buildid")
-    acf = GAME.parent.parent / "workshop" / f"appworkshop_{APP_ID}.acf"
+    acf = STEAMAPPS / "workshop" / f"appworkshop_{APP_ID}.acf"
     acf_text = acf.read_text(encoding="utf-8", errors="replace") if acf.exists() else ""
     for item in WORKSHOP.iterdir() if WORKSHOP.exists() else []:
         for manifest in item.rglob("*.json"):
@@ -86,7 +112,7 @@ def local_steam() -> dict:
                 data = json.loads(manifest.read_text(encoding="utf-8-sig"))
             except (ValueError, OSError):
                 continue
-            if isinstance(data, dict) and data.get("id") in MODS:
+            if isinstance(data, dict) and data.get("id") in WATCHED:
                 found["workshop_ids"][data["id"]] = item.name
                 block = re.search(rf'"{item.name}"\s*\{{([^}}]*)\}}', acf_text)
                 found[data["id"] + "_updated"] = acf_value(block.group(1), "timeupdated") if block else None
@@ -138,7 +164,7 @@ def main() -> int:
     remote = {} if "--local" in args else remote_steam(steam["workshop_ids"])
     if "--accept" in args:
         # The verified builds: what Steam publishes now (the protocol verified both branches and the mods), else local.
-        for key in ("game_buildid", "beta_buildid") + tuple(m + "_updated" for m in MODS):
+        for key in ("game_buildid", "beta_buildid") + tuple(m + "_updated" for m in WATCHED):
             current[key] = remote.get(key) or steam.get(key) or known.get(key)
         current["verified"] = datetime.date.today().isoformat()
         KNOWN.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
@@ -146,9 +172,11 @@ def main() -> int:
         return 0
     changed, unchecked = [], []
     print(f"{'':20} {'verified':>14} {'installed':>14}")
-    for key in ("game", "game_assembly_hash") + MODS:
+    for key in ("game", "game_assembly_hash") + WATCHED:
         mark = "" if known.get(key) == current.get(key) else "   <-- CHANGED"
-        if mark:
+        if key in EXTRA_MODS and current.get(key) is None:
+            mark = "   (not installed)"
+        elif mark:
             changed.append(key)
         print(f"{key:20} {str(known.get(key)):>14} {str(current.get(key)):>14}{mark}")
     try:
@@ -161,6 +189,7 @@ def main() -> int:
         print(f"{'published on Steam':20} {'verified':>16} {'published':>16} {'downloaded here':>16}")
         rows = [("game (public)", "game_buildid", False), ("game (public-beta)", "beta_buildid", False)]
         rows += [(m, m + "_updated", True) for m in MODS]
+        rows += [(m, m + "_updated", True) for m in EXTRA_MODS if m in steam["workshop_ids"]]
         for label, key, stamp in rows:
             fmt = when if stamp else str
             v, r, l = known.get(key), remote.get(key), steam.get(key) if key != "beta_buildid" else None
@@ -186,6 +215,15 @@ def main() -> int:
         print(f"\n{log.name}: {len(lines)} part(s) left vanilla")
         for line in dict.fromkeys(lines):
             print("  " + line[:220])
+        # "Limitless/BaseLib not loaded" above is expected only when the mod isn't there: one installed here but not loaded
+        # in that session (disabled, failed, a duplicate, an older copy in <game>/mods) leaves what relies on it vanilla.
+        loaded = set(re.findall(r"Finished mod initialization for '.*?' \(([^)]+)\)\.", text))
+        failed = set(re.findall(r"Exception thrown while loading mod (\S+?):", text))
+        missing = [m for m in WATCHED if current.get(m) is not None and m not in loaded]
+        if loaded and missing:
+            print(f"\ninstalled here but not loaded in {log.name}: "
+                  + ", ".join(m + (" (failed to load)" if m in failed else "") for m in missing)
+                  + " (fine if that session left it out on purpose, e.g. a test without the extra mods)")
     if changed:
         print("\nVersions changed: follow the version check protocol (CLAUDE.md) before relying on the optimizations.")
         return 1

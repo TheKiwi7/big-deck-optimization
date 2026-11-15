@@ -62,7 +62,9 @@ public static class SavedPropertyLookup
 
     private static SavedPropertyAttribute? Attribute(MemberInfo member)
     {
-        if (!Enabled)
+        // Inside ListenerCache.RunVanilla (SnapshotVerifier's and bdperf's reference) the game's own lookup: that reference is the
+        // unmodified game's, compared with what this patch serves.
+        if (!Enabled || ListenerCache.IsSuspended)
         {
             return member.GetCustomAttribute<SavedPropertyAttribute>();
         }

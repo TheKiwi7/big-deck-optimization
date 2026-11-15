@@ -33,6 +33,8 @@ public static class PoolSignalScan
     private const string StaticFreeFingerprint = "93E5DC86F9FBFE32";
     private const string PoolFreeFingerprint = "ABC14666CCEB9854";
     private const string WalkFingerprint = "FD48203FE0D7C5E8";
+    /// <summary>The explicit <c>INodePool.Free</c> the static Free calls (<c>Free((T)poolable)</c>), skipped too (v0.107.1, v0.111, v0.113).</summary>
+    private const string ExplicitFreeFingerprint = "2BF0476044EEC46C";
 
     private const int VerifyFirst = 3;
     private const int VerifyEvery = 64;
@@ -77,6 +79,7 @@ public static class PoolSignalScan
                 AccessTools.Method(poolType, "DisconnectIncomingAndOutgoingSignals"),
                 AccessTools.Method(poolType, "DisconnectSignal"),
                 PublicFree(poolType),
+                ExplicitFree(poolType),
             };
         }
     }
@@ -87,6 +90,7 @@ public static class PoolSignalScan
         PatchSafety.RequireFingerprint(_staticFree, StaticFreeFingerprint);
         PatchSafety.RequireFingerprint(PublicFree(typeof(NodePool<>)), PoolFreeFingerprint);
         PatchSafety.RequireFingerprint(AccessTools.Method(typeof(NodePool<>), "DisconnectIncomingAndOutgoingSignals"), WalkFingerprint);
+        PatchSafety.RequireFingerprint(ExplicitFree(typeof(NodePool<>)), ExplicitFreeFingerprint);
         _pools = AccessTools.StaticFieldRefAccess<Dictionary<Type, INodePool>>(AccessTools.Field(typeof(NodePool), "_pools"));
         PatchGuard.Patch(harmony, _staticFree, prefix: new HarmonyMethod(typeof(PoolSignalScan), nameof(Prefix)));
         Applied = true;
@@ -95,6 +99,10 @@ public static class PoolSignalScan
     /// <summary>NodePool&lt;T&gt;.Free(T) (the explicit INodePool.Free is a separate, non-public method).</summary>
     private static MethodInfo PublicFree(Type poolType) =>
         poolType.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly).Single(m => m.Name == "Free");
+
+    /// <summary>The explicit <c>void INodePool.Free(IPoolable)</c> implementation (its name carries the interface's full name).</summary>
+    private static MethodInfo ExplicitFree(Type poolType) =>
+        poolType.GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly).Single(m => m.Name == typeof(INodePool).FullName + ".Free");
 
     /// <summary>Mirrors NodePool.Free → NodePool&lt;T&gt;.Free for objects the pool tracks; anything else goes vanilla.</summary>
     private static bool Prefix(IPoolable poolable)

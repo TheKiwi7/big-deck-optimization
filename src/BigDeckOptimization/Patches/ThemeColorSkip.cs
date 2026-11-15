@@ -80,7 +80,8 @@ public static class ThemeColorSkip
 
     private static void AddIfChanged(Control control, StringName name, Color color)
     {
-        if (Enabled)
+        // A null or freed label: the game's own call below throws as it would have, without turning this off.
+        if (Enabled && GodotObject.IsInstanceValid(control))
         {
             try
             {

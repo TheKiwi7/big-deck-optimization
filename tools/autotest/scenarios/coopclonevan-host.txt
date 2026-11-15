@@ -5,10 +5,10 @@
 # every single action well under the network timeout (a longer freeze disconnects the other player, as in vanilla).
 # Pass: the same CHECKSUM lines on both, bdperf verify mismatches 0, no divergence.
 timeout 2400
+cmd bdopt off
 mplobby NECROBINDER 2
 waitfor run 240
 cmd bdperf checks off
-cmd bdopt off
 speed instant
 wait 8
 cmd bigdeck import ref all all {hash:ref}

@@ -1,10 +1,10 @@
 # Reshuffle A/B (off): starting deck + the reference relics, 6 turns of plays and end of turn (the draw pile empties and
 # is reshuffled, ModifyShuffleOrder listeners included); compare CHECKSUM/STATE/CARDPLAY with shuffle-on.
 timeout 900
+cmd bdopt off
 newrun NECROBINDER
 waitfor run 120
 wait 2
-cmd bdopt off
 cmd bigdeck import ref all relics
 cmd bdperf checks off
 enemyhp 999999

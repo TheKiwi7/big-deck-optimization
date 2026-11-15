@@ -44,18 +44,25 @@ namespace BigDeckOptimization.Patches;
 /// a memo per card holds what the last full comparison read (upgrade, floor, enchantment and amount, its saved list);
 /// while they hold, the card's snapshot object is the same without comparing it again. Keywords and the energy cost
 /// are read without allocating when no listener changes them. <c>CardState.Serialize</c>, which the checksum runs for
-/// every card, appends the bits the game's method (with other mods' transpilers) produced for the same state last time.
+/// every card, appends the bits the game's method produced for the same state last time: the serializers that run there are
+/// fingerprinted, another mod's patch on them (BaseLib's known postfixes and Unlimited's list-width transpiler aside) leaves bits to
+/// the game, and bits written with other id widths or BaseLib saves (<see cref="BitsEpoch"/>) are written again.
 ///
 /// A card that only got upgraded (some relics upgrade thousands of cards per action) gets a new snapshot object sharing
 /// the previous one's parts instead of a whole new tree: those trees outlive several collections, which made them slow.
 ///
 /// A pile that didn't change has the same state list and the same bits: while the pile's list version stands, no listener
 /// changes keywords or costs, and its <see cref="PileLast.Writes"/> stands still (every write to what a card's state reads,
-/// those fields' only writers checked at load, counts on the pile the card was last read in: a card that changes pile
+/// those fields' only writers checked at load, and the only users of the getters handing out their collections, counts on the pile the card was last read in: a card that changes pile
 /// changes both list versions), the pile's whole state costs one comparison per checksum instead of a read of every card,
 /// and its bits one copy. Cards with no memo (saved properties) are compared every time. One pile in
 /// <see cref="PileVerifyEvery"/> is read for real: finding a change then means a write went unseen, and piles stop being
-/// trusted for the session. A pile that did change gets its bits from its cards' kept bits, without a call per card.
+/// trusted for the session. A pile that did change gets its bits from its cards' kept bits, without a call per card. Another mod's
+/// patch on a getter those kept states skip (ids, affliction and amount, enchantment and amount, upgrade, floor, cost) reads every card.
+///
+/// Checks: a card's kept bits, one in <see cref="VerifyEvery"/>, against the game's serialization of that state (<see cref="SameBits"/>);
+/// a pile's bits, one in <see cref="PileVerifyEvery"/>, against the game's pile method, whose cards still write their kept bits: that one checks the
+/// header and how the bits were put together, not the cards' bits.
 /// </summary>
 public static class SnapshotCardReuse
 {
@@ -69,6 +76,13 @@ public static class SnapshotCardReuse
 
     public static long Reused { get; private set; }
     internal static bool ReleaseCombats { get; set; } = true;
+
+    /// <summary>
+    /// A reuse found wrong, or this turned off, while building or serializing a snapshot: <see cref="SnapshotVerifier"/> builds or
+    /// serializes that snapshot again (the part found wrong is off by then), so the checksum that revealed it isn't sent with other
+    /// states taken the same way.
+    /// </summary>
+    internal static long Detections { get; private set; }
 
     /// <summary>Entries of finished combats that let go of their card.</summary>
     public static long CombatCardsReleased { get; private set; }
@@ -104,7 +118,7 @@ public static class SnapshotCardReuse
     /// <summary>A pile with written cards reads only those, the others kept as moved piles keep them (bdperf dirtyreads on|off).</summary>
     public static bool DirtyReads { get; set; } = true;
 
-    /// <summary>One trusted pile in this many is read for real.</summary>
+    /// <summary>One trusted or moved pile in this many is read for real; one pile's kept or composed bits in this many are written by the game's pile method and compared.</summary>
     public const int PileVerifyEvery = 128;
     /// <summary>Below this many cards a pile isn't worth a copy of its bits.</summary>
     private const int MinCardsForPileBits = 32;
@@ -118,7 +132,6 @@ public static class SnapshotCardReuse
     private const int LiveShare = 16;
 
     private static bool _trustPiles;
-    private static bool _headerOnly;
     private static AccessTools.FieldRef<CardEnergyCost, CardModel>? _costCard;
     private static AccessTools.FieldRef<EnchantmentModel, CardModel?>? _enchantmentCard;
     private static AccessTools.FieldRef<AfflictionModel, CardModel?>? _afflictionCard;
@@ -187,6 +200,8 @@ public static class SnapshotCardReuse
         /// <summary>The bits <c>CardState.Serialize</c> wrote for this state, from the first bit of <see cref="Bits"/>.</summary>
         public byte[]? Bits;
         public int BitCount;
+        /// <summary>The <see cref="BitsEpoch"/> <see cref="Bits"/> were written in.</summary>
+        public int BitsEpoch;
         public SerializableCard? BitsCard;
         public ModelId? BitsAffliction;
         public int BitsAfflictionCount;
@@ -229,6 +244,8 @@ public static class SnapshotCardReuse
         public byte[]? Bits;
         public int BitCount;
         public List<NetFullCombatState.CardState>? BitsFor;
+        /// <summary>The <see cref="BitsEpoch"/> <see cref="Bits"/> were written in.</summary>
+        public int BitsEpoch;
 
         /// <summary>When <see cref="Compose"/> made <see cref="Bits"/>: where each card of <see cref="BitsFor"/> starts in them, then the end.</summary>
         public int[]? Offsets;
@@ -264,20 +281,29 @@ public static class SnapshotCardReuse
             {
                 if (entry is { Card: not null })
                 {
-                    CombatCardsReleased++;
-                    entry.Card = null!;
-                    entry.Enchantment = null;
-                    entry.In = null;
-                    entry.MemoStamp = -1;
-                    entry.Dirty = false;
+                    ReleaseEntry(entry);
                 }
             }
         }
 
-        /// <summary>The game's bits before the first card of a list of <see cref="HeaderCards"/> cards.</summary>
+        public static void ReleaseEntry(Last entry)
+        {
+            CombatCardsReleased++;
+            entry.Card = null!;
+            entry.Enchantment = null;
+            entry.In = null;
+            entry.MemoStamp = -1;
+            entry.Dirty = false;
+        }
+
+        /// <summary>
+        /// The game's bits for this pile with no card (its type, then a count of 0 on its last <see cref="CountBits"/> bits), written in
+        /// <see cref="HeaderEpoch"/>: a pile's header with any count is these with the count written in.
+        /// </summary>
         public byte[]? Header;
         public int HeaderBits;
-        public int HeaderCards = -1;
+        public int CountBits;
+        public int HeaderEpoch = -1;
     }
 
     /// <summary>From a snapshot object to its <see cref="Last"/>: all <c>CardState.Serialize</c> gets is the state.</summary>
@@ -381,10 +407,53 @@ public static class SnapshotCardReuse
             PatchSafety.RequireFieldWriters(typeof(CardModel), "<Enchantment>k__BackingField", "set_Enchantment");
             PatchSafety.RequireFieldWriters(typeof(CardModel), "<Affliction>k__BackingField", "set_Affliction");
             PatchSafety.RequireFieldWriters(typeof(CardModel), "_keywords", "DeepCloneFields", "DowngradeInternal", "get_LocalKeywords");
+            // Both getters hand out the collection itself: code changing it through them never touches the field, so the field check above
+            // can't see it. Their users are the known ones (v0.107.1 to v0.113.1, Limitless 1.2.1): the writers are AddKeyword, RemoveKeyword
+            // (counted below) and the setter, the others only read.
+            RequireCallers(typeof(CardModel), AccessTools.PropertyGetter(typeof(CardModel), "LocalKeywords"), "GetKeywordsWithSources", "AddKeyword", "RemoveKeyword");
+            RequireCallers(multi, AccessTools.PropertyGetter(multi, "SerializableEnchantmentsOnCards"), "get_EnchantmentsOnCards", "DeepCloneFields");
             PatchSafety.RequireFieldWriters(typeof(CardModel), "_energyCost", "DeepCloneFields", "MockSetEnergyCost", "get_EnergyCost");
             string[] costWriters = { ".ctor", "AddThisCombat", "AddThisTurn", "AddThisTurnOrUntilPlayed", "AddUntilPlayed", "AfterCardPlayedCleanup", "Clone", "EndOfTurnCleanup", "SetThisCombat", "SetThisTurn", "SetThisTurnOrUntilPlayed", "SetUntilPlayed" };
             PatchSafety.RequireFieldWriters(typeof(CardEnergyCost), "_localModifiers", costWriters);
             PatchSafety.RequireFieldWriters(typeof(CardEnergyCost), "_base", ".ctor", "Clone", "GetWithModifiers", "ResetForDowngrade", "SetCustomBaseCost", "UpgradeBy");
+            // A cost modifier's amount has a public setter, and changing it in place touches no field of the cost: UpgradeBy (counted) is
+            // the only code doing it. Modifiers are reached only through the private _localModifiers, whose users (readers too: a new one
+            // could hand a modifier out) are the known ones (v0.107.1 to v0.113.1).
+            string[] costUsers = costWriters.Concat(new[] { "GetWithModifiers", "get_HasLocalModifiers", "UpgradeBy" }).ToArray();
+            string[] newCostUsers = MethodFingerprint.FieldUsers(typeof(CardEnergyCost), "_localModifiers").Where(user => !costUsers.Contains(user)).ToArray();
+            if (newCostUsers.Length > 0)
+            {
+                throw new PatchSkippedException($"CardEnergyCost._localModifiers is now also used by {string.Join(", ", newCostUsers)} (update?): left vanilla");
+            }
+            MethodInfo? modifierAmount = AccessTools.PropertySetter(typeof(LocalCostModifier), nameof(LocalCostModifier.Amount));
+            RequireCallers(typeof(CardEnergyCost), modifierAmount, "UpgradeBy");
+            RequireCallers(typeof(LocalCostModifier), modifierAmount, ".ctor");
+            PatchSafety.RequireFieldWriters(typeof(LocalCostModifier), "<Amount>k__BackingField", "set_Amount");
+            // The pure listeners read the card's type: CardModel's own getter returns what the constructor set (see Note for overrides).
+            PatchSafety.RequireFieldWriters(typeof(CardModel), "<Type>k__BackingField", ".ctor");
+            MethodInfo typeGetter = AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.Type)) ?? throw new MissingMethodException(nameof(CardModel), "get_Type");
+            // The auto-property's getter (returns that field), v0.107.1 to v0.113.1.
+            PatchSafety.RequireFingerprint(typeGetter, TypeGetterFingerprint);
+            _typeGetter = typeGetter;
+            // What a trusted or moved pile's kept states skip reading: another mod's patch on one of them (a postfix changing the value)
+            // reads every card as the game does (GettersPatched).
+            _skippedGetters = new MethodBase[]
+            {
+                Getter(typeof(AbstractModel), nameof(AbstractModel.Id)),
+                Getter(typeof(CardModel), nameof(CardModel.Affliction)),
+                Getter(typeof(CardModel), nameof(CardModel.Enchantment)),
+                Getter(typeof(CardModel), nameof(CardModel.CurrentUpgradeLevel)),
+                Getter(typeof(CardModel), nameof(CardModel.FloorAddedToDeck)),
+                Getter(typeof(CardModel), nameof(CardModel.EnergyCost)),
+                Getter(typeof(AfflictionModel), nameof(AfflictionModel.Amount)),
+                Getter(typeof(EnchantmentModel), nameof(EnchantmentModel.Amount)),
+                Getter(typeof(CardEnergyCost), nameof(CardEnergyCost.Canonical)),
+                Getter(typeof(CardEnergyCost), nameof(CardEnergyCost.CostsX)),
+                // What the pure cost and keyword listeners read of a card (PureHooks).
+                Getter(typeof(CardModel), nameof(CardModel.Type)),
+                Getter(typeof(CardModel), nameof(CardModel.Owner)),
+                Getter(typeof(CardModel), nameof(CardModel.Pile)),
+            };
             _pileCards = AccessTools.FieldRefAccess<CardPile, List<CardModel>>("_cards");
             _listVersion = AccessTools.FieldRefAccess<List<CardModel>, int>("_version");
             _costCard = AccessTools.FieldRefAccess<CardEnergyCost, CardModel>("_card");
@@ -423,6 +492,113 @@ public static class SnapshotCardReuse
         {
             Log.Info($"[{ModEntry.Id}] {Name}: unchanged piles read every time: {e.Message}");
         }
+    }
+
+    /// <summary>
+    /// Throws <see cref="PatchSkippedException"/> when a method of <paramref name="type"/> (or of its nested types: lambdas, state
+    /// machines) other than <paramref name="known"/> calls <paramref name="getter"/>: a private getter returning a tracked collection,
+    /// or a setter changing a tracked object in place. A new caller could change it unseen by the counted writers and by
+    /// <see cref="PatchSafety.RequireFieldWriters"/>.
+    /// </summary>
+    private static void RequireCallers(Type type, MethodInfo? getter, params string[] known)
+    {
+        if (getter == null)
+        {
+            throw new MissingMethodException(type.Name, "a tracked member's accessor");
+        }
+        const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
+        var unknown = new List<string>();
+        void Scan(Type t, string prefix)
+        {
+            foreach (MethodBase m in t.GetMethods(all).Cast<MethodBase>().Concat(t.GetConstructors(all)))
+            {
+                if (m.Equals(getter) || (prefix.Length == 0 && known.Contains(m.Name)))
+                {
+                    continue;
+                }
+                if (MethodFingerprint.UsedMembers(m).Any(u => u is MethodBase used && used.Equals(getter)))
+                {
+                    unknown.Add(prefix + m.Name);
+                }
+            }
+            foreach (Type nested in t.GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic))
+            {
+                Scan(nested, prefix + nested.Name + "+");
+            }
+        }
+        Scan(type, "");
+        if (unknown.Count > 0)
+        {
+            throw new PatchSkippedException($"{type.Name}.{getter.Name} is now also used by {string.Join(", ", unknown)} (update?): left vanilla");
+        }
+    }
+
+    private static MethodBase Getter(Type type, string property) =>
+        AccessTools.PropertyGetter(type, property) ?? throw new MissingMethodException(type.Name, "get_" + property);
+
+    private static MethodBase[]? _skippedGetters;
+
+    /// <summary><c>CardModel.Type</c>'s getter (set when piles may be trusted), and per card type whether it keeps that getter.</summary>
+    private static MethodInfo? _typeGetter;
+    private const string TypeGetterFingerprint = "B3671DD3787AE845";
+    private static readonly Dictionary<Type, bool> _keepsTypeGetter = new();
+
+    /// <summary>
+    /// Whether this card type answers <c>Type</c> with CardModel's own getter (the constructor's value, see ApplyTrust). An override may
+    /// answer differently over time, unseen by the counted writers, while the pure listeners read it: such cards get no memo (they are
+    /// read at every snapshot, never kept by a trusted or moved pile).
+    /// </summary>
+    [PatchPart("piles")]
+    private static bool KeepsTypeGetter(Type type)
+    {
+        if (_typeGetter == null)
+        {
+            return false;
+        }
+        if (_keepsTypeGetter.TryGetValue(type, out bool keeps))
+        {
+            return keeps;
+        }
+        keeps = true;
+        try
+        {
+            for (Type? t = type; t != null && t != typeof(CardModel) && keeps; t = t.BaseType)
+            {
+                foreach (MethodInfo m in t.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
+                {
+                    // An override (same slot), or a method of that name hiding it: either way not CardModel's getter alone.
+                    if (m.Name == _typeGetter.Name && m.GetParameters().Length == 0)
+                    {
+                        keeps = false;
+                        break;
+                    }
+                }
+            }
+        }
+        catch (Exception)
+        {
+            keeps = false;
+        }
+        _keepsTypeGetter[type] = keeps;
+        return keeps;
+    }
+    private static long _gettersCheckedAt = long.MinValue / 2; // So `now - at` can't overflow: the first check runs.
+    private static bool _gettersPatched;
+
+    /// <summary>Another mod patches a getter whose value kept states stand for (<see cref="_skippedGetters"/>). Rechecked every 2 s.</summary>
+    private static bool GettersPatched()
+    {
+        if (_skippedGetters == null)
+        {
+            return false; // Piles aren't trusted then.
+        }
+        long now = Environment.TickCount64;
+        if (now - _gettersCheckedAt >= 2000)
+        {
+            _gettersPatched = _skippedGetters.Any(getter => PatchSafety.IsPatchedByOthers(getter));
+            _gettersCheckedAt = now;
+        }
+        return _gettersPatched;
     }
 
     /// <summary>A card no pile read yet is in no trusted pile: nothing to count.</summary>
@@ -535,6 +711,7 @@ public static class SnapshotCardReuse
             _reserveBits = AccessTools.MethodDelegate<Action<PacketWriter, int>>(resize);
             _setBitPosition = AccessTools.MethodDelegate<Action<PacketWriter, int>>(AccessTools.PropertySetter(typeof(PacketWriter), nameof(PacketWriter.BitPosition))
                 ?? throw new MissingMethodException(nameof(PacketWriter), "set_BitPosition"));
+            ResolveSerializers();
             PatchGuard.Patch(harmony, _cardSerialize, prefix: new HarmonyMethod(typeof(SnapshotCardReuse), nameof(CardSerializePrefix)));
         }
         catch (Exception e)
@@ -558,6 +735,18 @@ public static class SnapshotCardReuse
             MethodInfo writeList = AccessTools.FirstMethod(typeof(PacketWriter), m => m.Name == nameof(PacketWriter.WriteList) && m.IsGenericMethodDefinition && m.GetParameters().Length == 2)
                 ?? throw new MissingMethodException(nameof(PacketWriter), nameof(PacketWriter.WriteList));
             PatchSafety.RequireFingerprint(writeList, WriteListFingerprint);
+            // A pile's bits are its type (WriteInt, 32 bits), then WriteList(cards): the count, then each card's bits. Compose builds them that way.
+            PatchSafety.RequireFingerprint(_pileSerialize, CombatPileSerializeFingerprint);
+            PatchSafety.RequireFingerprint(AccessTools.Method(typeof(PacketWriter), nameof(PacketWriter.WriteInt))
+                ?? throw new MissingMethodException(nameof(PacketWriter), nameof(PacketWriter.WriteInt)), WriteIntFingerprint);
+            // A closed instantiation can be patched apart from the definition (Unlimited does it for some list types): WritePiles stands
+            // for one, Compose for the other.
+            _pileSerializers = new MethodBase[]
+            {
+                _pileSerialize,
+                writeList.MakeGenericMethod(typeof(NetFullCombatState.CardState)),
+                writeList.MakeGenericMethod(typeof(NetFullCombatState.CombatPileState)),
+            };
             PatchGuard.Patch(harmony, AccessTools.Method(typeof(NetFullCombatState.PlayerState), nameof(NetFullCombatState.PlayerState.Serialize), new[] { typeof(PacketWriter) })
                 ?? throw new MissingMethodException("NetFullCombatState.PlayerState", "Serialize"), transpiler: new HarmonyMethod(typeof(SnapshotCardReuse), nameof(PlayerSerializeTranspiler)));
         }
@@ -565,6 +754,250 @@ public static class SnapshotCardReuse
         {
             Log.Info($"[{ModEntry.Id}] {Name}: pile bits not reused, each card's still are: {e.Message}");
         }
+    }
+
+    // --- What kept bits rely on: the serializers below write a function of the state alone, in the current id widths ---
+
+    /// <summary><c>CombatPileState.Serialize</c>, v0.107.1 to v0.113.1: <c>WriteInt((int)pileType)</c>, then <c>WriteList(cards)</c>.</summary>
+    private const string CombatPileSerializeFingerprint = "78B8142AB5A76C0D";
+    /// <summary><c>SerializableEnchantment.Serialize</c>, v0.107.1 to v0.113.1: id, amount, properties.</summary>
+    private const string SerializableEnchantmentSerializeFingerprint = "174DFDEC4EA23729";
+    /// <summary><c>SavedProperties.Serialize</c>, v0.107.1 to v0.113.1: each list of its fields, names through WritePropertyName.</summary>
+    private const string SavedPropertiesSerializeFingerprint = "BAE840068F670DB0";
+    /// <summary><c>SavedProperties.WritePropertyName</c>: the name's net id on the cache's width (v0.107.1 SavedPropertiesTypeCache, v0.111+ ModelIdSerializationCache).</summary>
+    private static readonly string[] WritePropertyNameFingerprints = { "A8B4ED2BFA4D5515", "056C6A8F3E078C44" };
+    /// <summary>
+    /// BaseLib 3.4.8's postfixes on <c>SerializableCard.Serialize</c> and <c>SerializableEnchantment.Serialize</c>: the object's extended data
+    /// through <c>ExtendedSaveHandlers.Write</c> (each registered save's value, nothing while gameplay mods can't run). That data is set when
+    /// the object is made; registering a save or that switch changes <see cref="BitsEpoch"/>.
+    /// </summary>
+    private const string BaseLibCardWrite = "BaseLib.Patches.Saves.ExtendedSavePatches+SerializeExtendedCardData:WriteExtended";
+    private const string BaseLibCardWriteFingerprint = "038E012043C50ECB";
+    private const string BaseLibEnchantmentWrite = "BaseLib.Patches.Saves.ExtendedSavePatches+SerializeExtendedEnchantmentData:WriteExtended";
+    private const string BaseLibEnchantmentWriteFingerprint = "739429D3B854A2B3";
+    private const string BaseLibHandlersType = "BaseLib.Patches.Saves.ExtendedSaveHandlers`2";
+    private const string BaseLibHandlersWriteFingerprint = "D1DE163AF605BE38";
+
+    /// <summary>Card bits: <c>CardState.Serialize</c> and what it calls for the card. Pile bits add <see cref="_pileSerializers"/>.</summary>
+    private static MethodBase[]? _cardSerializers;
+    private static MethodBase[]? _pileSerializers;
+    /// <summary>BaseLib's two postfixes there, once their code is the known one.</summary>
+    private static MethodInfo[] _baseLibWrites = Array.Empty<MethodInfo>();
+    private static Func<uint>? _idHash;
+    private static Func<int>? _entryIdWidth, _categoryIdWidth, _propertyIdWidth;
+    private static Func<bool>? _baseLibGameplay;
+    private static (uint, int, int, int, int, int, bool) _bitsKey;
+    private static int _bitsEpoch;
+
+    private static void ResolveSerializers()
+    {
+        MethodInfo serializableCard = AccessTools.Method(typeof(SerializableCard), nameof(SerializableCard.Serialize))
+            ?? throw new MissingMethodException(nameof(SerializableCard), nameof(SerializableCard.Serialize));
+        MethodInfo serializableEnchantment = AccessTools.Method(typeof(SerializableEnchantment), nameof(SerializableEnchantment.Serialize))
+            ?? throw new MissingMethodException(nameof(SerializableEnchantment), nameof(SerializableEnchantment.Serialize));
+        MethodInfo savedProperties = AccessTools.Method(typeof(SavedProperties), nameof(SavedProperties.Serialize))
+            ?? throw new MissingMethodException(nameof(SavedProperties), nameof(SavedProperties.Serialize));
+        MethodInfo propertyName = AccessTools.Method(typeof(SavedProperties), "WritePropertyName")
+            ?? throw new MissingMethodException(nameof(SavedProperties), "WritePropertyName");
+        PatchSafety.RequireFingerprint(_cardSerialize!, CardStateSerializeFingerprint);
+        PatchSafety.RequireFingerprint(serializableCard, SerializableCardSerializeFingerprint);
+        PatchSafety.RequireFingerprint(serializableEnchantment, SerializableEnchantmentSerializeFingerprint);
+        PatchSafety.RequireFingerprint(savedProperties, SavedPropertiesSerializeFingerprint);
+        string nameFingerprint = MethodFingerprint.Of(propertyName);
+        if (!WritePropertyNameFingerprints.Any(expected => PatchSafety.FingerprintMatches(nameFingerprint, expected)))
+        {
+            throw new PatchSkippedException($"SavedProperties.WritePropertyName changed (fingerprint {nameFingerprint}): left vanilla");
+        }
+        _cardSerializers = new MethodBase[] { _cardSerialize!, serializableCard, serializableEnchantment, savedProperties, propertyName };
+
+        // What the kept bits were written with: ids are written on widths fixed when the caches are built (a mod adding a type to the
+        // saved-property cache later, as BaseLib can, may widen the property ids: Limitless's Patch_SavedPropertyNetIdWidth).
+        Type cache = typeof(ModelIdSerializationCache);
+        _idHash = AccessTools.MethodDelegate<Func<uint>>(AccessTools.PropertyGetter(cache, nameof(ModelIdSerializationCache.Hash))
+            ?? throw new MissingMethodException(cache.Name, "get_Hash"));
+        _entryIdWidth = AccessTools.MethodDelegate<Func<int>>(AccessTools.PropertyGetter(cache, nameof(ModelIdSerializationCache.EntryIdBitSize))
+            ?? throw new MissingMethodException(cache.Name, "get_EntryIdBitSize"));
+        _categoryIdWidth = AccessTools.MethodDelegate<Func<int>>(AccessTools.PropertyGetter(cache, nameof(ModelIdSerializationCache.CategoryIdBitSize))
+            ?? throw new MissingMethodException(cache.Name, "get_CategoryIdBitSize"));
+        // v0.111+: ModelIdSerializationCache.PropertyIdBitSize; v0.107.1: SavedPropertiesTypeCache.NetIdBitSize.
+        MethodInfo propertyWidth = AccessTools.PropertyGetter(cache, "PropertyIdBitSize")
+            ?? (AccessTools.TypeByName("MegaCrit.Sts2.Core.Saves.Runs.SavedPropertiesTypeCache") is { } legacy ? AccessTools.PropertyGetter(legacy, "NetIdBitSize") : null)
+            ?? throw new MissingMethodException(cache.Name, "the saved-property id width");
+        _propertyIdWidth = AccessTools.MethodDelegate<Func<int>>(propertyWidth);
+
+        // BaseLib is loaded (LimitlessReserialize's comparison needs it): its postfixes are allowed only with their known code.
+        MethodInfo cardWrite = AccessTools.Method(BaseLibCardWrite) ?? throw new PatchSkippedException("BaseLib has no " + BaseLibCardWrite);
+        MethodInfo enchantmentWrite = AccessTools.Method(BaseLibEnchantmentWrite) ?? throw new PatchSkippedException("BaseLib has no " + BaseLibEnchantmentWrite);
+        Type handlers = AccessTools.TypeByName(BaseLibHandlersType) ?? throw new PatchSkippedException("BaseLib has no " + BaseLibHandlersType);
+        MethodInfo canModify = (AccessTools.TypeByName("BaseLib.Patches.PostModInitPatch") is { } postModInit ? AccessTools.PropertyGetter(postModInit, "CanModifyGameplay") : null)
+            ?? throw new PatchSkippedException("BaseLib has no PostModInitPatch.CanModifyGameplay");
+        _baseLibGameplay = AccessTools.MethodDelegate<Func<bool>>(canModify);
+        if (PatchSafety.FingerprintMatches(MethodFingerprint.Of(cardWrite), BaseLibCardWriteFingerprint)
+            && PatchSafety.FingerprintMatches(MethodFingerprint.Of(enchantmentWrite), BaseLibEnchantmentWriteFingerprint)
+            && AccessTools.Method(handlers, "Write") is { } write && PatchSafety.FingerprintMatches(MethodFingerprint.Of(write), BaseLibHandlersWriteFingerprint))
+        {
+            _baseLibWrites = new[] { cardWrite, enchantmentWrite };
+        }
+        else
+        {
+            // Then BaseLib's postfixes count as another mod's: no card bits kept (logged by PatchSafety when seen).
+            Log.Info($"[{ModEntry.Id}] {Name}: BaseLib's serialization postfixes changed, card bits written by the game");
+        }
+        BitsEpoch();
+    }
+
+    private static long _cardGuardsAt = long.MinValue / 2, _pileGuardsAt = long.MinValue / 2; // So `now - at` can't overflow: the first check runs.
+    private static bool _cardBlocked = true, _pileBlocked = true;
+
+    /// <summary>
+    /// Another mod's patch on what kept card bits stand for (a prefix, postfix or finalizer may write anything; a transpiler, change what
+    /// is written): BaseLib's known postfixes and Unlimited's known list-width transpiler (fingerprinted by RelicStateReuse) aside.
+    /// Rechecked every 2 s: this runs for every card serialized.
+    /// </summary>
+    private static bool CardBitsBlocked()
+    {
+        long now = Environment.TickCount64;
+        if (now - _cardGuardsAt >= 2000)
+        {
+            _cardBlocked = Blocked(_cardSerializers);
+            _cardGuardsAt = now;
+        }
+        return _cardBlocked;
+    }
+
+    /// <summary><see cref="CardBitsBlocked"/>, plus the pile's own serialization and the two list writers it stands for.</summary>
+    private static bool PileBitsBlocked()
+    {
+        long now = Environment.TickCount64;
+        if (now - _pileGuardsAt >= 2000)
+        {
+            _pileBlocked = Blocked(_pileSerializers);
+            _pileGuardsAt = now;
+        }
+        return _pileBlocked || CardBitsBlocked();
+    }
+
+    private static bool Blocked(MethodBase[]? methods)
+    {
+        if (methods == null)
+        {
+            return true;
+        }
+        MethodInfo[] allowed = RelicStateReuse.UnlimitedTranspilerMethod is { } unlimited ? _baseLibWrites.Append(unlimited).ToArray() : _baseLibWrites;
+        foreach (MethodBase method in methods)
+        {
+            if (PatchSafety.IsPatchedByOthers(method, allowed))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Changes when what kept bits were written with may have: the model id cache (hash, entry and category id widths), the saved-property
+    /// id width, BaseLib's registered card and enchantment saves, and whether BaseLib writes them at all. Bits of another epoch are written
+    /// again by the game's method.
+    /// </summary>
+    private static int BitsEpoch()
+    {
+        (LimitlessReserialize.ExtendedData card, LimitlessReserialize.ExtendedData enchantment) = LimitlessReserialize.Data();
+        (uint, int, int, int, int, int, bool) key = (_idHash!(), _entryIdWidth!(), _categoryIdWidth!(), _propertyIdWidth!(), card.SavesCount, enchantment.SavesCount, _baseLibGameplay!());
+        if (key != _bitsKey)
+        {
+            _bitsKey = key;
+            _bitsEpoch++;
+        }
+        return _bitsEpoch;
+    }
+
+    /// <summary>
+    /// Whether bits may be kept for this object. <c>SavedProperties.FromInternal</c> stores an <c>int[]</c> property's own array, which its
+    /// model may change in place: the object then serializes the new values (the game's call, as vanilla's fresh object would), kept bits
+    /// the old ones. No card or enchantment saves one in v0.107.1 to v0.113.1 (relics do: Fur Coat); inner cards (Limitless) checked too.
+    /// A saved card (<c>props.cards</c>) is the model's own object, whose fields have public setters: never kept. A card array is a new one
+    /// from the game (<c>list.ToArray()</c>), but BaseLib's SavedSpireField export gives a field's own <c>SerializableCard[]</c>: arrays are
+    /// kept only for types no SavedSpireField targets.
+    /// BaseLib's extended data holds what each registered getter returned, written live at each serialization: a collection the model
+    /// owns may change in place (and an emptied one compares as unchanged, so the object is given again). Bits are kept only when that
+    /// data is known (none, or BaseLib's own empty card modifiers) or holds only primitives, strings and enums.
+    /// </summary>
+    [PatchPart("bits")]
+    private static bool BitsSafe(SerializableCard? card, int depth = 0)
+    {
+        if (card == null)
+        {
+            return true;
+        }
+        if (depth > 8)
+        {
+            return false;
+        }
+        return PropsSafe(card.Props, card.Id, depth) && (card.Enchantment == null || PropsSafe(card.Enchantment.Props, card.Enchantment.Id, depth))
+            && DataSafe(card);
+    }
+
+    [PatchPart("bits")]
+    private static bool DataSafe(SerializableCard card)
+    {
+        if (LimitlessReserialize.StoredDataState(card) >= 0)
+        {
+            return true;
+        }
+        (LimitlessReserialize.ExtendedData cardData, LimitlessReserialize.ExtendedData enchantmentData) = LimitlessReserialize.Data();
+        return ScalarData(cardData, card) && (card.Enchantment == null || ScalarData(enchantmentData, card.Enchantment));
+    }
+
+    [PatchPart("bits")]
+    private static bool ScalarData(LimitlessReserialize.ExtendedData data, object saved)
+    {
+        if (data.Stored(saved) is not { } stored)
+        {
+            return true;
+        }
+        foreach (System.Collections.IDictionary dictionary in data.Dictionaries(stored).Values)
+        {
+            foreach (object? value in dictionary.Values)
+            {
+                if (value != null && value is not string && !value.GetType().IsPrimitive && !value.GetType().IsEnum)
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    [PatchPart("bits")]
+    private static bool PropsSafe(SavedProperties? props, ModelId? owner, int depth)
+    {
+        if (props == null)
+        {
+            return true;
+        }
+        if (props.intArrays != null || props.cards != null)
+        {
+            return false;
+        }
+        if (props.cardArrays != null)
+        {
+            // Unknown id (no model to judge): not kept.
+            if (owner == null || ModelDb.GetByIdOrNull<AbstractModel>(owner) is not { } model || BaseLibTypes.SpireFieldTargets(model.GetType()))
+            {
+                return false;
+            }
+            foreach (SavedProperties.SavedProperty<SerializableCard[]> property in props.cardArrays)
+            {
+                foreach (SerializableCard inner in property.value ?? Array.Empty<SerializableCard>())
+                {
+                    if (!BitsSafe(inner, depth + 1))
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
     }
 
     /// <summary>What every card of a pile shares in one snapshot.</summary>
@@ -688,7 +1121,8 @@ public static class SnapshotCardReuse
     private static Reads ReadsFor(CardPile pile)
     {
         long stamp = LimitlessReserialize.MemoStamp();
-        if (!_fastReads || !HookFilter.Active || KeywordsPatched() || PatchSafety.IsPatchedByOthers(_withModifiers)
+        // No listeners (null): no pile trusted or kept as moved.
+        if (!_fastReads || !HookFilter.Active || KeywordsPatched() || PatchSafety.IsPatchedByOthers(_withModifiers) || GettersPatched()
             || pile.Cards.Count == 0 || pile.Cards[0].Owner?.Creature.CombatState is not CombatState combat)
         {
             return new Reads(stamp, false, false, null);
@@ -816,6 +1250,7 @@ public static class SnapshotCardReuse
                         if (!SameState(read, state))
                         {
                             PileMismatches++;
+                            Detections++;
                             _trustPiles = false;
                             moved = false;
                             Log.Error($"[{ModEntry.Id}] {Name}: a moved pile's card changed unseen ({pile.Type}, {count} cards), piles are read every time from now on");
@@ -874,6 +1309,7 @@ public static class SnapshotCardReuse
                 {
                     // Nothing moved, yet this read found a change: a write went unseen.
                     PileMismatches++;
+                    Detections++;
                     _trustPiles = false;
                     Log.Error($"[{ModEntry.Id}] {Name}: a pile's state changed unseen ({pile.Type}, {count} cards), piles are read every time from now on");
                 }
@@ -1047,10 +1483,11 @@ public static class SnapshotCardReuse
         object? data = cardData.Stored(old);
         if (data == null || old.Props != null)
         {
+            long stamp = entry.MemoStamp; // Remember clears it with the new object.
             SerializableCard fresh = card.ToSerializable();
             Remember(card, entry, fresh);
             Register(entry, fresh);
-            Note(card, entry, entry.MemoStamp);
+            Note(card, entry, stamp);
             return fresh;
         }
         cardData.Store(saved, data);
@@ -1080,6 +1517,17 @@ public static class SnapshotCardReuse
                 if (_piles.TryGetValue(pile, out PileLast? last))
                 {
                     last.Release();
+                }
+            }
+            // Cards that left every pile before the end (transformed, removed from combat) are in no pile's entries: their own entry still
+            // held them. An entry whose pile was released (this player's) or that no pile read is no live pile's; another player's are
+            // released with that player.
+            foreach (KeyValuePair<CardModel, Last> pair in (IEnumerable<KeyValuePair<CardModel, Last>>)_last)
+            {
+                Last entry = pair.Value;
+                if (entry.Card != null && (entry.In == null || entry.In.Cards == null))
+                {
+                    PileLast.ReleaseEntry(entry);
                 }
             }
         }
@@ -1138,7 +1586,7 @@ public static class SnapshotCardReuse
         EnchantmentModel? enchantment = card.Enchantment;
         Func<object, List<SerializableCard>?>? getter = null;
         Func<object, List<SerializableCard>?>? cardList = null;
-        if (stamp < 0 || !card.IsMutable || !LimitlessReserialize.MemoPlan(card, out cardList)
+        if (stamp < 0 || !card.IsMutable || (_trustPiles && !KeepsTypeGetter(card.GetType())) || !LimitlessReserialize.MemoPlan(card, out cardList)
             || (enchantment != null && (!enchantment.IsMutable || !LimitlessReserialize.MemoPlan(enchantment, out getter))))
         {
             return;
@@ -1250,7 +1698,8 @@ public static class SnapshotCardReuse
     [PatchPart("bits")]
     private static void WritePiles(PacketWriter writer, IReadOnlyList<NetFullCombatState.CombatPileState> piles, int lengthBits)
     {
-        if (!Enabled)
+        // Another mod's patch on WriteList<CombatPileState> (or on what pile bits stand for) runs only through the game's call.
+        if (!Enabled || PileBitsBlocked())
         {
             writer.WriteList(piles, lengthBits);
             return;
@@ -1277,7 +1726,7 @@ public static class SnapshotCardReuse
     {
         __state = -1;
         if (!Enabled || __instance.cards == null || __instance.cards.Count < MinCardsForPileBits || !LimitlessReserialize.CanCompareHere
-            || SerializePatched() || PatchedOthersOnPile())
+            || PileBitsBlocked())
         {
 #if BENCH
             if (__instance.cards is { Count: >= MinCardsForPileBits })
@@ -1294,39 +1743,45 @@ public static class SnapshotCardReuse
 #if BENCH
                 _composeFail = null;
 #endif
-                bool composed = !ReferenceEquals(last.BitsFor, __instance.cards) && Compose(ref __instance, last);
+                int epoch = BitsEpoch();
+                bool kept = ReferenceEquals(last.BitsFor, __instance.cards) && last.BitsEpoch == epoch;
+                bool composed = !kept && Compose(ref __instance, last, epoch);
 #if BENCH
-                CountPileBits((ReferenceEquals(last.BitsFor, __instance.cards) ? (composed ? "composed" : "same list") : "compose failed: " + _composeFail) + $" {__instance.pileType}");
+                CountPileBits((kept ? "same list" : composed ? "composed" : "compose failed: " + _composeFail) + $" {__instance.pileType}");
 #endif
-                if (ReferenceEquals(last.BitsFor, __instance.cards) && ++_sincePileBits < PileVerifyEvery)
+                if (kept || composed)
                 {
-                    _reserveBits!(writer, last.BitCount);
-                    int position = writer.BitPosition;
-                    AppendBits(writer.Buffer, position, last.Bits!, last.BitCount);
-                    _setBitPosition!(writer, position + last.BitCount);
-                    if (composed)
+                    if (++_sincePileBits < PileVerifyEvery)
                     {
-                        PileBitsComposed++;
+                        _reserveBits!(writer, last.BitCount);
+                        int position = writer.BitPosition;
+                        AppendBits(writer.Buffer, position, last.Bits!, last.BitCount);
+                        _setBitPosition!(writer, position + last.BitCount);
+                        if (composed)
+                        {
+                            PileBitsComposed++;
+                        }
+                        else
+                        {
+                            PileBitsReused++;
+                        }
+                        return false;
                     }
-                    else
-                    {
-                        PileBitsReused++;
-                    }
-                    return false;
+                    // This one is compared in the postfix (the counter restarts only here: lists the game wrote anyway don't delay it).
+                    _sincePileBits = 0;
                 }
-            }
-#if BENCH
-            else
-            {
-                CountPileBits($"list not from a read {__instance.pileType} {__instance.cards.Count}");
-            }
-#endif
-            if (!Enabled)
-            {
+                if (!Enabled)
+                {
+                    return true;
+                }
+                // Kept from what the game's method writes now (compared first when bits were kept or composed for this list).
+                __state = writer.BitPosition;
                 return true;
             }
-            _sincePileBits = 0;
-            __state = writer.BitPosition;
+#if BENCH
+            CountPileBits($"list not from a read {__instance.pileType} {__instance.cards.Count}");
+#endif
+            // Not a list of a read (the verifier's vanilla state, an old one): nothing to keep or compare.
             return true;
         }
         catch (Exception e)
@@ -1336,7 +1791,12 @@ public static class SnapshotCardReuse
         }
     }
 
-    /// <summary>Keeps what the game's method just wrote; when bits were kept for this list, they must be the same.</summary>
+    /// <summary>
+    /// Keeps what the game's method just wrote; when bits were kept for this list (in this epoch), they must be the same. The game's method
+    /// still writes each card through <see cref="CardSerializePrefix"/>, so this checks the pile's header and how its bits were put together
+    /// (copied blocks, upgrade levels, card order), not each card's kept bits: those are checked against the game's own serialization by
+    /// <see cref="SameBits"/>, one card in <see cref="VerifyEvery"/> (a whole pile serialized fresh would freeze for tens of ms at 20,000 cards).
+    /// </summary>
     [PatchPart("bits")]
     private static void PileSerializePostfix(ref NetFullCombatState.CombatPileState __instance, PacketWriter writer, int __state)
     {
@@ -1350,18 +1810,32 @@ public static class SnapshotCardReuse
             {
                 return;
             }
+            int epoch = BitsEpoch();
             int bits = writer.BitPosition - __state;
             byte[] taken = new byte[(bits + 7) >> 3];
             ExtractBits(writer.Buffer, __state, taken, bits);
-            if (ReferenceEquals(last.BitsFor, __instance.cards) && (last.BitCount != bits || !taken.AsSpan().SequenceEqual(last.Bits.AsSpan(0, taken.Length))))
+            if (ReferenceEquals(last.BitsFor, __instance.cards) && last.BitsEpoch == epoch
+                && (last.BitCount != bits || !taken.AsSpan().SequenceEqual(last.Bits.AsSpan(0, taken.Length))))
             {
                 Mismatches++;
                 Disable("the bits kept for a pile differ from the game's", $"{__instance.pileType} ({last.BitCount} vs {bits} bits)");
                 return;
             }
+            foreach (NetFullCombatState.CardState card in __instance.cards)
+            {
+                if (!BitsSafe(card.card))
+                {
+                    // Not kept: a card of it may serialize differently later (BitsSafe), the game's method writes it each time.
+                    last.BitsFor = null;
+                    last.Bits = null;
+                    last.Offsets = null;
+                    return;
+                }
+            }
             last.Bits = taken;
             last.BitCount = bits;
             last.BitsFor = __instance.cards;
+            last.BitsEpoch = epoch;
             last.Offsets = null;
         }
         catch (Exception e)
@@ -1371,13 +1845,14 @@ public static class SnapshotCardReuse
     }
 
     /// <summary>
-    /// A changed pile's bits, without a call per card: what the game's method writes before the first card (from that
-    /// method, with no card written), then each card's kept bits. <see cref="PileVerifyEvery"/> compares the result with the game's.
+    /// A changed pile's bits, without a call per card: what the game's method writes before the first card (its type and the count,
+    /// <see cref="CaptureHeader"/>), then each card's kept bits. One pile in <see cref="PileVerifyEvery"/> is written by the game's method
+    /// and compared (<see cref="PileSerializePostfix"/>: the assembly, not each card's bits).
     /// A card's bits depend on its state alone: the longest runs of the same states at the start and at the end of the previous
-    /// list (a card added at the end, cards drawn from the top) are copied from the previous bits as two blocks.
+    /// list (a card added at the end, cards drawn from the top) are copied from the previous bits as two blocks (same epoch only).
     /// </summary>
     [PatchPart("bits")]
-    private static bool Compose(ref NetFullCombatState.CombatPileState state, PileLast last)
+    private static bool Compose(ref NetFullCombatState.CombatPileState state, PileLast last, int epoch)
     {
         List<NetFullCombatState.CardState> cards = state.cards;
         int count = cards.Count;
@@ -1396,7 +1871,7 @@ public static class SnapshotCardReuse
         int head = 0, tail = 0;
         // Offsets are set with the bits they describe (BitsFor's cards, then the end); the array may be longer.
         if (BlockCopies && previous != null && previousBits != null && previousOffsets != null && previousOffsets.Length >= previous.Count + 1
-            && !ReferenceEquals(previous, cards))
+            && !ReferenceEquals(previous, cards) && last.BitsEpoch == epoch)
         {
             Span<NetFullCombatState.CardState> before = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(previous);
             int max = Math.Min(before.Length, count);
@@ -1430,15 +1905,20 @@ public static class SnapshotCardReuse
                 return false;
             }
             ref NetFullCombatState.CardState card = ref states[i];
-            if (!ReferenceEquals(entry.BitsCard, card.card) || entry.Bits == null || !Equals(entry.BitsAffliction, card.affliction)
-                || entry.BitsAfflictionCount != card.afflictionCount || entry.BitsEnergyCost != card.energyCost || !ReferenceEquals(entry.BitsKeywords, card.keywords))
+            if (!SameKeptBits(card, entry, epoch))
             {
 #if BENCH
                 _upgradePath = "pile ";
 #endif
-                if (!PatchUpgradeBits(ref card, entry))
+                if (!PatchUpgradeBits(ref card, entry, epoch))
                 {
-                    Capture(ref card, entry);
+                    if (!Capture(ref card, entry, epoch))
+                    {
+#if BENCH
+                        _composeFail = "a card whose bits aren't kept";
+#endif
+                        return false;
+                    }
                 }
                 else if (!CheckPatchedBits(ref card, entry))
                 {
@@ -1459,9 +1939,12 @@ public static class SnapshotCardReuse
             }
             bits += entry.BitCount;
         }
-        if (last.HeaderCards != count)
+        if ((last.HeaderEpoch != epoch && !CaptureHeader(ref state, last, epoch)) || (ulong)count >= 1UL << last.CountBits)
         {
-            CaptureHeader(ref state, last);
+#if BENCH
+            _composeFail = "header";
+#endif
+            return false; // Too many cards: WriteList throws, the game's call then does as vanilla.
         }
         bits += last.HeaderBits;
         if (bits > int.MaxValue - 64)
@@ -1474,6 +1957,14 @@ public static class SnapshotCardReuse
         int[] offsets = last.SpareOffsets is { } spareOffsets && spareOffsets.Length >= count + 1 && !ReferenceEquals(spareOffsets, previousOffsets)
             ? spareOffsets : new int[count + count / 8 + 1];
         Buffer.BlockCopy(last.Header!, 0, buffer, 0, last.Header!.Length);
+        // The count, as WriteInt(count, CountBits) writes it: least significant bit first, over the header's zero count.
+        for (int i = 0, at = last.HeaderBits - last.CountBits; i < last.CountBits; i++)
+        {
+            if (((count >> i) & 1) != 0)
+            {
+                buffer[(at + i) >> 3] |= (byte)(1 << ((at + i) & 7));
+            }
+        }
         int position = last.HeaderBits;
         if (head > 0)
         {
@@ -1515,6 +2006,7 @@ public static class SnapshotCardReuse
         last.Offsets = offsets;
         last.BitCount = position;
         last.BitsFor = cards;
+        last.BitsEpoch = epoch;
         return true;
     }
 
@@ -1552,40 +2044,32 @@ public static class SnapshotCardReuse
         return position + bits;
     }
 
+    private static readonly List<NetFullCombatState.CardState> NoCards = new();
+
+    /// <summary>
+    /// The game's bits for this pile with no card. <c>CombatPileState.Serialize</c> (fingerprinted) writes the type on 32 bits, then
+    /// <c>WriteList</c> (fingerprinted, its <c>CardState</c> instantiation unpatched) the count, then each card: any count's header is
+    /// these bits with the count written into their last ones. Written once per pile and epoch, not with a call per card (the earlier
+    /// way ran the pile's whole serialization, each card skipped, whenever the count changed: most plays for a big draw pile).
+    /// </summary>
     [PatchPart("bits")]
-    private static void CaptureHeader(ref NetFullCombatState.CombatPileState state, PileLast last)
+    private static bool CaptureHeader(ref NetFullCombatState.CombatPileState state, PileLast last, int epoch)
     {
         _bitWriter ??= new() { WarnOnGrow = false };
         _bitWriter.Reset();
-        _headerOnly = true;
-        try
-        {
-            state.Serialize(_bitWriter);
-        }
-        finally
-        {
-            _headerOnly = false;
-        }
+        var empty = new NetFullCombatState.CombatPileState { pileType = state.pileType, cards = NoCards };
+        empty.Serialize(_bitWriter);
         _bitWriter.ZeroByteRemainder();
+        int countBits = _bitWriter.BitPosition - 32;
+        if (countBits is <= 0 or > 32)
+        {
+            return false; // Not the layout mirrored: the game's method then.
+        }
         last.Header = _bitWriter.Buffer.AsSpan(0, _bitWriter.BytePosition).ToArray();
         last.HeaderBits = _bitWriter.BitPosition;
-        last.HeaderCards = state.cards.Count;
-    }
-
-    private static long _pileOthersAt = long.MinValue / 2; // So `now - at` can't overflow: the first check runs.
-    private static bool _pileOthers;
-
-    /// <summary>As for a card's bits: only transpilers (their effect is in the bits) leave a pile's reusable.</summary>
-    private static bool PatchedOthersOnPile()
-    {
-        long now = Environment.TickCount64;
-        if (now - _pileOthersAt >= 2000)
-        {
-            _pileOthersAt = now;
-            HarmonyLib.Patches? info = Harmony.GetPatchInfo(_pileSerialize);
-            _pileOthers = info != null && info.Prefixes.Concat(info.Postfixes).Concat(info.Finalizers).Any(p => !PatchGuard.IsOurs(p.owner));
-        }
-        return _pileOthers;
+        last.CountBits = countBits;
+        last.HeaderEpoch = epoch;
+        return true;
     }
 
     /// <summary>The bits from <paramref name="start"/> of a packet buffer, from the first bit of <paramref name="destination"/>, zeros after the last.</summary>
@@ -1614,26 +2098,11 @@ public static class SnapshotCardReuse
 
     private static bool _capturing;
     private static PacketWriter? _bitWriter;
-    private static long _patchedCheckAt = long.MinValue / 2; // So `now - at` can't overflow: the first check runs.
-    private static bool _serializePatched;
     private static int _sinceBitCheck;
-
-    /// <summary>Another mod's prefix, postfix or finalizer on <c>CardState.Serialize</c> might not be pure: transpilers are, in the captured bits.</summary>
-    private static bool SerializePatched()
-    {
-        long now = Environment.TickCount64;
-        if (now - _patchedCheckAt >= 2000)
-        {
-            _patchedCheckAt = now;
-            HarmonyLib.Patches? info = Harmony.GetPatchInfo(_cardSerialize);
-            _serializePatched = info != null && info.Prefixes.Concat(info.Postfixes).Concat(info.Finalizers).Any(p => !PatchGuard.IsOurs(p.owner));
-        }
-        return _serializePatched;
-    }
 
     // --- Upgrade bits: a card whose only change is its upgrade level keeps its bits but those 8 ---
 
-    /// <summary>v0.107.1 and v0.111: the card first (<c>writer.Write(card)</c>), then its affliction, cost and keywords.</summary>
+    /// <summary>v0.107.1 to v0.113.1: the card first (<c>writer.Write(card)</c>), then its affliction, cost and keywords.</summary>
     private const string CardStateSerializeFingerprint = "CD9AA92A00A4338D";
     /// <summary><c>SerializableCard.Serialize</c>: <c>WriteModelEntry(Id)</c>, then <c>WriteInt(CurrentUpgradeLevel, 8)</c>, then the rest.</summary>
     private const string SerializableCardSerializeFingerprint = "043F1A4FC022488F";
@@ -1644,15 +2113,11 @@ public static class SnapshotCardReuse
     /// <summary>The first patched cards of a session are all checked against the game's bits, then one in <see cref="VerifyEvery"/>.</summary>
     private const int UpgradeBitsCheckedFirst = 64;
     private static Func<int>? _entryIdBits;
-    private static MethodInfo? _serializableCardSerialize;
     private static int _upgradeBitsChecked;
 
+    /// <summary><c>CardState.Serialize</c> and <c>SerializableCard.Serialize</c>: fingerprinted with the card bits (<see cref="ResolveSerializers"/>).</summary>
     private static void ApplyUpgradeBits()
     {
-        PatchSafety.RequireFingerprint(_cardSerialize!, CardStateSerializeFingerprint);
-        _serializableCardSerialize = AccessTools.Method(typeof(SerializableCard), nameof(SerializableCard.Serialize))
-            ?? throw new MissingMethodException(nameof(SerializableCard), nameof(SerializableCard.Serialize));
-        PatchSafety.RequireFingerprint(_serializableCardSerialize, SerializableCardSerializeFingerprint);
         PatchSafety.RequireFingerprint(AccessTools.Method(typeof(PacketWriterExtensions), nameof(PacketWriterExtensions.WriteModelEntry))
             ?? throw new MissingMethodException(nameof(PacketWriterExtensions), nameof(PacketWriterExtensions.WriteModelEntry)), WriteModelEntryFingerprint);
         PatchSafety.RequireFingerprint(AccessTools.Method(typeof(PacketWriter), nameof(PacketWriter.WriteInt))
@@ -1664,23 +2129,24 @@ public static class SnapshotCardReuse
     /// <summary>
     /// The kept bits of a card <see cref="Upgraded"/> remade from the very object they were written for, with the rest of the state
     /// the same: its upgrade level written into them as <c>WriteInt(level, 8)</c> would (the low byte, least significant bit first,
-    /// right after the entry id), instead of serializing the card again with its enchantments. Only while the card's own
-    /// serialization has no transpiler (prefixes and postfixes write before or after these bits, the same as when they were kept).
+    /// right after the entry id), instead of serializing the card again with its enchantments. Only while nothing of another mod but
+    /// BaseLib's postfixes (after these bits) and Unlimited's list-width transpiler (no list here) patches the card's serialization:
+    /// a prefix would write before the entry id and move them (<see cref="CardBitsBlocked"/>, checked by every caller).
     /// </summary>
     [PatchPart("bits")]
-    private static bool PatchUpgradeBits(ref NetFullCombatState.CardState state, Last last)
+    private static bool PatchUpgradeBits(ref NetFullCombatState.CardState state, Last last, int epoch)
     {
-        if (!UpgradeBits || _entryIdBits == null || last.Bits == null || last.UpgradedFrom == null || !ReferenceEquals(last.BitsCard, last.UpgradedFrom)
+        if (!UpgradeBits || _entryIdBits == null || last.Bits == null || last.BitsEpoch != epoch || last.UpgradedFrom == null || !ReferenceEquals(last.BitsCard, last.UpgradedFrom)
             || !ReferenceEquals(last.Saved, state.card) || !Equals(last.BitsAffliction, state.affliction) || last.BitsAfflictionCount != state.afflictionCount
-            || last.BitsEnergyCost != state.energyCost || !ReferenceEquals(last.BitsKeywords, state.keywords) || CardSerializeTranspiled())
+            || last.BitsEnergyCost != state.energyCost || !ReferenceEquals(last.BitsKeywords, state.keywords))
         {
 #if BENCH
             if (last.UpgradedFrom == null || !ReferenceEquals(last.Saved, state.card))
             {
                 return false; // Not an upgrade: any other card's first or new capture.
             }
-            string why = !UpgradeBits || _entryIdBits == null ? "off" : last.Bits == null ? "no bits" : last.UpgradedFrom == null ? "not upgraded" : !ReferenceEquals(last.BitsCard, last.UpgradedFrom) ? "bits of another object"
-                : !ReferenceEquals(last.Saved, state.card) ? "other saved" : last.BitsEnergyCost != state.energyCost ? "cost" : !ReferenceEquals(last.BitsKeywords, state.keywords) ? "keywords" : CardSerializeTranspiled() ? "transpiled" : "affliction";
+            string why = !UpgradeBits || _entryIdBits == null ? "off" : last.Bits == null ? "no bits" : last.BitsEpoch != epoch ? "other epoch" : last.UpgradedFrom == null ? "not upgraded" : !ReferenceEquals(last.BitsCard, last.UpgradedFrom) ? "bits of another object"
+                : !ReferenceEquals(last.Saved, state.card) ? "other saved" : last.BitsEnergyCost != state.energyCost ? "cost" : !ReferenceEquals(last.BitsKeywords, state.keywords) ? "keywords" : "affliction";
             why = _upgradePath + why;
             WhyNoUpgradeBits[why] = WhyNoUpgradeBits.GetValueOrDefault(why) + 1;
 #endif
@@ -1732,34 +2198,11 @@ public static class SnapshotCardReuse
         return true;
     }
 
-    private static long _transpiledCheckAt = long.MinValue / 2; // So `now - at` can't overflow: the first check runs.
-    private static bool _transpiled;
-
-    /// <summary>
-    /// A transpiler on <c>SerializableCard.Serialize</c> could move the upgrade bits; Unlimited's (fingerprinted by RelicStateReuse)
-    /// only widens list counts, and this method writes no list.
-    /// </summary>
-    private static bool CardSerializeTranspiled()
-    {
-        long now = Environment.TickCount64;
-        if (now - _transpiledCheckAt >= 2000)
-        {
-            _transpiledCheckAt = now;
-            MethodInfo? unlimited = RelicStateReuse.UnlimitedTranspilerMethod;
-            _transpiled = Harmony.GetPatchInfo(_serializableCardSerialize)?.Transpilers.Any(t => unlimited == null || t.PatchMethod.MethodHandle != unlimited.MethodHandle) == true;
-        }
-        return _transpiled;
-    }
-
     /// <summary><c>CardState.Serialize</c>: the bits it wrote for this same state last time.</summary>
     [PatchPart("bits")]
     private static bool CardSerializePrefix(ref NetFullCombatState.CardState __instance, PacketWriter writer)
     {
-        if (_headerOnly)
-        {
-            return false;
-        }
-        if (_capturing || !Enabled || __instance.card == null || !LimitlessReserialize.CanCompareHere || SerializePatched())
+        if (_capturing || !Enabled || __instance.card == null || !LimitlessReserialize.CanCompareHere || CardBitsBlocked())
         {
             return true;
         }
@@ -1769,15 +2212,18 @@ public static class SnapshotCardReuse
             {
                 return true;
             }
-            if (last.Bits == null || !ReferenceEquals(last.BitsCard, __instance.card) || !Equals(last.BitsAffliction, __instance.affliction)
-                || last.BitsAfflictionCount != __instance.afflictionCount || last.BitsEnergyCost != __instance.energyCost || !ReferenceEquals(last.BitsKeywords, __instance.keywords))
+            int epoch = BitsEpoch();
+            if (!SameKeptBits(__instance, last, epoch))
             {
 #if BENCH
                 _upgradePath = "card ";
 #endif
-                if (!PatchUpgradeBits(ref __instance, last))
+                if (!PatchUpgradeBits(ref __instance, last, epoch))
                 {
-                    Capture(ref __instance, last);
+                    if (!Capture(ref __instance, last, epoch))
+                    {
+                        return true;
+                    }
                 }
                 else if (!CheckPatchedBits(ref __instance, last))
                 {
@@ -1826,9 +2272,22 @@ public static class SnapshotCardReuse
         _bitWriter.ZeroByteRemainder();
     }
 
+    /// <summary>Whether <paramref name="last"/>'s bits were written, in this epoch, for this very state.</summary>
     [PatchPart("bits")]
-    private static void Capture(ref NetFullCombatState.CardState state, Last last)
+    private static bool SameKeptBits(in NetFullCombatState.CardState state, Last last, int epoch) =>
+        last.Bits != null && last.BitsEpoch == epoch && ReferenceEquals(last.BitsCard, state.card) && Equals(last.BitsAffliction, state.affliction)
+        && last.BitsAfflictionCount == state.afflictionCount && last.BitsEnergyCost == state.energyCost && ReferenceEquals(last.BitsKeywords, state.keywords);
+
+    /// <summary>Keeps the game's bits for this state; false (nothing kept) when its object may serialize differently later (<see cref="BitsSafe"/>).</summary>
+    [PatchPart("bits")]
+    private static bool Capture(ref NetFullCombatState.CardState state, Last last, int epoch)
     {
+        if (!BitsSafe(state.card))
+        {
+            last.Bits = null;
+            last.BitsCard = null;
+            return false;
+        }
         RunSerialize(ref state);
         int bytes = _bitWriter!.BytePosition;
         if (last.Bits == null || last.Bits.Length != bytes)
@@ -1842,7 +2301,9 @@ public static class SnapshotCardReuse
         last.BitsAfflictionCount = state.afflictionCount;
         last.BitsEnergyCost = state.energyCost;
         last.BitsKeywords = state.keywords;
+        last.BitsEpoch = epoch;
         BitsCaptured++;
+        return true;
     }
 
     /// <summary>The kept bits against the game's method now; a difference stops all of this for the session.</summary>
@@ -1985,6 +2446,9 @@ public static class SnapshotCardReuse
                 last.Data = new LimitlessReserialize.StoredData();
                 // Not made by Upgraded: whatever bits are kept, this object may differ from theirs by more than its level.
                 last.UpgradedFrom = null;
+                // The memo described the previous object: a card back to those values later must not get this one (Note sets it again).
+                last.MemoStamp = -1;
+                last.PlainCard = false;
             }
             Built++;
         }
@@ -2019,6 +2483,7 @@ public static class SnapshotCardReuse
 
     private static void Disable(string why, string details)
     {
+        Detections++;
         Enabled = false;
         PatchSafety.Fault(Name);
         Log.Error($"[{ModEntry.Id}] {Name} disabled ({why}), snapshots build every card again: {details}");

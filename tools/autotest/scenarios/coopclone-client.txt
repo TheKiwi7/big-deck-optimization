@@ -45,7 +45,8 @@ wait 30
 checksum after shatter
 waitfor restsite 600
 wait 5
-restsite CloneRestSiteOption
+# Cards only imported here (no Pael's Growth): this player has no clone option.
+restsite CloneRestSiteOption optional
 waitfor deckcount 900
 wait 30
 checksum end

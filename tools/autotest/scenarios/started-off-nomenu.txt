@@ -1,0 +1,14 @@
+# Run with the saved setting "Enabled": "False" and BaseLib installed, but this mod's settings menu unable to register (its DLL
+# set aside by started-off-nomenu.ps1): nothing could save "on" again, so the saved "off" must be ignored. Before 2026-11-15 the
+# mod read the cfg itself and stayed off at every start, `bdopt on` saving nothing. Expected: the patches apply, bdopt says active.
+timeout 300
+cmd bdopt
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd fight CULTISTS_NORMAL
+waitfor idle 120
+play 2
+waitfor idle 60
+checksum started-off-nomenu
+quit

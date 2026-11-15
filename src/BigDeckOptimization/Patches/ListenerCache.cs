@@ -118,11 +118,13 @@ public static class ListenerCache
         PatchSafety.RequireFieldWriters(typeof(Player), "_relics", PatchSafety.RelicListWriters);
         PatchSafety.RequireFieldWriters(typeof(Player), "_potionSlots", PatchSafety.PotionSlotWriters);
         PatchSafety.RequireFieldWriters(typeof(OrbQueue), "_orbs", ".ctor", "<TryEnqueue>d__#+MoveNext", "Clear", "Insert", "Remove");
-        // TryEnqueue is async: its postfix runs at its first await, which comes after the orb is added (pinned: same in v0.111).
+        // TryEnqueue is async: its finalizer runs at its first await, which comes after the orb is added (pinned: same in v0.111).
         PatchSafety.RequireFingerprint(AccessTools.Method(typeof(OrbQueue), nameof(OrbQueue.TryEnqueue)), TryEnqueueFingerprint);
+        // Finalizers, not postfixes: a method throwing after its change (an event handler of AddInternal, v0.113's arrow
+        // slot) must still invalidate; a postfix doesn't run then.
         foreach (MethodBase? target in invalidators)
         {
-            PatchGuard.Patch(harmony, Require(target), postfix: Method(nameof(Invalidate)));
+            PatchGuard.Patch(harmony, Require(target), finalizer: Method(nameof(Invalidate)));
         }
         // Game v0.113: the walks also yield the run's dominion. Every write goes through its setter (the field's only
         // writer: checked), which invalidates. Absent before v0.113.
@@ -131,7 +133,7 @@ public static class ListenerCache
             if (AccessTools.PropertySetter(owner, "Dominion") is { } setDominion)
             {
                 PatchSafety.RequireFieldWriters(owner, "<Dominion>k__BackingField", "set_Dominion");
-                PatchGuard.Patch(harmony, setDominion, postfix: Method(nameof(Invalidate)));
+                PatchGuard.Patch(harmony, setDominion, finalizer: Method(nameof(Invalidate)));
             }
         }
         // A card's enchantment/affliction is only listed through a pile, and only owned cards sit in piles. Ownerless
@@ -139,8 +141,8 @@ public static class ListenerCache
         PatchSafety.RequireFieldWriters(typeof(CardModel), "<Enchantment>k__BackingField", "set_Enchantment");
         PatchSafety.RequireFieldWriters(typeof(CardModel), "<Affliction>k__BackingField", "set_Affliction");
         _cardOwner = AccessTools.FieldRefAccess<CardModel, Player?>("_owner");
-        PatchGuard.Patch(harmony, Require(AccessTools.PropertySetter(typeof(CardModel), nameof(CardModel.Enchantment))), postfix: Method(nameof(InvalidateIfOwned)));
-        PatchGuard.Patch(harmony, Require(AccessTools.PropertySetter(typeof(CardModel), nameof(CardModel.Affliction))), postfix: Method(nameof(InvalidateIfOwned)));
+        PatchGuard.Patch(harmony, Require(AccessTools.PropertySetter(typeof(CardModel), nameof(CardModel.Enchantment))), finalizer: Method(nameof(InvalidateIfOwned)));
+        PatchGuard.Patch(harmony, Require(AccessTools.PropertySetter(typeof(CardModel), nameof(CardModel.Affliction))), finalizer: Method(nameof(InvalidateIfOwned)));
 
         // 2. The caches themselves.
         _combatIterate = Require(AccessTools.Method(typeof(CombatState), nameof(CombatState.IterateHookListeners)));
@@ -156,7 +158,7 @@ public static class ListenerCache
         // 3. Scopes. Each one is independent: a missing target only loses that scope.
         TryScope(harmony, AccessTools.Method(typeof(NetFullCombatState), nameof(NetFullCombatState.FromRun)), nameof(EnterSnapshot), nameof(ExitSnapshot));
         // Read-only refresh passes: they only read game state and update visuals/display values.
-        TryScope(harmony, AccessTools.Method(typeof(PlayerCombatState), nameof(PlayerCombatState.RecalculateCardValues)), nameof(EnterRefresh), nameof(ExitRefresh));
+        TryScope(harmony, AccessTools.Method(typeof(PlayerCombatState), nameof(PlayerCombatState.RecalculateCardValues)), nameof(EnterRefreshPatch), nameof(ExitRefresh));
         // One scope around the whole CombatStateChanged dispatch (hand, end turn button, intents, creature state,
         // energy, orbs...): the listener lists are built and filtered once per refresh instead of once per handler.
         TryDispatchScope(harmony);
@@ -328,27 +330,55 @@ public static class ListenerCache
         return list.AsReadOnly();
     }
 
-    private static void Invalidate()
+    /// <summary>Harmony finalizer of every watched method: runs whether it returned or threw (a second run only bumps again).</summary>
+    private static Exception? Invalidate(Exception? __exception)
     {
         _version++;
+        return __exception;
     }
 
-    private static void InvalidateIfOwned(CardModel __instance)
+    private static Exception? InvalidateIfOwned(Exception? __exception, CardModel __instance)
     {
-        if (_cardOwner == null || _cardOwner(__instance) != null)
+        // Never throws into the setter: unsure, invalidate.
+        try
+        {
+            if (_cardOwner == null || _cardOwner(__instance) != null)
+            {
+                _version++;
+            }
+        }
+        catch
         {
             _version++;
         }
+        return __exception;
     }
 
     private static void EnterAny()
     {
         if (_snapshotDepth + _refreshDepth == 0)
         {
-            // Checked per outermost scope: another mod may patch after we load.
-            _safe = !PatchSafety.IsPatchedByOthers(_combatIterate) && !PatchSafety.IsPatchedByOthers(_runIterate);
+            try
+            {
+                // Checked per outermost scope: another mod may patch after we load. A replayed list stands for the whole
+                // walk: the iterators' state machines, Contains and the mod subscriber walks too (FastListeners knows them).
+                _safe = !PatchSafety.IsPatchedByOthers(_combatIterate) && !PatchSafety.IsPatchedByOthers(_runIterate)
+                    && !FastListeners.WalkCodePatchedByOthers();
+            }
+            catch (Exception e)
+            {
+                // Runs in the game's methods (scope prefixes): never throw there; this scope stays vanilla.
+                _safe = false;
+                if (!_safeCheckFailed)
+                {
+                    _safeCheckFailed = true;
+                    Log.Warn($"[{ModEntry.Id}] {Name}: patch check failed, scopes left vanilla while it does: {e.Message}");
+                }
+            }
         }
     }
+
+    private static bool _safeCheckFailed;
 
     [ThreadStatic] private static bool _releaseAtExit;
 
@@ -377,21 +407,34 @@ public static class ListenerCache
         }
     }
 
+    /// <summary>
+    /// Runs in the scopes' finalizers: never throws (Harmony would run every finalizer of the method again, then throw into
+    /// the game). Safe to run twice: the second run finds its cache empty and leaves what the first handed on.
+    /// </summary>
     private static void ExitAny()
     {
-        if (_snapshotDepth + _refreshDepth == 0)
+        if (_snapshotDepth + _refreshDepth != 0)
         {
-            // Refresh-only scopes hand their lists to the next refresh scope (valid while the version is unchanged).
-            _kept?.Clear();
+            return;
+        }
+        try
+        {
+            // Refresh-only scopes hand their lists to the next refresh scope (valid while the version is unchanged). A scope
+            // that built nothing hands nothing new: the lists kept before stay, each checked against the version on use.
             bool release = _releaseAtExit;
             _releaseAtExit = false;
+            if (release || _reuseBlocked || !ReuseEnabled)
+            {
+                _kept?.Clear();
+            }
             if (release)
             {
                 RunReleased?.Invoke(); // Lists filtered later in that scope for the left run go too.
             }
-            if (!release && !_reuseBlocked && ReuseEnabled && _cache != null)
+            else if (!_reuseBlocked && ReuseEnabled && _cache is { Count: > 0 })
             {
                 _kept ??= new Dictionary<(object, object?), (int, ReadOnlyCollection<AbstractModel>)>(new RefComparer());
+                _kept.Clear();
                 foreach (var pair in _cache)
                 {
                     _kept[pair.Key] = pair.Value;
@@ -401,6 +444,13 @@ public static class ListenerCache
             _fromKept?.Clear();
             _cache?.Clear();
             ScopeEnded?.Invoke();
+        }
+        catch (Exception e)
+        {
+            // A dependent cache (ScopeEnded) may not have dropped its lists: no scope caches any more, so none is used.
+            _reuseBlocked = false;
+            _fromKept?.Clear();
+            Fail(e);
         }
     }
 
@@ -451,23 +501,29 @@ public static class ListenerCache
         return fresh;
     }
 
-    private static void EnterSnapshot()
+    // Scope prefixes keep the depth they found in __state and their finalizers restore it instead of decrementing:
+    // Harmony 2.4 runs every finalizer of a method a second time when one of them throws (another mod's included), and a
+    // second decrement would leave this thread's depth negative (no scope ever caching again, or one never closing).
+
+    private static void EnterSnapshot(out int __state)
     {
+        __state = _snapshotDepth;
         EnterAny();
         BlockReuse();
         _snapshotDepth++;
     }
 
-    private static Exception? ExitSnapshot(Exception? __exception)
+    private static Exception? ExitSnapshot(Exception? __exception, int __state)
     {
-        _snapshotDepth--;
+        _snapshotDepth = __state;
         ExitAny();
         return __exception;
     }
 
     /// <summary>
     /// Refresh scope around a pass whose results can feed game state (enchantment values, first-turn filters): lists
-    /// are always built fresh here, never reused from an earlier scope.
+    /// are always built fresh here, never reused from an earlier scope. For callers pairing it with <c>ExitRefresh(null)</c>
+    /// in a try/finally; patches use <see cref="EnterRefreshPatch"/>.
     /// </summary>
     internal static void EnterRefresh()
     {
@@ -476,9 +532,17 @@ public static class ListenerCache
         _refreshDepth++;
     }
 
-    /// <summary>Refresh scope around a display-only pass (card visuals, other mods' previews): may reuse kept lists.</summary>
-    internal static void EnterDisplayRefresh()
+    /// <summary><see cref="EnterRefresh"/> as a Harmony prefix (finalizer <see cref="ExitRefresh"/>).</summary>
+    private static void EnterRefreshPatch(out int __state)
     {
+        __state = _refreshDepth;
+        EnterRefresh();
+    }
+
+    /// <summary>Refresh scope around a display-only pass (card visuals, other mods' previews): may reuse kept lists. Harmony prefix (finalizer <see cref="ExitRefresh"/>).</summary>
+    internal static void EnterDisplayRefresh(out int __state)
+    {
+        __state = _refreshDepth;
         EnterAny();
         _refreshDepth++;
     }
@@ -497,9 +561,13 @@ public static class ListenerCache
         }
     }
 
-    internal static Exception? ExitRefresh(Exception? __exception)
+    /// <summary>
+    /// Harmony finalizer of <see cref="EnterRefreshPatch"/> and <see cref="EnterDisplayRefresh"/> (restores the depth they
+    /// found), or called directly after <see cref="EnterRefresh"/> in a finally (no state: one level less).
+    /// </summary>
+    internal static Exception? ExitRefresh(Exception? __exception, int __state = -1)
     {
-        _refreshDepth--;
+        _refreshDepth = __state >= 0 ? __state : Math.Max(0, _refreshDepth - 1);
         ExitAny();
         return __exception;
     }
@@ -535,7 +603,7 @@ public static class ListenerCache
     private static bool RunIteratePrefix(RunState __instance, ICombatState? childCombatState, ref IEnumerable<AbstractModel> __result)
     {
         // HookSkip asked for a filtered walk (BaseLib's hand size): no need for every listener.
-        if (!IsCaching || _materializingRun || FastListeners.PendingRunFilter != null)
+        if (!IsCaching || _materializingRun || FastListeners.RunFilterPending)
         {
             return true;
         }

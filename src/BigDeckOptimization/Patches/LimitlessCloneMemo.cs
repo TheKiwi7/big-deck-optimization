@@ -17,7 +17,10 @@ namespace BigDeckOptimization.Patches;
 /// game, Limitless or BaseLib writes to a <c>SerializableCard</c> after making it), and on BaseLib's registered saves
 /// (<see cref="LimitlessReserialize.MemoStamp"/>; -1 when unknown, then always rebuilt). The result made for a content is given for the
 /// same content again, read-only like any saved card: a big deck holds few different inner cards, a first combat gains as much as the
-/// next ones, and so do other players' decks, rebuilt as new objects at each co-op combat. A saved card with real BaseLib data isn't kept.
+/// next ones, and so do other players' decks, rebuilt as new objects at each co-op combat. A saved card with real BaseLib data isn't kept,
+/// nor one whose card or enchantment type has code of another mod on the way (<see cref="OnTheWay"/>: only the game's and known code
+/// is taken to depend on the saved card alone), and only while the game's own code of that clone is the checked one
+/// (<see cref="GameChain"/>).
 ///
 /// One answer in <see cref="VerifyEvery"/> is rebuilt and both serialized: a byte difference turns it off for the session.
 /// </summary>
@@ -71,6 +74,11 @@ public static class LimitlessCloneMemo
                 && m.ReturnType == typeof(SerializableCard) && m.GetParameters() is [{ ParameterType: var p }] && p == typeof(SerializableCard))
             ?? throw new PatchSkippedException("DeepCloneFields maps the saved cards another way");
         PatchSafety.RequireFingerprint(_lambda, LambdaFingerprint);
+        // Fixed for the session: a changed game chain leaves the whole memo to the game (Stamp() checks it too).
+        if (!GameChainKnown())
+        {
+            throw new PatchSkippedException("the game's clone code changed: " + _gameChainChanged);
+        }
         PatchGuard.Patch(harmony, _lambda, prefix: new HarmonyMethod(typeof(LimitlessCloneMemo), nameof(Prefix)),
             postfix: new HarmonyMethod(typeof(LimitlessCloneMemo), nameof(Postfix)));
         Applied = true;
@@ -117,80 +125,283 @@ public static class LimitlessCloneMemo
         (typeof(MegaCrit.Sts2.Core.Localization.DynamicVars.DynamicVar), "Clone", new[] { ("BaseLib.Extensions.DynamicVarExtensions+CloneTooltips:Copy", "443436F93886072A") }),
         // Called by Limitless's set_Enchantment prefix when a card gets a second enchantment.
         (typeof(MegaCrit.Sts2.Core.Commands.CardCmd), "Enchant", new[] { ("Limitless.LimitlessCode.UncappedEnchantments.CardCmdPatches.Patch_Enchant:Transpiler", "46E29C1A39F295FA") }),
+        // The enchantment's side of FromSerializable and of the clone, and what ModifyCard, UpgradeInternal and
+        // FinalizeUpgradeInternal call (this mod's own patches there, e.g. on set_Amount, don't count).
+        (typeof(MegaCrit.Sts2.Core.Saves.SaveUtil), "EnchantmentOrDeprecated", Array.Empty<(string, string)>()),
+        (typeof(EnchantmentModel), nameof(EnchantmentModel.ToMutable), Array.Empty<(string, string)>()),
+        (typeof(EnchantmentModel), "set_Amount", Array.Empty<(string, string)>()),
+        (typeof(EnchantmentModel), nameof(EnchantmentModel.ApplyInternal), Array.Empty<(string, string)>()),
+        (typeof(EnchantmentModel), "OnEnchant", Array.Empty<(string, string)>()),
+        (typeof(EnchantmentModel), nameof(EnchantmentModel.RecalculateValues), Array.Empty<(string, string)>()),
+        (typeof(EnchantmentModel), "DeepCloneFields", Array.Empty<(string, string)>()),
+        (typeof(CardModel), "OnUpgrade", Array.Empty<(string, string)>()),
+        (typeof(CardModel), "AfterCloned", Array.Empty<(string, string)>()),
+        (typeof(AbstractModel), "DeepCloneFields", Array.Empty<(string, string)>()),
+        (typeof(AbstractModel), "AfterCloned", Array.Empty<(string, string)>()),
+        (typeof(AbstractModel), nameof(AbstractModel.ClonePreservingMutability), Array.Empty<(string, string)>()),
+        (typeof(MegaCrit.Sts2.Core.Localization.DynamicVars.DynamicVarSet), "Clone", Array.Empty<(string, string)>()),
+        (typeof(MegaCrit.Sts2.Core.Localization.DynamicVars.DynamicVarSet), "RecalculateForUpgradeOrEnchant", Array.Empty<(string, string)>()),
+        (typeof(MegaCrit.Sts2.Core.Localization.DynamicVars.DynamicVarSet), "FinalizeUpgrade", Array.Empty<(string, string)>()),
+        (typeof(MegaCrit.Sts2.Core.Entities.Cards.CardEnergyCost), "Clone", Array.Empty<(string, string)>()),
+        (typeof(MegaCrit.Sts2.Core.Entities.Cards.CardEnergyCost), "FinalizeUpgrade", Array.Empty<(string, string)>()),
     };
+
+    /// <summary>
+    /// The game's code on the way of the lambda (FromSerializable, then MutableClone) that shapes what ToSerializable saves:
+    /// the memo (and <see cref="LimitlessHookSkip"/>'s drops, which skip the getter's FromSerializable of a clone's inner
+    /// cards) take its result to depend on the saved card alone. <see cref="Chain"/> only sees other mods' patches there;
+    /// this pins the game's own code (game v0.107.1; other versions in EquivalentFingerprints). ToSerializable and
+    /// SavedProperties.From are LimitlessReserialize's. Dynamic variables, energy costs and keywords aren't saved: their
+    /// copies don't count here.
+    /// </summary>
+    private static readonly (Type Type, string Method, string Fingerprint)[] GameChain =
+    {
+        (typeof(CardModel), nameof(CardModel.FromSerializable), "663431D80AC6CCDF"),
+        (typeof(EnchantmentModel), nameof(EnchantmentModel.FromSerializable), "F59AC9E4E33F6805"),
+        (typeof(MegaCrit.Sts2.Core.Saves.SaveUtil), "CardOrDeprecated", "3F09E2699DE4B996"),
+        (typeof(MegaCrit.Sts2.Core.Saves.SaveUtil), "EnchantmentOrDeprecated", "989D62C62B0166EC"),
+        (typeof(CardModel), nameof(CardModel.ToMutable), "83A5F204B06DB078"),
+        (typeof(EnchantmentModel), nameof(EnchantmentModel.ToMutable), "A845F2C516B8D068"),
+        (typeof(AbstractModel), nameof(AbstractModel.MutableClone), "D5F5F0EF9B5E49FA"),
+        (typeof(AbstractModel), nameof(AbstractModel.ClonePreservingMutability), "25E8279545E0824F"),
+        (typeof(AbstractModel), "DeepCloneFields", "17D6CE246AF07277"),
+        (typeof(AbstractModel), "AfterCloned", "0909DD3790FCD0E0"),
+        (typeof(CardModel), "DeepCloneFields", "036591BD9285256E"),
+        (typeof(CardModel), "AfterCloned", "08693739A0C17DF7"),
+        (typeof(CardModel), "AfterDeserialized", "23869126C936D164"),
+        (typeof(EnchantmentModel), "DeepCloneFields", "7C21E4E1C30BF6B3"),
+        (typeof(SavedProperties), nameof(SavedProperties.Fill), "0A6CCB839E76DE14"),
+        (typeof(SavedProperties), "FillInternal", "86A1328A9431BCAD"),
+        (typeof(CardModel), "set_FloorAddedToDeck", "F0F067C73D0BEF95"),
+        (typeof(CardModel), "set_Enchantment", "E04944BE7A27DF3C"),
+        (typeof(CardModel), "set_CurrentUpgradeLevel", "6B87B0AA361E74B7"),
+        (typeof(CardModel), "EnchantInternal", "B0DE3FEAF9893C57"),
+        (typeof(EnchantmentModel), "set_Amount", "30F7A016B90135D3"),
+        (typeof(EnchantmentModel), nameof(EnchantmentModel.ApplyInternal), "68F74C5B4950FF0C"),
+        (typeof(EnchantmentModel), nameof(EnchantmentModel.ModifyCard), "33FF4E3FFE023615"),
+        (typeof(EnchantmentModel), "OnEnchant", "23869126C936D164"),
+        // Empty in every version (LimitlessRecalcSkip's DefaultRecalculateFingerprint).
+        (typeof(EnchantmentModel), nameof(EnchantmentModel.RecalculateValues), "23869126C936D164"),
+        (typeof(CardModel), "UpgradeInternal", "61E294C9661E9368"),
+        (typeof(CardModel), "OnUpgrade", "23869126C936D164"),
+        (typeof(CardModel), "FinalizeUpgradeInternal", "A16D32BDC1BFE3B8"),
+    };
+
+    private static readonly object _gameChainLock = new();
+    /// <summary>Null until checked, then "" (every method has the checked code) or the changed ones. Fixed for the session.</summary>
+    private static volatile string? _gameChainChanged;
+
+    /// <summary>Whether the game's code of <see cref="GameChain"/> is the checked one (checked once, then a field read).</summary>
+    internal static bool GameChainKnown()
+    {
+        string? changed = _gameChainChanged;
+        if (changed == null)
+        {
+            lock (_gameChainLock)
+            {
+                changed = _gameChainChanged ??= CheckGameChain();
+            }
+        }
+        return changed.Length == 0;
+    }
+
+    private static string CheckGameChain()
+    {
+        var changed = new List<string>();
+        foreach ((Type type, string method, string fingerprint) in GameChain)
+        {
+            try
+            {
+                // Declared on that type (an overload added or the method moved counts as changed).
+                System.Reflection.MethodInfo? found = AccessTools.DeclaredMethod(type, method);
+                if (found == null || !PatchSafety.FingerprintMatches(MethodFingerprint.Of(found), fingerprint))
+                {
+                    changed.Add(type.Name + "." + method);
+                }
+            }
+            catch (Exception e)
+            {
+                changed.Add($"{type.Name}.{method} ({e.GetType().Name})");
+            }
+        }
+        if (changed.Count == 0)
+        {
+            return "";
+        }
+        string result = string.Join(", ", changed);
+        Log.Info($"[{ModEntry.Id}] {Name}: the game's clone code changed ({result}): stacked enchantments' inner cards are rebuilt "
+            + "at every clone, and never skipped, as the game does");
+        return result;
+    }
 
     private static (System.Reflection.MethodBase Method, System.Reflection.MethodInfo[] Allowed)[]? _chain;
     private static long _chainCheckedAt = long.MinValue / 2;
     private static bool _chainPatched;
 
-    /// <summary>Asked per stacked card: answered from a result rechecked each second.</summary>
-    private static bool ChainPatched()
+    /// <summary>
+    /// Asked per stacked card: answered from a result rechecked each second. Also <see cref="LimitlessHookSkip"/>'s: a dropped
+    /// forwarder skips the same build of a clone's inner cards.
+    /// </summary>
+    internal static bool ChainPatched()
     {
         long now = Environment.TickCount64;
         if (now - _chainCheckedAt < 1000)
         {
             return _chainPatched;
         }
-        _chainCheckedAt = now;
-        // Every overload of each method (FromSerializable, Fill): any of them patched counts. Plus the overrides the clone
-        // reaches in card and enchantment types (their own code, no known patch).
+        // Every overload of each method (FromSerializable, Fill): any of them patched counts. The overrides the clone reaches
+        // in the saved card's own types are checked per type (OnTheWay), not every type's.
         _chain ??= Chain.SelectMany(c => c.Type.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly)
                 .Where(m => m.Name == c.Method)
                 .Select(m => ((System.Reflection.MethodBase)m, c.Allowed.Select(a => Allowed(a.Patch, a.Fingerprint)).OfType<System.Reflection.MethodInfo>().ToArray())))
-            .Concat(Overrides().Select(m => (m, Array.Empty<System.Reflection.MethodInfo>())))
             .ToArray();
-        _chainPatched = false;
+        // Published once known: LimitlessHookSkip may ask from another thread meanwhile.
+        bool patched = false;
         foreach ((System.Reflection.MethodBase method, System.Reflection.MethodInfo[] allowed) in _chain)
         {
             if (PatchSafety.IsPatchedByOthers(method, allowed))
             {
-                _chainPatched = true;
+                patched = true;
                 break;
             }
         }
-        return _chainPatched;
+        _chainPatched = patched;
+        _chainCheckedAt = now;
+        return patched;
     }
 
-    private static readonly string[] OverriddenOnTheWay = { "AfterDeserialized", "DeepCloneFields", "ModifyCard" };
+    /// <summary>
+    /// The virtuals the chain reaches in the card's and the enchantment's own types: FromSerializable's AfterDeserialized,
+    /// the clone's DeepCloneFields and AfterCloned, UpgradeInternal's OnUpgrade, ModifyCard's OnEnchant and RecalculateValues
+    /// (ModifyCard itself isn't virtual: until v1.0.2 this list named it, which matched nothing).
+    /// </summary>
+    private static readonly string[] OverriddenOnTheWay = { "AfterDeserialized", "DeepCloneFields", "AfterCloned", "OnUpgrade", "OnEnchant", "RecalculateValues" };
 
-    /// <summary>The overrides of the chain's virtuals in the game's and mods' card and enchantment types.</summary>
-    private static IEnumerable<System.Reflection.MethodBase> Overrides()
+    /// <summary>
+    /// Overrides on the way outside the game's code whose code is known to depend on nothing but the model: Limitless
+    /// 1.2.1's storage card (every inner card) upgrades nothing.
+    /// </summary>
+    private static readonly Dictionary<string, string> KnownOverrides = new()
     {
-        string game = typeof(CardModel).Assembly.GetName().Name!;
-        var found = new List<System.Reflection.MethodBase>();
-        foreach (System.Reflection.Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+        ["Limitless.LimitlessCode.UncappedEnchantments.EnchantmentStorageCard::OnUpgrade"] = "18AEDCC402F01079",
+    };
+
+    /// <summary>
+    /// The game's own overrides on the way, pinned like the rest of the chain (game v0.107.1; other versions in
+    /// EquivalentFingerprints): an update making one read more than the model (the run, the combat) would otherwise go
+    /// unseen. Today they only touch keywords, dynamic variables and energy costs, none saved. Only enchantment types are
+    /// listed: inner cards are always Limitless's storage card, so a game card type with an override on the way (500+
+    /// OnUpgrade alone) is simply never kept or dropped.
+    /// </summary>
+    private static readonly Dictionary<string, string> GameOverrides = new()
+    {
+        ["MegaCrit.Sts2.Core.Models.Enchantments.Adroit::RecalculateValues"] = "A33A1012839B9D01",
+        ["MegaCrit.Sts2.Core.Models.Enchantments.Goopy::OnEnchant"] = "6242499F022CD140",
+        ["MegaCrit.Sts2.Core.Models.Enchantments.RoyallyApproved::OnEnchant"] = "55D752A6AE93E27C",
+        ["MegaCrit.Sts2.Core.Models.Enchantments.SoulsPower::OnEnchant"] = "B7E6090026BA003C",
+        ["MegaCrit.Sts2.Core.Models.Enchantments.Steady::OnEnchant"] = "9A04D191E5323152",
+        ["MegaCrit.Sts2.Core.Models.Enchantments.TezcatarasEmber::OnEnchant"] = "D794311BEE023C2F",
+    };
+
+    private static readonly Dictionary<Type, System.Reflection.MethodInfo[]?> _onTheWay = new();
+    private static readonly object _onTheWayLock = new();
+
+    /// <summary>
+    /// The overrides of <see cref="OverriddenOnTheWay"/> a card or enchantment type has (its own and its ancestors' below
+    /// CardModel / EnchantmentModel), when each is pinned (<see cref="GameOverrides"/>, <see cref="KnownOverrides"/>); null when
+    /// one isn't: other code there may read more than the saved card (the run, an RNG, a counter), so what the clone
+    /// gives can't be kept, and a build of it skipped (<see cref="LimitlessHookSkip"/>) may not give what is saved.
+    /// Fixed per type: cached.
+    /// </summary>
+    internal static System.Reflection.MethodInfo[]? OnTheWay(Type type)
+    {
+        lock (_onTheWayLock)
         {
-            Type?[] types;
-            try
+            if (!_onTheWay.TryGetValue(type, out System.Reflection.MethodInfo[]? methods))
             {
-                if (assembly.IsDynamic || (assembly != typeof(CardModel).Assembly && !assembly.GetReferencedAssemblies().Any(r => r.Name == game)))
+                methods = FindOnTheWay(type);
+                _onTheWay[type] = methods;
+            }
+            return methods;
+        }
+    }
+
+    private static System.Reflection.MethodInfo[]? FindOnTheWay(Type type)
+    {
+        var found = new List<System.Reflection.MethodInfo>();
+        System.Reflection.Assembly game = typeof(CardModel).Assembly;
+        for (Type? t = type; t != null && t != typeof(CardModel) && t != typeof(EnchantmentModel) && t != typeof(AbstractModel); t = t.BaseType)
+        {
+            foreach (System.Reflection.MethodInfo method in t.GetMethods(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.DeclaredOnly))
+            {
+                if (!OverriddenOnTheWay.Contains(method.Name) || method.GetParameters().Length != 0 || method.GetBaseDefinition() == method)
                 {
                     continue;
                 }
-                types = assembly.GetTypes();
-            }
-            catch (System.Reflection.ReflectionTypeLoadException e)
-            {
-                types = e.Types;
-            }
-            catch
-            {
-                continue;
-            }
-            foreach (Type? type in types)
-            {
-                if (type == null || type == typeof(CardModel) || type == typeof(EnchantmentModel)
-                    || !(typeof(CardModel).IsAssignableFrom(type) || typeof(EnchantmentModel).IsAssignableFrom(type)))
+                string key = t.FullName + "::" + method.Name;
+                bool gameCode = t.Assembly == game;
+                string? fingerprint = null;
+                bool listed = gameCode
+                    ? typeof(EnchantmentModel).IsAssignableFrom(t) && GameOverrides.TryGetValue(key, out fingerprint)
+                    : KnownOverrides.TryGetValue(key, out fingerprint);
+                if (!listed || fingerprint == null || !PatchSafety.FingerprintMatches(MethodFingerprint.Of(method), fingerprint))
                 {
-                    continue;
+                    if (gameCode && GameOverrides.ContainsKey(key))
+                    {
+                        Log.Info($"[{ModEntry.Id}] {Name}: the game's {key} changed: {type.Name}'s stacked inner cards are rebuilt "
+                            + "at every clone and never skipped, as the game does");
+                    }
+                    return null;
                 }
-                found.AddRange(type.GetMethods(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.DeclaredOnly)
-                    .Where(m => OverriddenOnTheWay.Contains(m.Name) && m.GetParameters().Length == 0 && m.GetBaseDefinition() != m));
+                found.Add(method);
             }
         }
-        found.AddRange(typeof(EnchantmentModel).GetMethods(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.DeclaredOnly)
-            .Where(m => m.Name == "DeepCloneFields"));
-        return found;
+        return found.ToArray();
+    }
+
+    /// <summary>Whether another mod patches one of these overrides (PatchSafety caches each answer for a while).</summary>
+    internal static bool AnyPatched(System.Reflection.MethodInfo[] methods)
+    {
+        foreach (System.Reflection.MethodInfo method in methods)
+        {
+            if (PatchSafety.IsPatchedByOthers(method))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static readonly Dictionary<ModelId, System.Reflection.MethodInfo[]?> _cardTypes = new(), _enchantmentTypes = new();
+
+    /// <summary>
+    /// Whether the saved card's own types (what <c>FromSerializable</c> makes of its ids) have only known overrides on the
+    /// way, none patched by another mod. Main thread (the prefix's stamp checks it).
+    /// </summary>
+    private static bool KnownTypes(SerializableCard saved)
+    {
+        if (saved.Id is not { } cardId || OnTheWayOf(_cardTypes, cardId, static id => MegaCrit.Sts2.Core.Saves.SaveUtil.CardOrDeprecated(id).GetType()) is not { } card
+            || AnyPatched(card))
+        {
+            return false;
+        }
+        if (saved.Enchantment == null)
+        {
+            return true;
+        }
+        return saved.Enchantment.Id is { } enchantmentId
+            && OnTheWayOf(_enchantmentTypes, enchantmentId, static id => MegaCrit.Sts2.Core.Saves.SaveUtil.EnchantmentOrDeprecated(id).GetType()) is { } enchantment
+            && !AnyPatched(enchantment);
+    }
+
+    private static System.Reflection.MethodInfo[]? OnTheWayOf(Dictionary<ModelId, System.Reflection.MethodInfo[]?> byId, ModelId id, Func<ModelId, Type> type)
+    {
+        if (!byId.TryGetValue(id, out System.Reflection.MethodInfo[]? methods))
+        {
+            methods = OnTheWay(type(id));
+            byId[id] = methods;
+        }
+        return methods;
     }
 
     /// <summary>The patch method when its code is the one checked, else null (not allowed).</summary>
@@ -216,7 +427,7 @@ public static class LimitlessCloneMemo
     /// <summary>The stamp memos are valid for, or -1 when this can't answer (then the lambda runs and nothing is kept).</summary>
     private static long Stamp()
     {
-        if (!Enabled || ListenerCache.IsSuspended || LimitlessReserialize.Faulted || !LimitlessReserialize.CanCompareHere || LimitlessReserialize.PatchedByOthers()
+        if (!Enabled || ListenerCache.IsSuspended || LimitlessReserialize.Faulted || !LimitlessReserialize.CanCompareHere || !GameChainKnown() || LimitlessReserialize.PatchedByOthers()
             || PatchSafety.IsPatchedByOthers(_lambda) || ChainPatched())
         {
             return -1;
@@ -239,6 +450,11 @@ public static class LimitlessCloneMemo
             {
                 _memo.Clear();
                 _memoStamp = stamp;
+            }
+            // Saved cards of types with a mod's code on the way, or patched there: the lambda runs, nothing kept.
+            if (!KnownTypes(__0))
+            {
+                return true;
             }
             __state = LimitlessReserialize.StoredDataState(__0);
             if (__state < 0 || !_memo.TryGetValue(new Key(__0, __state), out SerializableCard? memo))

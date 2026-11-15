@@ -48,6 +48,34 @@ function Save-VersionedLog([string]$log, [string]$dir) {
     Copy-Item $log (Join-Path $target (Split-Path $log -Leaf)) -Force
 }
 
+# judge.py's verdict on logs (one rule for every runner): Show-Judgment its "PROBLEM <log>: <text>" and "expected" lines, Invoke-Judge
+# the PROBLEM lines alone. A judge that crashed or never ran prints no JUDGED line: that is a problem too, never "no problem".
+# -NoEnd: a session not expected to end by itself.
+function Show-Judgment([string[]]$Logs, [switch]$NoEnd, [switch]$ModOff) {
+    $arguments = @("-I", (Join-Path $PSScriptRoot "judge.py"))
+    if ($NoEnd) { $arguments += "--no-end" }
+    if ($ModOff) { $arguments += "--mod-off" }
+    $out = @(& python @arguments @Logs 2>&1 | ForEach-Object { "$_" })
+    $out | Where-Object { $_ -like "PROBLEM *" -or $_ -like "expected *" }
+    if (-not ($out | Where-Object { $_ -match '^JUDGED \d+ problem' })) {
+        "PROBLEM judge.py: did not finish, not judged: $(($Logs | ForEach-Object { Split-Path $_ -Leaf }) -join ', ') ($(@($out | Select-Object -Last 2) -join ' | '))"
+    }
+}
+
+function Invoke-Judge([string[]]$Logs, [switch]$NoEnd, [switch]$ModOff) {
+    @(Show-Judgment $Logs -NoEnd:$NoEnd -ModOff:$ModOff) | Where-Object { $_ -like "PROBLEM *" }
+}
+
+# The game a test launched through Steam (no process handle comes back from Steam): the newest SlayTheSpire2 started after $after
+# whose command line runs this scenario. Never a game found by its name alone: yours could be running.
+function Find-TestGame([string]$script, [datetime]$after) {
+    $leaf = [IO.Path]::GetFileName($script)
+    $found = Get-CimInstance Win32_Process -Filter "Name = 'SlayTheSpire2.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -and $_.CommandLine.Contains("--bdtest") -and $_.CommandLine.Contains($leaf) -and $_.CreationDate -ge $after.AddSeconds(-2) } |
+        Sort-Object CreationDate | Select-Object -Last 1
+    if ($found) { Get-Process -Id $found.ProcessId -ErrorAction SilentlyContinue }
+}
+
 function Assert-GameNotRunning {
     if (Get-Process -Name SlayTheSpire2 -ErrorAction SilentlyContinue) { throw "Slay the Spire 2 is already running" }
 }

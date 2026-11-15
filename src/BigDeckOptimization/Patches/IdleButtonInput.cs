@@ -117,6 +117,15 @@ public static class IdleButtonInput
             if (__instance.IsProcessingInput() != pressed)
             {
                 __instance.SetProcessInput(pressed);
+                if (!pressed)
+                {
+                    // Most mutes happen here (Godot turns input on natively at ready, unseen by the prefix): tracked so that
+                    // turning this off gives them their input back too, not only when pressed.
+                    Track(__instance);
+#if BENCH
+                    Muted++;
+#endif
+                }
             }
         }
         catch (Exception e)
@@ -130,6 +139,9 @@ public static class IdleButtonInput
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<NClickableControl, object> _mutedSet = new();
     private static bool _watching;
     private static int _frames;
+    /// <summary>Dead entries are pruned when the list doubles since the last prune: every live button is tracked now, so a
+    /// fixed threshold would rescan the whole list at each new button once more than that many are alive.</summary>
+    private static int _pruneAt = 1024;
 
     private static void Track(NClickableControl button)
     {
@@ -139,9 +151,10 @@ public static class IdleButtonInput
         }
         _mutedSet.Add(button, _muted);
         _muted.Add(new WeakReference<NClickableControl>(button));
-        if (_muted.Count > 1024)
+        if (_muted.Count > _pruneAt)
         {
             _muted.RemoveAll(w => !w.TryGetTarget(out NClickableControl? b) || !GodotObject.IsInstanceValid(b));
+            _pruneAt = Math.Max(1024, _muted.Count * 2);
         }
         if (!_watching && Engine.GetMainLoop() is SceneTree tree)
         {

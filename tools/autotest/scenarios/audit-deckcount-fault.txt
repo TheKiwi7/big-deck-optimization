@@ -1,4 +1,5 @@
-# Audit: deckcount-on with FastListeners faulted part way: DeckCountMemo must stop answering (kept and updated stop growing). Lines must match deckcount-off.
+# Audit: deckcount-on with FastListeners faulted part way: DeckCountMemo must stop answering (kept and updated stop growing: "bdperf deckcount answers-same" fails otherwise). Lines must match deckcount-off.
+expect FastListeners disabled after exception, falling back to vanilla: .*simulated error
 timeout 2400
 newrun NECROBINDER
 waitfor run 120
@@ -14,6 +15,8 @@ cmd bigdeck tank
 wait 1
 cmd power NO_DRAW_POWER 1 0
 cmd bdperf deckcount verify 1
+# answers-grew below: DeckCountMemo answered before the fault (answers-same after it means nothing otherwise).
+cmd bdperf deckcount mark
 checksum start
 emptyhand
 cmd card SQUEEZE hand
@@ -23,11 +26,8 @@ setenergy 5
 cmd card ALL_FOR_ONE hand
 playcard ALL_FOR_ONE free
 checksum after ALL_FOR_ONE
-cmd bdperf deckcount
+cmd bdperf deckcount answers-grew
 cmd bdperf fault piles
-cmd card DEFEND_NECROBINDER hand
-setenergy 5
-playcard DEFEND_NECROBINDER free
 waitfor idle 60
 cmd bdperf deckcount
 emptyhand
@@ -38,6 +38,8 @@ setenergy 5
 cmd card ANOINTED hand
 playcard ANOINTED free
 checksum after ANOINTED
+# FastListeners has faulted by now (the play walked the piles): DeckCountMemo gives every count to the game from here.
+cmd bdperf deckcount mark
 emptyhand
 cmd card SQUEEZE hand
 cmd card PERFECTED_STRIKE hand
@@ -503,5 +505,5 @@ cmd card PERFECTED_STRIKE hand
 cmd card CRESCENT_SPEAR hand
 wait 0.5
 cmd bdperf deckcount
-cmd bdperf deckcount
+cmd bdperf deckcount answers-same
 quit

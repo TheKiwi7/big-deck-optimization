@@ -35,6 +35,8 @@ public static class LimitlessReserialize
 
     /// <summary>Limitless v1.1.7 <c>MultiEnchantment.SetSerializableCards</c>: the list it builds is what this compares with.</summary>
     private const string SetSerializableCardsFingerprint = "916B119C60C89D96";
+    /// <summary>Limitless 1.2.1 <c>set_SerializableEnchantmentsOnCards</c> (auto-property): only stores the list, so skipping it changes nothing else.</summary>
+    private const string StoredSetterFingerprint = "C70F0868040EF2A5";
     /// <summary>v0.107.1 <c>CardModel.ToSerializable</c> and <c>EnchantmentModel.ToSerializable</c>, mirrored by the comparison.</summary>
     private const string CardToSerializableFingerprint = "BBD751B8837741A9";
     private const string EnchantmentToSerializableFingerprint = "9AD225E2780EB1EA";
@@ -70,6 +72,8 @@ public static class LimitlessReserialize
     public static long KnownData { get; private set; }
 
     private static MethodInfo? _original;
+    /// <summary>The stored list's setter (Limitless's auto-property), which a kept list skips.</summary>
+    private static MethodInfo? _setter;
     private static MethodInfo? _cardToSerializable;
     private static MethodInfo? _enchantmentToSerializable;
     private static MethodInfo? _savedPropertiesFrom, _fromInternal;
@@ -132,6 +136,10 @@ public static class LimitlessReserialize
             ?? throw new MissingMethodException(MultiEnchantmentType, "SetSerializableCards");
         PatchSafety.RequireFingerprint(original, SetSerializableCardsFingerprint);
         Stored = AccessTools.FieldRefAccess<List<SerializableCard>?>(multi, "<SerializableEnchantmentsOnCards>k__BackingField");
+        // A kept list never reaches the setter Limitless assigns the new one with: another mod's patch there is bypassed too.
+        _setter = AccessTools.PropertySetter(multi, "SerializableEnchantmentsOnCards")
+            ?? throw new MissingMethodException(MultiEnchantmentType, "set_SerializableEnchantmentsOnCards");
+        PatchSafety.RequireFingerprint(_setter, StoredSetterFingerprint);
         _original = original;
         PatchGuard.Patch(harmony, original, prefix: new HarmonyMethod(typeof(LimitlessReserialize), nameof(Prefix)));
         Applied = true;
@@ -334,7 +342,8 @@ public static class LimitlessReserialize
     private static bool _patchedByOthers;
 
     /// <summary>
-    /// Another mod's patch on the methods this reproduces (BaseLib's known postfixes aside). Runs millions of times per
+    /// Another mod's patch on the methods this reproduces or a kept list skips (SetSerializableCards, the stored list's
+    /// setter; BaseLib's known postfixes aside). Runs millions of times per
     /// combat: rechecked every 2 s, as <see cref="PatchSafety.IsPatchedByOthers(MethodBase?)"/> caches it.
     /// </summary>
     internal static bool PatchedByOthers()
@@ -342,7 +351,8 @@ public static class LimitlessReserialize
         long now = Environment.TickCount64;
         if (now - _patchesCheckedAt >= 2000)
         {
-            _patchedByOthers = (_original != null && PatchSafety.IsPatchedByOthers(_original)) || PatchSafety.IsPatchedByOthers(_savedPropertiesFrom)
+            _patchedByOthers = (_original != null && (PatchSafety.IsPatchedByOthers(_original) || PatchSafety.IsPatchedByOthers(_setter)))
+                || PatchSafety.IsPatchedByOthers(_savedPropertiesFrom)
                 || PatchSafety.IsPatchedByOthers(_fromInternal, _allowedOnFromInternal)
                 || PatchSafety.IsPatchedByOthers(_cardToSerializable, _cardData?.Postfix is { } cardPostfix ? new[] { cardPostfix } : Array.Empty<MethodInfo>())
                 || PatchSafety.IsPatchedByOthers(_enchantmentToSerializable, _enchantmentData?.Postfix is { } enchantmentPostfix ? new[] { enchantmentPostfix } : Array.Empty<MethodInfo>());

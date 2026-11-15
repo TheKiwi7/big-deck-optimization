@@ -109,17 +109,25 @@ public static class InlineGuard
         }
     }
 
-    /// <summary>Calls of a small non-virtual callee are followed this deep: the JIT inlines inside what it inlines.</summary>
+    /// <summary>Calls of a callee the JIT may inline are followed this deep: the JIT inlines inside what it inlines.</summary>
     private const int CalleeDepth = 2;
-    private const int SmallCalleeIl = 96;
+
+    /// <summary>
+    /// The largest IL the JIT inlines without profile data (.NET 8+ extended default policy, <c>JitExtDefaultPolicyMaxIL</c>
+    /// 0x80; the older default was 100): Harmony's replacements are dynamic methods, compiled once, without profile.
+    /// <c>AggressiveInlining</c> callees have no size limit.
+    /// </summary>
+    private const int MaxInlineIl = 128;
 
     /// <summary>
     /// The flag only stops what is compiled after it is set. A method another mod patched before this one's patches applied
     /// (or one of this mod's own applied earlier) already has its replacement compiled, with the original bodies of protected
     /// methods it calls possibly inlined: there a counted write isn't counted (BaseLib's postfix on <c>SetToFreeThisTurn</c>
     /// had <c>SetThisTurnOrUntilPlayed</c>'s body in it, so Bullet Time changed hand costs unseen). Once every patch is in,
-    /// each patched method whose code calls a protected one (directly or through small callees) gets its replacement built
-    /// again by Harmony, the same patches in the same order: now compiled with the flags set. One step per patched method: ~300 ms
+    /// each patched method whose replacement calls a protected one (directly or through callees the JIT may inline) gets its
+    /// replacement built again by Harmony, the same patches in the same order: now compiled with the flags set. The replacement
+    /// is the code after every transpiler plus every mod's prefixes, postfixes, finalizers and inner patches, each of which the
+    /// JIT may inline into it (<see cref="ReplacementReaches"/>). One step per patched method: ~300 ms
     /// in all, spread over frames by <see cref="ModEntry"/> (only what a run does needs it done).
     ///
     /// A rebuild can fail, and a failed one used to leave the method with no patches of any mod (v1.0.0: BaseLib's postfix
@@ -140,13 +148,13 @@ public static class InlineGuard
         }
         double spent = 0;
         int failed = 0;
-        Dictionary<MethodBase, bool> reaches = new();
+        Dictionary<MethodBase, Reach> reaches = new();
         foreach (MethodBase patched in Harmony.GetAllPatchedMethods().ToList())
         {
             long start = System.Diagnostics.Stopwatch.GetTimestamp();
             try
             {
-                bool rebuild = Reaches(patched, CalleeDepth, reaches);
+                bool rebuild = ReplacementReaches(patched, reaches);
 #if BENCH
                 // BDTEST_REBUILD_ALL=1 or a list of Type.Method: rebuilt whatever they call (a friend's game rebuilt
                 // NGlobalUi._Ready, this machine's doesn't). BDTEST_REBUILD_RAW=1: straight through Harmony, as v1.0.0 did.
@@ -177,40 +185,138 @@ public static class InlineGuard
             + (failed > 0 ? $", {failed} not" : "") + $" ({spent:F0} ms)");
     }
 
-    /// <summary>Whether this method's own code calls a protected method, or a small non-virtual callee does (up to this depth).</summary>
-    private static bool Reaches(MethodBase method, int depth, Dictionary<MethodBase, bool> known)
+    /// <summary>
+    /// What is known of a method: it reaches a protected method within <c>FoundAt</c> calls (int.MaxValue: not
+    /// known to), and doesn't within <c>NotWithin</c> calls (-1: not known). An answer only holds for the depth it was
+    /// searched to: a method first met as a callee at depth 0 (its own calls only) must be searched again when it is met
+    /// again as a patched method (depth 2), or its callees' calls would never be looked at.
+    /// </summary>
+    private record struct Reach(int FoundAt, int NotWithin);
+
+    /// <summary>
+    /// Whether the replacement Harmony compiled for this patched method calls a protected method, directly or through a callee
+    /// the JIT may inline: its code after every transpiler (the original body when there is none), and each patch method of
+    /// every mod (prefixes, postfixes, finalizers, inner patches), which the replacement calls and the JIT may inline too.
+    /// </summary>
+    private static bool ReplacementReaches(MethodBase patched, Dictionary<MethodBase, Reach> known)
     {
-        if (known.TryGetValue(method, out bool answer))
+        HarmonyLib.Patches? info = Harmony.GetPatchInfo(patched);
+        try
         {
-            return answer;
+            IEnumerable<(OpCode, object?)> code;
+            if (info is { Transpilers.Count: > 0 })
+            {
+                // Runs the transpilers again, as any rebuild does (they must allow it: another mod may patch later). One
+                // Harmony can't find again can't be rebuilt either (HarmonyRebuild.Run refuses it): nothing to read.
+                code = HarmonyRebuild.Blocker(patched) != null ? Enumerable.Empty<(OpCode, object?)>()
+                    : PatchProcessor.GetCurrentInstructions(patched).Select(c => (c.opcode, (object?)c.operand)).ToList();
+            }
+            else
+            {
+                code = PatchProcessor.ReadMethodBody(patched).Select(i => (i.Key, (object?)i.Value)).ToList();
+            }
+            if (Calls(code, CalleeDepth, known))
+            {
+                return true;
+            }
         }
-        known[method] = false; // Recursion guard.
+        catch (Exception)
+        {
+            // No readable body (native, dynamic) or a transpiler that throws: its patch methods are still looked at.
+        }
+        if (info == null)
+        {
+            return false;
+        }
+        foreach (Patch patch in info.Prefixes.Concat(info.Postfixes).Concat(info.Finalizers).Concat(info.InnerPrefixes).Concat(info.InnerPostfixes))
+        {
+            MethodInfo? method;
+            try
+            {
+                method = patch.PatchMethod;
+            }
+            catch (Exception)
+            {
+                continue;
+            }
+            // Called by the replacement: one level down, like a callee of its own code.
+            if (method != null && (_protected.Contains(method) || (Inlinable(method) && Reaches(method, CalleeDepth - 1, known))))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Whether this code calls a protected method, or a callee the JIT may inline does (up to this depth).</summary>
+    private static bool Calls(IEnumerable<(OpCode Op, object? Operand)> code, int depth, Dictionary<MethodBase, Reach> known)
+    {
+        foreach ((OpCode op, object? operand) in code)
+        {
+            if (operand is not MethodBase callee || (op != OpCodes.Call && op != OpCodes.Callvirt && op != OpCodes.Newobj))
+            {
+                continue;
+            }
+            if (_protected.Contains(callee) || (depth > 0 && Inlinable(callee) && Reaches(callee, depth - 1, known)))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Whether the JIT may inline a call of this method: a body, not marked NoInlining, not virtual unless it can be
+    /// devirtualized (final, or its type sealed), and small enough or marked AggressiveInlining.
+    /// </summary>
+    private static bool Inlinable(MethodBase method)
+    {
+        try
+        {
+            MethodImplAttributes impl = method.MethodImplementationFlags;
+            if (method.IsAbstract || (impl & MethodImplAttributes.NoInlining) != 0
+                || (method.IsVirtual && !method.IsFinal && method.DeclaringType is not { IsSealed: true }))
+            {
+                return false;
+            }
+            byte[]? il = method.GetMethodBody()?.GetILAsByteArray();
+            return il != null && (il.Length <= MaxInlineIl || (impl & MethodImplAttributes.AggressiveInlining) != 0);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Whether this method's own code calls a protected method, or a callee the JIT may inline does (up to this depth).</summary>
+    private static bool Reaches(MethodBase method, int depth, Dictionary<MethodBase, Reach> known)
+    {
+        if (!known.TryGetValue(method, out Reach reach))
+        {
+            reach = new Reach(int.MaxValue, -1);
+        }
+        else if (depth >= reach.FoundAt)
+        {
+            return true;
+        }
+        else if (depth <= reach.NotWithin)
+        {
+            return false;
+        }
+        // No recursion guard: the depth goes down at each call, so a cycle of callees ends at depth 0 by itself (an
+        // unfinished answer kept as final would hide what the rest of the cycle calls).
         bool found = false;
         try
         {
-            foreach (KeyValuePair<OpCode, object> instruction in PatchProcessor.ReadMethodBody(method))
-            {
-                if (instruction.Value is not MethodBase callee || (instruction.Key != OpCodes.Call && instruction.Key != OpCodes.Callvirt && instruction.Key != OpCodes.Newobj))
-                {
-                    continue;
-                }
-                if (_protected.Contains(callee))
-                {
-                    found = true;
-                    break;
-                }
-                if (depth > 0 && !callee.IsVirtual && !callee.IsAbstract && callee.GetMethodBody() is { } body && body.GetILAsByteArray()?.Length <= SmallCalleeIl
-                    && Reaches(callee, depth - 1, known))
-                {
-                    found = true;
-                    break;
-                }
-            }
+            found = Calls(PatchProcessor.ReadMethodBody(method).Select(i => (i.Key, (object?)i.Value)), depth, known);
         }
         catch (Exception)
         {
             // No readable body (native, dynamic): nothing of it to recompile.
         }
-        return known[method] = found;
+        // Read again: the callees searched meanwhile may have added to this method's entry (a cycle).
+        reach = known.TryGetValue(method, out Reach now) ? now : reach;
+        known[method] = found ? reach with { FoundAt = Math.Min(reach.FoundAt, depth) } : reach with { NotWithin = Math.Max(reach.NotWithin, depth) };
+        return found;
     }
 }

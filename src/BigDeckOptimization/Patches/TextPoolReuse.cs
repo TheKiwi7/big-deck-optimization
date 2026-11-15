@@ -67,13 +67,16 @@ public static class TextPoolReuse
     private static ArrayPool<char> Pool(int maxArrayLength, int maxArraysPerBucket)
     {
 #if BENCH
-        Served++;
+        if (Enabled)
+        {
+            Served++;
+        }
 #endif
         return Enabled ? ArrayPool<char>.Shared : ArrayPool<char>.Create(maxArrayLength, maxArraysPerBucket);
     }
 
 #if BENCH
-    /// <summary>Calls of <see cref="Pool"/> (the effects check).</summary>
+    /// <summary>Calls of <see cref="Pool"/> answered with the shared pool (the effects check): off, nothing is counted.</summary>
     public static long Served { get; private set; }
 #endif
 }

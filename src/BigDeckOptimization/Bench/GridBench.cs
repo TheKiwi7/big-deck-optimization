@@ -68,8 +68,34 @@ public static class GridBench
         return new CmdResult(success: ok, msg);
     }
 
+    /// <summary>The sort orders GridSortCache answers from per-card values (the others stay the game's).</summary>
+    private static readonly SortingOrders[] Mirrored =
+    {
+        SortingOrders.Ascending, SortingOrders.Descending, SortingOrders.CostAscending, SortingOrders.CostDescending,
+        SortingOrders.AlphabetAscending, SortingOrders.AlphabetDescending,
+    };
+
+    /// <summary>A comparer GridSortCache put in place of the game's (its lambda, compiled into a closure of that class).</summary>
+    private static bool IsWrapped(Func<CardModel, CardModel, int> comparer)
+    {
+        for (Type? type = comparer.Method.DeclaringType; type != null; type = type.DeclaringType)
+        {
+            if (type == typeof(GridSortCache))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static (string, bool) CompareSort(List<CardModel> deck)
     {
+        if (ModEntry.NotApplied(GridSortCache.Name) || !GridSortCache.Enabled)
+        {
+            // Not applied (the game's code changed) is a legitimate state, said as such; off (setting or fault) fails the check.
+            bool notApplied = ModEntry.NotApplied(GridSortCache.Name);
+            return ($"  sort: {GridSortCache.Name} {(notApplied ? "not applied" : "off (setting or fault)")}: nothing to compare", notApplied);
+        }
         NCardGrid grid = new();
         bool wasEnabled = GridSortCache.Enabled;
         try
@@ -79,6 +105,14 @@ public static class GridBench
             AccessTools.FieldRefAccess<NCardGrid, List<CardModel>>("_cards")(grid).AddRange(previous);
             var algorithms = (Dictionary<SortingOrders, Func<CardModel, CardModel, int>>)AccessTools
                 .PropertyGetter(typeof(NCardGrid), "SortingAlgorithms").Invoke(grid, null)!;
+            // The orders GridSortCache mirrors; one left vanilla (its comparer's fingerprint or value code changed) would be
+            // compared with itself: named, not counted as compared.
+            List<SortingOrders> leftVanilla = Mirrored.Where(o => !algorithms.TryGetValue(o, out var comparer) || !IsWrapped(comparer)).ToList();
+            if (leftVanilla.Count == Mirrored.Length)
+            {
+                return ($"  sort: {GridSortCache.Name} not applied to any order (code changed): nothing to compare", true);
+            }
+            string vanillaNote = leftVanilla.Count == 0 ? "" : $" ({string.Join(", ", leftVanilla)} left vanilla: not compared)";
 
             double vanillaMs = 0, cachedMs = 0;
             int mismatches = 0;
@@ -99,9 +133,9 @@ public static class GridBench
                 }
 
                 List<CardModel> vanilla = deck.ToList(), cached = deck.ToList();
-                GridSortCache.Enabled = false;
                 Stopwatch sw = Stopwatch.StartNew();
-                vanilla.Sort(Compare);
+                // The whole mod off: a cost sort reads costs through hooks the other optimizations walk.
+                PerfConsoleCmd.Vanilla(() => { vanilla.Sort(Compare); return 0; });
                 vanillaMs += sw.Elapsed.TotalMilliseconds;
                 GridSortCache.Enabled = true;
                 sw.Restart();
@@ -113,7 +147,7 @@ public static class GridBench
                 }
             }
             int n = _priorities.Length;
-            return ($"  sort ({n} orders): vanilla {vanillaMs / n:F1} ms, cached {cachedMs / n:F1} ms per sort — "
+            return ($"  sort ({n} orders){vanillaNote}: vanilla {vanillaMs / n:F1} ms, cached {cachedMs / n:F1} ms per sort — "
                 + (mismatches == 0 ? $"OK: identical orders, x{vanillaMs / Math.Max(0.001, cachedMs):F1} faster" : $"MISMATCH: {mismatches} orders differ!"),
                 mismatches == 0);
         }
@@ -134,8 +168,13 @@ public static class GridBench
         {
             return ("  pool free: no cards", true);
         }
+        if (!PoolSignalScan.Applied || !PoolSignalScan.Enabled)
+        {
+            return ($"  pool free: {PoolSignalScan.Name} {(PoolSignalScan.Applied ? "off (setting or fault)" : "not applied")}: nothing to compare", !PoolSignalScan.Applied);
+        }
         Control container = new() { Visible = false };
         bool wasEnabled = PoolSignalScan.Enabled;
+        long scannedBefore = PoolSignalScan.Nodes;
         try
         {
             NGame.Instance!.AddChild(container);
@@ -149,9 +188,8 @@ public static class GridBench
                 container.RemoveChild(vanillaHolder);
                 container.RemoveChild(scanHolder);
 
-                PoolSignalScan.Enabled = false;
                 sw.Restart();
-                NodePool.Free(vanillaHolder);
+                PerfConsoleCmd.Vanilla(() => { NodePool.Free(vanillaHolder); return 0; });
                 vanillaMs += sw.Elapsed.TotalMilliseconds;
 
                 PoolSignalScan.Enabled = true;
@@ -166,7 +204,12 @@ public static class GridBench
                     firstMismatch ??= $"\n    vanilla: {expected}\n    scan   : {actual}";
                 }
             }
-            return ($"  pool free ({cards.Count} grid holders): vanilla {vanillaMs / cards.Count:F2} ms, scan {scanMs / cards.Count:F2} ms per holder — "
+            if (PoolSignalScan.Nodes == scannedBefore && mismatches == 0)
+            {
+                // Every free left to the game (a back-off, holders the pool doesn't track): vanilla against vanilla.
+                return ($"  pool free ({cards.Count} grid holders): {PoolSignalScan.Name} scanned none, nothing to compare", true);
+            }
+            return ($"  pool free ({cards.Count} grid holders, {PoolSignalScan.Nodes - scannedBefore} nodes scanned): vanilla {vanillaMs / cards.Count:F2} ms, scan {scanMs / cards.Count:F2} ms per holder — "
                 + (mismatches == 0 ? $"OK: identical connections, x{vanillaMs / Math.Max(0.001, scanMs):F1} faster" : $"MISMATCH on {mismatches} holders!{firstMismatch}"),
                 mismatches == 0);
         }
@@ -244,30 +287,39 @@ public static class GridBench
             int mismatches = 0;
             string? firstMismatch = null;
             Stopwatch sw = new();
-            foreach (CardModel card in cards)
+            // What NCardGrid.AssignCardsToRow does to a recycled node: every card on one node the game's way (the whole mod
+            // off), then every card on the other node with the tabs reused.
+            NCard vanillaCard = vanillaNode, reuseCard = reuseNode;
+            List<string> expected = PerfConsoleCmd.Vanilla(() => cards.Select(card =>
             {
-                // What NCardGrid.AssignCardsToRow does to a recycled node.
-                EnchantmentTabReuse.Enabled = false;
                 sw.Restart();
-                vanillaNode.Model = card;
-                vanillaNode.UpdateVisuals(PileType.None, CardPreviewMode.Normal);
+                vanillaCard.Model = card;
+                vanillaCard.UpdateVisuals(PileType.None, CardPreviewMode.Normal);
                 vanillaMs += sw.Elapsed.TotalMilliseconds;
-
-                EnchantmentTabReuse.Enabled = true;
+                return EnchantmentTabReuse.DescribeTabs(vanillaCard);
+            }).ToList());
+            EnchantmentTabReuse.Enabled = true;
+            for (int i = 0; i < cards.Count; i++)
+            {
+                CardModel card = cards[i];
                 sw.Restart();
-                reuseNode.Model = card;
-                reuseNode.UpdateVisuals(PileType.None, CardPreviewMode.Normal);
+                reuseCard.Model = card;
+                reuseCard.UpdateVisuals(PileType.None, CardPreviewMode.Normal);
                 reuseMs += sw.Elapsed.TotalMilliseconds;
-
-                string expected = EnchantmentTabReuse.DescribeTabs(vanillaNode), actual = EnchantmentTabReuse.DescribeTabs(reuseNode);
-                if (expected != actual)
+                string actual = EnchantmentTabReuse.DescribeTabs(reuseCard);
+                if (expected[i] != actual)
                 {
                     mismatches++;
-                    firstMismatch ??= $"\n    {card.Id.Entry} vanilla: {expected}\n    {card.Id.Entry} reused : {actual}";
+                    firstMismatch ??= $"\n    {card.Id.Entry} vanilla: {expected[i]}\n    {card.Id.Entry} reused : {actual}";
                 }
             }
             long reused = EnchantmentTabReuse.Reused - reusedBefore;
             int enchanted = cards.Count(c => c.Enchantment != null);
+            if (reused == 0 && mismatches == 0)
+            {
+                // No render took the reuse path (no stacked enchantment in the sample, or a back-off): vanilla against vanilla.
+                return ($"  tabs ({cards.Count} cards, {enchanted} enchanted): none reused, nothing to compare", true);
+            }
             return ($"  tabs ({cards.Count} cards, {enchanted} enchanted, {reused} reused):vanilla {vanillaMs / cards.Count:F2} ms, reuse {reuseMs / cards.Count:F2} ms per card render — "
                 + (mismatches == 0 ? $"OK: identical tabs, x{vanillaMs / Math.Max(0.001, reuseMs):F1} faster" : $"MISMATCH on {mismatches} cards!{firstMismatch}"),
                 mismatches == 0);

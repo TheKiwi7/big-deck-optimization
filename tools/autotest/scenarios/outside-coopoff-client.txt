@@ -1,9 +1,9 @@
 # Outside combat in co-op with the mod off on both peers, client (with outside-coopoff-host.txt): see the host's scenario.
 timeout 3000
+cmd bdopt off
 mplobby IRONCLAD 2
 waitfor run 240
 wait 8
-cmd bdopt off
 cmd bigdeck import ref all all {hash:ref}
 cmd bigdeck import ref all cards {hash:ref}
 cmd gold 5000

@@ -2,6 +2,7 @@
 # none at Instant speed), ~1,880 cards (4 Bing Bongs: each clone copied again), speed instant; CHECKSUM to compare
 # with reflections-instant-off.
 timeout 1800
+cmd bdopt off
 newrun NECROBINDER
 waitfor run 120
 wait 2
@@ -10,7 +11,6 @@ cmd bigdeck import ref all all
 cmd bdperf checks off
 cmd bdperf probe off
 cmd bdperf segments verify off
-cmd bdopt off
 speed instant
 checksum before
 cmd event REFLECTIONS

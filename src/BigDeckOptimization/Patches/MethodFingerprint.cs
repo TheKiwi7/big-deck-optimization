@@ -271,6 +271,228 @@ public static class MethodFingerprint
     }
 
     /// <summary>
+    /// The compiler-generated code that is part of this method's source, recursively: lambdas and local functions it uses,
+    /// and every method of the state machines (async, iterator) and display classes it creates. Each token is resolved on
+    /// its own and one that doesn't resolve is passed over: the method may use members another game version lacks
+    /// (<see cref="PatchPartAttribute"/>), and what it uses after them still counts.
+    /// </summary>
+    public static List<MethodBase> GeneratedCode(MethodBase method)
+    {
+        var found = new List<MethodBase>();
+        var seen = new HashSet<MethodBase> { method };
+        var types = new HashSet<Type>();
+        var queue = new Queue<MethodBase>();
+        queue.Enqueue(method);
+        void Add(MethodBase m)
+        {
+            if (seen.Add(m))
+            {
+                found.Add(m);
+                queue.Enqueue(m);
+            }
+        }
+        void AddType(Type type)
+        {
+            if (!types.Add(type))
+            {
+                return;
+            }
+            const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
+            foreach (MethodBase m in type.GetMethods(all).Cast<MethodBase>().Concat(type.GetConstructors(all)))
+            {
+                Add(m);
+            }
+            foreach (Type nested in type.GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic))
+            {
+                AddType(nested);
+            }
+        }
+        while (queue.Count > 0)
+        {
+            MethodBase current = queue.Dequeue();
+            byte[] il = current.GetMethodBody()?.GetILAsByteArray() ?? Array.Empty<byte>();
+            Type[]? typeArgs = current.DeclaringType is { IsGenericType: true } t ? t.GetGenericArguments() : null;
+            Type[]? methodArgs = current.IsGenericMethod ? current.GetGenericArguments() : null;
+            int pos = 0;
+            while (pos < il.Length)
+            {
+                short value = il[pos++];
+                if (value == 0xFE)
+                {
+                    value = (short)(0xFE00 | il[pos++]);
+                }
+                OpCode op = _opCodes[value];
+                if (op.OperandType is OperandType.InlineField or OperandType.InlineMethod or OperandType.InlineType or OperandType.InlineTok)
+                {
+                    MemberInfo? member;
+                    try
+                    {
+                        member = current.Module.ResolveMember(BitConverter.ToInt32(il, pos), typeArgs, methodArgs);
+                    }
+                    catch (Exception)
+                    {
+                        member = null; // Missing in this game version: not generated code of this module either way.
+                    }
+                    pos += 4;
+                    if (member == null || member.Module != method.Module)
+                    {
+                        continue;
+                    }
+                    Type? owner = member as Type ?? member.DeclaringType;
+                    if (owner != null && IsGeneratedType(owner)
+                        && (typeof(IAsyncStateMachine).IsAssignableFrom(owner) || typeof(System.Collections.IEnumerator).IsAssignableFrom(owner)))
+                    {
+                        // A state machine (<Method>d__N): its own, all of it (not <PrivateImplementationDetails>, anonymous
+                        // types or <>c, which the whole class shares).
+                        AddType(owner);
+                    }
+                    else if (owner != null && owner.Name.StartsWith("<>c__DisplayClass", StringComparison.Ordinal))
+                    {
+                        // A display class: the captured variables of this method's scopes (shared by its lambdas only).
+                        AddType(owner);
+                    }
+                    else if (member is MethodBase m && IsGenerated(m))
+                    {
+                        // A lambda (in <>c, shared by the class: only the method itself) or a local function.
+                        Add(m);
+                    }
+                    continue;
+                }
+                pos += op.OperandType switch
+                {
+                    OperandType.InlineNone => 0,
+                    OperandType.ShortInlineBrTarget or OperandType.ShortInlineI or OperandType.ShortInlineVar => 1,
+                    OperandType.InlineVar => 2,
+                    OperandType.InlineI8 or OperandType.InlineR => 8,
+                    OperandType.InlineSwitch => 4 + 4 * BitConverter.ToInt32(il, pos),
+                    _ => 4,
+                };
+            }
+        }
+        return found;
+    }
+
+    /// <summary>
+    /// The compiler-generated code of each part method of a patch class (<paramref name="partOf"/>: its part, or null) -> that
+    /// part: its lambdas, local functions and state machines, nested members that can't carry the part attribute. Generated
+    /// code also used by a method outside the part (or by two parts) is left out: it belongs to the whole class. Shared by the
+    /// load check (PatchSafety) and tools/compat, so both judge the same code as a part's.
+    /// </summary>
+    public static Dictionary<MethodBase, string> PartCode(Type outermost, Func<MethodBase, string?> partOf)
+    {
+        var code = new Dictionary<MethodBase, string>();
+        List<MethodBase> methods = DeclaredMethods(outermost).ToList();
+        if (!methods.Any(m => partOf(m) != null))
+        {
+            return code; // Nearly every patch class: no scan.
+        }
+        var shared = new HashSet<MethodBase>();
+        foreach (MethodBase method in methods)
+        {
+            if (method.Name.Contains('<') || method.DeclaringType?.Name.Contains('<') == true)
+            {
+                continue; // Generated itself: reached from the method it belongs to.
+            }
+            string? part = partOf(method);
+            foreach (MethodBase generated in GeneratedCode(method))
+            {
+                if (part == null || (code.TryGetValue(generated, out string? other) && other != part))
+                {
+                    shared.Add(generated);
+                }
+                else
+                {
+                    code[generated] = part;
+                }
+            }
+        }
+        foreach (MethodBase method in shared)
+        {
+            code.Remove(method);
+        }
+        return code;
+    }
+
+    /// <summary>Every method and constructor of the type and of its nested types, recursively.</summary>
+    public static IEnumerable<MethodBase> DeclaredMethods(Type type)
+    {
+        const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
+        foreach (MethodInfo method in type.GetMethods(all))
+        {
+            yield return method;
+        }
+        foreach (ConstructorInfo constructor in type.GetConstructors(all))
+        {
+            yield return constructor;
+        }
+        foreach (Type nested in type.GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic))
+        {
+            foreach (MethodBase method in DeclaredMethods(nested))
+            {
+                yield return method;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether code of the assembly <paramref name="own"/> may use the member directly: its own members, or public ones
+    /// (protected only from a class deriving from the owner, or nested in one) of public types. The load check's rule
+    /// (PatchSafety.RequireResolvable), shared with tools/compat: an update making a used member private or protected is a
+    /// clean "skipped" in game, and a problem for compat.
+    /// </summary>
+    public static bool Accessible(MemberInfo member, Assembly own, Type? user)
+    {
+        Type? owner = member as Type ?? member.DeclaringType;
+        if (owner == null || owner.Assembly == own || owner.IsGenericParameter)
+        {
+            return true;
+        }
+        bool visible = member is Type type ? IsVisible(type, own) : IsVisible(owner, own);
+        bool family = Derives(user, owner);
+        return visible && member switch
+        {
+            MethodBase m => m.IsPublic || ((m.IsFamily || m.IsFamilyOrAssembly) && family),
+            FieldInfo f => f.IsPublic || ((f.IsFamily || f.IsFamilyOrAssembly) && family),
+            _ => true,
+        };
+    }
+
+    private static bool Derives(Type? user, Type owner)
+    {
+        Type definition = owner.IsGenericType ? owner.GetGenericTypeDefinition() : owner;
+        for (Type? outer = user; outer != null; outer = outer.DeclaringType)
+        {
+            for (Type? t = outer.BaseType; t != null; t = t.BaseType)
+            {
+                if (t == owner || (t.IsGenericType && t.GetGenericTypeDefinition() == definition))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Public all the way out (nested types included); array, pointer and generic arguments checked too.</summary>
+    private static bool IsVisible(Type type, Assembly own)
+    {
+        if (type.HasElementType)
+        {
+            return IsVisible(type.GetElementType()!, own);
+        }
+        if (type.IsGenericParameter || type.Assembly == own)
+        {
+            return true;
+        }
+        if (type.IsGenericType && !type.IsGenericTypeDefinition && !type.GetGenericArguments().All(t => IsVisible(t, own)))
+        {
+            return false;
+        }
+        Type definition = type.IsGenericType ? type.GetGenericTypeDefinition() : type;
+        return definition.IsNested ? (definition.IsNestedPublic || definition.IsNestedFamily || definition.IsNestedFamORAssem) && IsVisible(definition.DeclaringType!, own) : definition.IsPublic;
+    }
+
+    /// <summary>
     /// The methods of <paramref name="type"/> and its nested types (lambdas, state machines) whose code uses the field
     /// (read, write or address), by name (<c>Nested+Name</c> for nested types, generated numbering normalized), sorted.
     /// A private field can't be used from elsewhere (reflection aside): this is every place that can change it.

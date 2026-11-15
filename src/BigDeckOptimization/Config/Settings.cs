@@ -182,15 +182,16 @@ public static class Settings
             new[] { ListenerCache.Name, ListenerCache.SnapshotFault }, on => ListenerCache.SnapshotEnabled = on,
             () => NoneApplied(ListenerCache.Name, ReplayStateSkip.Name, SavedPropertyLookup.Name, RelicStateReuse.Name, SnapshotCardReuse.Name),
             parts: new OptionPart[] { new(SnapshotCardReuse.Name, NeedsMods: true), new(ReplayStateSkip.Name), new(SavedPropertyLookup.Name), new(RelicStateReuse.Name), new(RelicStateReuse.ScalarName) },
-            setParts: on => { SnapshotCardReuse.Enabled = Part(on, SnapshotCardReuse.Name); ReplayStateSkip.Enabled = Part(on, ReplayStateSkip.Name); SavedPropertyLookup.Enabled = Part(on, SavedPropertyLookup.Name); RelicStateReuse.Enabled = Part(on, RelicStateReuse.Name); RelicStateReuse.ScalarEnabled = Part(on, RelicStateReuse.ScalarName); },
+            setParts: on => { Flag(() => SnapshotCardReuse.Enabled = Part(on, SnapshotCardReuse.Name)); Flag(() => ReplayStateSkip.Enabled = Part(on, ReplayStateSkip.Name)); Flag(() => SavedPropertyLookup.Enabled = Part(on, SavedPropertyLookup.Name)); Flag(() => RelicStateReuse.Enabled = Part(on, RelicStateReuse.Name)); Flag(() => RelicStateReuse.ScalarEnabled = Part(on, RelicStateReuse.ScalarName)); },
             // A snapshot that differed from the game's: anything of the state check may be why.
             wholeFaults: new[] { ListenerCache.SnapshotFault }),
         new("combat_refresh", "Combat refresh",
             "Faster card and UI refresh after every action in combat.",
             new[] { ListenerCache.Name }, on => ListenerCache.RefreshEnabled = on,
             () => NoneApplied(ListenerCache.Name, TextPoolReuse.Name, ThemeColorSkip.Name, DeckCountMemo.Name),
-            parts: new OptionPart[] { new(TextPoolReuse.Name), new(ThemeColorSkip.Name), new(DeckCountMemo.Name), new(ListenerCache.ReuseFault) },
-            setParts: on => { TextPoolReuse.Enabled = on; ThemeColorSkip.Enabled = Part(on, ThemeColorSkip.Name); DeckCountMemo.Enabled = Part(on, DeckCountMemo.Name); }),
+            parts: new OptionPart[] { new(TextPoolReuse.Name), new(ThemeColorSkip.Name), new(DeckCountMemo.Name), new(ListenerCache.ReuseFault), new(ExtraScopes.Name), new(ExtraScopes.Name + ".BetterSpire2") },
+            // ExtraScopes reads its own two fault names itself (a scope stays off once faulted): one switch for both.
+            setParts: on => { Flag(() => TextPoolReuse.Enabled = Part(on, TextPoolReuse.Name)); Flag(() => ThemeColorSkip.Enabled = Part(on, ThemeColorSkip.Name)); Flag(() => DeckCountMemo.Enabled = Part(on, DeckCountMemo.Name)); Flag(() => ExtraScopes.Enabled = on); }),
         new("hook_filter", "Skip empty hooks",
             "Inside the two optimizations above, only asks the cards and relics that actually react to each check.",
             new[] { HookFilter.Name }, on => HookFilter.Enabled = on),
@@ -212,7 +213,7 @@ public static class Settings
             new[] { GcPacing.Name }, on => GcPacing.Enabled = on,
             () => NoneApplied(GcPacing.Name, RoomCollect.Name, PooledCardRelease.Name, SyncedCardRelease.Name, RichTextEnvRelease.Name),
             parts: new OptionPart[] { new(RoomCollect.Name), new(PooledCardRelease.Name), new(SyncedCardRelease.Name), new(RichTextEnvRelease.Name) },
-            setParts: on => { RoomCollect.Enabled = Part(on, RoomCollect.Name); PooledCardRelease.Enabled = Part(on, PooledCardRelease.Name); SyncedCardRelease.Enabled = Part(on, SyncedCardRelease.Name); RichTextEnvRelease.Enabled = Part(on, RichTextEnvRelease.Name); }),
+            setParts: on => { Flag(() => RoomCollect.Enabled = Part(on, RoomCollect.Name)); Flag(() => PooledCardRelease.Enabled = Part(on, PooledCardRelease.Name)); Flag(() => SyncedCardRelease.Enabled = Part(on, SyncedCardRelease.Name)); Flag(() => RichTextEnvRelease.Enabled = Part(on, RichTextEnvRelease.Name)); }),
         new("grid_sort", "Card grid sorting",
             "Faster sorting of the deck view and other card grids.",
             new[] { GridSortCache.Name }, on => GridSortCache.Enabled = on),
@@ -238,7 +239,7 @@ public static class Settings
             () => Missing(FastListeners.CombatMirrored || FastListeners.RunMirrored)),
         new("hook_skip", "Skip non-reacting cards",
             "Each time the game processes an effect (card played, damage, turn end...), only asks the cards, enchantments, relics, potions and powers whose type reacts to it (same results).",
-            new[] { HookSkip.Name, FastListeners.Name }, on => { HookSkip.Enabled = on; FastListeners.KindSkipEnabled = on; },
+            new[] { HookSkip.Name, FastListeners.Name }, on => { Flag(() => HookSkip.Enabled = on); Flag(() => FastListeners.KindSkipEnabled = on); },
             () => Missing(HookSkip.Applied)),
         new("hover_tips", "Creature hover tips",
             "While the mouse is on a creature, rebuilds its tooltips after an action only when their content changed (they stay live).",
@@ -250,7 +251,7 @@ public static class Settings
             () => MissingMod(EnchantmentTabReuse.Applied, LimitlessReason)),
         new("limitless_saves", "Limitless enchantment copies",
             "With Limitless: keeps the saved copy of stacked enchantments when rebuilding it would give the same content, instead of rebuilding it after every action or each time a card is copied at the start of a combat.",
-            new[] { LimitlessReserialize.Name }, on => { LimitlessReserialize.Enabled = on; LimitlessRecalcSkip.Enabled = Part(on, LimitlessRecalcSkip.Name); LimitlessHookSkip.Enabled = Part(on, LimitlessHookSkip.Name); LimitlessCloneMemo.Enabled = Part(on, LimitlessCloneMemo.Name); },
+            new[] { LimitlessReserialize.Name }, on => { Flag(() => LimitlessReserialize.Enabled = on); Flag(() => LimitlessRecalcSkip.Enabled = Part(on, LimitlessRecalcSkip.Name)); Flag(() => LimitlessHookSkip.Enabled = Part(on, LimitlessHookSkip.Name)); Flag(() => LimitlessCloneMemo.Enabled = Part(on, LimitlessCloneMemo.Name)); },
             () => MissingMod(LimitlessReserialize.Applied, LimitlessReason),
             parts: new OptionPart[] { new(LimitlessRecalcSkip.Name, NeedsMods: true), new(LimitlessHookSkip.Name, NeedsMods: true), new(LimitlessCloneMemo.Name, NeedsMods: true) }),
         new("card_type_line", "BaseLib card type line",
@@ -264,6 +265,22 @@ public static class Settings
     /// on with its option unless it faulted this session.
     /// </summary>
     private static bool Part(bool on, string name) => on && !PatchSafety.IsFaulted(name);
+
+    /// <summary>
+    /// Sets one patch's flag, on its own: a patch class a game update left unloadable throws here (its static constructor),
+    /// and must not keep the next flags of the same option from being set (bdopt off, a fault would leave them on).
+    /// </summary>
+    private static void Flag(Action set)
+    {
+        try
+        {
+            set();
+        }
+        catch (Exception e)
+        {
+            MegaCrit.Sts2.Core.Logging.Log.Warn($"[{ModEntry.Id}] a switch not set: {e.GetType().Name}: {e.Message}");
+        }
+    }
 
     /// <summary>Raised after a choice changed through bdopt (not from the menu or when loading), so the menu saves it.</summary>
     public static event Action<string, bool>? Changed;
@@ -297,13 +314,31 @@ public static class Settings
         }
     }
 
-    /// <summary>Pushes the effective state to every patch flag. Never turns a faulted patch back on.</summary>
+    /// <summary>
+    /// Pushes the effective state to every patch flag. Never turns a faulted patch back on. Each option on its own: one whose
+    /// setter throws (a patch class a game update left unloadable) must not leave the others' flags as they were (bdopt off
+    /// would leave them on, a fault's flag would stay on).
+    /// </summary>
     public static void ApplyAll()
     {
         foreach (Option option in Options)
         {
-            option.SetEnabled(option.Effective);
-            option.SetParts?.Invoke(option.PartsEffective);
+            try
+            {
+                option.SetEnabled(option.Effective);
+            }
+            catch (Exception e)
+            {
+                MegaCrit.Sts2.Core.Logging.Log.Warn($"[{ModEntry.Id}] {option.Key}: switch not set: {e.Message}");
+            }
+            try
+            {
+                option.SetParts?.Invoke(option.PartsEffective);
+            }
+            catch (Exception e)
+            {
+                MegaCrit.Sts2.Core.Logging.Log.Warn($"[{ModEntry.Id}] {option.Key}: parts' switches not set: {e.Message}");
+            }
         }
     }
 

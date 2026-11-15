@@ -116,7 +116,8 @@ public static partial class AutoTest
                 {
                     if (top != null)
                     {
-                        Say($"  no handler for screen {top.GetType().Name}");
+                        // Left open, the screen would be the same on both sides of an A/B and the rest of the room never played.
+                        MissingStep(_roomOptional, $"no handler for screen {top.GetType().Name}");
                     }
                     break;
                 }
@@ -165,10 +166,11 @@ public static partial class AutoTest
     }
 
     /// <summary>
-    /// Script <c>autoroom [remove] [timeout s]</c>: plays the current room with the game's handler (shop: buys what it can afford;
-    /// rest site: a random option; treasure; event: random options), then every screen it leaves (rewards, card rewards, upgrade,
-    /// transform, enchant and card choices), then the rest site's or event's proceed. A combat room must be won first: its rewards
-    /// are taken. <c>remove</c> (shop): the card removal service first. Logs an <c>AUTOROOM</c> line.
+    /// Script <c>autoroom [remove] [&lt;X&gt;RestSiteOption] [optional] [timeout s]</c>: plays the current room with the game's handler
+    /// (shop: buys what it can afford; rest site: a random option, or the one named; treasure; event: random options), then every
+    /// screen it leaves (rewards, card rewards, upgrade, transform, enchant and card choices), then the rest site's or event's proceed.
+    /// A combat room must be won first: its rewards are taken. <c>remove</c> (shop): the card removal service first. A removal or
+    /// named option not available, or a room or screen no handler plays, fails the line, unless <c>optional</c>. Logs an <c>AUTOROOM</c> line.
     /// </summary>
     private static async Task AutoRoom(SceneTree tree, string arg)
     {
@@ -184,6 +186,26 @@ public static partial class AutoTest
         long start = Stopwatch.GetTimestamp();
         _screensHandled.Clear();
         string? restOption = parts.FirstOrDefault(p => p.EndsWith("RestSiteOption", StringComparison.Ordinal));
+        bool optional = parts.Contains("optional");
+        _roomOptional = optional;
+        try
+        {
+            await PlayRoom(tree, type, parts, restOption, optional, timeout, ct);
+        }
+        finally
+        {
+            _roomOptional = false;
+        }
+        await Frames(tree, 10);
+        Say($"  AUTOROOM {type}: {Stopwatch.GetElapsedTime(start).TotalMilliseconds:F0} ms, deck {deck} -> {me.Deck.Cards.Count}, gold {gold} -> {me.Gold}, "
+            + $"relics {relics} -> {me.Relics.Count}, screens [{string.Join(", ", _screensHandled)}]");
+    }
+
+    /// <summary>The current <c>autoroom</c> line's <c>optional</c>: a screen without a handler is then skipped instead of failing it.</summary>
+    private static bool _roomOptional;
+
+    private static async Task PlayRoom(SceneTree tree, RoomType type, string[] parts, string? restOption, bool optional, double timeout, CancellationToken ct)
+    {
         if (type != RoomType.Map && NMapScreen.Instance is { IsOpen: true } map)
         {
             // A debug jump (cmd room / cmd event) leaves the map open, as travel never does: game v0.111 hides every screen pushed
@@ -198,21 +220,22 @@ public static partial class AutoTest
         }
         else if (type == RoomType.RestSite && restOption != null)
         {
-            await RestSiteOption(tree, restOption, ct);
+            await RestSiteOption(tree, restOption, optional, ct);
         }
         else
         {
             if (type == RoomType.Shop)
             {
-                await Shop(tree, parts.Contains("remove"), ct);
+                await Shop(tree, parts.Contains("remove"), optional, ct);
             }
             else if (_roomHandlers!.TryGetValue(type, out IRoomHandler? handler))
             {
                 await handler.HandleAsync(_roomRng!, ct);
             }
-            else
+            else if (type != RoomType.Map)
             {
-                Say($"  no handler for room {type}");
+                // Nothing played: both sides of an A/B would skip the room and compare identical.
+                MissingStep(optional, $"no handler for room {type}");
             }
         }
         await DrainScreens(null, ct);
@@ -224,9 +247,6 @@ public static partial class AutoTest
         {
             await EventProceed(tree, timeout, ct);
         }
-        await Frames(tree, 10);
-        Say($"  AUTOROOM {type}: {Stopwatch.GetElapsedTime(start).TotalMilliseconds:F0} ms, deck {deck} -> {me.Deck.Cards.Count}, gold {gold} -> {me.Gold}, "
-            + $"relics {relics} -> {me.Relics.Count}, screens [{string.Join(", ", _screensHandled)}]");
     }
 
     /// <summary>
@@ -340,7 +360,7 @@ public static partial class AutoTest
     }
 
     /// <summary>One rest site option, clicked like the game's handler clicks its random pick; its screen, if any, is left to the drain.</summary>
-    private static async Task RestSiteOption(SceneTree tree, string optionType, CancellationToken ct)
+    private static async Task RestSiteOption(SceneTree tree, string optionType, bool optional, CancellationToken ct)
     {
         await Until(tree, () => NRestSiteRoom.Instance is { } site && site.IsInsideTree(), 60, "rest site room");
         NRestSiteRoom room = NRestSiteRoom.Instance!;
@@ -349,7 +369,7 @@ public static partial class AutoTest
         NRestSiteButton? button = buttons.FirstOrDefault(b => b.Option.IsEnabled && b.Option.GetType().Name == optionType);
         if (button == null)
         {
-            Say($"  no enabled {optionType} ({string.Join(", ", buttons.Select(b => b.Option.GetType().Name + (b.Option.IsEnabled ? "" : " (disabled)")))})");
+            MissingStep(optional, $"no enabled {optionType} ({string.Join(", ", buttons.Select(b => b.Option.GetType().Name + (b.Option.IsEnabled ? "" : " (disabled)")))})");
             return;
         }
         await UiHelper.Click(button);
@@ -361,7 +381,7 @@ public static partial class AutoTest
     /// v0.107's handler awaits a purchase without answering the screen it opens. With <paramref name="remove"/>, the card removal
     /// service first. Each purchase is logged (a purchase that never ends then names itself).
     /// </summary>
-    private static async Task Shop(SceneTree tree, bool remove, CancellationToken ct)
+    private static async Task Shop(SceneTree tree, bool remove, bool optional, CancellationToken ct)
     {
         // The room the game's own shop handler waits for in v0.113 (its node path changed there; same property before).
         await Until(tree, () => NMerchantRoom.Instance?.Visible ?? false, 60, "merchant room");
@@ -373,7 +393,7 @@ public static partial class AutoTest
             NMerchantSlot? removal = room.Inventory.GetAllSlots().FirstOrDefault(s => s is NMerchantCardRemoval);
             if (removal == null || !removal.Entry.IsStocked || !removal.Entry.EnoughGold)
             {
-                Say($"  no card removal to buy (found {removal != null}, stocked {removal?.Entry.IsStocked}, gold {removal?.Entry.EnoughGold})");
+                MissingStep(optional, $"no card removal to buy (found {removal != null}, stocked {removal?.Entry.IsStocked}, gold {removal?.Entry.EnoughGold})");
             }
             else
             {
@@ -417,9 +437,17 @@ public static partial class AutoTest
                 return;
             }
             List<NEventOptionButton> options = new();
+            // A screen too: the game's handler can call the event done before its rewards open (co-op, THE_LEGENDS_WERE_TRUE's potion
+            // on v0.113.1: the host's rewards screen came after "Event room completed", and nothing here answered it).
             await WaitHelper.Until(() => (NMapScreen.Instance?.IsOpen ?? false) || CombatManager.Instance.IsInProgress
+                || NOverlayStack.Instance is { ScreenCount: > 0 }
                 || (options = UiHelper.FindAll<NEventOptionButton>(eventRoom).Where(o => !o.Option.IsLocked).ToList()).Count > 0,
-                ct, TimeSpan.FromSeconds(10), "no event option, no fight and no map");
+                ct, TimeSpan.FromSeconds(10), "no event option, no fight, no screen and no map");
+            if (!CombatManager.Instance.IsInProgress && NOverlayStack.Instance is { ScreenCount: > 0 } && options.Count == 0)
+            {
+                await DrainScreens(null, ct);
+                continue;
+            }
             if (CombatManager.Instance.IsInProgress)
             {
                 await AutoCombat(tree, timeout);

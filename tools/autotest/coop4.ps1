@@ -28,7 +28,9 @@ function Start-Peer([string]$log, [string]$script, [string[]]$mode) {
 }
 $started = Get-Date
 $state = $null
+$slotLocked = $false
 try {
+    $slotLocked = Lock-Slot 49
     $slot = Sync-Slot 49 -Coop
     $profiles = Join-Path $slot "SlayTheSpire2\default"
     foreach ($i in 2..($Peers - 1)) { robocopy (Join-Path $profiles "1001") (Join-Path $profiles (1000 + $i)) /MIR /NFL /NDL /NJH /NJS | Out-Null }
@@ -47,7 +49,9 @@ try {
         $age = ((Get-Date) - $started).TotalSeconds
         $silent = ($logs | Where-Object { Test-Path $_ } | ForEach-Object { ((Get-Date) - (Get-Item $_).LastWriteTime).TotalSeconds } | Measure-Object -Maximum).Maximum
         $alive = @($procs | Where-Object { -not $_.HasExited }).Count
-        if ($alive -eq 0) { $state = "done" }
+        # The test runner never started (no Debug build in the copy, or it failed to load): nothing would ever run.
+        if ($age -gt 90 -and (Test-Path $logs[0]) -and -not (Select-String -Path $logs[0] -Pattern "\] AutoTest " -Quiet)) { $state = "AUTOTEST NOT LOADED" }
+        elseif ($alive -eq 0) { $state = "done" }
         elseif ($age -gt $TimeoutSec) { $state = "TIMEOUT" }
         elseif ($silent -gt $StallSec) { $state = "STALLED" }
         elseif ($alive -lt $procs.Count -and $silent -gt 40) { $state = "A PEER LEFT" }
@@ -56,6 +60,7 @@ try {
 finally {
     $env:APPDATA = $realAppData
     foreach ($p in $procs) { if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }
+    if ($slotLocked) { Unlock-Slot 49 }
     Remove-TestMods $GameDir
 }
 $problems = @()
@@ -63,11 +68,16 @@ if ($state -ne "done") { $problems += $state }
 $enemies = @(); $runs = @()
 foreach ($log in $logs) {
     $role = [IO.Path]::GetFileNameWithoutExtension($log)
-    if (-not (Select-String -Path $log -Pattern "AutoTest\s+[\d.]+s > quit" -Quiet)) { $problems += "$role did not reach its end" }
-    Select-String -Path $log -CaseSensitive -Pattern "State divergence|FAILED line|MISMATCH|mismatches [1-9]|disabled after|turned off and removed" | Select-Object -First 2 | ForEach-Object { $problems += "$role`: $($_.Line.Trim())" }
+    # judge.py: not ended, a failed line, an error or a difference this mod found itself, a positive control that saw nothing...
+    Invoke-Judge @($log) | Select-Object -First 3 | ForEach-Object { $problems += "$role`: " + ($_ -replace '^PROBLEM [^:]+: ', '') }
+    Select-String -Path $log -CaseSensitive -Pattern "State divergence" -ErrorAction SilentlyContinue | Select-Object -First 1 | ForEach-Object { $problems += "$role`: $($_.Line.Trim())" }
+    # The Workshop mods its game must have found (a mods_STEAMTEST emptied by another series would go unseen).
+    Get-MissingTestMods $log $GameDir | Select-Object -First 2 | ForEach-Object { $problems += "$role`: $_" }
     $enemies += ,@(Select-String -Path $log -Pattern "STATE floor .*: enemy " | ForEach-Object { $_.Line -replace '^.*?STATE ', '' })
     $runs += ,@(Select-String -Path $log -Pattern "STATE (?![^:]*\(local\))[^:]+: (floor \d+, act |\S+ gold )" | ForEach-Object { $_.Line -replace '^.*?STATE ', '' })
 }
+# Peers agreeing on nothing proves nothing: a session that logged no state at all is a problem.
+if ($enemies[0].Count -eq 0 -and $runs[0].Count -eq 0) { $problems += "no enemy or run state line" }
 foreach ($i in 1..($logs.Count - 1)) {
     if (($enemies[0] -join "`n") -ne ($enemies[$i] -join "`n")) { $problems += "enemy states differ: host $($enemies[0].Count) lines, peer $i $($enemies[$i].Count)" }
     if (($runs[0] -join "`n") -ne ($runs[$i] -join "`n")) { $problems += "run states differ: host $($runs[0].Count) lines, peer $i $($runs[$i].Count)" }

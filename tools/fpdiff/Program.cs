@@ -40,6 +40,7 @@ string[] HookHelpers =
     "MegaCrit.Sts2.Core.GameActions.Multiplayer.PlayerChoiceContext::PushModel(AbstractModel)",
     "MegaCrit.Sts2.Core.GameActions.Multiplayer.PlayerChoiceContext::PopModel(AbstractModel)",
     "MegaCrit.Sts2.Core.Models.AbstractModel::InvokeExecutionFinished()",
+    "MegaCrit.Sts2.Core.Helpers.TaskHelper::WhenAny(Task[])",
 };
 const BindingFlags All = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
 

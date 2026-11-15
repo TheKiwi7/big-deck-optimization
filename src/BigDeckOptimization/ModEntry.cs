@@ -1,8 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Text.Json;
 using BigDeckOptimization.Patches;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Logging;
@@ -80,10 +77,12 @@ public static class ModEntry
         {
             Log.Warn($"[{Id}] {Config.SettingsMenu.Name}: settings menu unavailable (bdopt still works): {e}");
         }
+        _initMs = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
         ApplyOverFrames();
-        Log.Info($"[{Id}] Initialized v{typeof(ModEntry).Assembly.GetName().Version?.ToString(3)} in {System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds:F0} ms"
-            + (StartedOff ? ": turned off in the settings, nothing applied (turn it on, then restart the game)" : ""));
     }
+
+    /// <summary>Time <see cref="Init"/> took, logged once <see cref="StartedOff"/> is known (at the first patch).</summary>
+    private static double _initMs;
 
     /// <summary>
     /// The patches, a few per frame while the game loads, so the mod adds no pause to the game's start. Nothing they touch
@@ -178,6 +177,7 @@ public static class ModEntry
     /// <summary>Applies patches until the budget is spent: the time it took.</summary>
     private static double ApplySome(double budgetMs)
     {
+        DecideStartedOff();
         long start = System.Diagnostics.Stopwatch.GetTimestamp();
         double elapsed = 0;
         while (_toApply.Count > 0 && elapsed < budgetMs)
@@ -212,33 +212,35 @@ public static class ModEntry
 
     /// <summary>
     /// True when the saved settings had the whole mod off when the game started: no patch is applied this session, so
-    /// none of this mod's code runs inside the game's (turning it back on takes effect at the next start). Only with
-    /// BaseLib, which saves the settings and can turn the mod back on.
+    /// none of this mod's code runs inside the game's (turning it back on takes effect at the next start). Only when the
+    /// settings menu registered in BaseLib: it loaded that saved choice and saves the one that turns the mod back on. A
+    /// saved "off" the menu can't load or change (BaseLib failed, a BaseLib update the menu can't run with) is not
+    /// honoured: the mod could never be turned back on but by editing the file. Decided at the first patch, once every mod
+    /// has loaded (BaseLib may come after this mod); false until then.
     /// </summary>
-    public static bool StartedOff { get; } = SavedOff();
+    public static bool StartedOff { get; private set; }
 
-    private static bool SavedOff()
+    private static bool _decided;
+
+    private static void DecideStartedOff()
     {
+        if (_decided)
+        {
+            return;
+        }
+        _decided = true;
         try
         {
-            if (!ModManager.Mods.Any(m => m.manifest?.id == Config.SettingsMenu.BaseLibId && m.state is ModLoadState.None or ModLoadState.Loaded))
-            {
-                return false;
-            }
-            string path = Path.Combine(Godot.OS.GetUserDataDir(), "mod_configs", Id + ".cfg");
-            if (!File.Exists(path))
-            {
-                return false;
-            }
-            using JsonDocument saved = JsonDocument.Parse(File.ReadAllText(path));
-            return saved.RootElement.TryGetProperty("Enabled", out JsonElement enabled)
-                && string.Equals(enabled.ToString(), "false", StringComparison.OrdinalIgnoreCase);
+            // The menu set the master switch from the saved file when it registered (nothing else can have changed it yet).
+            StartedOff = Config.SettingsMenu.Registered && !Config.Settings.Master;
         }
         catch (Exception e)
         {
+            StartedOff = false;
             Log.Warn($"[{Id}] Could not read the saved on/off setting (mod on): {e.Message}");
-            return false;
         }
+        Log.Info($"[{Id}] Initialized v{typeof(ModEntry).Assembly.GetName().Version?.ToString(3)} in {_initMs:F0} ms"
+            + (StartedOff ? ": turned off in the settings, nothing applied (turn it on, then restart the game)" : ""));
     }
 
     /// <summary>
@@ -269,21 +271,35 @@ public static class ModEntry
         catch (PatchSkippedException e)
         {
             _notApplied.Add(name);
-            PatchGuard.Remove(PatchGuard.Owned(harmony));
+            RemoveFailed(name, harmony);
             Log.Info($"[{Id}] Patch {name} skipped: {e.Message}");
         }
         catch (Exception e) when (e is MissingMemberException or TypeLoadException)
         {
             // A method, field or type it needs is gone or renamed: an update, not a bug of this mod.
             _notApplied.Add(name);
-            PatchGuard.Remove(PatchGuard.Owned(harmony));
+            RemoveFailed(name, harmony);
             Log.Info($"[{Id}] Patch {name} skipped: {e.Message} (missing: game or mod update?), left vanilla");
         }
         catch (Exception e)
         {
             _notApplied.Add(name);
-            PatchGuard.Remove(PatchGuard.Owned(harmony));
+            RemoveFailed(name, harmony);
             Log.Error($"[{Id}] Patch {name} could not be applied and is disabled: {e}");
+        }
+    }
+
+    /// <summary>What a failed Apply installed comes off; what can't is faulted and retried (<see cref="PatchGuard.RemoveFailedApply"/>).</summary>
+    private static void RemoveFailed(string name, Harmony harmony)
+    {
+        try
+        {
+            PatchGuard.RemoveFailedApply(name, harmony);
+        }
+        catch (Exception e)
+        {
+            PatchSafety.Fault(name);
+            Log.Error($"[{Id}] Patch {name}: removing what it installed failed, turned off: {e}");
         }
     }
 

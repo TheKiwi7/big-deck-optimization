@@ -1,10 +1,10 @@
 # Control run: coopclone with this mod off on both sides (bdopt off), same scenario, to tell the game's own behavior apart.
 # Co-op check of v0.5.0, client (with coopclone-host.txt).
 timeout 2400
+cmd bdopt off
 mplobby IRONCLAD 2
 waitfor run 240
 cmd bdperf checks off
-cmd bdopt off
 speed instant
 wait 14
 cmd bigdeck import ref all cards {hash:ref}
@@ -31,7 +31,8 @@ wait 30
 checksum after shatter
 waitfor restsite 600
 wait 5
-restsite CloneRestSiteOption
+# Cards only imported here (no Pael's Growth): this player has no clone option.
+restsite CloneRestSiteOption optional
 waitfor deckcount 900
 wait 30
 checksum end

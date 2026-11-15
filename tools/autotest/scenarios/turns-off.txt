@@ -1,10 +1,10 @@
 # All optimizations A/B (off): compare with hookskip-on (everything on); the CHECKSUM and STATE lines must match line
 # for line: 5 turns with plays and end of turn, then combat end, ~8,400 cards + 368 relics.
 timeout 2400
+cmd bdopt off
 newrun NECROBINDER
 waitfor run 120
 wait 2
-cmd bdopt off
 cmd bigdeck import ref all all
 cmd bigdeck import ref all cards
 cmd bigdeck import ref all cards

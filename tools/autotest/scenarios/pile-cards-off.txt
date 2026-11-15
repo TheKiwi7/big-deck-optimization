@@ -3,10 +3,10 @@
 # every card play (CARDPLAY lines, auto-plays included) and the combat checksum after each, to compare with
 # pile-cards-on. Not here: Grand Finale (needs an empty draw pile) and Regret (unplayable curse, end of turn).
 timeout 2400
+cmd bdopt off
 newrun NECROBINDER
 waitfor run 120
 wait 2
-cmd bdopt off
 cmd bigdeck import ref all all
 cmd bigdeck import ref all cards
 cmd bigdeck import ref all cards

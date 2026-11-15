@@ -1,0 +1,27 @@
+# HoverTipReuse when the hovered creature moves with the same tips (the panel at the old place was a real bug, audit of
+# 2026-11-15): the mouse on an enemy, two plays (the panel reused), the enemy's node moved, a play (a state change), then
+# checktips: the panel on screen must have been placed for the hitbox where it was at that state change (TIPS INPUT OK: a
+# panel reused at the old place after the 40 px move logs TIPS INPUT MISMATCH), and laid out as the game's own rebuild for that
+# place (TIPS PLACEMENT OK); HoverTipReuse must have rebuilt since the move (tipsrebuilt grew fails the line otherwise). No
+# checktips before the move: its own rebuild would make the next state change rebuild anyway.
+timeout 600
+newrun NECROBINDER
+waitfor run 120
+wait 2
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 300
+wait 1
+cmd bdopt hover_tips on
+hover 0
+play 1
+waitfor idle 120
+play 1
+waitfor idle 120
+tipsrebuilt mark
+movehovered 40 0
+play 1
+waitfor idle 120
+tipsrebuilt grew
+checktips after move
+quit

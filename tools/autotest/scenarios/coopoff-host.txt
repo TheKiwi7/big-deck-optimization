@@ -1,9 +1,9 @@
 # Local co-op control, both peers with the mod off (host): any divergence here is the game's (or another mod's), not this mod's.
 # See coopoff-client.txt.
 timeout 2400
+cmd bdopt off
 mplobby NECROBINDER 2
 waitfor run 240
-cmd bdopt off
 cmd bdperf checks off
 wait 8
 cmd bigdeck import ref all all {hash:ref}

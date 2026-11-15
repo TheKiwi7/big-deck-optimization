@@ -11,7 +11,8 @@ wait 6
 cmd fight CULTISTS_NORMAL
 waitfor idle 120
 wait 8
-cmd bdperf waitspin
+# Fails unless the frame was given back after 2 to 2,001 waits returned at once (MaxSkipsPerFrame + 1).
+cmd bdperf waitspin 2 2001
 wait 3
 state after spin
 cmd bdopt instant_combats off

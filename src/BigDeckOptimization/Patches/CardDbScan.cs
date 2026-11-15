@@ -22,6 +22,10 @@ namespace BigDeckOptimization.Patches;
 /// walked since, never assumed from the pile's type), the cards added since its last walk: when all of them already have an ID, the walk would
 /// ID nothing and is skipped; otherwise the vanilla walk runs (same cards, same order, same IDs). One skipped walk in
 /// <see cref="VerifyEvery"/> is checked against the full pile; any card without an ID disables the patch.
+///
+/// Another mod's patch on <c>AddInternal</c> could put a card in a pile unseen (a prefix skipping the original and adding it
+/// itself, a transpiler): while one is there, and until the next combat start rebuilds the tracking from the piles, every walk
+/// is the game's. An add whose original was skipped but which changed the pile anyway also gives that pile a full walk.
 /// </summary>
 public static class CardDbScan
 {
@@ -52,7 +56,16 @@ public static class CardDbScan
 
     private static readonly ConditionalWeakTable<CardPile, Pending> _pending = new();
     private static AccessTools.FieldRef<NetCombatCardDb, Dictionary<CardModel, uint>>? _cardToId;
-    private static MethodInfo? _walk, _id;
+    private static MethodInfo? _walk, _id, _add;
+
+    /// <summary>
+    /// The code that writes the database's ids (v0.107.1, v0.111, v0.113: the same class): "IDs never removed during a
+    /// combat" holds while nothing else does, which no fingerprint would show (a new method removing one).
+    /// </summary>
+    private static readonly string[] IdWriters = { ".ctor", "StartCombat", "IdCardIfNecessary", "ClearCardsForTesting" };
+
+    /// <summary>Another mod patched <c>AddInternal</c> since the last combat start: the tracking may have missed adds.</summary>
+    private static bool _addPatchedSinceStart;
 
     /// <summary>
     /// Other mods' patches on IdCardIfNecessary a skipped walk may leave out: Limitless 1.2.1's card id ledger (its
@@ -86,10 +99,17 @@ public static class CardDbScan
             ?? throw new MissingMethodException("NetCombatCardDb.StartCombat");
         PatchSafety.RequireFingerprint(startCombat, StartCombatFingerprint);
         PatchSafety.RequireFieldWriters(typeof(CardPile), "_cards", PatchSafety.CardListWriters);
+        PatchSafety.RequireFieldWriters(typeof(NetCombatCardDb), "_cardToId", IdWriters);
+        PatchSafety.RequireFieldWriters(typeof(NetCombatCardDb), "_nextId", IdWriters);
+        _add = add;
         _cardToId = AccessTools.FieldRefAccess<NetCombatCardDb, Dictionary<CardModel, uint>>("_cardToId");
 
         // Tracking first: it must see every add before the walk can be skipped.
         PatchGuard.Patch(harmony, add, prefix: new HarmonyMethod(typeof(CardDbScan), nameof(RecordAdd)));
+        // Harmony doesn't call RecordAdd (it takes the card) once an earlier prefix returned false: the pile's count is taken
+        // by a first prefix that always runs, and an add skipped that way but changing the pile anyway is seen after it.
+        PatchGuard.Patch(harmony, add, prefix: new HarmonyMethod(typeof(CardDbScan), nameof(WatchAdd)) { priority = Priority.First },
+            finalizer: new HarmonyMethod(typeof(CardDbScan), nameof(AfterAdd)));
         PatchGuard.Patch(harmony, startCombat,
             postfix: new HarmonyMethod(typeof(CardDbScan), nameof(AfterStartCombat)));
         PatchGuard.Patch(harmony, walk,
@@ -123,10 +143,35 @@ public static class CardDbScan
         }
     }
 
+    private static void WatchAdd(CardPile __instance, out int __state) => __state = __instance.Cards.Count;
+
+    /// <summary>An add whose original didn't run but whose pile changed anyway: what entered isn't known, that pile walks in full.</summary>
+    private static Exception? AfterAdd(Exception? __exception, CardPile __instance, int __state, bool __runOriginal)
+    {
+        if (!__runOriginal)
+        {
+            try
+            {
+                if (__instance.Cards.Count != __state && _pending.TryGetValue(__instance, out Pending? pending))
+                {
+                    pending.Overflow = true;
+                    pending.Cards.Clear();
+                }
+            }
+            catch (Exception e)
+            {
+                Fail(e.ToString());
+            }
+        }
+        return __exception;
+    }
+
     /// <summary>StartCombat IDs every card already in a pile (vanilla refuses ownerless ones: keep those pending).</summary>
     private static void AfterStartCombat(NetCombatCardDb __instance, IReadOnlyList<Player> players)
     {
         _pending.Clear();
+        // Tracking starts again from the piles themselves: earlier unseen adds no longer matter.
+        _addPatchedSinceStart = PatchSafety.IsPatchedByOthers(_add);
         try
         {
             Dictionary<CardModel, uint> ids = _cardToId!(__instance);
@@ -160,6 +205,11 @@ public static class CardDbScan
         Walks++;
         if (!Enabled || PatchSafety.IsPatchedByOthers(_walk) || PatchSafety.IsPatchedByOthers(_id, AllowedOnId()))
         {
+            return true;
+        }
+        if (_addPatchedSinceStart || PatchSafety.IsPatchedByOthers(_add))
+        {
+            _addPatchedSinceStart = true;
             return true;
         }
         try
@@ -208,7 +258,13 @@ public static class CardDbScan
         try
         {
             Dictionary<CardModel, uint> ids = _cardToId!(__instance);
-            Pending pending = _pending.GetOrCreateValue(pile);
+            if (!_pending.TryGetValue(pile, out Pending? pending))
+            {
+                // A pile tracked from now on (not one of the piles at combat start): what the walk left without an ID
+                // (ownerless cards) is read from the pile itself, as after an overflow.
+                pending = _pending.GetOrCreateValue(pile);
+                pending.Overflow = true;
+            }
             if (pending.Overflow)
             {
                 pending.Overflow = false;

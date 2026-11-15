@@ -71,6 +71,10 @@ public static partial class AutoTest
         // The fight command seeds the encounter from the clock (seconds): peers running it in different seconds desync.
         PatchGuard.Patch(harmony, AccessTools.Method(typeof(EncounterModel), nameof(EncounterModel.DebugRandomizeRng)),
             prefix: new HarmonyMethod(typeof(AutoTest), nameof(FixedEncounterRng)));
+        // In co-op a networked command is only enqueued (DevConsole.ProcessCommand answers "Enqueued"): its result reaches the
+        // console's output only. Every peer runs it through ProcessNetCommand: a failure there fails the session.
+        PatchGuard.Patch(harmony, AccessTools.Method(typeof(DevConsole), nameof(DevConsole.ProcessNetCommand)),
+            finalizer: new HarmonyMethod(typeof(AutoTest), nameof(NetCommandFinalizer)));
         PatchGuard.Patch(harmony, AccessTools.Method(typeof(NCharacterSelectScreen), nameof(NCharacterSelectScreen.InitializeMultiplayerAsHost)),
             postfix: new HarmonyMethod(typeof(AutoTest), nameof(LobbyScreenPostfix)));
         PatchGuard.Patch(harmony, AccessTools.Method(typeof(NCharacterSelectScreen), nameof(NCharacterSelectScreen.InitializeMultiplayerAsClient)),
@@ -290,6 +294,12 @@ public static partial class AutoTest
     /// Logs every card play, manual or auto-played by an effect (Havoc, Cascade...), from the combat history: a patch
     /// on the play methods misses the calls the JIT inlined.
     /// </summary>
+    /// <summary>
+    /// Cards whose manual play the combat history saw start since <see cref="Play"/> last cleared it (it waits for its own). A set,
+    /// not the last one: in co-op the other player's plays start in between.
+    /// </summary>
+    private static readonly HashSet<CardModel> _manualPlaysStarted = new(ReferenceEqualityComparer.Instance);
+
     private static void LogCardPlays()
     {
         if (_loggingPlays)
@@ -300,8 +310,16 @@ public static partial class AutoTest
         MegaCrit.Sts2.Core.Combat.History.CombatHistory history = CombatManager.Instance.History;
         history.Changed += () =>
         {
+            if (!history.Entries.Any())
+            {
+                _manualPlaysStarted.Clear(); // A new combat (the history cleared): the last one's cards hold their run.
+            }
             if (history.Entries.LastOrDefault() is MegaCrit.Sts2.Core.Combat.History.Entries.CardPlayStartedEntry { CardPlay: var play })
             {
+                if (!play.IsAutoPlay)
+                {
+                    _manualPlaysStarted.Add(play.Card);
+                }
                 Say($"  CARDPLAY {(play.IsAutoPlay ? "auto" : "manual")} {play.Card.Id.Entry} -> {play.Target?.ToString() ?? "no target"}");
             }
         };
@@ -321,6 +339,49 @@ public static partial class AutoTest
         }
         __result = Task.CompletedTask;
         return false;
+    }
+
+    /// <summary>Set while <see cref="Command"/> runs a command itself: it sees the result (and a sweep's refusals are expected).</summary>
+    private static bool _directCommand;
+
+    /// <summary>A networked command that failed when the action queue ran it, until a script line or a wait reports it.</summary>
+    private static string? _netCommandFailed;
+
+    private static Exception? NetCommandFinalizer(Player? player, string inputValue, CmdResult __result, Exception? __exception)
+    {
+        if (_directCommand)
+        {
+            return __exception;
+        }
+        if (__exception != null || !__result.success)
+        {
+            NetCommandFailed($"networked command '{inputValue}' (player {player?.NetId}) failed: {__exception?.Message ?? __result.msg}");
+        }
+        else if (__result.task is { } task)
+        {
+            // The queue awaits the command's task (NDevConsole.ProcessNetCommand returns it): a fault there only reaches the game's log,
+            // without a frame of this mod's patches, which judge.py doesn't count.
+            task.ContinueWith(t => NetCommandFailed($"networked command '{inputValue}' (player {player?.NetId}) failed in its task: {t.Exception?.GetBaseException().Message}"),
+                System.Threading.CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        }
+        return __exception;
+    }
+
+    private static void NetCommandFailed(string failed)
+    {
+        failed = failed.Replace("\n", " ");
+        _netCommandFailed ??= failed;
+        Say("FAILED: " + failed);
+    }
+
+    /// <summary>Fails the current script line or wait when a queued networked command failed meanwhile.</summary>
+    private static void ThrowIfNetCommandFailed()
+    {
+        if (_netCommandFailed is { } failed)
+        {
+            _netCommandFailed = null;
+            throw new InvalidOperationException(failed);
+        }
     }
 
     private static bool FixedEncounterRng(EncounterModel __instance)
@@ -349,14 +410,28 @@ public static partial class AutoTest
         Say("  co-op lobby screen ready");
     }
 
-    /// <summary>Script <c>mplobby &lt;CHARACTER&gt; [players]</c>: once the lobby has that many players, pick and ready up.</summary>
+    /// <summary>
+    /// Script <c>mplobby &lt;CHARACTER&gt; [players] [seed]</c>: once the lobby has that many players, pick and ready up.
+    /// The host sets the run seed (default BDTEST, as newrun): without it the game draws one from <c>Rng.Chaotic</c>, the
+    /// clock in seconds up to v0.111 (two sessions started in the same second got the same run, by chance) and a random
+    /// number since v0.113, so an on/off pair of co-op sessions played two different runs. Through
+    /// <c>NGame.DebugSeedOverride</c>, which the lobby reads when everyone is ready (as the game's AutoSlayer does):
+    /// <c>StartRunLobby.SetSeed</c> throws in standard mode (the character screen refuses seed changes). The lobby screen
+    /// resets it when it initializes, before this runs.
+    /// </summary>
     private static async Task MpLobby(SceneTree tree, string arg)
     {
         string[] parts = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         int players = parts.Length > 1 ? int.Parse(parts[1]) : 2;
+        string seed = parts.Length > 2 ? parts[2] : "BDTEST";
         await Until(tree, () => _lobbyScreen?.Lobby is { } lobby && LobbyPlayerCount(lobby) >= players, 300, $"lobby with {players} players");
         CharacterModel character = ModelDb.GetById<CharacterModel>(new ModelId(ModelId.SlugifyCategory<CharacterModel>(), parts[0].ToUpperInvariant()));
         var startLobby = _lobbyScreen!.Lobby;
+        if (startLobby.NetService.Type == MegaCrit.Sts2.Core.Multiplayer.Game.NetGameType.Host)
+        {
+            NGame.Instance!.DebugSeedOverride = seed;
+            Say($"  run seed {seed}");
+        }
         SetLobbyCharacter(startLobby, character);
         await Frames(tree, 30);
         startLobby.SetReady(true);
@@ -369,6 +444,106 @@ public static partial class AutoTest
     }
 
     private static IDisposable? _selector;
+
+    /// <summary>Each optimization's effect counter (the <c>effects</c> line), by name.</summary>
+    private static (string Name, long Count)[] EffectCounts() => new (string, long)[]
+    {
+        (ListenerCache.Name, ListenerCache.Served), (HookFilter.Name, HookFilter.ListenersDropped), (ExtraScopes.Name, ExtraScopes.FirstTurnPasses),
+        (IdleButtonInput.Name, IdleButtonInput.Muted), (GridSortCache.Name, GridSortCache.Sorts), (EnchantmentTabReuse.Name, EnchantmentTabReuse.Reused),
+        (PoolSignalScan.Name, PoolSignalScan.Nodes), (CardDbScan.Name, CardDbScan.Skipped), (PileIndex.Name, PileIndex.Fast), (PileIndex.Name + ".Duplicates", PileIndex.FastDuplicateChecks),
+        (PileCounterBatch.Name, PileCounterBatch.Batched), (FastCombatStart.Name, FastCombatStart.SkippedWaits), (HoverTipReuse.Name, HoverTipReuse.Reused),
+        (FastListeners.Name + ".CombatWalk", FastListeners.CombatWalks), (FastListeners.Name + ".RunWalk", FastListeners.RunWalks),
+        (FastListeners.Name + ".Cache", FastListeners.SegmentHits + FastListeners.SegmentMoveHits), (FastListeners.Name + ".Moves", FastListeners.SegmentMoveHits + FastListeners.SnapshotCatchUps),
+        (FastListeners.Name + ".Kinds", FastListeners.KindsSkipped), (FastListeners.Name + ".Others", FastListeners.OthersDropped),
+        (HookSkip.Name, HookSkip.FilteredWalks), (LimitlessReserialize.Name, LimitlessReserialize.Kept), (LimitlessRecalcSkip.Name + ".Memos", LimitlessRecalcSkip.Skipped), (LimitlessRecalcSkip.Name + ".Passes", LimitlessRecalcSkip.PassesSkipped),
+        (SnapshotCardReuse.Name + ".Cards", SnapshotCardReuse.Reused), (SnapshotCardReuse.Name + ".Release", SnapshotCardReuse.CombatCardsReleased), (SnapshotCardReuse.Name + ".Piles", SnapshotCardReuse.PilesReused + SnapshotCardReuse.PilesTrusted), (SnapshotCardReuse.Name + ".Trust", SnapshotCardReuse.PilesTrusted), (SnapshotCardReuse.Name + ".Moved", SnapshotCardReuse.MovedReused), (SnapshotCardReuse.Name + ".Dirty", SnapshotCardReuse.DirtyPiles), (SnapshotCardReuse.Name + ".Hooks", SnapshotCardReuse.PilesWithHooks), (SnapshotCardReuse.Name + ".Blocks", SnapshotCardReuse.BlockCopiedCards),
+        (SnapshotCardReuse.Name + ".CardBits", SnapshotCardReuse.BitsReused), (SnapshotCardReuse.Name + ".UpgradeBits", SnapshotCardReuse.UpgradeBitsPatched), (SnapshotCardReuse.Name + ".PileBits", SnapshotCardReuse.PileBitsReused + SnapshotCardReuse.PileBitsComposed),
+        (DeckCountMemo.Name, DeckCountMemo.Kept + DeckCountMemo.Updated), (DeckCountMemo.Name + ".Checks", DeckCountMemo.Checks), (LimitlessHookSkip.Name, LimitlessHookSkip.Dropped), (LimitlessHookSkip.Name + ".Saved", LimitlessHookSkip.NotesFromSaved), (LimitlessCloneMemo.Name, LimitlessCloneMemo.Reused), (TextPoolReuse.Name, TextPoolReuse.Served), (ThemeColorSkip.Name, ThemeColorSkip.Skipped), (ReplayStateSkip.Name, ReplayStateSkip.Skipped),
+        (GcPacing.Name, GcPacing.Regions), (RelicFlashMerge.Name, RelicFlashMerge.Merged), (CardFlightLimit.Name, CardFlightLimit.Skipped), (TypePlaqueSkip.Name, TypePlaqueSkip.Skipped),
+        (ControllerActionSkip.Name, ControllerActionSkip.Skipped), (RoomCollect.Name, RoomCollect.Background), (PooledCardRelease.Name, PooledCardRelease.Released), (SyncedCardRelease.Name, SyncedCardRelease.Released), (SavedPropertyLookup.Name, SavedPropertyLookup.Served), (RelicStateReuse.Name, RelicStateReuse.Reused), (RelicStateReuse.ScalarName, RelicStateReuse.ScalarReused), (RichTextEnvRelease.Name, RichTextEnvRelease.Released), (RichTextEnvRelease.Name + ".Untracked", RichTextEnvRelease.Untracked), ("InlineGuard", InlineGuard.Protected),
+    };
+
+    /// <summary>
+    /// The game starts its "Common" preload at the main menu without awaiting it. A run started meanwhile (a script's newrun 0.4 s
+    /// after the menu; a player takes seconds) unloads what that preload is still loading, and the run's own preload never
+    /// completes: the session stops in "Preloading 'characters=...'", mod on or off (v0.113.1, 2026-11-15). Waits until the Common and
+    /// main menu sets are loaded; assets that failed to load never show up, so it also goes on once nothing changed for 5 s.
+    /// </summary>
+    private static async Task WaitCommonPreload(SceneTree tree)
+    {
+        try
+        {
+            var wanted = MegaCrit.Sts2.Core.Assets.AssetSets.CommonAssets.Concat(MegaCrit.Sts2.Core.Assets.AssetSets.MainMenuSet).ToHashSet();
+            long start = Stopwatch.GetTimestamp();
+            long changed = start;
+            int missing = -1;
+            while (Stopwatch.GetElapsedTime(start).TotalSeconds < 30)
+            {
+                IReadOnlySet<string> loaded = MegaCrit.Sts2.Core.Assets.PreloadManager.Cache.GetLoadedCacheAssets();
+                int now = wanted.Count(path => !loaded.Contains(path));
+                if (now == 0)
+                {
+                    missing = 0;
+                    break;
+                }
+                if (now != missing)
+                {
+                    missing = now;
+                    changed = Stopwatch.GetTimestamp();
+                }
+                else if (Stopwatch.GetElapsedTime(changed).TotalSeconds > 5)
+                {
+                    break;
+                }
+                await Frames(tree, 5);
+            }
+            Say($"  common preload: {(missing == 0 ? "complete" : $"{missing} asset(s) never loaded")} after {Stopwatch.GetElapsedTime(start).TotalSeconds:F1} s");
+        }
+        catch (Exception e)
+        {
+            Say($"  common preload not checked: {e.GetType().Name}: {e.Message}");
+        }
+    }
+
+    /// <summary>The counters of each <c>effects &lt;label&gt;</c> line, for <see cref="EffectCheck"/>.</summary>
+    private static readonly Dictionary<string, Dictionary<string, long>> _effectsAt = new();
+
+    /// <summary>
+    /// Script <c>effectcheck &lt;Effect&gt; same|grew &lt;label&gt;</c>: that effect counter must have stayed the same (an optimization
+    /// that must be off or idle since then) or grown since the <c>effects &lt;label&gt;</c> line, or the line fails: what a scenario
+    /// would otherwise leave to be read by eye.
+    /// </summary>
+    private static void EffectCheck(string arg)
+    {
+        string[] parts = arg.Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 2 && parts[1] == "zero")
+        {
+            // A counter its optimization resets (FastCombatStart's, at each combat room entered) can't be compared with an earlier line.
+            long count = EffectCounts().First(e => e.Name == parts[0]).Count;
+            Say($"  EFFECTCHECK {parts[0]} zero: {count}");
+            if (count != 0)
+            {
+                throw new InvalidOperationException($"{parts[0]} is {count}, not 0");
+            }
+            return;
+        }
+        if (parts.Length < 3 || parts[1] is not ("same" or "grew"))
+        {
+            throw new ArgumentException("effectcheck <Effect> zero | <Effect> same|grew <label of an earlier 'effects' line>");
+        }
+        if (!_effectsAt.TryGetValue(parts[2], out Dictionary<string, long>? then) || !then.TryGetValue(parts[0], out long before))
+        {
+            throw new ArgumentException($"no effect {parts[0]} in an earlier 'effects {parts[2]}' line");
+        }
+        long now = EffectCounts().First(e => e.Name == parts[0]).Count;
+        bool ok = parts[1] == "same" ? now == before : now > before;
+        Say($"  EFFECTCHECK {parts[0]} {parts[1]} since '{parts[2]}': {before} -> {now}");
+        if (!ok)
+        {
+            throw new InvalidOperationException($"{parts[0]} {(parts[1] == "same" ? "grew" : "didn't grow")} since 'effects {parts[2]}': {before} -> {now}");
+        }
+    }
+
     /// <summary>The current room when this peer's last cmd room / cmd event ran, until a waitfor room saw it replaced.</summary>
     private static WeakReference<object>? _roomBeforeJump;
     /// <summary>Script <c>selector ui</c>: card choices go through the game's screens; a new run pushes no selector.</summary>
@@ -735,9 +910,27 @@ public static partial class AutoTest
         foreach (string line in _autoSlayFirst)
         {
             Say("> (first room) " + line);
-            _ = Command(line);
+            FirstRoomCommand(line);
         }
         _autoSlayFirst.Clear();
+    }
+
+    /// <summary>An <c>autoslayfirst</c> command: it fails the session as a script line would (nothing awaits it).</summary>
+    private static async void FirstRoomCommand(string line)
+    {
+        try
+        {
+            await Command(line);
+        }
+        catch (Exception e)
+        {
+            Say($"FAILED line 'autoslayfirst {line}': {e.Message}");
+            if (!_continueOnFail)
+            {
+                Say("ABORT: first failed line (a scenario expecting failures says 'onfail continue')");
+                Quit();
+            }
+        }
     }
 
     private static async Task Run(SceneTree tree)
@@ -753,6 +946,7 @@ public static partial class AutoTest
         Say($"script {_script} ({lines.Length} lines)");
         await Until(tree, () => NGame.Instance?.MainMenu != null && ModEntry.Ready, 300, "menu");
         await Frames(tree, 60);
+        await WaitCommonPreload(tree);
         NGame game = NGame.Instance!;
         if (DisplayServer.GetName() == "headless")
         {
@@ -766,8 +960,9 @@ public static partial class AutoTest
         foreach (string raw in lines)
         {
             // {hash:NAME} = hash of the shared run file NAME (co-op imports need it; each machine computes its own).
+            string? missingShared = null;
             string line = System.Text.RegularExpressions.Regex.Replace(raw.Trim(), @"\{hash:([\w.-]+)\}",
-                m => BigDeckConsoleCmd.SharedHash(m.Groups[1].Value) ?? "missing-shared-file");
+                m => BigDeckConsoleCmd.SharedHash(m.Groups[1].Value) ?? (missingShared = m.Groups[1].Value));
             if (line.Length == 0 || line.StartsWith('#'))
             {
                 continue;
@@ -782,8 +977,19 @@ public static partial class AutoTest
             string arg = parts.Length > 1 ? parts[1] : "";
             try
             {
+            if (missingShared != null)
+            {
+                throw new FileNotFoundException($"no shared run file '{missingShared}' in user://bigdeck for {{hash:{missingShared}}}");
+            }
+            ThrowIfNetCommandFailed();
             switch (parts[0].ToLowerInvariant())
             {
+                case "expect":
+                    // A positive control: the problem lines this regex matches are expected (tools/autotest/judge.py lists them
+                    // apart), and a line of the session must match it, or the control saw nothing.
+                    _ = new System.Text.RegularExpressions.Regex(arg.Trim());
+                    Say("  EXPECT " + arg.Trim());
+                    break;
                 case "enemyhp":
                     _enemyHp = int.Parse(arg);
                     break;
@@ -845,10 +1051,19 @@ public static partial class AutoTest
                 case "selector":
                     _localSelector = arg.Trim() == "local";
                     bool supported = typeof(CardSelectCmd).GetMethods().Any(m => m.Name == "PushSelector" && m.GetParameters().Any(p => p.Name == "localOnly"));
-                    Say(_localSelector && !supported ? "  FAILED: this game version has no local-only card selector" : $"  card selector: {(_localSelector ? "local player only" : "global")}");
+                    if (_localSelector && !supported)
+                    {
+                        throw new NotSupportedException("this game version has no local-only card selector");
+                    }
+                    Say($"  card selector: {(_localSelector ? "local player only" : "global")}");
                     break;
                 case "faultprobe":
-                    Say("  FAULTPROBE " + await FaultProbe.Run(() => Frames(tree, 3)));
+                    string probe = await FaultProbe.Run(() => Frames(tree, 3));
+                    Say("  FAULTPROBE " + probe);
+                    if (probe.Contains("FAILED"))
+                    {
+                        throw new InvalidOperationException("a PatchGuard check failed: " + probe);
+                    }
                     break;
                 case "menutext":
                     string menuKey = $"BIGDECKOPTIMIZATION-{arg.Trim().ToUpperInvariant()}.hover.desc";
@@ -931,6 +1146,8 @@ public static partial class AutoTest
                     _combatSelector?.Dispose();
                     _selector = null;
                     _combatSelector = null;
+                    // Its cards hold the left run: leak checks and gcfull must see only what the game and the mod keep.
+                    _manualPlaysStarted.Clear();
                     Say("  on the main menu");
                     break;
                 case "leakcheck":
@@ -945,8 +1162,14 @@ public static partial class AutoTest
                 case "forcefocus":
                     ForceFocus();
                     break;
+                case "controllermap" when arg.Trim() == "stale":
+                    ControllerMapStale();
+                    break;
                 case "controllermap":
                     ControllerMapDefault();
+                    break;
+                case "buttoninput":
+                    ButtonInput(tree, arg.Trim());
                     break;
                 case "mousesweep":
                     await MouseSweep(tree, double.Parse(arg));
@@ -957,8 +1180,17 @@ public static partial class AutoTest
                 case "hover":
                     Hover(int.Parse(arg));
                     break;
+                case "eventtrace":
+                    EventTrace();
+                    break;
                 case "checktips":
                     CheckTips(arg.Trim());
+                    break;
+                case "tipsrebuilt":
+                    TipsRebuilt(arg.Trim());
+                    break;
+                case "movehovered":
+                    MoveHovered(arg.Trim());
                     break;
                 case "menuvalues":
                     // What BaseLib's menu shows (each box reads its property), by reflection: this DLL must not reference BaseLib.
@@ -968,32 +1200,21 @@ public static partial class AutoTest
                     break;
                 case "counters":
                     Say($"  COUNTERS {arg.Trim()}: {LimitlessReserialize.Name} kept {LimitlessReserialize.Kept}, rebuilt {LimitlessReserialize.Rebuilt}, skipped getters {LimitlessReserialize.SkippedGetters}, known data {LimitlessReserialize.KnownData}, "
-                        + $"verify mismatches {LimitlessReserialize.VerifyMismatches}; {LimitlessRecalcSkip.Name} passes skipped {LimitlessRecalcSkip.PassesSkipped}, run {LimitlessRecalcSkip.PassesRun}, mismatches {LimitlessRecalcSkip.PassMismatches}, skipped {LimitlessRecalcSkip.Skipped}, verified {LimitlessRecalcSkip.Verified}, mismatches {LimitlessRecalcSkip.Mismatches}; {SnapshotCardReuse.Name} reused {SnapshotCardReuse.Reused}, built {SnapshotCardReuse.Built}, upgraded {SnapshotCardReuse.LightBuilt}, piles trusted {SnapshotCardReuse.PilesTrusted}, pile bits reused {SnapshotCardReuse.PileBitsReused}, composed {SnapshotCardReuse.PileBitsComposed}, pile mismatches {SnapshotCardReuse.PileMismatches}, verified {SnapshotCardReuse.Verified}, mismatches {SnapshotCardReuse.Mismatches}, piles reused {SnapshotCardReuse.PilesReused}, built {SnapshotCardReuse.PilesBuilt}, bits reused {SnapshotCardReuse.BitsReused}, captured {SnapshotCardReuse.BitsCaptured}, checked {SnapshotCardReuse.BitChecks}; {FastListeners.Name} cache mismatches {FastListeners.CacheMismatches}, "
+                        + $"verify mismatches {LimitlessReserialize.VerifyMismatches}; {LimitlessRecalcSkip.Name} passes skipped {LimitlessRecalcSkip.PassesSkipped}, run {LimitlessRecalcSkip.PassesRun}, mismatches {LimitlessRecalcSkip.PassMismatches}, skipped {LimitlessRecalcSkip.Skipped}, verified {LimitlessRecalcSkip.Verified}, mismatches {LimitlessRecalcSkip.Mismatches}; {LimitlessHookSkip.Name} samples {LimitlessHookSkip.Samples}, mismatches {LimitlessHookSkip.SampleMismatches}; {SnapshotCardReuse.Name} reused {SnapshotCardReuse.Reused}, built {SnapshotCardReuse.Built}, upgraded {SnapshotCardReuse.LightBuilt}, piles trusted {SnapshotCardReuse.PilesTrusted}, pile bits reused {SnapshotCardReuse.PileBitsReused}, composed {SnapshotCardReuse.PileBitsComposed}, pile mismatches {SnapshotCardReuse.PileMismatches}, verified {SnapshotCardReuse.Verified}, mismatches {SnapshotCardReuse.Mismatches}, piles reused {SnapshotCardReuse.PilesReused}, built {SnapshotCardReuse.PilesBuilt}, bits reused {SnapshotCardReuse.BitsReused}, captured {SnapshotCardReuse.BitsCaptured}, checked {SnapshotCardReuse.BitChecks}; {FastListeners.Name} cache mismatches {FastListeners.CacheMismatches}, "
                         + $"segments rebuilt {FastListeners.SegmentRebuilds} (versions {FastListeners.RebuiltVersions}, pile version {FastListeners.PileVersion}), "
                         + $"extended {FastListeners.SegmentExtends}, kept across moves {FastListeners.SegmentMoveHits}, snapshot catch-ups {FastListeners.SnapshotCatchUps}, rebuilds {FastListeners.SnapshotRebuilds}, move checks {FastListeners.MoveChecks}, mismatches {FastListeners.MoveMismatches}, hits {FastListeners.SegmentHits}, uncached walks {FastListeners.UncachedWalks}; "
                         + $"{HookFilter.Name} walk checks {HookFilter.WalkChecks}, mismatches {HookFilter.WalkMismatches}, cost color checks {HookFilter.CostColorChecks / 64}, mismatches {HookFilter.CostColorMismatches}; {RelicFlashMerge.Name} merged {RelicFlashMerge.Merged}; {CardFlightLimit.Name} skipped {CardFlightLimit.Skipped}; {ReplayStateSkip.Name} skipped {ReplayStateSkip.Skipped}; {ThemeColorSkip.Name} skipped {ThemeColorSkip.Skipped}, set {ThemeColorSkip.Set}; {GcPacing.Name} regions {GcPacing.Regions}, refused {GcPacing.RegionsRefused}, exhausted {GcPacing.Exhausted}, {GcPacing.RegionMs:F0} ms, collections {GcPacing.Collections} (full {GcPacing.Fulls}) in {GcPacing.CollectMs:F0} ms, worst {GcPacing.WorstCollectMs:F0} ms; {PileIndex.Name} duplicate checks fast {PileIndex.FastDuplicateChecks}, slow {PileIndex.SlowDuplicateChecks}; subscriber checks {FastListeners.SubscriberChecks} in {FastListeners.SubscriberCheckTicks * 1000.0 / Stopwatch.Frequency:F1} ms");
                     break;
                 case "effects":
-                    // What each optimization really did so far: tools/autotest/effects.py checks none stayed at zero.
-                    foreach ((string name, long count) in new (string, long)[]
+                    // What each optimization really did so far: tools/autotest/effects.py checks none stayed at zero. Kept per
+                    // label for effectcheck.
+                    Dictionary<string, long> effectsNow = new();
+                    foreach ((string name, long count) in EffectCounts())
                     {
-                        (ListenerCache.Name, ListenerCache.Served), (HookFilter.Name, HookFilter.ListsFiltered), (ExtraScopes.Name, ExtraScopes.FirstTurnPasses),
-                        (IdleButtonInput.Name, IdleButtonInput.Muted), (GridSortCache.Name, GridSortCache.Sorts), (EnchantmentTabReuse.Name, EnchantmentTabReuse.Reused),
-                        (PoolSignalScan.Name, PoolSignalScan.Nodes), (CardDbScan.Name, CardDbScan.Skipped), (PileIndex.Name, PileIndex.Fast), (PileIndex.Name + ".Duplicates", PileIndex.FastDuplicateChecks),
-                        (PileCounterBatch.Name, PileCounterBatch.Batched), (FastCombatStart.Name, FastCombatStart.SkippedWaits), (HoverTipReuse.Name, HoverTipReuse.Reused),
-                        (FastListeners.Name + ".CombatWalk", FastListeners.CombatWalks), (FastListeners.Name + ".RunWalk", FastListeners.RunWalks),
-                        (FastListeners.Name + ".Cache", FastListeners.SegmentHits + FastListeners.SegmentMoveHits), (FastListeners.Name + ".Moves", FastListeners.SegmentMoveHits + FastListeners.SnapshotCatchUps),
-                        (FastListeners.Name + ".Kinds", FastListeners.KindsSkipped), (FastListeners.Name + ".Others", FastListeners.OthersDropped),
-                        (HookSkip.Name, HookSkip.FilteredWalks), (LimitlessReserialize.Name, LimitlessReserialize.Kept), (LimitlessRecalcSkip.Name + ".Memos", LimitlessRecalcSkip.Skipped), (LimitlessRecalcSkip.Name + ".Passes", LimitlessRecalcSkip.PassesSkipped),
-                        (SnapshotCardReuse.Name + ".Cards", SnapshotCardReuse.Reused), (SnapshotCardReuse.Name + ".Release", SnapshotCardReuse.CombatCardsReleased), (SnapshotCardReuse.Name + ".Piles", SnapshotCardReuse.PilesReused + SnapshotCardReuse.PilesTrusted), (SnapshotCardReuse.Name + ".Trust", SnapshotCardReuse.PilesTrusted), (SnapshotCardReuse.Name + ".Moved", SnapshotCardReuse.MovedReused), (SnapshotCardReuse.Name + ".Dirty", SnapshotCardReuse.DirtyPiles), (SnapshotCardReuse.Name + ".Hooks", SnapshotCardReuse.PilesWithHooks), (SnapshotCardReuse.Name + ".Blocks", SnapshotCardReuse.BlockCopiedCards),
-                        (SnapshotCardReuse.Name + ".CardBits", SnapshotCardReuse.BitsReused), (SnapshotCardReuse.Name + ".UpgradeBits", SnapshotCardReuse.UpgradeBitsPatched), (SnapshotCardReuse.Name + ".PileBits", SnapshotCardReuse.PileBitsReused + SnapshotCardReuse.PileBitsComposed),
-                        (DeckCountMemo.Name, DeckCountMemo.Kept + DeckCountMemo.Updated), (DeckCountMemo.Name + ".Checks", DeckCountMemo.Checks), (LimitlessHookSkip.Name, LimitlessHookSkip.Dropped), (LimitlessHookSkip.Name + ".Saved", LimitlessHookSkip.NotesFromSaved), (LimitlessCloneMemo.Name, LimitlessCloneMemo.Reused), (TextPoolReuse.Name, TextPoolReuse.Served), (ThemeColorSkip.Name, ThemeColorSkip.Skipped), (ReplayStateSkip.Name, ReplayStateSkip.Skipped),
-                        (GcPacing.Name, GcPacing.Regions), (RelicFlashMerge.Name, RelicFlashMerge.Merged), (CardFlightLimit.Name, CardFlightLimit.Skipped), (TypePlaqueSkip.Name, TypePlaqueSkip.Skipped),
-                        (ControllerActionSkip.Name, ControllerActionSkip.Skipped), (RoomCollect.Name, RoomCollect.Background), (PooledCardRelease.Name, PooledCardRelease.Released), (SyncedCardRelease.Name, SyncedCardRelease.Released), (SavedPropertyLookup.Name, SavedPropertyLookup.Served), (RelicStateReuse.Name, RelicStateReuse.Reused), (RelicStateReuse.ScalarName, RelicStateReuse.ScalarReused), (RichTextEnvRelease.Name, RichTextEnvRelease.Released), (RichTextEnvRelease.Name + ".Untracked", RichTextEnvRelease.Untracked), ("InlineGuard", InlineGuard.Protected),
-                    })
-                    {
+                        effectsNow[name] = count;
                         Say($"EFFECT {name} {count}");
                     }
+                    _effectsAt[arg.Trim()] = effectsNow;
                     Say("PILE READS " + string.Join(", ", SnapshotCardReuse.WhyRead.OrderByDescending(p => p.Value).Select(p => $"{p.Key} {p.Value}")));
                     Say("WRITES " + string.Join(", ", SnapshotCardReuse.WritesByMethod.OrderByDescending(p => p.Value).Select(p => $"{p.Key} {p.Value}")));
                     Say("PILE BITS " + string.Join(", ", SnapshotCardReuse.WhyPileBits.OrderByDescending(p => p.Value).Select(p => $"{p.Key} {p.Value}")));
@@ -1003,6 +1224,9 @@ public static partial class AutoTest
                     Say($"BALANCE {nameof(ListenerCache)}.OpenScopes {ListenerCache.OpenScopes}");
                     Say($"BALANCE {nameof(FastListeners)}.OpenShuffles {FastListeners.OpenShuffles}");
                     Say($"BALANCE {nameof(PileCounterBatch)}.OpenClears {PileCounterBatch.OpenClears}");
+                    break;
+                case "effectcheck":
+                    EffectCheck(arg.Trim());
                     break;
                 case "patchlist":
                     // For tools/profiling/inlines.
@@ -1073,7 +1297,8 @@ public static partial class AutoTest
                 case "playcard":
                     List<string> playArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
                     bool free = playArgs.Remove("free");
-                    await PlayCard(tree, playArgs[0].ToUpperInvariant(), playArgs.Count > 1 ? int.Parse(playArgs[1]) : 0, free);
+                    bool optionalCard = playArgs.Remove("optional");
+                    await PlayCard(tree, playArgs[0].ToUpperInvariant(), playArgs.Count > 1 ? int.Parse(playArgs[1]) : 0, free, optionalCard);
                     break;
                 case "endturn":
                     EndTurn();
@@ -1085,13 +1310,17 @@ public static partial class AutoTest
                     LogNodes(tree, arg.Trim());
                     break;
                 case "eventoption":
-                    string[] eventArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                    await EventOption(tree, eventArgs[0], eventArgs.Length > 1 ? double.Parse(eventArgs[1]) : 600);
+                    List<string> eventArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
+                    bool optionalEvent = eventArgs.Remove("optional");
+                    await EventOption(tree, eventArgs[0], eventArgs.Count > 1 ? double.Parse(eventArgs[1]) : 600, optionalEvent);
                     break;
                 case "restsite":
-                    await RestSite(arg.Trim());
+                    List<string> restArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
+                    bool optionalRest = restArgs.Remove("optional");
+                    await RestSite(restArgs[0], optionalRest);
                     break;
                 case "quit":
+                    EndChecks();
                     Quit();
                     return;
                 case "handoff":
@@ -1126,6 +1355,7 @@ public static partial class AutoTest
                 }
             }
         }
+        EndChecks();
         Say("script finished");
         Quit();
     }
@@ -1164,6 +1394,7 @@ public static partial class AutoTest
         {
             await Frames(node, 1);
             held = condition() ? held + 1 : 0;
+            ThrowIfNetCommandFailed();
             if (_turnLoopDied)
             {
                 _turnLoopDied = false;
@@ -1466,7 +1697,15 @@ public static partial class AutoTest
             AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Combat.NCreature), "OnUnfocus").Invoke(_hovered, null);
         }
         _hovered = MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom.Instance?.GetCreatureNode(enemy) ?? throw new InvalidOperationException("no node for " + enemy);
+        // checktips compares each panel with what it was placed for: watched from the first panel on.
+        WatchTips();
+        _hitboxAtLastChange = null;
         AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Combat.NCreature), "OnFocus").Invoke(_hovered, null);
+        if (MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom.Instance?.Ui.Hand.InCardPlay == false)
+        {
+            // OnFocus places the panel itself (ShowHoverTips), not through a state change.
+            _hitboxAtLastChange = _hovered.Hitbox.GlobalPosition;
+        }
         Say($"  hovering {enemy}");
     }
 
@@ -1485,9 +1724,11 @@ public static partial class AutoTest
         List<string> expected = MegaCrit.Sts2.Core.HoverTips.IHoverTip.RemoveDupes(_hovered.Entity.HoverTips)
             .OfType<MegaCrit.Sts2.Core.HoverTips.HoverTip>().Select(t => $"{t.Title}: {t.Description}").ToList();
         List<string> shown = new();
+        _tipsChecks++;
         if (!active.TryGetValue(_hovered.Hitbox, out var panel))
         {
-            // The game hides them itself (targeting a card, card play in progress): nothing to compare.
+            // The game hides them itself (targeting a card, card play in progress): nothing to compare here, and a session
+            // where every checktips found them hidden fails at its end (TipsCompared).
             Say($"  TIPS hidden {label}: reused {HoverTipReuse.Reused}, rebuilt {HoverTipReuse.Rebuilt}");
             return;
         }
@@ -1504,13 +1745,196 @@ public static partial class AutoTest
         Say($"  TIPS {(same ? "OK" : "MISMATCH")} {label}: {shown.Count} shown / {expected.Count} expected, " +
             $"reused {HoverTipReuse.Reused}, rebuilt {HoverTipReuse.Rebuilt}" +
             (same ? "" : $" | shown: {string.Join(" / ", shown)} | expected: {string.Join(" / ", expected)}"));
+        _tipsCompared += same ? 1 : 0;
+
+        // Where the panel is. Creatures animate (idle bob, hit reactions): their hitbox moves every frame, while the game (and
+        // HoverTipReuse alike) places the panel only at each ShowHoverTips, so a rebuild "now" would measure the animation.
+        // Two checks instead:
+        // 1. Input: the shown panel was placed for the hitbox where it was at the last state change that re-placed it in the
+        //    game (a panel reused at the old place after the creature moved fails here: hover-tips-move).
+        // 2. Layout: the game's own full rebuild (ShowHoverTips: HoverTipReuse only patches ShowCreatureHoverTips), the hitbox
+        //    put back for that rebuild where the shown panel was placed for, gives the same panel, overflow corrections included.
+        // HoverTipReuse then rebuilds once at its next state change (the panel is no longer its own).
+        Control hitbox = _hovered.Hitbox;
+        TipsInput? shownInput = _placedAt.TryGetValue(panel, out TipsInput? placedFor) ? placedFor : null;
+        if (shownInput == null)
+        {
+            Say($"  TIPS INPUT not known {label}: the shown panel was placed before checktips watched placements");
+        }
+        else if (_hitboxAtLastChange is { } expectedAt)
+        {
+            bool inputOk = Near(shownInput.Position, expectedAt);
+            Say($"  TIPS INPUT {(inputOk ? "OK" : "MISMATCH")} {label}: placed for the hitbox at {P(shownInput.Position)}, "
+                + $"at the last state change it was at {P(expectedAt)}, now at {P(hitbox.GlobalPosition)}");
+        }
+        TipsLayout before = TipsPlacement(panel);
+        Vector2 hitboxLocal = hitbox.Position;
+        string? notCompared = shownInput == null ? "what the shown panel was placed for isn't known"
+            : !Near(shownInput.Size, hitbox.Size * hitbox.Scale) ? $"the hitbox's size changed since the panel was placed ({P(shownInput.Size)} -> {P(hitbox.Size * hitbox.Scale)})"
+            : null;
+        TipsLayout? after = null;
+        if (notCompared == null)
+        {
+            try
+            {
+                hitbox.GlobalPosition = shownInput!.Position;
+                _hovered.ShowHoverTips(_hovered.Entity.HoverTips);
+                if (!active.TryGetValue(hitbox, out var rebuilt) || ReferenceEquals(rebuilt, panel))
+                {
+                    // ShowHoverTips does nothing during a card play: the same panel would be compared with itself.
+                    notCompared = "the game didn't rebuild the panel (card play in progress)";
+                }
+                else
+                {
+                    after = TipsPlacement(rebuilt);
+                }
+            }
+            finally
+            {
+                hitbox.Position = hitboxLocal;
+            }
+            // The panel on screen as the game places it for the hitbox now, the reference of the next check's input.
+            _hovered.ShowHoverTips(_hovered.Entity.HoverTips);
+            if (active.TryGetValue(hitbox, out var current) && _placedAt.TryGetValue(current, out TipsInput? currentInput))
+            {
+                _hitboxAtLastChange = currentInput.Position;
+            }
+        }
+        if (after is not { } rebuiltLayout)
+        {
+            Say($"  TIPS PLACEMENT not compared {label}: {notCompared}");
+            return;
+        }
+        bool placed = before.Matches(rebuiltLayout);
+        Say($"  TIPS PLACEMENT {(placed ? "OK" : "MISMATCH")} {label}: shown {before}" + (placed ? "" : $" | rebuilt for the same hitbox place {rebuiltLayout}"));
+    }
+
+    /// <summary>What a session must have done by its end (a normal end or <c>quit</c>), or it fails.</summary>
+    private static void EndChecks()
+    {
+        if (_tipsChecks > 0 && _tipsCompared == 0)
+        {
+            // Every checktips found the panel hidden or different: the session compared no tips at all.
+            Say($"FAILED: checktips compared no panel ({_tipsChecks} checks, none with its tips on screen and matching)");
+        }
+    }
+
+    /// <summary><c>checktips</c> lines run, and those that found the panel on screen with the expected tips.</summary>
+    private static int _tipsChecks, _tipsCompared;
+
+    /// <summary>What a tip panel was placed for: the owner's global position and its size times scale (what SetAlignment reads).</summary>
+    private sealed record TipsInput(Vector2 Position, Vector2 Size);
+
+    /// <summary>Each tip panel's placement input, recorded by the game's own SetAlignment (Bench postfixes, see <see cref="WatchTips"/>).</summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<MegaCrit.Sts2.Core.Nodes.HoverTips.NHoverTipSet, TipsInput> _placedAt = new();
+
+    /// <summary>The hovered hitbox's place at the last state change after which the game re-places its panel (or at hover).</summary>
+    private static Vector2? _hitboxAtLastChange;
+
+    private static bool _watchingTips;
+
+    /// <summary>
+    /// Records each panel's placement input and the hovered hitbox at each state change that re-places it in the game
+    /// (<c>ShowCreatureHoverTips</c> with a combat and no card play, as <c>ShowHoverTips</c> decides). Postfixes run even when
+    /// HoverTipReuse's prefix skips the original. Under this mod's Harmony id: no back-off sees them as another mod's.
+    /// </summary>
+    private static void WatchTips()
+    {
+        if (_watchingTips)
+        {
+            return;
+        }
+        _watchingTips = true;
+        Type set = typeof(MegaCrit.Sts2.Core.Nodes.HoverTips.NHoverTipSet);
+        Type alignment = typeof(MegaCrit.Sts2.Core.HoverTips.HoverTipAlignment);
+        PatchGuard.Patch(ModEntry.Harmony, AccessTools.Method(set, "SetAlignment", new[] { typeof(Control), alignment }),
+            postfix: new HarmonyMethod(typeof(AutoTest), nameof(AlignedToControl)));
+        // v0.113: Left and Right go through the Rect2 overload (a target's rect, maybe where it will end up).
+        if (AccessTools.Method(set, "SetAlignment", new[] { typeof(Rect2), alignment }) is { } toRect)
+        {
+            PatchGuard.Patch(ModEntry.Harmony, toRect, postfix: new HarmonyMethod(typeof(AutoTest), nameof(AlignedToRect)));
+        }
+        PatchGuard.Patch(ModEntry.Harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Combat.NCreature), "ShowCreatureHoverTips"),
+            postfix: new HarmonyMethod(typeof(AutoTest), nameof(CreatureTipsShown)));
+    }
+
+    // The Control overload runs last when it calls the Rect2 one (v0.113): both record the same input.
+    private static void AlignedToControl(MegaCrit.Sts2.Core.Nodes.HoverTips.NHoverTipSet __instance, Control __0) =>
+        _placedAt.AddOrUpdate(__instance, new TipsInput(__0.GlobalPosition, __0.Size * __0.Scale));
+
+    private static void AlignedToRect(MegaCrit.Sts2.Core.Nodes.HoverTips.NHoverTipSet __instance, Rect2 __0) =>
+        _placedAt.AddOrUpdate(__instance, new TipsInput(__0.Position, __0.Size));
+
+    private static void CreatureTipsShown(MegaCrit.Sts2.Core.Nodes.Combat.NCreature __instance)
+    {
+        if (ReferenceEquals(__instance, _hovered) && __instance.Entity.CombatState != null
+            && MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom.Instance?.Ui.Hand.InCardPlay == false)
+        {
+            _hitboxAtLastChange = __instance.Hitbox.GlobalPosition;
+        }
+    }
+
+    /// <summary>A tip panel's place: its own, its text container's (and size), its card container's.</summary>
+    private readonly record struct TipsLayout(Vector2 Panel, Vector2 Text, Vector2 TextSize, Vector2 Cards)
+    {
+        public bool Matches(TipsLayout other) => Near(Panel, other.Panel) && Near(Text, other.Text) && Near(TextSize, other.TextSize) && Near(Cards, other.Cards);
+
+        public override string ToString() => $"panel {P(Panel)} text {P(Text)} size {P(TextSize)} cards {P(Cards)}";
+    }
+
+    private static TipsLayout TipsPlacement(MegaCrit.Sts2.Core.Nodes.HoverTips.NHoverTipSet panel)
+    {
+        var text = (Control)AccessTools.Field(panel.GetType(), "_textHoverTipContainer").GetValue(panel)!;
+        var cards = (Control)AccessTools.Field(panel.GetType(), "_cardHoverTipContainer").GetValue(panel)!;
+        return new TipsLayout(panel.GlobalPosition, text.GlobalPosition, text.Size, cards.GlobalPosition);
+    }
+
+    private static bool Near(Vector2 a, Vector2 b) => Math.Abs(a.X - b.X) <= 0.01f && Math.Abs(a.Y - b.Y) <= 0.01f;
+
+    private static string P(Vector2 v) => $"({v.X:F2},{v.Y:F2})";
+
+    /// <summary>
+    /// Script <c>tipsrebuilt mark|grew</c>: HoverTipReuse's rebuilds since the mark must have grown (a moved creature: the panel
+    /// is placed again, not reused), or the line fails.
+    /// </summary>
+    private static long _tipsRebuiltMark;
+
+    private static void TipsRebuilt(string arg)
+    {
+        if (arg == "mark")
+        {
+            _tipsRebuiltMark = HoverTipReuse.Rebuilt;
+            Say($"  TIPSREBUILT mark: {_tipsRebuiltMark}");
+            return;
+        }
+        if (arg != "grew")
+        {
+            throw new ArgumentException("tipsrebuilt mark|grew");
+        }
+        Say($"  TIPSREBUILT grew: {_tipsRebuiltMark} -> {HoverTipReuse.Rebuilt}");
+        if (HoverTipReuse.Rebuilt <= _tipsRebuiltMark)
+        {
+            throw new InvalidOperationException($"HoverTipReuse didn't rebuild since the mark ({_tipsRebuiltMark} -> {HoverTipReuse.Rebuilt})");
+        }
+    }
+
+    /// <summary>Script <c>movehovered &lt;dx&gt; &lt;dy&gt;</c>: moves the hovered creature's node (and its hitbox) on screen, nothing else.</summary>
+    private static void MoveHovered(string arg)
+    {
+        if (_hovered == null || !GodotObject.IsInstanceValid(_hovered))
+        {
+            throw new InvalidOperationException("hover a creature first");
+        }
+        string[] parts = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        _hovered.Position += new Vector2(float.Parse(parts[0], System.Globalization.CultureInfo.InvariantCulture), float.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture));
+        Say($"  moved {_hovered.Entity} to {_hovered.Position}, hitbox at {_hovered.Hitbox.GlobalPosition}");
     }
 
     /// <summary>
     /// Script <c>checksum [label] [vanilla]</c>: the full combat state checksum (what co-op peers compare after every
     /// action). Two sessions running the same script must log the same values. By default through the game's path with
-    /// this mod's snapshot optimizations (verified identical, ~40 ms); "vanilla" disables them (tens of seconds with huge
-    /// decks).
+    /// this mod's optimizations (verified identical, ~40 ms); "vanilla" turns the whole mod off for it, as <c>bdopt off</c>
+    /// does (tens of seconds with huge decks).
     /// </summary>
     private static void LogChecksum(string arg)
     {
@@ -1520,7 +1944,7 @@ public static partial class AutoTest
         Func<uint> compute = () => RunManager.Instance.ChecksumTracker.GenerateChecksum(
             MegaCrit.Sts2.Core.Entities.Multiplayer.NetFullCombatState.FromRun(state, null));
         long start = Stopwatch.GetTimestamp();
-        uint checksum = vanilla ? ListenerCache.RunVanilla(compute) : compute();
+        uint checksum = vanilla ? PerfConsoleCmd.Vanilla(compute) : compute();
         Say($"  CHECKSUM {label}: {checksum:X8} ({Stopwatch.GetElapsedTime(start).TotalMilliseconds:F0} ms)");
     }
 
@@ -1580,18 +2004,52 @@ public static partial class AutoTest
         Say($"  run started: {character.Id.Entry}, seed {seed}");
     }
 
-    private static async Task Command(string line)
+    /// <summary>
+    /// A console command. One that fails throws by default: a script's <c>cmd</c> line then fails like any other line
+    /// (a deck import that found no file, a bdperf comparison saying MISMATCH, an unknown bdopt option would otherwise
+    /// go on unseen, and an A/B compare two sessions that both skipped it). <paramref name="mayFail"/>: the sweeps' own
+    /// steps, where a refused command (a relic its effect already removed) is the same on both sides and logged as such.
+    /// </summary>
+    private static async Task Command(string line, bool mayFail = false)
     {
         _console ??= new DevConsole(shouldAllowDebugCommands: true);
         // In co-op, networked commands must go through the action queue so every peer runs them.
-        CmdResult result = RunManager.Instance.IsInProgress && !RunManager.Instance.IsSingleplayerOrFakeMultiplayer
-            ? _console.ProcessCommand(line)
-            : _console.ProcessNetCommand(Me(), line);
+        // A queued networked command's result is only seen when the queue runs it (NetCommandFinalizer); every other one here.
+        // (ProcessCommand never calls ProcessNetCommand itself: the flag only covers the direct call.)
+        CmdResult result;
+        if (RunManager.Instance.IsInProgress && !RunManager.Instance.IsSingleplayerOrFakeMultiplayer)
+        {
+            result = _console.ProcessCommand(line);
+        }
+        else
+        {
+            _directCommand = true;
+            try
+            {
+                result = _console.ProcessNetCommand(Me(), line);
+            }
+            finally
+            {
+                _directCommand = false;
+            }
+        }
         if (result.task != null)
         {
             await result.task;
         }
-        Say($"  {(result.success ? "ok" : "FAILED")}: {result.msg}".Replace("\n", "\n    "));
+        string text = result.msg.Replace("\n", "\n    ");
+        if (result.success)
+        {
+            Say($"  ok: {text}");
+        }
+        else if (mayFail)
+        {
+            Say($"  refused: {text}");
+        }
+        else
+        {
+            throw new InvalidOperationException($"the command failed: {text}");
+        }
     }
 
     /// <summary>Script <c>nodes [label]</c>: scene nodes in all, card previews, cards flying to a pile and their trails.</summary>
@@ -1640,20 +2098,20 @@ public static partial class AutoTest
     /// Script <c>eventoption &lt;text key part&gt; [timeout s]</c>: picks the current event's option whose text key
     /// contains it (e.g. SHATTER), like a click, and waits for the event to finish, timed.
     /// </summary>
-    private static async Task EventOption(SceneTree tree, string key, double timeout)
+    private static async Task EventOption(SceneTree tree, string key, double timeout, bool optional)
     {
         var sync = RunManager.Instance.EventSynchronizer;
         MegaCrit.Sts2.Core.Models.EventModel? model = sync.GetLocalEvent();
         if (model == null)
         {
-            Say("  EVENTOPTION: no event");
+            MissingStep(optional, "EVENTOPTION: no event");
             return;
         }
         List<MegaCrit.Sts2.Core.Events.EventOption> options = model.CurrentOptions.ToList();
         int index = options.FindIndex(o => o.TextKey.Contains(key, StringComparison.OrdinalIgnoreCase));
         if (index < 0)
         {
-            Say($"  EVENTOPTION: no {key} option ({string.Join(", ", options.Select(o => o.TextKey))})");
+            MissingStep(optional, $"EVENTOPTION: no {key} option ({string.Join(", ", options.Select(o => o.TextKey))})");
             return;
         }
         int before = Me()!.Deck.Cards.Count;
@@ -1663,21 +2121,39 @@ public static partial class AutoTest
         Say($"  EVENTOPTION {options[index].TextKey}: {(_clock.Elapsed.TotalSeconds - start) * 1000:F0} ms, deck {before} -> {Me()!.Deck.Cards.Count}");
     }
 
-    /// <summary>Script <c>restsite &lt;option class&gt;</c> (e.g. CloneRestSiteOption): picks it like a click, timed.</summary>
-    private static async Task RestSite(string name)
+    /// <summary>
+    /// What a script asked for isn't there (an option, a card): the line fails, or with <c>optional</c> (a scenario where it
+    /// legitimately lacks, e.g. a co-op client without the relic) it says so and goes on. A silent skip let both sides of an
+    /// A/B skip the step and compare identical.
+    /// </summary>
+    private static void MissingStep(bool optional, string what)
+    {
+        if (!optional)
+        {
+            throw new InvalidOperationException(what + " (add 'optional' if this scenario may lack it)");
+        }
+        Say($"  {what}: skipped (optional)");
+    }
+
+    /// <summary>Script <c>restsite &lt;option class&gt; [optional]</c> (e.g. CloneRestSiteOption): picks it like a click, timed.</summary>
+    private static async Task RestSite(string name, bool optional)
     {
         var sync = RunManager.Instance.RestSiteSynchronizer;
         List<MegaCrit.Sts2.Core.Entities.RestSite.RestSiteOption> options = sync.GetLocalOptions().ToList();
         int index = options.FindIndex(o => o.GetType().Name.Equals(name, StringComparison.OrdinalIgnoreCase));
         if (index < 0)
         {
-            Say($"  RESTSITE: no {name} option ({string.Join(", ", options.Select(o => o.GetType().Name))})");
+            MissingStep(optional, $"RESTSITE: no {name} option ({string.Join(", ", options.Select(o => o.GetType().Name))})");
             return;
         }
         int before = Me()!.Deck.Cards.Count;
         long start = Stopwatch.GetTimestamp();
         bool ok = await sync.ChooseLocalOption(index);
-        Say($"  RESTSITE {name}: {(ok ? "ok" : "FAILED")} in {Stopwatch.GetElapsedTime(start).TotalMilliseconds:F0} ms, deck {before} -> {Me()!.Deck.Cards.Count}");
+        if (!ok)
+        {
+            throw new InvalidOperationException($"RESTSITE {name}: the game refused the option");
+        }
+        Say($"  RESTSITE {name}: ok in {Stopwatch.GetElapsedTime(start).TotalMilliseconds:F0} ms, deck {before} -> {Me()!.Deck.Cards.Count}");
     }
 
     /// <summary>Plays up to n cards from hand, like clicks: each one waits for the game to be idle again.</summary>
@@ -1714,21 +2190,30 @@ public static partial class AutoTest
             Say($"  play {card.Id.Entry} -> {target?.ToString() ?? "no target"}");
             last = card.Id.Entry;
             lastStart = Stopwatch.GetTimestamp();
+            LogCardPlays();
+            _manualPlaysStarted.Clear();
             if (!card.TryManualPlay(target))
             {
                 break;
             }
             played++;
             await Frames(node, 5);
+            // In co-op the play goes through the networked action queue: the player can look idle before it ran, and the next pick
+            // would take the same card again (the queue then drops that play). How fast the queue runs depends on the session (mod
+            // off is slower), so a mod-on and a mod-off session played different cards: wait until the combat history saw this
+            // card's play start (not "out of the hand": a card can come back to it during its own play).
+            await Until(node, () => !CombatManager.Instance.IsInProgress || _manualPlaysStarted.Contains(card), 120, $"{card.Id.Entry}'s play started");
+            _manualPlaysStarted.Clear(); // Its cards hold the run (leak checks after tomenu).
         }
         Say($"  played {played}");
     }
 
     /// <summary>
-    /// Script <c>playcard &lt;CARD_ID&gt; [living enemy index] [free]</c>: plays that card from the hand, waits. "free" sets
-    /// its energy and star costs to 0 this turn first (not X costs: X is the energy spent).
+    /// Script <c>playcard &lt;CARD_ID&gt; [living enemy index] [free] [optional]</c>: plays that card from the hand, waits. "free" sets
+    /// its energy and star costs to 0 this turn first (not X costs: X is the energy spent). Not in hand or not playable fails the
+    /// line, unless "optional".
     /// </summary>
-    private static async Task PlayCard(SceneTree tree, string id, int enemyIndex, bool free)
+    private static async Task PlayCard(SceneTree tree, string id, int enemyIndex, bool free, bool optional)
     {
         await Until(tree, IsIdle, 120, "idle");
         Player me = Me() ?? throw new InvalidOperationException("no local player");
@@ -1736,7 +2221,7 @@ public static partial class AutoTest
         CardModel? card = PileType.Hand.GetPile(me).Cards.FirstOrDefault(c => c.Id.Entry == id);
         if (card == null)
         {
-            Say($"  {id} not in hand: use 'cmd card {id}' first");
+            MissingStep(optional, $"{id} not in hand: use 'cmd card {id}' first");
             return;
         }
         // Through reflection: test tooling must keep loading on game versions where this member changed.
@@ -1752,7 +2237,7 @@ public static partial class AutoTest
         long start = Stopwatch.GetTimestamp();
         if (!card.TryManualPlay(target))
         {
-            Say($"  {id} cannot be played now");
+            MissingStep(optional, $"{id} cannot be played now");
             return;
         }
         await Frames(tree, 2);

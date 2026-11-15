@@ -56,5 +56,18 @@ public static partial class PatchSafety
         // never null here). Still one RunState walk per method, the one HookSkip's BaseLibHooks prefix filters.
         ["895AD94736FEED8E"] = new[] { "CE826596CCBABDCE" },
         ["98B29C743F42C15F"] = new[] { "275DEC0945924F89" },
+
+        // CardModel.DeepCloneFields, game v0.113 (beta): also copies the clone's _keywordsAddedFromOutside and
+        // _keywordsRemovedFromOutside sets. Keywords aren't saved: what ToSerializable gives of a clone (LimitlessCloneMemo,
+        // LimitlessHookSkip's GameChain) is unchanged.
+        ["036591BD9285256E"] = new[] { "FEFC6D04D593F712" },
+
+        // CardModel.AfterCloned, game v0.113 (beta): also resets TransformIntoAfterPlay and _isUpgrading on the clone,
+        // neither saved. Same GameChain use as above.
+        ["08693739A0C17DF7"] = new[] { "1F618FE1B94D5D18" },
+
+        // CardModel.UpgradeInternal, game v0.113 (beta): OnUpgrade runs inside a try/finally setting _isUpgrading (not
+        // saved); the level still goes up by one before it. Same GameChain use as above.
+        ["61E294C9661E9368"] = new[] { "3002363B9818A138" },
     };
 }

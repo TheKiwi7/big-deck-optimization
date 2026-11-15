@@ -1,11 +1,11 @@
 # Memory check across fights and runs (mod off), ~1,900 cards: the reference of memory-runs-on.
 timeout 900
+cmd bdopt off
 newrun NECROBINDER 1234
 waitfor run 60
 wait 2
 cmd bigdeck import ref all all
 cmd bigdeck import ref all cards
-cmd bdopt off
 cmd bdperf checks off
 enemyhp 999999
 gcfull run1 start

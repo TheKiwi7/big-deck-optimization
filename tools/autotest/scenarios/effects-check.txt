@@ -1,9 +1,14 @@
 # Every optimization must really run, not only load: tools/autotest/effects.py on this session's EFFECT lines. Also the
 # session mutations.ps1 compares against the unmodified game (fixed seed: CHECKSUM and STATE lines must match line for line).
+# Only SyncedCardRelease can't run here (co-op combat starts: effects-coop-host/-client with parcoop.ps1), nor ReplayStateSkip on
+# v0.107.1 (the game checksums a solo combat only since v0.111: RunManager enables its ChecksumTracker in co-op). ControllerActionSkip
+# through 'controllermap stale' (actions a v0.107 settings.save keeps; later versions drop such bindings themselves), the
+# snapshot of piles with pure cost/keyword listeners (SnapshotCardReuse.Hooks) through Curious.
 timeout 900
 newrun NECROBINDER 1234
 waitfor run 120
 wait 2
+forcefocus
 cmd bigdeck import ref all all
 enemyhp 999999
 cmd fight CULTISTS_NORMAL
@@ -28,6 +33,14 @@ wait 2
 checksum start
 hover 0
 wait 1
+controllermap stale
+mousesweep 2
+hover 0
+wait 1
+cmd power CURIOUS_POWER 1 0
+checksum curious
+checksum curious again
+checksum curious trusted
 play 4
 waitfor idle 120
 wait 1

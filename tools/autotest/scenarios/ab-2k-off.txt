@@ -1,10 +1,10 @@
 # All optimizations A/B at ~1,900 cards (off): compare with ab-2k-on; CHECKSUM and STATE lines must match line for line.
 # Same as turns-off with 2 imports instead of 9, so the vanilla run stays short on the game beta too.
 timeout 2400
+cmd bdopt off
 newrun NECROBINDER
 waitfor run 120
 wait 2
-cmd bdopt off
 cmd bigdeck import ref all all
 cmd bigdeck import ref all cards
 cmd bdperf checks off

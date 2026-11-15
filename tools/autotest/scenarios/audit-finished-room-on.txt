@@ -1,5 +1,6 @@
 # Audit: FastCombatStart after a run is continued on a finished combat room (the game marks a won combat pre-finished, and entering
-# it again never reaches StartTurn). Waits outside combat must keep the game's pace: EFFECT FastCombatStart must not grow outside combat.
+# it again never reaches StartTurn). Waits outside combat must keep the game's pace: FastCombatStart's count (reset at each combat room entered, the finished one
+# included) must stay 0 from the continue on (effectcheck fails the line otherwise).
 timeout 600
 newrun NECROBINDER 1234
 waitfor run 120
@@ -18,6 +19,7 @@ continuerun 120
 wait 3
 runstate continued
 effects continued
+effectcheck FastCombatStart zero
 cmd room RestSite
 waitfor room RestSite
 autoroom SmithRestSiteOption 120
@@ -26,4 +28,5 @@ cmd event AROMA_OF_CHAOS
 waitfor event 120
 autoroom 120
 effects after event
+effectcheck FastCombatStart zero
 quit

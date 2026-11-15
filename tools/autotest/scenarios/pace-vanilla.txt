@@ -2,10 +2,10 @@
 # (waitfor idle after each endturn) match pace-vanilla in pace-on and pace-off; pace-instant (opt-in option) is much shorter.
 # CHECKSUM/STATE lines identical in all four (compare.py).
 timeout 300
+cmd bdopt off
 newrun IRONCLAD
 waitfor run 60
 wait 2
-cmd bdopt off
 cmd fight CULTISTS_NORMAL
 waitfor idle 60
 play 2

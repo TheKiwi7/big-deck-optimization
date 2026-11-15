@@ -35,6 +35,9 @@ public static class RelicStateReuse
     public static long Reused { get; private set; }
     public static long Built { get; private set; }
 
+    /// <summary>A reuse found wrong, or this (or its scalar part) turned off, while building a snapshot: <see cref="SnapshotVerifier"/> builds it again.</summary>
+    internal static long Detections { get; private set; }
+
 #if BENCH
     /// <summary>Saved properties taken as unchanged (bdperf relicreuse blind): shows that the snapshot checks see a stale relic.</summary>
     public static bool BlindForTest { get; set; }
@@ -299,6 +302,8 @@ public static class RelicStateReuse
 
     private static void ScalarFail(Exception e)
     {
+        // Relics before this one in the same snapshot took the same shortcut: SnapshotVerifier builds it again, this part off.
+        Detections++;
         ScalarEnabled = false;
         PatchSafety.Fault(ScalarName);
         Log.Error($"[{ModEntry.Id}] {ScalarName} disabled, relics' saved properties read by the game: {e}");
@@ -418,28 +423,50 @@ public static class RelicStateReuse
         return targeted;
     }
 
-    private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+    /// <summary>
+    /// Each <c>relic.ToSerializable()</c> of <c>FromRun</c> becomes: <see cref="Serialize"/>, and when it gives null, the game's
+    /// own call, made from <c>FromRun</c> itself. The game's errors there (an invalid saved property: a JsonException) then
+    /// leave through no frame of this class, so <see cref="PatchGuard"/> doesn't take them for this patch's and turn it off.
+    /// </summary>
+    private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions, ILGenerator generator)
     {
+        MethodInfo reuse = AccessTools.Method(typeof(RelicStateReuse), nameof(Serialize));
+        LocalBuilder? kept = null;
         foreach (CodeInstruction instruction in instructions)
         {
             if (instruction.Calls(_toSerializable!))
             {
                 _replaced++;
-                // Same stack: (relic) -> serializable relic.
-                yield return new CodeInstruction(OpCodes.Call, AccessTools.Method(typeof(RelicStateReuse), nameof(Serialize)))
-                    .WithLabels(instruction.labels).WithBlocks(instruction.blocks);
+                kept ??= generator.DeclareLocal(typeof(SerializableRelic));
+                Label have = generator.DefineLabel();
+                Label done = generator.DefineLabel();
+                // (relic) -> (relic, reused or null)
+                yield return new CodeInstruction(OpCodes.Dup).WithLabels(instruction.labels).WithBlocks(instruction.blocks);
+                yield return new CodeInstruction(OpCodes.Call, reuse);
+                yield return new CodeInstruction(OpCodes.Dup);
+                yield return new CodeInstruction(OpCodes.Brtrue, have);
+                // Null: (relic) -> the game's call, as it was.
+                yield return new CodeInstruction(OpCodes.Pop);
+                yield return new CodeInstruction(instruction.opcode, instruction.operand);
+                yield return new CodeInstruction(OpCodes.Br, done);
+                // (relic, reused) -> (reused)
+                yield return new CodeInstruction(OpCodes.Stloc, kept).WithLabels(have);
+                yield return new CodeInstruction(OpCodes.Pop);
+                yield return new CodeInstruction(OpCodes.Ldloc, kept);
+                yield return new CodeInstruction(OpCodes.Nop).WithLabels(done);
                 continue;
             }
             yield return instruction;
         }
     }
 
-    private static SerializableRelic Serialize(RelicModel relic)
+    /// <summary>The relic's serialized object, built or given again; null: the game's <c>ToSerializable</c> runs instead.</summary>
+    private static SerializableRelic? Serialize(RelicModel relic)
     {
         // Inside RunVanilla the result is the reference this is compared with (SnapshotVerifier, bdperf): the game's own.
         if (!Enabled || ListenerCache.IsSuspended || !relic.IsMutable || Environment.CurrentManagedThreadId != _mainThread || !GuardsPass())
         {
-            return relic.ToSerializable();
+            return null;
         }
         try
         {
@@ -458,12 +485,16 @@ public static class RelicStateReuse
         {
             props = SavedProperties.From(relic);
         }
-        catch (Exception e) when (e is not System.Text.Json.JsonException)
+        catch (System.Text.Json.JsonException)
+        {
+            // An invalid property: the game's error. Its own call throws it again, at the same place, from FromRun.
+            return null;
+        }
+        catch (Exception e)
         {
             Fail(e);
-            return relic.ToSerializable();
+            return null;
         }
-        // An invalid property throws above as it does in ToSerializable, at the same place: the game's error, nothing caught.
         try
         {
             if (_last.TryGetValue(relic, out SerializableRelic? previous) && previous.Id == relic.Id && previous.FloorAddedToDeck == relic.FloorAddedToDeck
@@ -482,7 +513,7 @@ public static class RelicStateReuse
         catch (Exception e)
         {
             Fail(e);
-            return relic.ToSerializable();
+            return null;
         }
     }
 
@@ -508,13 +539,14 @@ public static class RelicStateReuse
     }
 
 #if BENCH
-    internal static SerializableRelic SerializeForBench(RelicModel relic) => Serialize(relic);
+    internal static SerializableRelic SerializeForBench(RelicModel relic) => Serialize(relic) ?? relic.ToSerializable();
     /// <summary>Why the scalar part last let the game's call run.</summary>
     internal static string ScalarWhy = "";
 #endif
 
     private static void Fail(Exception e)
     {
+        Detections++;
         Enabled = false;
         PatchSafety.Fault(Name);
         Log.Error($"[{ModEntry.Id}] {Name} disabled after exception, relics serialized by the game: {e}");

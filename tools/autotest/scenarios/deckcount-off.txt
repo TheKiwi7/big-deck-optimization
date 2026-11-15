@@ -1,9 +1,9 @@
 # Squeeze, Perfected Strike and Crescent Spear kept in hand through the pile-scanning cards at ~1,900 cards, then a turn change.
 timeout 2400
+cmd bdopt off
 newrun NECROBINDER
 waitfor run 120
 wait 2
-cmd bdopt off
 cmd bigdeck import ref all all
 cmd bigdeck import ref all cards
 cmd bdperf checks off

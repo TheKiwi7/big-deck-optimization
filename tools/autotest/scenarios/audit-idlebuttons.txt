@@ -1,0 +1,19 @@
+# Audit: IdleButtonInput keeps idle buttons (the relic bar's hundreds of holders) from input, and turned off (bdopt off) gives every
+# one its input back within a second, as the unmodified game has it; turned on again, the next mouse moves mute them again.
+# buttoninput fails the line when the count isn't what it expects (expect-muted: some muted; expect-none: none).
+timeout 600
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+forcefocus
+cmd bigdeck import ref all relics
+wait 3
+mousesweep 1
+buttoninput expect-muted
+cmd bdopt off
+wait 1.5
+buttoninput expect-none
+cmd bdopt on
+mousesweep 1
+buttoninput expect-muted
+quit

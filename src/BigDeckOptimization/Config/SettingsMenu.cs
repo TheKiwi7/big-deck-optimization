@@ -21,6 +21,12 @@ public static class SettingsMenu
     private const string MenuAssembly = "BigDeckOptimization.Menu";
     private const string MenuType = "BigDeckOptimization.Config.BaseLibSettings";
 
+    /// <summary>
+    /// The menu is in BaseLib's mod configuration: its saved settings were loaded, and choices (menu or bdopt) are saved.
+    /// Without it nothing can be saved, so the mod never starts off (<see cref="ModEntry.StartedOff"/>).
+    /// </summary>
+    internal static bool Registered { get; private set; }
+
     public static void Init()
     {
         if (ModManager.Mods.Any(IsLoadedBaseLib))
@@ -60,10 +66,25 @@ public static class SettingsMenu
             MethodInfo register = settings.GetMethod("Register", BindingFlags.Public | BindingFlags.Static)
                 ?? throw new MissingMethodException(MenuType + ".Register");
             register.Invoke(null, null);
+            Registered = true;
         }
         catch (Exception e)
         {
             Log.Warn($"[{ModEntry.Id}] {Name}: settings menu unavailable (bdopt still works): {e}");
+            try
+            {
+                // The menu may have loaded a saved "off" before failing: nothing can save "on" again this way, so the mod
+                // would start disabled at every launch. On, as without BaseLib (bdopt still turns it off for the session).
+                if (!Settings.Master)
+                {
+                    Settings.SetMaster(true, notify: false);
+                    Log.Warn($"[{ModEntry.Id}] {Name}: the saved \"off\" can't be changed without the menu: the mod stays on (bdopt off turns it off for the session).");
+                }
+            }
+            catch (Exception reset)
+            {
+                Log.Warn($"[{ModEntry.Id}] {Name}: {reset.Message}");
+            }
         }
     }
 }

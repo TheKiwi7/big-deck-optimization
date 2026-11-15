@@ -155,6 +155,10 @@ var mutations = new Dictionary<string, (string What, Action<ModuleDefinition> Ap
     }),
     ["limitless-recalc"] = ("Limitless: MultiEnchantment.RecalculateValues changed (LimitlessRecalcSkip relies on it)", m =>
         Prepend(m.GetTypes().Where(t => t.Name == "MultiEnchantment").SelectMany(t => t.Methods).First(x => x.Name == "RecalculateValues"), OpCodes.Ldarg_0, OpCodes.Pop)),
+    ["clone-from"] = ("CardModel.FromSerializable changed (LimitlessCloneMemo checks the game's clone chain, GameChain)", m =>
+        Prepend(Method(m, "MegaCrit.Sts2.Core.Models.CardModel", "FromSerializable"), OpCodes.Ldarg_0, OpCodes.Pop)),
+    ["limitless-getter"] = ("Limitless: MultiEnchantment.EnchantmentsOnCards getter changed (LimitlessHookSkip relies on what it hands out)", m =>
+        Prepend(m.GetTypes().Where(t => t.Name == "MultiEnchantment").SelectMany(t => t.Methods).First(x => x.Name == "get_EnchantmentsOnCards" && x.HasBody), OpCodes.Ldarg_0, OpCodes.Pop)),
     ["baselib-plaque"] = ("BaseLib: AddSubtypesToTypePlaquePatch.TryModifyPlaqueText changed (TypePlaqueSkip relies on it)", m =>
         Prepend(m.GetTypes().SelectMany(t => t.Methods).First(x => x.Name == "TryModifyPlaqueText" && x.HasBody), OpCodes.Ldarg_0, OpCodes.Pop)),
 };

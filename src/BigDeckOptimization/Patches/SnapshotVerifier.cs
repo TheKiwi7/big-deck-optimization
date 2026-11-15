@@ -6,6 +6,7 @@ using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.GameActions;
 using MegaCrit.Sts2.Core.Logging;
+using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Multiplayer.Serialization;
 using MegaCrit.Sts2.Core.Runs;
 
@@ -23,6 +24,10 @@ public enum VerifyMode
 /// Safety net for the snapshot optimizations: on sampled snapshots, rebuilds the snapshot the vanilla way and compares
 /// both serializations byte for byte. On any difference the vanilla snapshot is used (so peers never see a divergent
 /// checksum from us) and every snapshot optimization is turned off for the session.
+///
+/// Also, whatever the sampling: when <see cref="SnapshotCardReuse"/> or <see cref="RelicStateReuse"/> finds one of its reuses wrong
+/// (or turns itself off) while a snapshot is built or its checksum computed, the part found wrong is off from then on, but that snapshot was partly made the same
+/// way. It is built again (<see cref="Rebuilt"/>), or its checksum computed again (<see cref="Reserialized"/>), before anything uses it.
 /// </summary>
 public static class SnapshotVerifier
 {
@@ -62,20 +67,62 @@ public static class SnapshotVerifier
     [ThreadStatic] private static PacketWriter? _optimizedWriter;
     [ThreadStatic] private static PacketWriter? _vanillaWriter;
 
+    /// <summary>Snapshots built again, and checksums computed again, after a reuse was found wrong during them.</summary>
+    public static int Rebuilt { get; private set; }
+    public static int Reserialized { get; private set; }
+
+    /// <summary>Reuses found wrong (or a reuse turned off) by the card and the relic reuse: what a snapshot or checksum is redone on.</summary>
+    private static long Detections => SnapshotCardReuse.Detections + RelicStateReuse.Detections;
+
+    /// <summary><see cref="Detections"/> when the current snapshot, and the current checksum, started.</summary>
+    [ThreadStatic] private static long _detectionsAtSnapshot;
+    [ThreadStatic] private static long _detectionsAtChecksum;
+    [ThreadStatic] private static bool _reserializing;
+
+    /// <summary>
+    /// A fault recorded under this name (PatchGuard, when one of these patches threw into the game) means these patches should be
+    /// gone: if Harmony couldn't remove one, it does nothing.
+    /// </summary>
+    private static bool Faulted => PatchSafety.IsFaulted(Name);
+
     public static void Apply(Harmony harmony)
     {
-        PatchGuard.Patch(harmony, 
+        PatchGuard.Patch(harmony,
             AccessTools.Method(typeof(NetFullCombatState), nameof(NetFullCombatState.FromRun)),
+            prefix: new HarmonyMethod(typeof(SnapshotVerifier), nameof(FromRunPrefix)),
             postfix: new HarmonyMethod(typeof(SnapshotVerifier), nameof(FromRunPostfix)));
+        try
+        {
+            PatchGuard.Patch(harmony,
+                AccessTools.Method(typeof(ChecksumTracker), nameof(ChecksumTracker.GenerateChecksum), new[] { typeof(NetFullCombatState) }),
+                prefix: new HarmonyMethod(typeof(SnapshotVerifier), nameof(ChecksumPrefix)),
+                postfix: new HarmonyMethod(typeof(SnapshotVerifier), nameof(ChecksumPostfix)));
+        }
+        catch (Exception e)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: a checksum computed while card bits were found wrong isn't computed again: {e.Message}");
+        }
+    }
+
+    private static void FromRunPrefix()
+    {
+        if (!_verifying && !Faulted)
+        {
+            _detectionsAtSnapshot = Detections;
+        }
     }
 
     private static void FromRunPostfix(IRunState runState, GameAction? justFinishedAction, ref NetFullCombatState __result)
     {
+        if (_verifying || ListenerCache.IsSuspended || Faulted)
+        {
+            return;
+        }
+        RebuildIfDetected(runState, justFinishedAction, ref __result);
         // Also when the listener cache backs off or faulted: the card and relic reuse in snapshots still run then.
         // A snapshot (this is FromRun's postfix), not the vanilla reference (RunVanilla), with a snapshot optimization on
         // (also when the listener cache backs off, faulted or never applied: the card and relic reuse still run then).
-        if (_verifying || ListenerCache.IsSuspended
-            || !(ListenerCache.IsInSnapshot || (SnapshotCardReuse.Applied && SnapshotCardReuse.Enabled) || (RelicStateReuse.Applied && RelicStateReuse.Enabled)))
+        if (!(ListenerCache.IsInSnapshot || (SnapshotCardReuse.Applied && SnapshotCardReuse.Enabled) || (RelicStateReuse.Applied && RelicStateReuse.Enabled)))
         {
             return;
         }
@@ -157,6 +204,71 @@ public static class SnapshotVerifier
         finally
         {
             _verifying = false;
+        }
+    }
+
+    /// <summary>
+    /// A reuse found wrong while this snapshot was built: what found it is off now (the whole card reuse, trusted piles, the relic reuse
+    /// or its scalar part), but the
+    /// snapshot's other states may have been taken the same way. Built again at the optimized speed (a vanilla rebuild freezes for
+    /// seconds at large decks), with what found it off; at most three times, each pass turning more off.
+    /// </summary>
+    private static void RebuildIfDetected(IRunState runState, GameAction? justFinishedAction, ref NetFullCombatState __result)
+    {
+        for (int pass = 0; pass < 3 && Detections != _detectionsAtSnapshot; pass++)
+        {
+            _detectionsAtSnapshot = Detections;
+            _verifying = true;
+            try
+            {
+                __result = NetFullCombatState.FromRun(runState, justFinishedAction);
+                Rebuilt++;
+                Log.Info($"[{ModEntry.Id}] {Name}: a snapshot reuse was found wrong while building a snapshot: built again");
+            }
+            catch (Exception e)
+            {
+                Log.Error($"[{ModEntry.Id}] {Name}: building a snapshot again failed, keeping the first one: {e}");
+                return;
+            }
+            finally
+            {
+                _verifying = false;
+            }
+        }
+    }
+
+    private static void ChecksumPrefix()
+    {
+        if (!_reserializing && !Faulted)
+        {
+            _detectionsAtChecksum = Detections;
+        }
+    }
+
+    /// <summary>
+    /// Kept bits found wrong while this checksum's state was serialized: the bits written before that came from the same kept bits.
+    /// Card and pile bits are off now (SnapshotCardReuse turned itself off): the game's serialization again, once.
+    /// </summary>
+    private static void ChecksumPostfix(ChecksumTracker __instance, NetFullCombatState state, ref uint __result)
+    {
+        if (_reserializing || Faulted || Detections == _detectionsAtChecksum)
+        {
+            return;
+        }
+        _reserializing = true;
+        try
+        {
+            __result = __instance.GenerateChecksum(state);
+            Reserialized++;
+            Log.Info($"[{ModEntry.Id}] {Name}: kept bits were found wrong while computing a checksum: computed again");
+        }
+        catch (Exception e)
+        {
+            Log.Error($"[{ModEntry.Id}] {Name}: computing a checksum again failed, keeping the first one: {e}");
+        }
+        finally
+        {
+            _reserializing = false;
         }
     }
 

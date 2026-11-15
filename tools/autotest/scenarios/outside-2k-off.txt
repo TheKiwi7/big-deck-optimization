@@ -5,10 +5,10 @@
 # for the main menu and continued ("before save" and "after load" must be the same state). Enemies at 1 HP: the fights are only
 # the way into their rewards.
 timeout 3000
+cmd bdopt off
 newrun NECROBINDER 1234
 waitfor run 120
 wait 2
-cmd bdopt off
 cmd bigdeck import ref all all
 cmd bigdeck import ref all cards
 cmd bdperf checks off

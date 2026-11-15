@@ -1,10 +1,10 @@
 # Chemical X A/B with the reference run imported (~945 cards + 369 relics), off: compare with chemical-x-big-on;
 # CHECKSUM and STATE lines must match line for line (Whirlwind with the relic twice, then without it).
 timeout 900
+cmd bdopt off
 newrun IRONCLAD
 waitfor run 120
 wait 2
-cmd bdopt off
 cmd bigdeck import ref all all
 cmd relic add CHEMICAL_X
 enemyhp 999999

@@ -15,13 +15,17 @@ $script = Join-Path $out "scenario.txt"
 [IO.File]::WriteAllText($script, ([IO.File]::ReadAllText((Join-Path $Scenarios "$Scenario.txt")) -replace "(?m)^quit\r?$", "wait 240`nquit"))
 $log = Join-Path $out "session.log"
 $realAppData = $env:APPDATA
-$env:APPDATA = Sync-Slot 90
-Add-TestMods $GameDir
-$game = Start-Process -FilePath (Join-Path $GameDir "SlayTheSpire2.exe") -WorkingDirectory $GameDir -PassThru -WindowStyle Hidden -ArgumentList @("--force-steam", "off", "--log-file", "`"$log`"", "--bdtest", "`"$script`"", "--bdmute", "--headless")
-$env:APPDATA = $realAppData
 $dump = Join-Path $out "game.dmp"
-Set-Content (Join-Path $Results "status.txt") ("{0}  leakroots {1}: one session, a dump, then gcroot on each run; several minutes, quiet log" -f (Get-Date -Format "HH:mm:ss"), $Scenario) -Encoding utf8
+$game = $null
+$slotLocked = $false
 try {
+    $slotLocked = Lock-Slot 90
+    Add-TestMods $GameDir
+    # The slot's user data for the game only: whatever fails here, this script's own APPDATA comes back (finally).
+    $env:APPDATA = Sync-Slot 90
+    $game = Start-Process -FilePath (Join-Path $GameDir "SlayTheSpire2.exe") -WorkingDirectory $GameDir -PassThru -WindowStyle Hidden -ArgumentList @("--force-steam", "off", "--log-file", "`"$log`"", "--bdtest", "`"$script`"", "--bdmute", "--headless")
+    $env:APPDATA = $realAppData
+    Set-Content (Join-Path $Results "status.txt") ("{0}  leakroots {1}: one session, a dump, then gcroot on each run; several minutes, quiet log" -f (Get-Date -Format "HH:mm:ss"), $Scenario) -Encoding utf8
     $end = (Get-Date).AddSeconds(400)
     Start-Sleep 20
     while ((Get-Date) -lt $end -and -not $game.HasExited -and -not (Select-String -Path $log -Pattern "> wait 240" -Quiet)) { Start-Sleep 2 }
@@ -30,7 +34,9 @@ try {
     dotnet-dump collect -p $game.Id --type Heap -o $dump | Select-Object -Last 1 | Out-Null
 }
 finally {
-    Stop-Process -Id $game.Id -Force -ErrorAction SilentlyContinue
+    $env:APPDATA = $realAppData
+    if ($game) { Stop-Process -Id $game.Id -Force -ErrorAction SilentlyContinue }
+    if ($slotLocked) { Unlock-Slot 90 }
     Remove-TestMods $GameDir
 }
 $runState = $Type

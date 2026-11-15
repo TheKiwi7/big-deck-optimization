@@ -47,17 +47,30 @@ public static class RelicBench
         double vanilla = Time(() => { foreach (RelicModel r in relics) r.ToSerializable(); });
         double from = Time(() => { foreach (RelicModel r in relics) SavedProperties.From(r); });
         int verifyEvery = RelicStateReuse.ScalarVerifyEvery;
-        RelicStateReuse.ScalarVerifyEvery = 256; // As release builds check.
-        long built = RelicStateReuse.Built, reused = RelicStateReuse.Reused, scalar = RelicStateReuse.ScalarReused;
-        double reuse = Time(() => { foreach (RelicModel r in relics) RelicStateReuse.SerializeForBench(r); });
-        long builtPerPass = (RelicStateReuse.Built - built) / (iterations + 1), reusedPerPass = (RelicStateReuse.Reused - reused) / (iterations + 1);
-        long scalarPerPass = (RelicStateReuse.ScalarReused - scalar) / (iterations + 1);
-        RelicStateReuse.ScalarVerifyEvery = verifyEvery;
-        string why = $"{RelicStateReuse.ScalarWhy} (enabled {RelicStateReuse.ScalarEnabled})";
         bool wasScalar = RelicStateReuse.ScalarEnabled;
-        RelicStateReuse.ScalarEnabled = false;
-        double reuseFrom = Time(() => { foreach (RelicModel r in relics) RelicStateReuse.SerializeForBench(r); });
-        RelicStateReuse.ScalarEnabled = wasScalar;
+        double reuse, reuseFrom;
+        long builtPerPass, reusedPerPass, scalarPerPass;
+        string why;
+        // The settings put back whatever throws in between (a scalar part left off would stay off for the session).
+        try
+        {
+            RelicStateReuse.ScalarVerifyEvery = 256; // As release builds check.
+            long built = RelicStateReuse.Built, reused = RelicStateReuse.Reused, scalar = RelicStateReuse.ScalarReused;
+            reuse = Time(() => { foreach (RelicModel r in relics) RelicStateReuse.SerializeForBench(r); });
+            builtPerPass = (RelicStateReuse.Built - built) / (iterations + 1);
+            reusedPerPass = (RelicStateReuse.Reused - reused) / (iterations + 1);
+            scalarPerPass = (RelicStateReuse.ScalarReused - scalar) / (iterations + 1);
+            RelicStateReuse.ScalarVerifyEvery = verifyEvery;
+            why = $"{RelicStateReuse.ScalarWhy} (enabled {RelicStateReuse.ScalarEnabled})";
+            RelicStateReuse.ScalarEnabled = false;
+            reuseFrom = Time(() => { foreach (RelicModel r in relics) RelicStateReuse.SerializeForBench(r); });
+        }
+        finally
+        {
+            RelicStateReuse.ScalarVerifyEvery = verifyEvery;
+            // Not back on when it faulted meanwhile: a fault keeps its part off for the session.
+            RelicStateReuse.ScalarEnabled = wasScalar && !PatchSafety.IsFaulted(RelicStateReuse.ScalarName);
+        }
         string rebuiltTypes = string.Join(", ", relics.Where(r => propertyCounts[r.GetType()] != 0).GroupBy(r => r.GetType().Name)
             .Select(g => $"{g.Key} {g.Count()}x{propertyCounts[g.First().GetType()]}").Take(40));
         string msg = $"relics x{iterations}: {relics.Count} relics of {propertyCounts.Count} types, {withoutProps} with no saved property (lookup {(lookup != null ? "found" : "missing")}); "

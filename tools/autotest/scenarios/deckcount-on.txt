@@ -1,4 +1,5 @@
 # Squeeze, Perfected Strike and Crescent Spear kept in hand through the pile-scanning cards at ~1,900 cards, then a turn change.
+# The last `bdperf deckcount` fails when no answer was checked (verify 1 set: DeckCountMemo never answered).
 timeout 2400
 newrun NECROBINDER
 waitfor run 120

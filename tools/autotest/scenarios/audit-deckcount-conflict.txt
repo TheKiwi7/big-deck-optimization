@@ -1,0 +1,36 @@
+# Audit: another mod's patch on one card type's own CanonicalTags (Necrobinder's Strike), installed in the middle of a combat
+# (fakeconflict: a no-op postfix under another Harmony id; the base getters DeckCountMemo checks per answer stay unpatched).
+# DeckCountMemo must read the card types again (the expect line) and leave Perfected Strike's count to the game while such a card
+# is in the piles ("bdperf deckcount unsure-grew" fails otherwise); every answer is checked against the game's (verify 1).
+expect DeckCountMemo: .*card types read again
+timeout 900
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+cmd bigdeck tank
+wait 1
+cmd power NO_DRAW_POWER 1 0
+cmd bdperf deckcount verify 1
+emptyhand
+cmd card STRIKE_NECROBINDER hand
+cmd card PERFECTED_STRIKE hand
+setenergy 5
+playcard PERFECTED_STRIKE free
+cmd bdperf deckcount
+fakeconflict MegaCrit.Sts2.Core.Models.Cards.StrikeNecrobinder:get_CanonicalTags
+# Patches come and go in DeckCountMemo's view every 2 s.
+wait 5
+cmd bdperf deckcount mark
+emptyhand
+cmd card STRIKE_NECROBINDER hand
+cmd card PERFECTED_STRIKE hand
+setenergy 5
+playcard PERFECTED_STRIKE free
+cmd bdperf deckcount unsure-grew
+quit

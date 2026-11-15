@@ -1,5 +1,10 @@
-# Positive control of RelicStateReuse.Scalar (relics-verify-0 with every relic of a scalar plan taken as unchanged without reading
-# it): the snapshot checks and the part's own sampled check must both see it. Expected to fail at its last line.
+# Positive control of RelicStateReuse.Scalar's own sampled check (every relic of a scalar plan taken as unchanged without reading
+# it): with every answer compared with the game's, the first relic that really changed turns the part off. The snapshot verifier
+# is relics-scalarblind-verifier: run together, whichever check sees it first hides it from the other (at the usual 1 in 16, the
+# part's sample fell on a changed relic on v0.111.0 and on none on v0.107.1, 2026-11-15).
+expect RelicStateReuse\.Scalar disabled
+# The snapshot whose relics went through the bad answers is built again with the part off (SnapshotVerifier).
+expect SnapshotVerifier: a snapshot reuse was found wrong while building a snapshot: built again
 timeout 1500
 newrun NECROBINDER 1234
 waitfor run 120
@@ -14,10 +19,8 @@ speed instant
 immortal
 cmd godmode
 sweeptimeout 45
+cmd bdperf relicreuse verify 1
 cmd bdperf relicreuse scalarblind on
-cmd bdperf verify all
 sweep relics 0 75 checksum state
-cmd bdperf verify
 effects end
-cmd bdperf verify check
 quit

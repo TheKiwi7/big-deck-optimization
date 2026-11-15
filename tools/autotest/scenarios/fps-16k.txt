@@ -24,7 +24,6 @@ cmd bigdeck import ref all cards
 cmd bigdeck import ref all cards
 cmd bdperf checks off
 enemyhp 999999
-cmd bigdeck tank
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 2

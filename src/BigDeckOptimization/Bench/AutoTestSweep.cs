@@ -69,6 +69,12 @@ public static partial class AutoTest
             }
             catch (Exception e)
             {
+                if (e is SweepNotExercisedException)
+                {
+                    // The tooling's own failure, not the game's: both sides would skip the item and compare identical. A problem for
+                    // judge.py even in parsweep's parts (SWEEP FAILED alone is listed, not counted, when both sides stop there).
+                    Say($"FAILED: sweep {parts[0]} {id} exercised nothing: {e.Message}");
+                }
                 // Often the game's own error in a situation it never meets (its action queue then stays stuck): nothing
                 // after it would mean anything. tools/autotest/sweep.ps1 goes on from the next item in a new session.
                 Say($"  SWEEP FAILED {parts[0]} {id}: {e.GetType().Name}: {e.Message}");
@@ -162,9 +168,25 @@ public static partial class AutoTest
     private static async Task SweepCard(SceneTree tree, string id)
     {
         await SweepReady(tree);
-        await Command($"card {id} hand");
+        // Refused only for a full hand or an unknown id: the tooling's failure, never the item's.
+        await SweepCommand($"card {id} hand");
         await Frames(tree, 2);
         await SweepMeasure(tree, "card", id, "play", () => SweepPlay(tree, id));
+    }
+
+    /// <summary>What a sweep item needs done: the game's refusal means the item would be compared without being exercised.</summary>
+    private sealed class SweepNotExercisedException(string message) : Exception(message);
+
+    private static async Task SweepCommand(string line)
+    {
+        try
+        {
+            await Command(line);
+        }
+        catch (InvalidOperationException e) when (e.Message.StartsWith("the command failed", StringComparison.Ordinal))
+        {
+            throw new SweepNotExercisedException($"'{line}': {e.Message}");
+        }
     }
 
     /// <summary><c>card.TryManualPlay</c> as in <see cref="PlayCard"/>, without its logs and waits.</summary>
@@ -176,7 +198,12 @@ public static partial class AutoTest
         CardModel? card = PileType.Hand.GetPile(me).Cards.FirstOrDefault(c => id == null ? c.CanPlayTargeting(enemy) || c.CanPlayTargeting(null) : c.Id.Entry == id);
         if (card == null)
         {
-            return;
+            if (id != null)
+            {
+                // The card just added isn't in the hand: playing nothing would compare identical on both sides.
+                throw new SweepNotExercisedException($"{id} not in the hand after 'card {id} hand'");
+            }
+            return; // play1: the hand was emptied before the item, it may well hold nothing playable.
         }
         card.SetToFreeThisTurn();
         if (!card.TryManualPlay(card.CanPlayTargeting(enemy) ? enemy : null))
@@ -202,17 +229,24 @@ public static partial class AutoTest
     private static async Task SweepRelic(SceneTree tree, string id)
     {
         await SweepReady(tree);
-        await SweepMeasure(tree, "relic", id, "obtain", () => Command($"relic add {id}"));
+        // Refused only for an id the command can't find: the tooling's failure. Remove may be refused: a relic its own effect removed.
+        await SweepMeasure(tree, "relic", id, "obtain", () => SweepCommand($"relic add {id}"));
         await SweepTurn(tree, "relic", id);
         // Back to the same relics for the next one (a relic its own effect removed stays removed).
         await SweepReady(tree);
-        await Command($"relic remove {id}");
+        await Command($"relic remove {id}", mayFail: true);
     }
 
     private static async Task SweepPotion(SceneTree tree, string id)
     {
         await SweepReady(tree);
-        await Command($"potion {id}");
+        // Free slots: a potion its use didn't consume (or an automatic one) would leave every later potion not procured.
+        Player owner = Me() ?? throw new InvalidOperationException("no local player");
+        foreach (PotionModel held in owner.Potions.ToList())
+        {
+            await MegaCrit.Sts2.Core.Commands.PotionCmd.Discard(held);
+        }
+        await SweepCommand($"potion {id}");
         await Frames(tree, 2);
         await SweepMeasure(tree, "potion", id, "use", async () =>
         {
@@ -220,8 +254,7 @@ public static partial class AutoTest
             PotionModel? potion = me.Potions.LastOrDefault(p => p.Id.Entry == id);
             if (potion == null)
             {
-                Say($"  {id} not procured");
-                return;
+                throw new SweepNotExercisedException($"{id} not procured (slots {me.MaxPotionCount}, held {me.Potions.Count()})");
             }
             Creature? enemy = CombatManager.Instance.DebugOnlyGetState()?.Enemies.FirstOrDefault(e => e.IsAlive);
             potion.EnqueueManualUse(potion.TargetType.ToString().Contains("Enemy") ? enemy : me.Creature);
@@ -261,7 +294,7 @@ public static partial class AutoTest
         {
             for (int i = 0; i < 5 && CombatManager.Instance.IsInProgress; i++)
             {
-                await Command("kill all");
+                await Command("kill all", mayFail: true);
                 double start = _clock.Elapsed.TotalSeconds;
                 double idleSince = start;
                 int idleFrames = 0;
@@ -295,7 +328,7 @@ public static partial class AutoTest
         await SweepReady(tree);
         foreach ((string side, int index) in new[] { ("player", 0), ("enemy", 1) })
         {
-            await SweepMeasure(tree, "power", id, "apply-" + side, () => Command($"power {id} 3 {index}"));
+            await SweepMeasure(tree, "power", id, "apply-" + side, () => Command($"power {id} 3 {index}", mayFail: true));
         }
         await SweepTurn(tree, "power", id);
     }

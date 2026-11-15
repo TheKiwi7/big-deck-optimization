@@ -90,7 +90,7 @@ public static class FastListeners
 
     [ThreadStatic] private static Stack<List<AbstractModel>>? _pool;
 
-    /// <summary>Set by <see cref="HookSkip"/> just before a hook calls RunState.IterateHookListeners; taken by that call.</summary>
+    /// <summary>Set by <see cref="HookSkip"/> just before a hook calls RunState.IterateHookListeners; taken by that call (<see cref="TakeRunFilter"/>).</summary>
     [ThreadStatic] internal static PileFilter? PendingRunFilter;
 
     /// <summary>Filtered walks also leave out what isn't in a pile (relics, potions, orbs, powers...) when its type doesn't react.</summary>
@@ -169,7 +169,26 @@ public static class FastListeners
             return depends;
         }
 
-        private static Dictionary<string, Assembly>? _loadedByName;
+        /// <summary>The non-dynamic assemblies loaded at the last scan, by name (never changed once published).</summary>
+        private static volatile Dictionary<string, Assembly>? _loadedByName;
+
+        /// <summary>
+        /// Whether an assembly just loaded may hold model types: it references the game, or an assembly known at the last
+        /// scan that depends on it. One depending on the game only through an assembly loaded since that scan needs nothing
+        /// more: that assembly referenced the game (or another such one) and marked the kinds stale when it loaded, and the
+        /// next scan sees both. Runs inside the assembly's load: never throws.
+        /// </summary>
+        private static bool MayDefineModels(Assembly assembly)
+        {
+            try
+            {
+                return !assembly.IsDynamic && (assembly == typeof(AbstractModel).Assembly || DependsOnGame(assembly, new Dictionary<string, bool>(), 0));
+            }
+            catch
+            {
+                return true; // Can't tell: scan again.
+            }
+        }
 
         private static void Refresh()
         {
@@ -180,8 +199,9 @@ public static class FastListeners
             if (!_listening)
             {
                 _listening = true;
-                // Not for the dynamic ones Harmony and others make: they hold no model types.
-                AppDomain.CurrentDomain.AssemblyLoad += (_, args) => _stale |= !args.LoadedAssembly.IsDynamic;
+                // Only an assembly that may hold model types: not the dynamic ones Harmony and others make, nor the framework's
+                // loaded lazily mid-combat (each made the next walk scan every type again).
+                AppDomain.CurrentDomain.AssemblyLoad += (_, args) => _stale |= MayDefineModels(args.LoadedAssembly);
             }
             _stale = false;
             var found = new List<Type>[Count];
@@ -190,14 +210,16 @@ public static class FastListeners
                 found[i] = new List<Type>();
             }
             Assembly[] assemblies = AppDomain.CurrentDomain.GetAssemblies();
-            _loadedByName = new Dictionary<string, Assembly>();
+            // Filled before it is published: the load handler reads it from the loading thread.
+            var loadedByName = new Dictionary<string, Assembly>();
             foreach (Assembly loaded in assemblies)
             {
                 if (!loaded.IsDynamic && loaded.GetName().Name is { } loadedName)
                 {
-                    _loadedByName.TryAdd(loadedName, loaded);
+                    loadedByName.TryAdd(loadedName, loaded);
                 }
             }
+            _loadedByName = loadedByName;
             var dependsOnGame = new Dictionary<string, bool>();
             foreach (Assembly assembly in assemblies)
             {
@@ -306,8 +328,12 @@ public static class FastListeners
         /// </summary>
         private static bool OnMainThread => Thread.CurrentThread.ManagedThreadId == _mainThread;
 
-        /// <summary>Snapshots and segments are usable: piles tracked, main thread, and not inside a shuffle (see <see cref="_shuffling"/>).</summary>
-        private static bool CanCache => _tracking && OnMainThread && _shuffling == 0;
+        /// <summary>
+        /// Snapshots and segments are usable: piles tracked, main thread, not inside a shuffle (see <see cref="_shuffling"/>),
+        /// and no other mod patches a getter the cached entries stand for or a method whose tracking prefix it could skip
+        /// (see <see cref="TrackedCodePatched"/>).
+        /// </summary>
+        private static bool CanCache => _tracking && OnMainThread && _shuffling == 0 && !TrackedCodePatched();
 
         private sealed class Segment
         {
@@ -349,19 +375,24 @@ public static class FastListeners
         /// </summary>
         private void AddCached(List<AbstractModel> list, object key, IReadOnlyList<CardPile> piles, bool withAfflictions)
         {
+            // Every path below judges MultiEnchantments by this filter's verdict on their type: a new inner type noted since
+            // (or a switch) must be applied first, uncached path included (its verdict was otherwise never judged again).
+            SyncMulti();
             if (_keepSubscribed && !_subscriptionsTracked)
             {
 #if BENCH
                 UncachedWalks++;
                 int start = list.Count;
 #endif
-                AddKept(list, PileSnapshot.Of(key, piles, withAfflictions), 0);
+                PileSnapshot uncached = PileSnapshot.Of(key, piles, withAfflictions);
+                // Building it notes the MultiEnchantments it adds: an inner type new to this walk counts here already.
+                SyncMulti();
+                AddKept(list, uncached, 0);
 #if BENCH
                 VerifyUncached(list, start, piles, withAfflictions);
 #endif
                 return;
             }
-            SyncMulti();
             Segment segment = _segments.GetValue(key, _ => new Segment());
             if (segment.MultiStamp != _multiStamp)
             {
@@ -390,6 +421,15 @@ public static class FastListeners
             if (segment.Version != PileVersion || !subscriptionsSame || !afflictionsSame)
             {
                 PileSnapshot snapshot = PileSnapshot.Of(key, piles, withAfflictions);
+                long multiStamp = _multiStamp;
+                SyncMulti();
+                if (_multiStamp != multiStamp)
+                {
+                    // Building the snapshot noted a new inner enchantment type: MultiEnchantments are judged again, so the
+                    // segment's entries (judged without it) are rebuilt, never extended, and this walk already sees them.
+                    segment.MultiStamp = _multiStamp;
+                    segment.Generation = -1;
+                }
                 if (subscriptionsSame && segment.Generation == snapshot.Generation && segment.Consumed <= snapshot.Count)
                 {
 #if BENCH
@@ -510,7 +550,9 @@ public static class FastListeners
             {
                 MoveMismatches++;
                 _scopedMoves = false;
-                UnscopedVersion++;
+                // A change went unseen: the shared snapshot may be as stale as the segment, so it is read from the piles
+                // again (this walk's rebuild included), not only the segment.
+                BumpPileVersion();
                 segment.Version = -1;
                 segment.Generation = -1;
                 Log.Error($"[{ModEntry.Id}] {Name}: a hook's entries changed unseen across card moves ({segment.Items.Count} vs {fresh.Count}), every move now rebuilds them");
@@ -519,9 +561,16 @@ public static class FastListeners
 
         private long _multiStamp = long.MinValue;
 
-        /// <summary>After a new inner enchantment type (or a switch): the MultiEnchantment type is judged again.</summary>
+        /// <summary>
+        /// After a new inner enchantment type (or a switch): the MultiEnchantment type is judged again. Main thread only: the
+        /// state reset here is main-thread state, and other threads never cache a MultiEnchantment verdict (see <see cref="Keeps"/>).
+        /// </summary>
         internal void SyncMulti()
         {
+            if (!OnMainThread)
+            {
+                return;
+            }
             long stamp = LimitlessHookSkip.Stamp;
             if (stamp == _multiStamp)
             {
@@ -759,9 +808,12 @@ public static class FastListeners
         public bool Keeps(AbstractModel model)
         {
             Type type = model.GetType();
-            if (!_tracking && ReferenceEquals(type, LimitlessHookSkip.Multi))
+            bool multi = ReferenceEquals(type, LimitlessHookSkip.Multi);
+            if (multi)
             {
-                // No snapshot or card move records its inner enchantments then.
+                // Entries judged one by one (the game's walk, a shuffle, piles read live, the live checks): no snapshot was
+                // built for them, and a card move only notes it while moves are scoped. Its inner types must be known before
+                // the verdict below.
                 NoteMulti(model);
                 SyncMulti();
             }
@@ -770,6 +822,11 @@ public static class FastListeners
             {
                 // Per type id, an array read: the walks outside scopes ask this for every relic, potion, power and monster.
                 reacts = Reacts(TypeIdOf(type));
+            }
+            else if (multi)
+            {
+                // Off the main thread, judged anew: its verdict depends on the inner types known now, and no cache here is resynced.
+                reacts = _reacts(type);
             }
             else if (ReferenceEquals(_lastFilter, this) && _lastType == type)
             {
@@ -782,7 +839,7 @@ public static class FastListeners
                 _lastType = type;
                 _lastReacts = reacts;
             }
-            if (reacts && ReferenceEquals(type, LimitlessHookSkip.Multi))
+            if (reacts && multi)
             {
                 reacts = !MultiDoesNothing(model);
             }
@@ -877,9 +934,9 @@ public static class FastListeners
                     list.Add(relic);
                 }
 #if BENCH
-                else
+                else if (!relic.IsMelted)
                 {
-                    OthersDropped++;
+                    OthersDropped++; // Melted relics are left out by the game's walk too: not this filter's doing.
                 }
 #endif
             }
@@ -1261,7 +1318,8 @@ public static class FastListeners
     /// Pile changes all go through <see cref="PileVersion"/> and this is the main thread, outside a shuffle (which reorders a pile's list
     /// unseen). Not after a fault: <see cref="PatchGuard"/> may have removed what bumps the version.
     /// </summary>
-    internal static bool PilesKnown => _tracking && _shuffling == 0 && Thread.CurrentThread.ManagedThreadId == _mainThread && !PatchSafety.IsFaulted(Name);
+    internal static bool PilesKnown => _tracking && _shuffling == 0 && Thread.CurrentThread.ManagedThreadId == _mainThread && !PatchSafety.IsFaulted(Name)
+        && !TrackedCodePatched();
 
     /// <summary>
     /// Adds to <paramref name="count"/> what the changes since <paramref name="version"/> did to the number of cards of
@@ -1500,11 +1558,12 @@ public static class FastListeners
         }
     }
 
-    private readonly record struct MoveState(long From, int Count);
+    /// <summary><see cref="Ran"/> false: the prefix never ran (Harmony skips a prefix taking the card once an earlier one returned false).</summary>
+    private readonly record struct MoveState(long From, int Count, bool Ran);
 
     private static void BeforeAdd(CardPile __instance, CardModel card, out MoveState __state)
     {
-        __state = new MoveState(PileVersion, __instance.Cards.Count);
+        __state = new MoveState(PileVersion, __instance.Cards.Count, Ran: true);
         PileVersion++;
         MarkMoved(card);
     }
@@ -1512,6 +1571,12 @@ public static class FastListeners
     /// <summary>Records the add when it went as asked and nothing else changed meanwhile.</summary>
     private static Exception? AfterAdd(Exception? __exception, CardPile __instance, CardModel card, int index, MoveState __state)
     {
+        if (!__state.Ran)
+        {
+            // Another mod's prefix skipped ours (and maybe the original, doing the add its own way): any change counts.
+            BumpPileVersion();
+            return __exception;
+        }
         PileVersion++;
         MarkMoved(card);
         if (__exception != null)
@@ -1536,13 +1601,18 @@ public static class FastListeners
 
     private static void BeforeRemove(CardPile __instance, CardModel card, out MoveState __state)
     {
-        __state = new MoveState(PileVersion, __instance.Cards.Count);
+        __state = new MoveState(PileVersion, __instance.Cards.Count, Ran: true);
         PileVersion++;
         MarkMoved(card);
     }
 
     private static Exception? AfterRemove(Exception? __exception, CardPile __instance, CardModel card, MoveState __state)
     {
+        if (!__state.Ran)
+        {
+            BumpPileVersion(); // Prefix skipped: see AfterAdd.
+            return __exception;
+        }
         PileVersion++;
         MarkMoved(card);
         if (__exception != null)
@@ -1576,8 +1646,9 @@ public static class FastListeners
     }
 
     /// <summary>A card moved inside its pile: the filters keeping it see a new order, snapshots read the piles again.</summary>
-    private static void BeforeReorder(CardModel card)
+    private static void BeforeReorder(CardModel card, out bool __state)
     {
+        __state = true;
         PileVersion++;
         if (_moves.Count != 0 && Thread.CurrentThread.ManagedThreadId == _mainThread)
         {
@@ -1586,8 +1657,13 @@ public static class FastListeners
         MarkMoved(card);
     }
 
-    private static Exception? AfterReorder(Exception? __exception, CardModel card)
+    private static Exception? AfterReorder(Exception? __exception, CardModel card, bool __state)
     {
+        if (!__state)
+        {
+            BumpPileVersion(); // Prefix skipped: see AfterAdd.
+            return __exception;
+        }
         PileVersion++;
         MarkMoved(card);
         if (__exception != null)
@@ -1619,13 +1695,15 @@ public static class FastListeners
 
     /// <summary>
     /// Around the Affliction setter of a card in a pile: <see cref="AfflictionVersion"/> when the old and new affliction
-    /// types are known, else <see cref="PileVersion"/> (every cache rebuilt, as for any other change). 0: in no pile.
+    /// types are known (1), else <see cref="PileVersion"/> (2: every cache rebuilt, as for any other change). 3: in no pile.
+    /// 0: this prefix never ran (it takes the new value, so Harmony skips it once an earlier prefix returned false, which
+    /// may then set the field itself): the finalizer counts it as any other change.
     /// </summary>
     private static void BeforeAfflictionSet(CardModel __instance, AfflictionModel? value, out byte __state)
     {
         if (PileIndex.InNoPile(__instance))
         {
-            __state = 0;
+            __state = 3;
             return;
         }
         // Both checked: each records its type when new.
@@ -1653,6 +1731,10 @@ public static class FastListeners
             PileVersion++;
             UnscopedVersion++;
         }
+        else if (__state == 0)
+        {
+            BumpPileVersion();
+        }
         return __exception;
     }
 
@@ -1671,19 +1753,26 @@ public static class FastListeners
     /// </summary>
     private static int _shuffling;
 
-    private static void EnterShuffle()
+    /// <summary>The depth before this shuffle (-1 off the main thread), restored on exit rather than decremented.</summary>
+    private static void EnterShuffle(out int __state)
     {
+        __state = -1;
         if (Thread.CurrentThread.ManagedThreadId == _mainThread)
         {
+            __state = _shuffling;
             _shuffling++;
         }
     }
 
-    private static Exception? ExitShuffle(Exception? __exception)
+    /// <summary>
+    /// Restores the depth: Harmony runs a method's finalizers a second time when one of them throws, and a second decrement
+    /// would leave the next shuffle at 0, caching while its listeners reorder the pile unseen.
+    /// </summary>
+    private static Exception? ExitShuffle(Exception? __exception, int __state)
     {
-        if (Thread.CurrentThread.ManagedThreadId == _mainThread)
+        if (__state >= 0 && Thread.CurrentThread.ManagedThreadId == _mainThread)
         {
-            _shuffling--;
+            _shuffling = __state;
         }
         return __exception;
     }
@@ -1697,6 +1786,10 @@ public static class FastListeners
 
     /// <summary>v0.107.1 <c>ModHelper.IterateAllCombatStateSubscribers</c> (state machine), mirrored by <see cref="Subscribers"/>.</summary>
     private const string SubscribersFingerprint = "B70A116760A4FE08";
+
+    /// <summary><c>ModHelper.SubscribeForCombatStateHooks</c> (v0.107.1, v0.111.0, v0.113.0, v0.113.1): adds, never removes or replaces.</summary>
+    private const string SubscribeFingerprint = "4F5EA1DCEC53C6F9";
+    private static MethodBase? _subscribeMethod;
 
     /// <summary>
     /// BaseLib 3.4.7's "BaseLibCardModifiers" subscriber: for every card in every combat pile, the card's CardModifier
@@ -1747,6 +1840,19 @@ public static class FastListeners
     {
         // The pile cache is bumped by those methods only: no other code may change the pile lists.
         PatchSafety.RequireFieldWriters(typeof(CardPile), "_cards", PatchSafety.CardListWriters);
+        _trackedCode = new MethodBase[]
+        {
+            AccessTools.PropertyGetter(typeof(CardPile), nameof(CardPile.Cards)) ?? throw new MissingMethodException(nameof(CardPile), "get_Cards"),
+            AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.Enchantment)) ?? throw new MissingMethodException(nameof(CardModel), "get_Enchantment"),
+            AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.Affliction)) ?? throw new MissingMethodException(nameof(CardModel), "get_Affliction"),
+            // Their tracking prefixes take the card or the new affliction: Harmony skips such a prefix once an earlier
+            // prefix returned false, which may then change the list or field itself, unseen until our finalizer.
+            AccessTools.Method(typeof(CardPile), nameof(CardPile.AddInternal)) ?? throw new MissingMethodException(nameof(CardPile), nameof(CardPile.AddInternal)),
+            AccessTools.Method(typeof(CardPile), nameof(CardPile.RemoveInternal)) ?? throw new MissingMethodException(nameof(CardPile), nameof(CardPile.RemoveInternal)),
+            AccessTools.Method(typeof(CardPile), nameof(CardPile.MoveToBottomInternal)) ?? throw new MissingMethodException(nameof(CardPile), nameof(CardPile.MoveToBottomInternal)),
+            AccessTools.Method(typeof(CardPile), nameof(CardPile.MoveToTopInternal)) ?? throw new MissingMethodException(nameof(CardPile), nameof(CardPile.MoveToTopInternal)),
+            AccessTools.PropertySetter(typeof(CardModel), nameof(CardModel.Affliction)) ?? throw new MissingMethodException(nameof(CardModel), "set_Affliction"),
+        };
         foreach (string property in new[] { nameof(CardModel.Enchantment), nameof(CardModel.Affliction) })
         {
             // The setter is the only code changing it (auto-property backing field), so bumping around it is enough.
@@ -1824,6 +1930,16 @@ public static class FastListeners
         {
             Log.Info($"[{ModEntry.Id}] {Name}: hooks keeping ExecutionFinished subscribers left uncached: {e.Message}");
         }
+        try
+        {
+            // Without it the last moves of a left run stay referenced until the next run's first shuffle (memory only).
+            PatchGuard.Patch(harmony, AccessTools.Method(typeof(RunManager), nameof(RunManager.CleanUp)) ?? throw new MissingMethodException(nameof(RunManager), nameof(RunManager.CleanUp)),
+                postfix: new HarmonyMethod(typeof(FastListeners), nameof(ReleaseMoves)));
+        }
+        catch (Exception e)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: a left run's card moves kept until the next shuffle: {e.Message}");
+        }
         _tracking = true;
     }
 
@@ -1881,6 +1997,10 @@ public static class FastListeners
                 _runTail = RunScalingTail;
             }
             _runIterate = runIterate;
+            // Takes HookSkip's filter in a prefix Harmony always runs (no bool return, no argument), dropped by a finalizer:
+            // RunPrefix (bool return) is skipped once an earlier prefix returned false, and the filter must not reach a later walk.
+            PatchGuard.Patch(harmony, runIterate, prefix: new HarmonyMethod(typeof(FastListeners), nameof(TakeRunFilter)) { priority = Priority.First },
+                finalizer: new HarmonyMethod(typeof(FastListeners), nameof(DropRunFilter)));
             PatchGuard.Patch(harmony, runIterate, prefix: new HarmonyMethod(typeof(FastListeners), nameof(RunPrefix)) { priority = Priority.Last });
             RunMirrored = true;
         }
@@ -1989,6 +2109,12 @@ public static class FastListeners
             _subscribersMethod = AccessTools.Method(typeof(ModHelper), nameof(ModHelper.IterateAllCombatStateSubscribers));
             _subscribersBody = AccessTools.EnumeratorMoveNext(_subscribersMethod);
             PatchSafety.RequireFingerprint(_subscribersBody, SubscribersFingerprint);
+            // The copy of the subscriber list is taken again only when its count changes: the list must only ever grow. Its
+            // only writers are the static constructor and SubscribeForCombatStateHooks (add, then sort by id), pinned.
+            PatchSafety.RequireFieldWriters(typeof(ModHelper), "_combatHookSubscribers", ".cctor", nameof(ModHelper.SubscribeForCombatStateHooks));
+            _subscribeMethod = AccessTools.Method(typeof(ModHelper), nameof(ModHelper.SubscribeForCombatStateHooks))
+                ?? throw new MissingMethodException(nameof(ModHelper), nameof(ModHelper.SubscribeForCombatStateHooks));
+            PatchSafety.RequireFingerprint(_subscribeMethod, SubscribeFingerprint);
             // Everything resolved and typed before use: AccessTools returns null for a renamed member, which would only
             // fail later, inside every walk.
             var subscribers = AccessTools.Field(typeof(ModHelper), "_combatHookSubscribers")?.GetValue(null) as System.Collections.IList
@@ -2025,9 +2151,109 @@ public static class FastListeners
     private static bool RunWalkPatched() =>
         PatchSafety.IsPatchedByOthers(_runIterate) || PatchSafety.IsPatchedByOthers(_runBody) || PatchSafety.IsPatchedByOthers(_runContains);
 
+    /// <summary>
+    /// The code a walk's result comes from besides the two IterateHookListeners methods: both state machines, both
+    /// Contains, and ModHelper's two subscriber walks (and their state machines). Looked up on their own, whatever this
+    /// patch applied: <see cref="ListenerCache"/> replays a whole walk's result per scope, so another mod's patch on any of
+    /// them would run once per scope instead of once per walk. A member missing here can't be patched either.
+    /// </summary>
+    private static MethodBase[]? _walkCode;
+
+    private static MethodBase[] WalkCode()
+    {
+        if (_walkCode is { } known)
+        {
+            return known;
+        }
+        var found = new List<MethodBase>();
+        Func<MethodBase?>[] lookups =
+        {
+            () => AccessTools.EnumeratorMoveNext(AccessTools.Method(typeof(CombatState), nameof(CombatState.IterateHookListeners))),
+            () => AccessTools.Method(typeof(CombatState), "Contains"),
+            () => AccessTools.EnumeratorMoveNext(AccessTools.Method(typeof(RunState), nameof(RunState.IterateHookListeners), new[] { typeof(ICombatState) })),
+            () => AccessTools.Method(typeof(RunState), "Contains"),
+            () => AccessTools.Method(typeof(ModHelper), nameof(ModHelper.IterateAllCombatStateSubscribers)),
+            () => AccessTools.EnumeratorMoveNext(AccessTools.Method(typeof(ModHelper), nameof(ModHelper.IterateAllCombatStateSubscribers))),
+            () => AccessTools.Method(typeof(ModHelper), nameof(ModHelper.IterateAllRunStateSubscribers)),
+            () => AccessTools.EnumeratorMoveNext(AccessTools.Method(typeof(ModHelper), nameof(ModHelper.IterateAllRunStateSubscribers))),
+        };
+        foreach (Func<MethodBase?> lookup in lookups)
+        {
+            try
+            {
+                if (lookup() is { } method)
+                {
+                    found.Add(method);
+                }
+            }
+            catch
+            {
+                // Missing or ambiguous: nothing to check there.
+            }
+        }
+        return _walkCode = found.ToArray();
+    }
+
+    /// <summary>Whether another mod patches the walks' code beyond IterateHookListeners itself (see <see cref="WalkCode"/>).</summary>
+    internal static bool WalkCodePatchedByOthers([CallerFilePath] string caller = "")
+    {
+        foreach (MethodBase method in WalkCode())
+        {
+            if (PatchSafety.IsPatchedByOthers(method, caller))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// The getters the cached pile entries stand for: a segment holds what <c>CardPile.Cards</c>, <c>CardModel.Enchantment</c>
+    /// and <c>CardModel.Affliction</c> returned when it was built, kept in step through their fields' writers. Another mod's
+    /// patch on one of them could answer otherwise at each walk. Also the writers whose tracking prefix another mod's earlier
+    /// prefix can make Harmony skip (<c>Enchantment</c>'s setter isn't one: its prefix takes no reference argument, so it
+    /// always runs, Limitless's replacing prefix there included). Either way the piles are then read live.
+    /// </summary>
+    private static MethodBase[] _trackedCode = Array.Empty<MethodBase>();
+
+    private static bool TrackedCodePatched()
+    {
+        MethodBase[] getters = _trackedCode;
+        for (int i = 0; i < getters.Length; i++)
+        {
+            if (PatchSafety.IsPatchedByOthers(getters[i]))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// After the game cleans a run up: the recorded moves hold that run's piles and cards (and through them the whole run)
+    /// until the next change that isn't a move, possibly the next run's first shuffle. Dropping them only makes the next
+    /// cached walks read the piles again.
+    /// </summary>
+    private static void ReleaseMoves()
+    {
+        try
+        {
+            if (Thread.CurrentThread.ManagedThreadId == _mainThread)
+            {
+                _moves.Clear();
+            }
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"[{ModEntry.Id}] {Name}: releasing the left run's card moves failed: {e.Message}");
+        }
+    }
+
     private static bool CombatPrefix(CombatState __instance, ref IEnumerable<AbstractModel> __result, bool __runOriginal)
     {
-        if (!__runOriginal || !Enabled || CombatWalkPatched())
+        // Inside ListenerCache.RunVanilla (the snapshot verifier's and the bench's reference): the game's own walk, so the
+        // reference doesn't rely on this mirror either.
+        if (!__runOriginal || !Enabled || ListenerCache.IsSuspended || CombatWalkPatched())
         {
             return __runOriginal;
         }
@@ -2038,17 +2264,36 @@ public static class FastListeners
         return false;
     }
 
+    /// <summary>The filter <see cref="TakeRunFilter"/> took for this call of RunState.IterateHookListeners (this thread).</summary>
+    [ThreadStatic] private static PileFilter? _takenRunFilter;
+
+    /// <summary>A HookSkip filter is waiting for, or was taken by, the RunState walk being called (ListenerCache then serves nothing).</summary>
+    internal static bool RunFilterPending => PendingRunFilter != null || _takenRunFilter != null;
+
+    private static void TakeRunFilter()
+    {
+        _takenRunFilter = PendingRunFilter;
+        PendingRunFilter = null;
+    }
+
+    /// <summary>The call only creates the iterator: nothing else may take the filter once it returned.</summary>
+    private static Exception? DropRunFilter(Exception? __exception)
+    {
+        _takenRunFilter = null;
+        return __exception;
+    }
+
     private static bool RunPrefix(RunState __instance, ICombatState? childCombatState, ref IEnumerable<AbstractModel> __result, bool __runOriginal)
     {
-        PileFilter? filter = PendingRunFilter;
-        PendingRunFilter = null;
+        PileFilter? filter = _takenRunFilter;
+        _takenRunFilter = null;
         if (!__runOriginal || RunWalkPatched())
         {
             return __runOriginal;
         }
-        if (!Enabled)
+        if (!Enabled || ListenerCache.IsSuspended)
         {
-            return true;
+            return true; // Option off, or the vanilla reference (see CombatPrefix).
         }
 #if BENCH
         RunWalks++;
@@ -2073,12 +2318,7 @@ public static class FastListeners
     {
         foreach (AbstractModel model in walk)
         {
-            if (ReferenceEquals(model.GetType(), LimitlessHookSkip.Multi))
-            {
-                // No snapshot records its inner enchantments on this path, whatever the tracking.
-                NoteMulti(model);
-                filter.SyncMulti();
-            }
+            // A MultiEnchantment is an EnchantmentModel: Keeps notes its inner enchantments first (no snapshot on this path).
             if (model is not (CardModel or EnchantmentModel or AfflictionModel) || filter.Keeps(model))
             {
                 yield return model;
@@ -2215,7 +2455,9 @@ public static class FastListeners
     /// </summary>
     private static IEnumerable<AbstractModel> Subscribers(CombatState state)
     {
-        var snapshot = _combatSubscribers == null || PatchSafety.IsPatchedByOthers(_subscribersMethod) || PatchSafety.IsPatchedByOthers(_subscribersBody) ? null : SubscriberSnapshot();
+        // A patch on the subscribe method could remove or replace subscribers (same count): the game's own walk then.
+        var snapshot = _combatSubscribers == null || PatchSafety.IsPatchedByOthers(_subscribersMethod) || PatchSafety.IsPatchedByOthers(_subscribersBody)
+            || PatchSafety.IsPatchedByOthers(_subscribeMethod) ? null : SubscriberSnapshot();
         if (snapshot == null)
         {
             foreach (AbstractModel item in ModHelper.IterateAllCombatStateSubscribers(state))
@@ -2279,7 +2521,9 @@ public static class FastListeners
 
     private static bool CardModifiersEmpty(string id, Delegate del)
     {
-        if (id != CardModifiersId || !Enabled)
+        // Not inside ListenerCache.RunVanilla: the reference calls every subscriber, as the game does.
+        // Another mod's patch on the delegate's method must run: the fingerprint reads the original IL, it can't see one.
+        if (id != CardModifiersId || !Enabled || ListenerCache.IsSuspended || PatchSafety.IsPatchedByOthers(del.Method))
         {
             return false;
         }

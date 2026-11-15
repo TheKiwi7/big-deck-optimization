@@ -1,0 +1,99 @@
+# The Fool (game v0.113+ beta) with ~2,000 random Fool cards (seeded) and the reference run's relics, two combats,
+# mod off: arrows, Shoot cards and the Fool's hooks over several turns. Compare with fool-2k-on:
+# CHECKSUM and STATE lines identical. The card sweep plays each Fool card once, as a Necrobinder; this plays them as the Fool.
+timeout 2400
+cmd bdopt off
+newrun FOOL 1234
+waitfor run 120
+wait 2
+cmd bigdeck 2000 7
+cmd bigdeck import ref all relics
+cmd bdperf checks off
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum CULTISTS_NORMAL start
+state CULTISTS_NORMAL start
+play 6
+waitfor idle 300
+checksum CULTISTS_NORMAL t1 plays
+state CULTISTS_NORMAL t1 plays
+endturn
+waitfor idle 600
+checksum CULTISTS_NORMAL t1 end
+state CULTISTS_NORMAL t1 end
+play 6
+waitfor idle 300
+checksum CULTISTS_NORMAL t2 plays
+state CULTISTS_NORMAL t2 plays
+endturn
+waitfor idle 600
+checksum CULTISTS_NORMAL t2 end
+state CULTISTS_NORMAL t2 end
+play 6
+waitfor idle 300
+checksum CULTISTS_NORMAL t3 plays
+state CULTISTS_NORMAL t3 plays
+endturn
+waitfor idle 600
+checksum CULTISTS_NORMAL t3 end
+state CULTISTS_NORMAL t3 end
+play 6
+waitfor idle 300
+checksum CULTISTS_NORMAL t4 plays
+state CULTISTS_NORMAL t4 plays
+endturn
+waitfor idle 600
+checksum CULTISTS_NORMAL t4 end
+state CULTISTS_NORMAL t4 end
+play 6
+waitfor idle 300
+checksum CULTISTS_NORMAL t5 plays
+state CULTISTS_NORMAL t5 plays
+endturn
+waitfor idle 600
+checksum CULTISTS_NORMAL t5 end
+state CULTISTS_NORMAL t5 end
+cmd kill all
+waitfor nocombat 300
+wait 2
+cmd fight KNIGHTS_ELITE
+waitfor idle 600
+wait 1
+checksum KNIGHTS_ELITE start
+state KNIGHTS_ELITE start
+play 6
+waitfor idle 300
+checksum KNIGHTS_ELITE t1 plays
+state KNIGHTS_ELITE t1 plays
+endturn
+waitfor idle 600
+checksum KNIGHTS_ELITE t1 end
+state KNIGHTS_ELITE t1 end
+play 6
+waitfor idle 300
+checksum KNIGHTS_ELITE t2 plays
+state KNIGHTS_ELITE t2 plays
+endturn
+waitfor idle 600
+checksum KNIGHTS_ELITE t2 end
+state KNIGHTS_ELITE t2 end
+play 6
+waitfor idle 300
+checksum KNIGHTS_ELITE t3 plays
+state KNIGHTS_ELITE t3 plays
+endturn
+waitfor idle 600
+checksum KNIGHTS_ELITE t3 end
+state KNIGHTS_ELITE t3 end
+cmd kill all
+waitfor nocombat 300
+wait 2
+checksum after combats
+state after combats
+runstate after combats
+cmd bdopt on
+wait 1
+quit

@@ -1,5 +1,6 @@
-// Lists every method of the mod's DLL that uses a member or type a game version doesn't have (what the load check,
-// PatchSafety.RequireResolvable, would skip), all at once instead of one patch per game start.
+// Lists every method of the mod's DLL that uses a member or type a game version doesn't have, or no longer lets the mod
+// use (private, protected outside a derived class): what the load check, PatchSafety.RequireResolvable, would skip, by
+// the same rules (MethodFingerprint.Accessible, MethodFingerprint.PartCode), all at once instead of one patch per start.
 // Usage: dotnet run --project tools/compat -- <BigDeckOptimization.dll> [game data dir, default: installed game]
 // e.g. against the beta's saved assemblies: ... -- src/BigDeckOptimization/bin/Debug/BigDeckOptimization.dll refs/v0.111.0
 // (game assemblies missing from that folder, e.g. GodotSharp's dependencies, are taken from the installed game).
@@ -24,14 +25,35 @@ context.Resolving += (ctx, name) =>
 };
 // The mod's DLL in its own context, so its game references resolve against the chosen folder.
 Assembly mod = context.LoadFromAssemblyPath(Path.GetFullPath(args[0]));
-const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
 int problems = 0, parts = 0;
-foreach (Type type in mod.GetTypes())
+// The [PatchPart] attribute of the mod's own assembly (another load context): read by name.
+static string? PartOf(MethodBase method) =>
+    method.GetCustomAttributesData().FirstOrDefault(a => a.AttributeType.Name == "PatchPartAttribute")?.ConstructorArguments[0].Value as string;
+Type[] types;
+try
+{
+    types = mod.GetTypes();
+}
+catch (ReflectionTypeLoadException e)
+{
+    foreach (Exception? loader in e.LoaderExceptions)
+    {
+        problems++;
+        Console.WriteLine($"type load: {loader?.Message}");
+    }
+    types = e.Types.Where(t => t != null).Cast<Type>().ToArray();
+}
+// The game's load check (PatchSafety.RequireResolvable) per outermost class, nested types and generated code included:
+// every member used must resolve and be accessible (MethodFingerprint.Accessible); a part's methods and the generated
+// code only they use (MethodFingerprint.PartCode) only take that part away.
+foreach (Type type in types.Where(t => !t.IsNested))
 {
     List<MethodBase> methods;
+    Dictionary<MethodBase, string> partCode;
     try
     {
-        methods = type.GetMethods(all).Cast<MethodBase>().Concat(type.GetConstructors(all)).ToList();
+        methods = MethodFingerprint.DeclaredMethods(type).ToList();
+        partCode = MethodFingerprint.PartCode(type, PartOf);
     }
     catch (Exception e)
     {
@@ -43,23 +65,29 @@ foreach (Type type in mod.GetTypes())
     {
         try
         {
-            _ = MethodFingerprint.UsedMembers(method).Count();
+            foreach (MemberInfo member in MethodFingerprint.UsedMembers(method))
+            {
+                if (!MethodFingerprint.Accessible(member, mod, method.DeclaringType))
+                {
+                    throw new MemberAccessException($"{member.DeclaringType?.Name}.{member.Name} is not accessible");
+                }
+            }
         }
         catch (Exception e)
         {
-            // A [PatchPart] method is checked on its own before that part is used (another version's code): it only
-            // leaves that part off, not its patch.
-            string? part = method.GetCustomAttributesData().FirstOrDefault(a => a.AttributeType.Name == "PatchPartAttribute")?.ConstructorArguments[0].Value as string;
+            // A part's code is checked on its own before that part is used (another version's code): it only leaves that
+            // part off, not its patch.
+            string? part = PartOf(method) ?? partCode.GetValueOrDefault(method);
             if (part != null)
             {
                 parts++;
                 // Fine when the part is another version's code (never used here); where this version needs that part,
                 // what uses it stays vanilla (RequirePartResolvable throws there): check which.
-                Console.WriteLine($"  part \"{part}\" unresolved (fine if it is another version's code, else what needs it stays vanilla): {type.FullName}.{method.Name}: {e.Message}");
+                Console.WriteLine($"  part \"{part}\" unresolved (fine if it is another version's code, else what needs it stays vanilla): {method.DeclaringType?.FullName}.{method.Name}: {e.Message}");
                 continue;
             }
             problems++;
-            Console.WriteLine($"{type.FullName}.{method.Name}: {e.Message}");
+            Console.WriteLine($"{method.DeclaringType?.FullName}.{method.Name}: {e.Message}");
         }
     }
 }

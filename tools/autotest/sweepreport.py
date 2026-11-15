@@ -6,7 +6,12 @@ For each kind: chunks compared one by one, with the item and the values that dif
 errors logged on one side only; this mod's problems; what each optimization did over all sessions and those that never
 ran; the items allocating the most with the mod on, and where it saves the least. Allocations are measured per session,
 so they hold under load; frame times don't, they aren't reported here. Writes report-<kind>.md and merged logs
-sweep-<kind>-2k-off/on.log next to the parts. Exit code 1 when anything differs.
+sweep-<kind>-2k-off/on.log next to the parts. Exit code 1 when anything differs, when an item stopped a session on one side
+only, or when a session has a problem (judge.py: an error or a difference this mod found itself, a failed line, a session
+neither ended nor stopped on an item). An item stopping a session on both sides (the game's own error in a situation it
+never meets, mod off too) is listed, not counted: the next session goes on from the next item. Every item of the game must
+be in a chunk on both sides (the parts' scripts, against the item count): a chunk without any log, or a sweep cut short
+(parsweep.ps1 -Chunks over another run), is "not compared".
 """
 import glob
 import os
@@ -15,6 +20,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import compare  # noqa: E402
+import judge  # noqa: E402
 
 PART = re.compile(r'(\w+)-(off|on)-c(\d+)-p(\d+)\.log$')
 STEP = re.compile(r'SWEEP (\S+) (\S+) (\S+) wall (\d+) worst (\d+) over50 (\d+) gc (\d+) mb ([\d.]+)')
@@ -22,6 +28,21 @@ FAILED = re.compile(r'SWEEP FAILED \S+ (\S+): (.{0,110})')
 EFFECT = re.compile(r'EFFECT (\S+) (\d+)')
 CLOCK = re.compile(r'AutoTest\s+([\d.]+)s')
 ITEMS = re.compile(r'SWEEP \w+: (\d+) items')
+# A part's script: 'sweep <kind> <first> <count> ...' (parsweep.ps1's chunks, p0 = the chunk's whole range).
+PLANNED = re.compile(r'^sweep \S+ (\d+) (\d+)', re.M)
+SCRIPT = re.compile(r'(\w+)-(off|on)-c(\d+)-p0\.txt$')
+
+
+def planned_of(folder, kind):
+    """{(side, chunk): (first, count)} from the chunks' first scripts."""
+    found = {}
+    for path in glob.glob(os.path.join(folder, f'parts-{kind}', f'{kind}-*-c*-p0.txt')):
+        m = SCRIPT.search(os.path.basename(path))
+        with open(path, encoding='utf-8', errors='replace') as f:
+            planned = PLANNED.search(f.read())
+        if m and planned:
+            found[(m.group(2), int(m.group(3)))] = (int(planned.group(1)), int(planned.group(2)))
+    return found
 
 
 def parts_of(folder, kind):
@@ -52,13 +73,16 @@ def report(folder, kind):
     parts = parts_of(folder, kind)
     if not parts:
         return [f'## {kind}', 'no session logs'], True
-    chunks = sorted({chunk for _, chunk in parts})
+    planned = planned_of(folder, kind)
+    # A chunk planned but without any log on either side is listed too ("not compared").
+    chunks = sorted({chunk for _, chunk in parts} | {chunk for _, chunk in planned})
     out, different, cut, missing = [f'## {kind}'], [], [], []
     checked = 0
     effects, zero_runs = {}, 0
     failed = {'off': {}, 'on': {}}
     errors = {'off': {}, 'on': {}}
     problems = []
+    session_problems = []
     steps = {'off': {}, 'on': {}}
     seconds = {'off': 0.0, 'on': 0.0}
     sessions = {'off': 0, 'on': 0}
@@ -69,6 +93,13 @@ def report(folder, kind):
         for side in ('off', 'on'):
             paths = parts.get((side, chunk), [])
             text, spent = read_parts(paths)
+            for path in paths:
+                found, _ = judge.judge(path, sweep=True, need_end=False)
+                session_problems += [f'mod {side}: {p}' for p in found]
+                with open(path, encoding='utf-8', errors='replace') as f:
+                    tail = f.read()
+                if not judge.END.search(tail) and 'SWEEP ABORT next=' not in tail:
+                    session_problems.append(f'mod {side}: {os.path.basename(path)}: neither ended nor stopped on an item')
             seconds[side] += spent
             sessions[side] += len(paths)
             merged[side].writelines(text)
@@ -87,8 +118,8 @@ def report(folder, kind):
                     effects[m.group(1)] = effects.get(m.group(1), 0) + int(m.group(2))
                 elif items is None and (m := ITEMS.search(line)):
                     items = int(m.group(1))
-                if side == 'on' and compare.MOD_PROBLEM.search(line):
-                    problems.append(line.strip()[:170])
+                if compare.MOD_PROBLEM.search(line):
+                    problems.append(f'mod {side}: ' + line.strip()[:170])
         a, b = logs['off']['lines'], logs['on']['lines']
         checked += len(a)
         same = a == b
@@ -102,6 +133,19 @@ def report(folder, kind):
                 different.append(f'  line {i}\n    off: {x[:150]}\n    on:  {y[:150]}' + (f'\n    differs: {words}' if words else ''))
     for handle in merged.values():
         handle.close()
+    # Every item of the game in a chunk, on both sides: chunks with no script nor log (a sweep cut short, -Chunks over another run)
+    # would otherwise just be absent from this report.
+    for side in ('off', 'on'):
+        if items is None:
+            missing.append(f'mod {side}: no item count (SWEEP <kind>: N items): what the chunks cover is unknown')
+            break
+        covered = set()
+        for (planned_side, _), (first, count) in planned.items():
+            if planned_side == side:
+                covered.update(range(first, first + count))
+        absent = sorted(set(range(items)) - covered)
+        if absent:
+            missing.append(f'mod {side}: {len(absent)} of {items} items in no chunk (from item {absent[0]}): the sweep did not cover the whole game')
     out.append(f'{items or "?"} items, {len(chunks)} chunks, {sessions["off"] + sessions["on"]} sessions, {checked} checked lines (mod off), session time off {seconds["off"] / 60:.1f} min, on {seconds["on"] / 60:.1f} min')
     verdict = 'IDENTICAL' if not different and not cut and not missing else f'{len([d for d in different if d.startswith("chunk")])} DIFFERENT chunk(s), {len(cut)} cut differently, {len(missing)} not compared'
     out.append(verdict)
@@ -109,14 +153,23 @@ def report(folder, kind):
     both = sorted(set(failed['off']) & set(failed['on']))
     if both:
         out.append('items stopping a session on both sides: ' + ', '.join(both))
+    one_side = []
+    # The same item stopping both sides is the game's own error only when it is the same error: another one mod on (an exception
+    # from this mod's code where the game also fails) counts as a difference.
+    for item in both:
+        if compare.normalized_error(failed['off'][item]) != compare.normalized_error(failed['on'][item]):
+            one_side.append(f'item stopping both sides with different errors: {item}: off "{failed["off"][item]}", on "{failed["on"][item]}"')
     for side, other in (('off', 'on'), ('on', 'off')):
         for item in sorted(set(failed[side]) - set(failed[other])):
-            out.append(f'item stopping a session only mod {side}: {item}: {failed[side][item]}')
+            one_side.append(f'item stopping a session only mod {side}: {item}: {failed[side][item]}')
+    out += one_side
     for side, other in (('on', 'off'), ('off', 'on')):
         for text, count in list(compare.errors_only_in(errors[side], errors[other]).items())[:10]:
             out.append(f'game errors only mod {side}: {count}x {text}')
     for line in sorted(set(problems))[:10]:
         out.append(f'mod problem: {line}')
+    for line in list(dict.fromkeys(session_problems))[:20]:
+        out.append(f'session problem: {line}')
     if effects:
         ran = {k: v for k, v in effects.items() if v}
         never = sorted(k for k, v in effects.items() if not v)
@@ -128,7 +181,7 @@ def report(folder, kind):
     if heavy:
         out.append('most allocated with the mod on (MB, mod off in parentheses):')
         out += [f'  {steps["on"][k]:8.1f} ({steps["off"][k]:8.1f})  {k[0]} {k[1]}' for k in heavy]
-    return out, bool(different or cut or missing)
+    return out, bool(different or cut or missing or one_side or session_problems)
 
 
 def overall_effects(folder, kinds):

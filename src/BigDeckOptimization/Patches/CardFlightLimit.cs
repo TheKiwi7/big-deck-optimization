@@ -95,7 +95,8 @@ public static class CardFlightLimit
     {
         try
         {
-            if (!Enabled || targetPile.Type is not (PileType.Draw or PileType.Discard)
+            // A null pile (v0.107.1 reads card.Pile when the tween fires): the game's code, whatever it does with it.
+            if (!Enabled || targetPile == null || targetPile.Type is not (PileType.Draw or PileType.Discard)
                 || Thread.CurrentThread.ManagedThreadId != _mainThread || PatchSafety.IsPatchedByOthers(_create) || SkippedPatched())
             {
                 return true;
@@ -172,19 +173,21 @@ public static class CardFlightLimit
     /// <summary>What the skipped souls would have told their pile on landing, one label fit per pile and frame.</summary>
     private static void Flush()
     {
-        try
+        // A copy: the events run other code (another mod's listener) that may move cards and skip souls again, which
+        // then queues them for the next flush instead of changing this list.
+        (CardPile Pile, int Count)[] pending = _pending.ToArray();
+        _pending.Clear();
+        // Each pile on its own, as each soul lands on its own: one that throws doesn't lose what the others were owed.
+        foreach ((CardPile pile, int count) in pending)
         {
-            // A copy: the events run other code (another mod's listener) that may move cards and skip souls again, which
-            // then queues them for the next flush instead of changing this list.
-            (CardPile Pile, int Count)[] pending = _pending.ToArray();
-            _pending.Clear();
-            foreach ((CardPile pile, int count) in pending)
+            try
             {
-                if (OnlyPileButtons(pile))
+                // After a fault AddCardPrefix may be gone (PatchGuard removes a faulted patch's methods), and one event would
+                // count one card: one per card then, as the souls would, whatever the switches say.
+                if (!PatchSafety.IsFaulted(Name) && OnlyPileButtons(pile))
                 {
                     _extra = count - 1;
                     pile.InvokeCardAddFinished();
-                    _extra = 0;
                 }
                 else
                 {
@@ -195,14 +198,21 @@ public static class CardFlightLimit
                     }
                 }
             }
-        }
-        catch (Exception e)
-        {
-            Disable(e);
-        }
-        finally
-        {
-            _extra = 0;
+            catch (Exception e)
+            {
+                if (!PatchSafety.IsFaulted(Name))
+                {
+                    Disable(e);
+                }
+                else
+                {
+                    Log.Error($"[{ModEntry.Id}] {Name}: a pile button's count failed after the fault: {e}");
+                }
+            }
+            finally
+            {
+                _extra = 0;
+            }
         }
     }
 

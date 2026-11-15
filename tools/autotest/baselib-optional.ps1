@@ -9,18 +9,25 @@ $copy = $GameDir
 $GameDir = Resolve-GameCopy $copy
 Assert-GameNotRunning
 
-$slot = Sync-Slot $KeptSlot
-Update-SlotModList $slot { param($mods) @($mods | Where-Object { $_.id -eq "BigDeckOptimization" }) + @($mods | Where-Object { $_.id -ne "BigDeckOptimization" }) }
-& (Join-Path $PSScriptRoot "run.ps1") -Name baselib-late -TimeoutSec 240 -GameDir $GameDir -KeepSlot
+# The kept slot, held until the end (other series skip it; run.ps1 -KeepSlot below holds it too).
+[void](Lock-Slot $KeptSlot)
+try {
+    $slot = Sync-Slot $KeptSlot
+    Update-SlotModList $slot { param($mods) @($mods | Where-Object { $_.id -eq "BigDeckOptimization" }) + @($mods | Where-Object { $_.id -ne "BigDeckOptimization" }) }
+    & (Join-Path $PSScriptRoot "run.ps1") -Name baselib-late -TimeoutSec 240 -GameDir $GameDir -KeepSlot
 
-$slot = Sync-Slot $KeptSlot
-Set-SlotModEnabled $slot "BaseLib" $false
-& (Join-Path $PSScriptRoot "run.ps1") -Name baselib-absent -TimeoutSec 240 -GameDir $GameDir -KeepSlot
+    $slot = Sync-Slot $KeptSlot
+    Set-SlotModEnabled $slot "BaseLib" $false
+    & (Join-Path $PSScriptRoot "run.ps1") -Name baselib-absent -TimeoutSec 240 -GameDir $GameDir -KeepSlot
 
-Test-SessionLog "baselib-late" "BaseLib not loaded \(yet\)" $true "this mod loaded before BaseLib"
-Test-SessionLog "baselib-late" "BaseLibSettings: registered" $true "the settings menu registered all the same"
-Test-SessionLog "baselib-late" "screenshot .*shot-settings-late" $true "the menu was captured"
-Test-SessionLog "baselib-absent" "Finished mod initialization for 'BaseLib'" $false "BaseLib did not load"
-Test-SessionLog "baselib-absent" "BaseLibSettings: registered" $false "no settings menu"
-Test-SessionLog "baselib-absent" "FAILED line" $false "bdopt worked"
-Test-SessionLog "baselib-absent" "[1-9]\d* left vanilla|Patch \w+ could not" $false "every patch that needs no other mod applied"
+    Test-SessionLog "baselib-late" "BaseLib not loaded \(yet\)" $true "this mod loaded before BaseLib"
+    Test-SessionLog "baselib-late" "BaseLibSettings: registered" $true "the settings menu registered all the same"
+    Test-SessionLog "baselib-late" "screenshot .*shot-settings-late" $true "the menu was captured"
+    Test-SessionLog "baselib-absent" "Finished mod initialization for 'BaseLib'" $false "BaseLib did not load"
+    Test-SessionLog "baselib-absent" "BaseLibSettings: registered" $false "no settings menu"
+    Test-SessionLog "baselib-absent" "FAILED line" $false "bdopt worked"
+    # HookSkip's own count is judged by its "code changed" lines: on v0.113 the two hooks classify.py finds unsafe there (new code
+    # shapes, DESIGN "Game beta v0.113.0") are left vanilla by design, whatever the mods.
+    Test-SessionLog "baselib-absent" "[1-9]\d* left vanilla|Patch \w+ could not|HookSkip: \w+ code changed" $false "every patch that needs no other mod applied"
+}
+finally { Unlock-Slot $KeptSlot }

@@ -1,0 +1,27 @@
+# Positive control of the snapshot verifier against RelicStateReuse.Scalar (every relic of a scalar plan taken as unchanged
+# without reading it; the part's own sampled check put out of reach, see relics-scalarblind): the verifier must see a snapshot
+# differ. Expected to fail at its last line.
+expect SnapshotVerifier: (optimized snapshot differs from vanilla|line \d+: optimized)
+expect verified \d+, mismatches [1-9]
+timeout 1500
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf probe off
+cmd bdperf segments verify off
+enemyhp 999999
+speed instant
+immortal
+cmd godmode
+sweeptimeout 45
+cmd bdperf relicreuse verify 1000000000
+cmd bdperf relicreuse scalarblind on
+cmd bdperf verify all
+sweep relics 0 75 checksum state
+cmd bdperf verify
+effects end
+cmd bdperf verify check
+quit

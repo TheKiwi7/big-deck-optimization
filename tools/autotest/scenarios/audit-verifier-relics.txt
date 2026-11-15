@@ -1,5 +1,7 @@
 # Audit: what stays on after SnapshotVerifier finds a difference. A stale relic (relicreuse blind, the positive control) must be seen, and then
-# EFFECT RelicStateReuse must stop growing: the verifier says every snapshot optimization is off.
+# EFFECT RelicStateReuse must stop growing: the verifier says every snapshot optimization is off (effectcheck fails the line otherwise).
+expect SnapshotVerifier: (optimized snapshot differs from vanilla|line \d+: optimized)
+expect verify mode: .*mismatches [1-9]
 timeout 600
 newrun NECROBINDER 1234
 waitfor run 120
@@ -29,5 +31,6 @@ play 2
 waitfor idle 120
 checksum t3
 effects later
+effectcheck RelicStateReuse same after mismatch
 cmd bdperf verify
 quit

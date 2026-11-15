@@ -114,7 +114,9 @@ public static class RoomCollect
             }
             catch (Exception e)
             {
-                _enabled = false;
+                // Through the property: off is the game's latency mode too, not only its blocking collection (a fault records
+                // nothing that would push the settings again).
+                Enabled = false;
                 PatchSafety.Fault(Name);
                 Log.Error($"[{ModEntry.Id}] {Name} disabled after exception, rooms collect as the game does: {e}");
             }

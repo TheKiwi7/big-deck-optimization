@@ -18,10 +18,25 @@ $out = Get-VersionDir $GameDir
 # An encounter is a whole fight: smaller chunks. A session start costs ~10 s: bigger than this wastes cores, smaller wastes starts.
 if ($ChunkItems -le 0) { $ChunkItems = if ($Kind -eq "encounters") { 6 } else { 20 } }
 $work = Join-Path $out $(if ($Imports) { "parts-$Kind-i$Imports" } else { "parts-$Kind" })
-Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force $work | Out-Null
 $started = Get-Date
 $source = @{ off = Get-Content (Join-Path $Scenarios "sweep-$Kind-2k-off.txt"); on = Get-Content (Join-Path $Scenarios "sweep-$Kind-2k-on.txt") }
+# What the parts were made with: -Chunks reruns some chunks of the last whole run, whose other chunks stay in the report, only
+# when they were cut and played the same way (sweepreport.py also checks every item is in a chunk on both sides).
+$plan = "chunk items $ChunkItems, speed $Speed, item timeout $ItemTimeout, on extra '$OnExtra', game $(Get-GameTag $GameDir), scenarios " +
+    (Get-FileHash -InputStream ([IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes(($source.off + $source.on) -join "`n")))).Hash.Substring(0, 16)
+$planFile = Join-Path $work "plan.txt"
+if ($Chunks.Count) {
+    if (-not (Test-Path $planFile) -or [IO.File]::ReadAllText($planFile).Trim() -ne $plan) {
+        throw "-Chunks reruns chunks of the last whole $Kind run in $work, made the same way: $(if (Test-Path $planFile) { "it was '$([IO.File]::ReadAllText($planFile).Trim())', now '$plan'" } else { 'there is none' }). Run the whole sweep."
+    }
+    # Only these chunks' parts go: the others stay, and the report covers the whole game again.
+    foreach ($chunk in $Chunks) { Get-ChildItem $work -File -Filter "$Kind-*-c$chunk-p*" | Remove-Item -Force }
+}
+else {
+    Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force $work | Out-Null
+    [IO.File]::WriteAllText($planFile, $plan)
+}
 if ($Imports) {
     $source.on = foreach ($line in $source.on) {
         if ($line -match 'bigdeck import ref all all') { $line; if ($Imports -ge 2) { 2..$Imports | ForEach-Object { "cmd bigdeck import ref all cards" } } }
@@ -71,6 +86,9 @@ while (@($round).Count -gt 0) {
     $next = foreach ($job in $round) {
         $result = $outcome | Where-Object { $_.Name -eq $job.Name }
         if ($result.State -notin "done", "cached") { $sessionProblems.Add("$($job.Name): $($result.State)") }
+        # What sweepreport.py doesn't see in the parts' logs: an earlier session of this part that ended early (not the known
+        # renderer crash), a test mod the game didn't find.
+        $result.Failed | Where-Object { $_ -match '^(ended early|test mod not loaded)' } | ForEach-Object { $sessionProblems.Add("$($job.Name): $_") }
         $abort = Select-String -Path $job.Log -Pattern "SWEEP ABORT next=(\d+)" -ErrorAction SilentlyContinue | Select-Object -Last 1
         if ($abort) {
             $from = [int]$abort.Matches[0].Groups[1].Value

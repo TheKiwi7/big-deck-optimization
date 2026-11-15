@@ -1,5 +1,7 @@
 # Control of rebuild-check: the same rebuilds straight through Harmony, as v1.0.0 did. Each must report PATCHES LOST,
 # and the checks after them must fail: what rebuild-check passing means.
+expect PATCHES LOST
+expect PROBLEM without detour
 onfail continue
 timeout 300
 wait 3

@@ -9,10 +9,12 @@ $source = Get-Content (Join-Path $scenarios "$Name.txt")
 $part = "$Name-part"
 $partScript = Join-Path $scenarios "$part.txt"
 $all = Join-Path $results "$Name.log"
-$tagDir = if ($GameDir) { $GameDir } else { "$env:STS2_GAME_DIR" }
+# The copy to run on: -GameDir, else STS2_GAME_DIR; neither: through Steam (run.ps1 without -GameDir). common.ps1 sets
+# $GameDir to the Steam install in that case, which run.ps1 must not get as a copy.
+$copyDir = if ($GameDir) { $GameDir } else { "$env:STS2_GAME_DIR" }
 . (Join-Path $PSScriptRoot "common.ps1")
-if (-not $tagDir) { $tagDir = $GameDir }
-if ($tagDir -ne $GameDir -or $PSBoundParameters.ContainsKey("GameDir")) { $GameDir = $PSBoundParameters["GameDir"] }
+$tagDir = if ($copyDir) { $copyDir } else { $GameDir }
+$GameDir = $copyDir
 Set-Content $all "" -Encoding utf8
 $next = $Start
 try {

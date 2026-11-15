@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
@@ -24,6 +25,13 @@ namespace BigDeckOptimization.Patches;
 /// Each mirrored hook backs off (vanilla) whenever another mod has Harmony-patched that hook or its base method, since
 /// our mirror of the hook body would then no longer match what vanilla peers run. BaseLib patches
 /// <c>Hook.ModifyDamage</c> but not <c>Hook.ModifyDamageInternal</c>, which holds the listener loops.
+///
+/// Exceptions: one thrown by this mod's code turns HookFilter off and the call runs the game's hook. One thrown by a
+/// listener's own code (the game's or a mod's, no frame of this mod between the throw and the mirror) is the one the game's
+/// loop throws at the same listener after the same calls: it goes on to the hook's caller as is (<see cref="PassOn"/>),
+/// nothing called twice, HookFilter stays on. When a frame of this mod is on the way (another patch of this mod the
+/// listener reached, or a listener the JIT inlined into the mirror), it counts as this mod's: HookFilter turns off and the
+/// game's hook calls the listeners before the thrower again (pure Try/Should/Modify methods: same results).
 /// </summary>
 public static class HookFilter
 {
@@ -89,6 +97,8 @@ public static class HookFilter
 
     private static MethodBase?[]? _combatHookWalkParts;
     private static bool? _combatHookWalkKnown;
+    /// <summary>The check threw once (logged once): asked per hook walk, it must not log or redo the lookups each time.</summary>
+    private static bool _combatHookWalkCheckFailed;
 
     /// <summary>v0.107.1 <c>Hook.IterateCombatHookListeners</c> (its state machine), equivalents in EquivalentFingerprints.</summary>
     private const string CombatHookWalkFingerprint = "B3B83A82B69E17FC";
@@ -147,7 +157,17 @@ public static class HookFilter
         }
         catch (Exception e)
         {
-            Log.Warn($"[{ModEntry.Id}] {Name}: combat hook walk not checked ({e.Message}): game hooks");
+            if (_combatHookWalkParts == null)
+            {
+                // The lookups themselves failed: answered "changed" from now on (game hooks), not looked up again.
+                _combatHookWalkKnown = false;
+                _combatHookWalkParts = Array.Empty<MethodBase?>();
+            }
+            if (!_combatHookWalkCheckFailed)
+            {
+                _combatHookWalkCheckFailed = true;
+                Log.Warn($"[{ModEntry.Id}] {Name}: combat hook walk not checked ({e.Message}): game hooks");
+            }
             return true;
         }
     }
@@ -182,6 +202,13 @@ public static class HookFilter
     public static long CostColorMismatches { get; internal set; }
     /// <summary>Hook lists built with only the listeners overriding the hook (the effects check).</summary>
     public static long ListsFiltered { get; private set; }
+    /// <summary>
+    /// Listeners left out of those lists (the effects check: a list can be built while nothing is left out). The pile entries
+    /// FastListeners' pile filter leaves out before are counted there (FastListeners.Kinds/.Others count HookSkip's filters).
+    /// </summary>
+    public static long ListenersDropped { get; private set; }
+    /// <summary>Filtered lists handed out (a cached one included): what bdperf checksum's filter row requires to have moved.</summary>
+    public static long Served { get; private set; }
 #endif
 
     /// <summary>v0.107.1 hooks mirrored by the prefixes below; a changed hook is left vanilla.</summary>
@@ -219,8 +246,11 @@ public static class HookFilter
 
     private static FilteredHook[] _hooks = Array.Empty<FilteredHook>();
 
-    /// <summary>Filtered lists per source listener list (a new source list means the cache was invalidated).</summary>
-    [ThreadStatic] private static Dictionary<IReadOnlyList<AbstractModel>, List<AbstractModel>?[]>? _filtered;
+    /// <summary>
+    /// Filtered lists per source listener list (a new source list means the cache was invalidated). Weak keys: an entry goes
+    /// with its source list, which ListenerCache drops (the lists of a finished combat aren't kept here until the run ends).
+    /// </summary>
+    [ThreadStatic] private static ConditionalWeakTable<IReadOnlyList<AbstractModel>, List<AbstractModel>?[]>? _filtered;
 
     /// <summary>Per-scope result of <see cref="FilteredHook.IsSafe"/> (patch checks are not free).</summary>
     [ThreadStatic] private static bool[]? _safe;
@@ -266,7 +296,7 @@ public static class HookFilter
             {
                 if (HookFilterDamage.HasLate && MethodFingerprint.Of(damageHook) == ModifyDamageInternalLateFingerprint)
                 {
-                    PatchGuard.Patch(harmony, damageHook, prefix: new HarmonyMethod(typeof(HookFilterDamage), nameof(HookFilterDamage.PrefixWithLate)));
+                    PatchGuard.Patch(harmony, damageHook, prefix: new HarmonyMethod(typeof(HookFilterDamage), nameof(HookFilterDamage.PrefixWithLate)), finalizer: Finalizer);
                 }
                 else
                 {
@@ -303,14 +333,10 @@ public static class HookFilter
         ListenerCache.ScopeEnded += () =>
         {
             // Filtered lists stay valid for their source list (listener lists are immutable and reused across
-            // refreshes while nothing changed); they are rebuilt when patch safety changes.
+            // refreshes while nothing changed); Get rebuilds them when patch safety changed. Nothing here that can throw:
+            // it runs at the end of every scope, some inside the game's async code (ExtraScopes' first turn).
             _safe = null;
             _walked?.Clear();
-            if (_filtered != null && (_filtered.Count > 8 || _filteredWith == null || !_filteredWith.SequenceEqual(CurrentSafety())))
-            {
-                _filtered = null;
-                _filteredWith = null;
-            }
         };
     }
 
@@ -343,7 +369,7 @@ public static class HookFilter
         string actual = MethodFingerprint.Of(hook);
         if (PatchSafety.FingerprintMatches(actual, fingerprint))
         {
-            PatchGuard.Patch(harmony, hook, prefix: prefix);
+            PatchGuard.Patch(harmony, hook, prefix: prefix, finalizer: Finalizer);
             return true;
         }
         Log.Info($"[{ModEntry.Id}] {Name}: {hook.DeclaringType?.Name}.{hook.Name} changed (fingerprint {actual}): left vanilla");
@@ -368,11 +394,17 @@ public static class HookFilter
     /// <summary>Filtered listeners for one hook, or null when filtering that hook isn't safe right now.</summary>
     private static List<AbstractModel>? Get(IReadOnlyList<AbstractModel> listeners, int hook)
     {
-        _filtered ??= new Dictionary<IReadOnlyList<AbstractModel>, List<AbstractModel>?[]>(ReferenceEqualityComparer.Instance);
+        _safe ??= CurrentSafety();
+        if (_filtered == null || (!ReferenceEquals(_filteredWith, _safe) && !_filteredWith!.SequenceEqual(_safe)))
+        {
+            // Built with another patch safety (a hook another mod patched since): all built again.
+            _filtered = new ConditionalWeakTable<IReadOnlyList<AbstractModel>, List<AbstractModel>?[]>();
+        }
+        _filteredWith = _safe;
         if (!_filtered.TryGetValue(listeners, out List<AbstractModel>?[]? perHook))
         {
             perHook = FilterAll(listeners);
-            _filtered[listeners] = perHook;
+            _filtered.AddOrUpdate(listeners, perHook);
         }
         return perHook[hook];
     }
@@ -394,11 +426,6 @@ public static class HookFilter
     private static List<AbstractModel>?[] FilterAll(IReadOnlyList<AbstractModel> listeners)
     {
         _safe ??= CurrentSafety();
-        if (_filteredWith != null && !_filteredWith.SequenceEqual(_safe))
-        {
-            _filtered?.Clear();
-        }
-        _filteredWith = _safe;
 #if BENCH
         ListsFiltered++;
 #endif
@@ -426,6 +453,12 @@ public static class HookFilter
                 }
             }
         }
+#if BENCH
+        for (int i = 0; i < perHook.Length; i++)
+        {
+            ListenersDropped += perHook[i] == null ? 0 : listeners.Count - perHook[i]!.Count;
+        }
+#endif
         return perHook;
     }
 
@@ -444,15 +477,27 @@ public static class HookFilter
     /// of materializing every listener: same objects, same order, then the same override mask.
     /// </summary>
     internal static List<AbstractModel>? ForCombat(CombatState state, int hook) =>
-        CanWalk
+        Count(CanWalk
             ? Cached((state, null), hook) ?? Walked((state, null), hook, filter => FastListeners.Filtered(state, filter), () => ListenerCache.GetListeners(state))
-            : Get(ListenerCache.GetListeners(state), hook);
+            : Get(ListenerCache.GetListeners(state), hook));
 
     /// <summary>The run listeners (deck + child combat) of one hook, as <see cref="ForCombat"/>.</summary>
     internal static List<AbstractModel>? ForRun(RunState run, ICombatState? child, int hook) =>
-        CanWalk && (child == null || child is CombatState)
+        Count(CanWalk && (child == null || child is CombatState)
             ? Cached((run, child), hook) ?? Walked((run, child), hook, filter => FastListeners.Filtered(run, child, filter), () => ListenerCache.GetRunListeners(run, child))
-            : Get(ListenerCache.GetRunListeners(run, child), hook);
+            : Get(ListenerCache.GetRunListeners(run, child), hook));
+
+    /// <summary>A filtered list handed out (counted in test builds: bdperf checksum's filter row must see it used).</summary>
+    private static List<AbstractModel>? Count(List<AbstractModel>? list)
+    {
+#if BENCH
+        if (list != null)
+        {
+            Served++;
+        }
+#endif
+        return list;
+    }
 
     /// <summary>
     /// The list <see cref="Walked"/> built for this key and hook, while still current; null otherwise (then
@@ -515,6 +560,12 @@ public static class HookFilter
                 {
                     list.Add(listener);
                 }
+#if BENCH
+                else
+                {
+                    ListenersDropped++;
+                }
+#endif
             }
             entry.PerHook[hook] = list;
             _lastWalked[hook] = list.Count;
@@ -548,6 +599,73 @@ public static class HookFilter
         PatchSafety.Fault(Name);
         Log.Error($"[{ModEntry.Id}] {Name} disabled after exception, falling back to vanilla: {e}");
     }
+
+    /// <summary>The listener exception a mirror caught, thrown from its hook by <see cref="RethrowFinalizer"/>.</summary>
+    [ThreadStatic] private static Exception? _passOn;
+
+    /// <summary>
+    /// A mirror's catch: true when <paramref name="e"/> is a listener's own exception (then thrown from the hook after the
+    /// prefix returns, see <see cref="RethrowFinalizer"/>: the prefix returns false); false when this mod's code threw it
+    /// (HookFilter off, the prefix returns true: the game's hook runs).
+    /// </summary>
+    internal static bool PassOn(Exception e, Type mirror)
+    {
+        if (!ThrownByListener(e, mirror))
+        {
+            Disable(e);
+            return false;
+        }
+        _passOn = e;
+        return true;
+    }
+
+    /// <summary>
+    /// Whether no code of this mod lies between where <paramref name="e"/> was thrown and the mirror that caught it: the
+    /// first frame of this assembly is the mirror's class (its listener calls, decimal arithmetic in the BCL: the game's
+    /// loop makes the same calls in the same order and throws the same), and not where it was thrown (a bug of the mirror
+    /// itself). A listener method the JIT inlined into the mirror counts as the mirror's: game's hook then, as before.
+    /// </summary>
+    private static bool ThrownByListener(Exception e, Type mirror)
+    {
+        try
+        {
+            System.Diagnostics.StackFrame[] frames = new System.Diagnostics.StackTrace(e).GetFrames();
+            for (int i = 0; i < frames.Length; i++)
+            {
+                Type? type = frames[i].GetMethod()?.DeclaringType;
+                if (type != null && type.Assembly == typeof(HookFilter).Assembly)
+                {
+                    return i > 0 && type == mirror;
+                }
+            }
+        }
+        catch
+        {
+            // Can't tell: this mod's, the game's hook runs.
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Last finalizer of each mirrored hook (<see cref="Priority.Last"/>: after PatchGuard's guard, which then sees no
+    /// exception, so HookFilter isn't faulted by its frames): throws the listener exception the mirror caught, from the hook.
+    /// Harmony throws a returned exception with its stack trace restarting at the hook (this mod's frames gone, so no guard
+    /// further up blames this patch either), as it does for the game's own exceptions passing through these hooks: both
+    /// are logged here with their full trace first.
+    /// </summary>
+    internal static Exception? RethrowFinalizer(Exception? __exception)
+    {
+        // Runs at every call of these hot hooks: one thread-static read, no __originalMethod (a method lookup per call).
+        Exception? thrown = __exception ?? _passOn;
+        if (thrown != null)
+        {
+            _passOn = null;
+            Log.Warn($"[{ModEntry.Id}] {Name}: a mirrored hook threw (passed on to its caller as the game would): {thrown}");
+        }
+        return thrown;
+    }
+
+    internal static HarmonyMethod Finalizer => new(typeof(HookFilter), nameof(RethrowFinalizer)) { priority = Priority.Last };
 }
 
 /// <summary>
@@ -634,16 +752,27 @@ internal static class HookFilterDamage
         {
             return true;
         }
+        List<AbstractModel>? additive, multiplicative, cap, multiplicativeLate;
         try
         {
-            List<AbstractModel>? additive = HookFilter.ForRun(run, combatState, HookFilter.DamageAdditive);
-            List<AbstractModel>? multiplicative = HookFilter.ForRun(run, combatState, HookFilter.DamageMultiplicative);
-            List<AbstractModel>? cap = HookFilter.ForRun(run, combatState, HookFilter.DamageCap);
-            List<AbstractModel>? multiplicativeLate = late ? HookFilter.ForRun(run, combatState, HookFilter.DamageMultiplicativeLate) : null;
-            if (additive == null || multiplicative == null || cap == null || (late && multiplicativeLate == null))
-            {
-                return true;
-            }
+            // This mod's code only (an exception here is never the game's, however the JIT inlines it).
+            additive = HookFilter.ForRun(run, combatState, HookFilter.DamageAdditive);
+            multiplicative = HookFilter.ForRun(run, combatState, HookFilter.DamageMultiplicative);
+            cap = HookFilter.ForRun(run, combatState, HookFilter.DamageCap);
+            multiplicativeLate = late ? HookFilter.ForRun(run, combatState, HookFilter.DamageMultiplicativeLate) : null;
+        }
+        catch (Exception e)
+        {
+            HookFilter.Disable(e);
+            return true;
+        }
+        if (additive == null || multiplicative == null || cap == null || (late && multiplicativeLate == null))
+        {
+            return true;
+        }
+        try
+        {
+            // The game's loops over the kept listeners.
             decimal num = damage;
             List<AbstractModel> list = new();
             if (modifyDamageHookType.HasFlag(ModifyDamageHookType.Additive))
@@ -705,8 +834,8 @@ internal static class HookFilterDamage
         }
         catch (Exception e)
         {
-            HookFilter.Disable(e);
-            return true;
+            // A listener's own exception goes on to the caller as the game's loop throws it; this mod's: the game's hook.
+            return !HookFilter.PassOn(e, typeof(HookFilterDamage));
         }
     }
 }
@@ -722,14 +851,24 @@ internal static class HookFilterEnergyCost
         {
             return true;
         }
+        List<AbstractModel>? early, late;
         try
         {
-            List<AbstractModel>? early = HookFilter.ForCombat(state, HookFilter.EnergyCost);
-            List<AbstractModel>? late = HookFilter.ForCombat(state, HookFilter.EnergyCostLate);
-            if (early == null || late == null)
-            {
-                return true;
-            }
+            // This mod's code only (an exception here is never the game's, however the JIT inlines it).
+            early = HookFilter.ForCombat(state, HookFilter.EnergyCost);
+            late = HookFilter.ForCombat(state, HookFilter.EnergyCostLate);
+        }
+        catch (Exception e)
+        {
+            HookFilter.Disable(e);
+            return true;
+        }
+        if (early == null || late == null)
+        {
+            return true;
+        }
+        try
+        {
             // Vanilla: negative costs return early; IterateCombatHookListeners yields nothing while combat is ending.
             if (originalCost < 0m || HookFilter.CombatHookListenersEmpty)
             {
@@ -750,8 +889,8 @@ internal static class HookFilterEnergyCost
         }
         catch (Exception e)
         {
-            HookFilter.Disable(e);
-            return true;
+            // A listener's own exception goes on to the caller as the game's loop throws it; this mod's: the game's hook.
+            return !HookFilter.PassOn(e, typeof(HookFilterEnergyCost));
         }
     }
 }
@@ -767,13 +906,23 @@ internal static class HookFilterKeywords
         {
             return true;
         }
+        List<AbstractModel>? listeners;
         try
         {
-            List<AbstractModel>? listeners = HookFilter.ForCombat(state, HookFilter.Keywords);
-            if (listeners == null)
-            {
-                return true;
-            }
+            // This mod's code only (an exception here is never the game's, however the JIT inlines it).
+            listeners = HookFilter.ForCombat(state, HookFilter.Keywords);
+        }
+        catch (Exception e)
+        {
+            HookFilter.Disable(e);
+            return true;
+        }
+        if (listeners == null)
+        {
+            return true;
+        }
+        try
+        {
             // Vanilla iterates combatState.IterateHookListeners() directly here (no "combat ending" check).
             foreach (AbstractModel item in listeners)
             {
@@ -783,8 +932,8 @@ internal static class HookFilterKeywords
         }
         catch (Exception e)
         {
-            HookFilter.Disable(e);
-            return true;
+            // A listener's own exception goes on to the caller as the game's loop throws it; this mod's: the game's hook.
+            return !HookFilter.PassOn(e, typeof(HookFilterKeywords));
         }
     }
 }
@@ -800,13 +949,23 @@ internal static class HookFilterShouldPlay
         {
             return true;
         }
+        List<AbstractModel>? listeners;
         try
         {
-            List<AbstractModel>? listeners = HookFilter.ForCombat(state, HookFilter.ShouldPlay);
-            if (listeners == null)
-            {
-                return true;
-            }
+            // This mod's code only (an exception here is never the game's, however the JIT inlines it).
+            listeners = HookFilter.ForCombat(state, HookFilter.ShouldPlay);
+        }
+        catch (Exception e)
+        {
+            HookFilter.Disable(e);
+            return true;
+        }
+        if (listeners == null)
+        {
+            return true;
+        }
+        try
+        {
             if (!HookFilter.CombatHookListenersEmpty)
             {
                 foreach (AbstractModel item in listeners)
@@ -825,8 +984,8 @@ internal static class HookFilterShouldPlay
         }
         catch (Exception e)
         {
-            HookFilter.Disable(e);
-            return true;
+            // A listener's own exception goes on to the caller as the game's loop throws it; this mod's: the game's hook.
+            return !HookFilter.PassOn(e, typeof(HookFilterShouldPlay));
         }
     }
 }
@@ -842,13 +1001,23 @@ internal static class HookFilterHitting
         {
             return true;
         }
+        List<AbstractModel>? listeners;
         try
         {
-            List<AbstractModel>? listeners = HookFilter.ForCombat(state, HookFilter.AllowHitting);
-            if (listeners == null)
-            {
-                return true;
-            }
+            // This mod's code only (an exception here is never the game's, however the JIT inlines it).
+            listeners = HookFilter.ForCombat(state, HookFilter.AllowHitting);
+        }
+        catch (Exception e)
+        {
+            HookFilter.Disable(e);
+            return true;
+        }
+        if (listeners == null)
+        {
+            return true;
+        }
+        try
+        {
             // Vanilla goes through IterateCombatHookListeners, which yields nothing while combat is ending.
             bool allowed = true;
             if (!HookFilter.CombatHookListenersEmpty)
@@ -878,8 +1047,8 @@ internal static class HookFilterHitting
         }
         catch (Exception e)
         {
-            HookFilter.Disable(e);
-            return true;
+            // A listener's own exception goes on to the caller as the game's loop throws it; this mod's: the game's hook.
+            return !HookFilter.PassOn(e, typeof(HookFilterHitting));
         }
     }
 }
@@ -900,14 +1069,24 @@ internal static class HookFilterCostColors
         {
             return true;
         }
+        List<AbstractModel>? early, late;
         try
         {
-            List<AbstractModel>? early = HookFilter.ForCombat(combat, HookFilter.EnergyCost);
-            List<AbstractModel>? late = HookFilter.ForCombat(combat, HookFilter.EnergyCostLate);
-            if (early == null || late == null)
-            {
-                return true;
-            }
+            // This mod's code only (an exception here is never the game's, however the JIT inlines it).
+            early = HookFilter.ForCombat(combat, HookFilter.EnergyCost);
+            late = HookFilter.ForCombat(combat, HookFilter.EnergyCostLate);
+        }
+        catch (Exception e)
+        {
+            HookFilter.Disable(e);
+            return true;
+        }
+        if (early == null || late == null)
+        {
+            return true;
+        }
+        try
+        {
             // Vanilla iterates state.IterateHookListeners() directly here (no "combat ending" check).
             hookModifiedCost = card.EnergyCost.GetWithModifiers(CostModifiers.None);
             bool modified = false;
@@ -927,8 +1106,8 @@ internal static class HookFilterCostColors
         }
         catch (Exception e)
         {
-            HookFilter.Disable(e);
-            return true;
+            // A listener's own exception goes on to the caller as the game's loop throws it; this mod's: the game's hook.
+            return !HookFilter.PassOn(e, typeof(HookFilterCostColors));
         }
     }
 
@@ -939,13 +1118,23 @@ internal static class HookFilterCostColors
         {
             return true;
         }
+        List<AbstractModel>? listeners;
         try
         {
-            List<AbstractModel>? listeners = HookFilter.ForCombat(combat, HookFilter.StarCost);
-            if (listeners == null)
-            {
-                return true;
-            }
+            // This mod's code only (an exception here is never the game's, however the JIT inlines it).
+            listeners = HookFilter.ForCombat(combat, HookFilter.StarCost);
+        }
+        catch (Exception e)
+        {
+            HookFilter.Disable(e);
+            return true;
+        }
+        if (listeners == null)
+        {
+            return true;
+        }
+        try
+        {
             hookModifiedCost = card.BaseStarCost;
             bool modified = false;
             foreach (AbstractModel item in listeners)
@@ -960,8 +1149,8 @@ internal static class HookFilterCostColors
         }
         catch (Exception e)
         {
-            HookFilter.Disable(e);
-            return true;
+            // A listener's own exception goes on to the caller as the game's loop throws it; this mod's: the game's hook.
+            return !HookFilter.PassOn(e, typeof(HookFilterCostColors));
         }
     }
 

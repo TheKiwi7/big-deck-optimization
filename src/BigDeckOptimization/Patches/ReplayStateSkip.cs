@@ -13,9 +13,11 @@ namespace BigDeckOptimization.Patches;
 /// and, for every checksum, the full combat state. With huge decks that keeps every state of the combat alive: the heap
 /// grew by ~100 MB per turn at 20,000 combat cards, every collection got slower, and combat end serialized all of it.
 ///
-/// Above <see cref="MaxCards"/> combat cards, states are left out of the recording; the actions, choices and hooks still
-/// are recorded. The replay is a local debugging file no game logic reads (checksums compare the last 20 states, kept
-/// apart by <c>ChecksumTracker</c>, which also dumps them on a divergence), so results don't change.
+/// Above <see cref="MaxCards"/> combat cards, checksums are left out of the recording, each with its state (the id and
+/// context alone would be useless: playing a replay back checks each recorded checksum by hashing its state, and logs
+/// "Replay state diverged" for an id it doesn't find); the actions, choices and hooks still are recorded. The replay is a
+/// local debugging file no game logic reads (checksums compare the last 20 states, kept apart by <c>ChecksumTracker</c>,
+/// which also dumps them on a divergence), so results don't change.
 /// </summary>
 public static class ReplayStateSkip
 {

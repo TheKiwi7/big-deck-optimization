@@ -1,6 +1,10 @@
 # Positive control of SnapshotCardReuse's upgrade bits (snapcheck-apotheosis with a wrong level written into them): the check of
 # patched bits must see it (SnapshotCardReuse off for the session, its "bits kept for a card differ" error); the checksum
 # pairs stay identical (the game's own snapshot from then on).
+expect SnapshotCardReuse disabled \(the bits kept for a card differ
+expect COUNTERS end:.*mismatches [1-9]
+# The wrong bits are also caught while the checksum is computed, which is then computed again (SnapshotVerifier.Reserialized).
+expect SnapshotVerifier: kept bits were found wrong while computing a checksum
 timeout 1500
 newrun NECROBINDER 1234
 waitfor run 120

@@ -278,7 +278,12 @@ public static class PatchGuard
         }
     }
 
-    /// <summary>Runs after every call of a patched method: kept to a null check the JIT can inline (hot methods).</summary>
+    /// <summary>
+    /// Runs after every call of a patched method: kept to a null check the JIT can inline (hot methods). Harmony 2.4 calls
+    /// every finalizer a second time, in its catch block, when one of them throws after a normal return: this one then sees
+    /// that exception once (null the first time), never throws itself (<see cref="Check"/>), and faulting a class twice
+    /// does nothing more (<see cref="_removed"/>).
+    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void Guard(Exception? __exception)
     {
@@ -332,15 +337,83 @@ public static class PatchGuard
             }
             Log.Error($"[{ModEntry.Id}] {string.Join(", ", names)}: error inside the game's code, turned off and removed for this session (normal game from now on): {exception}");
         }
+        // Unpatching rebuilds the method that is running right now: done once it has returned. Scheduled first, so nothing
+        // after (the settings) can keep it from happening.
+        Type[] types = hit.Select(h => h.Type).ToArray();
+        Godot.Callable.From(() => RemoveFaulted(types, 0)).CallDeferred();
         Config.Settings.ApplyAll();
-        // Unpatching rebuilds the method that is running right now: done once it has returned.
-        Godot.Callable.From(() =>
+    }
+
+    /// <summary>Seconds after which a faulted patch class's patches that couldn't be removed are tried again.</summary>
+    private static readonly double[] RetryRemovalAfter = { 2, 10, 60 };
+
+    /// <summary>
+    /// Removes the patches of faulted patch classes. A removal can be refused (<see cref="HarmonyRebuild.Run{T}"/>: another
+    /// mod added a patch Harmony can't build again since) or fail: what is left stays installed but falls back to vanilla
+    /// through its flag (faulted: <see cref="Config.Settings.ApplyAll"/> keeps it off), and is tried again a few times.
+    /// </summary>
+    private static void RemoveFaulted(Type[] types, int attempt)
+    {
+        bool Faulted(Installed p) => p.Patch.DeclaringType != null && types.Contains(Outermost(p.Patch.DeclaringType));
+        RemoveWithRetries(() => Snapshot().Where(Faulted).ToList(), attempt);
+    }
+
+    /// <summary>
+    /// After an Apply that failed (<see cref="ModEntry.TryApply"/>): removes what that patch's Harmony id installed. What can't
+    /// be removed (refused or failed) would keep running with its option on: the patch is faulted (flags off, so its code
+    /// falls back to the game's) and the removal is tried again later, as for a fault at runtime.
+    /// </summary>
+    public static void RemoveFailedApply(string name, Harmony harmony)
+    {
+        Remove(Owned(harmony));
+        List<Installed> left = Owned(harmony);
+        if (left.Count == 0)
         {
-            foreach ((Type type, string[] _) in hit)
+            return;
+        }
+        PatchSafety.Fault(name);
+        Config.Settings.ApplyAll();
+        RetryLater(() => Owned(harmony), left, 0);
+    }
+
+    /// <summary>Removes these patches (read again at each try); what is left is tried again later.</summary>
+    private static void RemoveWithRetries(Func<List<Installed>> patches, int attempt)
+    {
+        try
+        {
+            Remove(patches());
+            List<Installed> left = patches();
+            if (left.Count > 0)
             {
-                Remove(Snapshot().Where(p => p.Patch.DeclaringType != null && Outermost(p.Patch.DeclaringType) == type));
+                RetryLater(patches, left, attempt);
             }
-        }).CallDeferred();
+        }
+        catch (Exception e)
+        {
+            Log.Error($"[{ModEntry.Id}] {Name}: removing faulted patches: {e}");
+        }
+    }
+
+    /// <summary>Patches left installed though faulted: kept off, tried again after <see cref="RetryRemovalAfter"/>[attempt].</summary>
+    private static void RetryLater(Func<List<Installed>> patches, List<Installed> left, int attempt)
+    {
+        try
+        {
+            // Never back on, whatever changed the settings meanwhile.
+            Config.Settings.ApplyAll();
+            string what = string.Join(", ", left.Select(p => $"{p.Patch.DeclaringType?.Name}.{p.Patch.Name} on {HarmonyRebuild.Describe(p.Original)}"));
+            if (attempt >= RetryRemovalAfter.Length || Godot.Engine.GetMainLoop() is not Godot.SceneTree tree)
+            {
+                Log.Error($"[{ModEntry.Id}] {Name}: faulted patches left installed (turned off, normal game through them): {what}");
+                return;
+            }
+            Log.Warn($"[{ModEntry.Id}] {Name}: faulted patches not removed yet (turned off meanwhile), trying again in {RetryRemovalAfter[attempt]:F0} s: {what}");
+            tree.CreateTimer(RetryRemovalAfter[attempt]).Timeout += () => RemoveWithRetries(patches, attempt + 1);
+        }
+        catch (Exception e)
+        {
+            Log.Error($"[{ModEntry.Id}] {Name}: removing faulted patches: {e}");
+        }
     }
 
     private static Type Outermost(Type type)

@@ -1,11 +1,11 @@
 # Campfire clone A/B (off): vanilla, run before clone-on; the CHECKSUM and STATE lines must match line for line.
 timeout 1200
+cmd bdopt off
 newrun NECROBINDER
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
 cmd bigdeck import ref all all
-cmd bdopt off
 checksum before
 state before
 cmd room RestSite

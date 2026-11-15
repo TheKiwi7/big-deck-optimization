@@ -1,9 +1,9 @@
 # Local co-op control, both peers with the mod off (client): see coopoff-host.txt.
 # Every machine needs the same bigdeck/ref.run.
 timeout 2400
+cmd bdopt off
 mplobby IRONCLAD 2
 waitfor run 240
-cmd bdopt off
 cmd bdperf checks off
 wait 14
 cmd bigdeck import ref all cards {hash:ref}

@@ -91,9 +91,10 @@ public static partial class AutoTest
             }
         }
         string walked = $"{parents.Count} objects walked in {watch.ElapsedMilliseconds} ms{(parents.Count >= LeakWalkLimit ? ", LIMIT REACHED" : "")}";
-        Say(paths.Count == 0
-            ? $"  LEAKCHECK {label}: no static of {(game ? "the game" : "the mod")} reaches {(current ? "the current run" : "the left run")} ({walked})"
-            : $"  LEAKCHECK {label}: REACHED through {paths.Count} path(s) ({walked})");
+        // A walk stopped at its limit saw only part of what the statics hold: finding nothing then proves nothing.
+        Say(paths.Count > 0 ? $"  LEAKCHECK {label}: REACHED through {paths.Count} path(s) ({walked})"
+            : parents.Count >= LeakWalkLimit ? $"  LEAKCHECK {label}: INCONCLUSIVE, the walk stopped at its limit before finding {(current ? "the current run" : "the left run")} ({walked})"
+            : $"  LEAKCHECK {label}: no static of {(game ? "the game" : "the mod")} reaches {(current ? "the current run" : "the left run")} ({walked})");
         paths.ForEach(p => Say($"    {p}"));
     }
 

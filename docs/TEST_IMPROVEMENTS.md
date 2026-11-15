@@ -66,5 +66,5 @@ What the v0.9.0 test series taught, what was built from it, and what's left. Num
 
 - One AutoSlay session stopped at room 15, no error in its log, no Windows crash record: not seen again in 192 short sessions and 8 whole runs. Cause unknown (it had just loaded a texture outside the cache, the dummy renderer isn't thread-safe: a guess). Its exit code is now recorded with the state `CRASHED`, and its first log kept as `<log>.early`.
 - A polled window once at 0,0 fullscreen for a single poll (a few ms), in 2 of the last 6 scripts, around a session's start or end; origin not found.
-- A session through Steam (`run.ps1` without a copy, `try.ps1`) shows its window: Steam launches the game.
+- A session through Steam (`run.ps1` without a copy, `try.ps1 -SteamInstall`) shows its window: Steam launches the game.
 - With Limitless, AutoSlay ends on "Main menu did not appear" or "Game over screen did not appear" after its 50 rooms: Limitless's last event goes on instead of ending the run. A normal end, 30 s after the last room.

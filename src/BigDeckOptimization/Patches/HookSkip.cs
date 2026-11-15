@@ -169,7 +169,7 @@ public static partial class HookSkip
         return false;
     }
 
-    private static MethodInfo? _runWalk, _combatWalk, _combatHookWalk, _combatHookWalkBody;
+    private static MethodInfo? _runWalk, _combatWalk, _combatHookWalk;
     private static Func<ICombatState, IEnumerable<AbstractModel>>? _vanillaCombatHookWalk;
     private static MethodInfo? _redirectRun, _redirectCombat, _redirectCombatHook;
     private static readonly Dictionary<MethodBase, int> _indexByBody = new();
@@ -187,8 +187,10 @@ public static partial class HookSkip
         _redirectRun = AccessTools.Method(typeof(HookSkip), nameof(RunWalk));
         _redirectCombat = AccessTools.Method(typeof(HookSkip), nameof(CombatWalk));
         _redirectCombatHook = AccessTools.Method(typeof(HookSkip), nameof(CombatHookWalk));
-        _combatHookWalkBody = AccessTools.EnumeratorMoveNext(_combatHookWalk);
-        PatchSafety.RequireFingerprint(_combatHookWalkBody, CombatHookWalkFingerprint);
+        // No fingerprint required on Hook.IterateCombatHookListeners here: only the hooks walking through it rely on its
+        // code (CombatHookFiltered mirrors its "combat ending" check), and CombatHookWalk asks HookFilter.CombatHookWalkPatched
+        // at each walk, which answers "patched" when that code changed. The hooks walking runState/combatState directly
+        // stay filtered then.
 
         // Entries of every classified game version: per hook, the first one whose code, defaults and helpers all match.
         int absent = 0;
@@ -284,6 +286,33 @@ public static partial class HookSkip
             Log.Error($"[{ModEntry.Id}] {Name}: patching hooks stopped ({_toPatch.Count} left vanilla): {e}");
             LeftVanilla += _toPatch.Count;
             _toPatch.Clear();
+            Finished();
+        }
+    }
+
+    private static bool _finished;
+
+    /// <summary>
+    /// The last hook is patched: logs the totals and checks every patched method has its detour again (ModEntry's check
+    /// may have run while hooks were still queued). InlineGuard needs nothing here: no hook is inlined by its callers
+    /// (each has a loop over an IEnumerable, i.e. exception handling, which the JIT doesn't inline).
+    /// </summary>
+    private static void Finished()
+    {
+        if (_finished)
+        {
+            return;
+        }
+        _finished = true;
+        Log.Info($"[{ModEntry.Id}] {Name}: {Active} hooks filtered, {LeftVanilla} left vanilla ({_absent} classified hooks not in this game version)");
+        try
+        {
+            // ModEntry's own check ran when its patches were in, possibly before these hooks: ~150 rebuilds since.
+            HarmonyRebuild.CheckAll("HookSkip patched its hooks");
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"[{ModEntry.Id}] {nameof(HarmonyRebuild)}: {e}");
         }
     }
 
@@ -300,7 +329,10 @@ public static partial class HookSkip
             }
             try
             {
-                PatchGuard.Patch(harmony, body, transpiler: new HarmonyMethod(typeof(HookSkip), nameof(Transpiler)));
+                // Last of the transpilers: Harmony runs them by priority (highest first), each on the previous one's output,
+                // so another mod's transpiler on the hook still sees the game's walk calls it may look for (this one
+                // replaces them, and the redirect stays in place even when this patch backs off or is switched off).
+                PatchGuard.Patch(harmony, body, transpiler: new HarmonyMethod(typeof(HookSkip), nameof(Transpiler)) { priority = Priority.Last });
                 Active++;
             }
             catch (Exception e)
@@ -311,7 +343,7 @@ public static partial class HookSkip
         }
         if (_toPatch.Count == 0)
         {
-            Log.Info($"[{ModEntry.Id}] {Name}: {Active} hooks filtered, {LeftVanilla} left vanilla ({_absent} classified hooks not in this game version)");
+            Finished();
         }
     }
 
@@ -339,7 +371,9 @@ public static partial class HookSkip
                 yield return code;
                 continue;
             }
-            // Same stack in, same IEnumerable out: (state[, combat]) -> (state[, combat], index) -> call redirect.
+            // Same stack in, same IEnumerable out: (state[, combat]) -> (state[, combat], index) -> call redirect. In
+            // `combatState?.IterateHookListeners() ?? Array.Empty<AbstractModel>()` (v0.113) the call sits on the non-null
+            // branch only: the null branch keeps the game's empty array.
             yield return new CodeInstruction(OpCodes.Ldc_I4, index).WithLabels(code.ExtractLabels()).WithBlocks(code.ExtractBlocks());
             yield return new CodeInstruction(OpCodes.Call, redirect);
         }
@@ -475,13 +509,11 @@ public static partial class HookSkip
             : combatState.IterateHookListeners();
     }
 
-    /// <summary>v0.107.1 <c>Hook.IterateCombatHookListeners</c> (nothing while combat is ending), mirrored below.</summary>
-    private const string CombatHookWalkFingerprint = "B3B83A82B69E17FC";
-
     /// <summary>Replaces <c>Hook.IterateCombatHookListeners(combatState)</c> in a hook.</summary>
     public static IEnumerable<AbstractModel> CombatHookWalk(ICombatState combatState, int index)
     {
-        // The filtered walk mirrors this method: another mod's patch on it or on what it reads keeps the game's (never throws).
+        // The filtered walk mirrors this method (nothing while combat is ending): its code changed (fingerprint, checked
+        // there), or another mod's patch on it or on what it reads, keeps the game's (never throws).
         PileFilter? filter = FilterFor(index);
         if (filter != null && HookFilter.CombatHookWalkPatched())
         {

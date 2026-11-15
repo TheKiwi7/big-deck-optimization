@@ -2,10 +2,10 @@
 # fights played by the game's auto player. Each combat the game rebuilds every peer's deck from the sync message (Player.
 # SyncWithSerializedPlayer) and the cards replaced stay in RunState._allCards: GCFULL shows that list and the live heap.
 timeout 1500
+cmd bdopt off
 mplobby NECROBINDER 2
 waitfor run 240
 wait 8
-cmd bdopt off
 cmd bigdeck import ref all all {hash:ref}
 cmd bigdeck import ref all cards {hash:ref}
 cmd bdperf checks off

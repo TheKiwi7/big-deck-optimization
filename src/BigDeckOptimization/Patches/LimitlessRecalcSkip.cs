@@ -34,9 +34,10 @@ namespace BigDeckOptimization.Patches;
 /// pass found every card's enchantment doing nothing (its memo holds, or the empty default), the next passes on that player
 /// return at once while <see cref="_quiet"/> stands still: it moves when an enchantment's amount changes, a storage
 /// card's upgrade or floor, a card's enchantment, a saved list, an inner enchantment added, or a card with a stacked
-/// enchantment without a memo entering a pile (the fields' only writers are checked at load). One skipped pass in
+/// enchantment without a memo that holds (or another enchantment with its own RecalculateValues) entering a pile (the fields' only writers are checked at load). One skipped pass in
 /// <see cref="PassVerifyEvery"/> runs for real: a memo not holding then means a change went unseen, and passes stop being
-/// skipped for the session.
+/// skipped for the session. A pass that runs is the game's own: this only watches what its calls do (an exception from the
+/// game's or a mod's code there leaves it as the game would, unwatched).
 /// </summary>
 public static class LimitlessRecalcSkip
 {
@@ -77,12 +78,19 @@ public static class LimitlessRecalcSkip
     private static readonly WeakReference<PlayerCombatState?> _quietState = new(null);
     private static int _sincePassCheck;
     private static bool _passSkip;
-    private static bool _checkingPass;
     private static MethodInfo? _pass;
+    /// <summary>What the game's pass walks; quiet passes are judged on AllPiles and pile adds, the same cards while unpatched.</summary>
+    private static MethodInfo? _allCards;
     private static Type? _multi, _storageCard;
-    private static readonly Dictionary<Type, bool> _defaultRecalculates = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, bool> _defaultRecalculates = new();
+
+    /// <summary>A running pass of the game's is watched (main thread, the outermost one): whether every call did nothing so far.</summary>
+    private static bool _passTracked, _passQuiet, _passWasQuiet;
+    private static long _passVersion, _passData;
 
     private static MethodInfo? _original;
+    /// <summary>The inner list's getter, which a skipped recalculation doesn't call.</summary>
+    private static MethodInfo? _getter;
     private static MethodInfo? _defaultRecalculate;
     private static AccessTools.FieldRef<object, List<CardModel>?>? _innerCards;
     private static AccessTools.FieldRef<List<CardModel>, int>? _cardsVersion;
@@ -101,8 +109,9 @@ public static class LimitlessRecalcSkip
         MethodInfo original = AccessTools.Method(multi, "RecalculateValues", Type.EmptyTypes)
             ?? throw new MissingMethodException(LimitlessReserialize.MultiEnchantmentType, "RecalculateValues");
         PatchSafety.RequireFingerprint(original, RecalculateValuesFingerprint);
-        PatchSafety.RequireFingerprint(AccessTools.PropertyGetter(multi, "EnchantmentsOnCards")
-            ?? throw new MissingMethodException(LimitlessReserialize.MultiEnchantmentType, "get_EnchantmentsOnCards"), EnchantmentsOnCardsFingerprint);
+        _getter = AccessTools.PropertyGetter(multi, "EnchantmentsOnCards")
+            ?? throw new MissingMethodException(LimitlessReserialize.MultiEnchantmentType, "get_EnchantmentsOnCards");
+        PatchSafety.RequireFingerprint(_getter, EnchantmentsOnCardsFingerprint);
         MethodInfo defaultRecalculate = AccessTools.Method(typeof(EnchantmentModel), nameof(EnchantmentModel.RecalculateValues), Type.EmptyTypes)
             ?? throw new MissingMethodException(nameof(EnchantmentModel), nameof(EnchantmentModel.RecalculateValues));
         PatchSafety.RequireFingerprint(defaultRecalculate, DefaultRecalculateFingerprint);
@@ -130,7 +139,8 @@ public static class LimitlessRecalcSkip
     {
         _pass = AccessTools.Method(typeof(PlayerCombatState), nameof(PlayerCombatState.RecalculateCardValues)) ?? throw new MissingMethodException(nameof(PlayerCombatState), nameof(PlayerCombatState.RecalculateCardValues));
         PatchSafety.RequireFingerprint(_pass, RecalculateCardValuesFingerprint);
-        PatchSafety.RequireFingerprint(AccessTools.PropertyGetter(typeof(PlayerCombatState), nameof(PlayerCombatState.AllCards)) ?? throw new MissingMethodException(nameof(PlayerCombatState), "AllCards"), AllCardsFingerprint);
+        _allCards = AccessTools.PropertyGetter(typeof(PlayerCombatState), nameof(PlayerCombatState.AllCards)) ?? throw new MissingMethodException(nameof(PlayerCombatState), "AllCards");
+        PatchSafety.RequireFingerprint(_allCards, AllCardsFingerprint);
         MethodInfo deepClone = AccessTools.Method(multi, "DeepCloneFields") ?? throw new MissingMethodException(LimitlessReserialize.MultiEnchantmentType, "DeepCloneFields");
         PatchSafety.RequireFingerprint(deepClone, DeepCloneFieldsFingerprint);
         _storageCard = AccessTools.TypeByName("Limitless.LimitlessCode.UncappedEnchantments.EnchantmentStorageCard")
@@ -141,6 +151,8 @@ public static class LimitlessRecalcSkip
         PatchSafety.RequireFieldWriters(typeof(CardModel), "_floorAddedToDeck", "set_FloorAddedToDeck");
         PatchSafety.RequireFieldWriters(typeof(CardModel), "<Enchantment>k__BackingField", "set_Enchantment");
         PatchSafety.RequireFieldWriters(multi, "_enchantmentsOnCards", "get_EnchantmentsOnCards", "DeepCloneFields");
+        // And the list the getter hands out changes only in AddEnchantment (bumped around it): no other code may change it.
+        LimitlessHookSkip.RequireKnownInnerListWriters(multi);
         var bump = new HarmonyMethod(typeof(LimitlessRecalcSkip), nameof(BumpQuiet));
         var bumpCard = new HarmonyMethod(typeof(LimitlessRecalcSkip), nameof(BumpQuietIfStorage));
         MethodInfo Setter(Type type, string property) => AccessTools.PropertySetter(type, property) ?? throw new MissingMethodException(type.Name, "set_" + property);
@@ -153,9 +165,11 @@ public static class LimitlessRecalcSkip
         PatchGuard.Patch(harmony, deepClone, prefix: bump);
         // A card only enters a pile through this method (no other code changes the pile lists).
         PatchSafety.RequireFieldWriters(typeof(CardPile), "_cards", PatchSafety.CardListWriters);
+        // A finalizer: AddInternal raises its events after the list changed, and a handler throwing there leaves the card in.
         PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), nameof(CardPile.AddInternal)) ?? throw new MissingMethodException(nameof(CardPile), nameof(CardPile.AddInternal)),
-            postfix: new HarmonyMethod(typeof(LimitlessRecalcSkip), nameof(CardEntered)));
-        PatchGuard.Patch(harmony, _pass, prefix: new HarmonyMethod(typeof(LimitlessRecalcSkip), nameof(PassPrefix)));
+            finalizer: new HarmonyMethod(typeof(LimitlessRecalcSkip), nameof(CardEntered)));
+        PatchGuard.Patch(harmony, _pass, prefix: new HarmonyMethod(typeof(LimitlessRecalcSkip), nameof(PassPrefix)),
+            finalizer: new HarmonyMethod(typeof(LimitlessRecalcSkip), nameof(PassFinalizer)));
         _passSkip = true;
     }
 
@@ -169,29 +183,55 @@ public static class LimitlessRecalcSkip
         }
     }
 
-    /// <summary>Called when a card enters a pile: a stacked enchantment no pass has seen means the next pass runs.</summary>
-    private static void CardEntered(CardModel card)
+    /// <summary>
+    /// Called when a card enters a pile (or tried to): an enchantment whose recalculation may do something, a stacked one
+    /// without a memo or any other type with its own RecalculateValues (Adroit, a mod's), means the next pass runs. Until
+    /// v1.0.2 only stacked ones counted: a bare enchantment (Limitless's uncapped enchantments off) entering after a quiet
+    /// pass wasn't recalculated until a check pass.
+    /// </summary>
+    private static Exception? CardEntered(Exception? __exception, CardModel card)
     {
-        if (_passSkip && card.Enchantment is { } enchantment && ReferenceEquals(enchantment.GetType(), _multi)
-            && !(_memos.TryGetValue(enchantment, out Memo? memo) && memo.Valid))
+        try
         {
-            _quiet++;
+            // A stacked one counts as quiet only if its memo still holds: one made before the last quiet pass, while its card
+            // was in no pile, may have gone stale unseen by that pass.
+            if (_passSkip && card.Enchantment is { } enchantment && !KeepsDefault(enchantment.GetType())
+                && !(ReferenceEquals(enchantment.GetType(), _multi) && _memos.TryGetValue(enchantment, out Memo? memo) && memo.Holds(enchantment)))
+            {
+                System.Threading.Interlocked.Increment(ref _quiet);
+            }
         }
+        catch
+        {
+            System.Threading.Interlocked.Increment(ref _quiet); // Can't tell: the next pass runs.
+        }
+        return __exception;
     }
 
     /// <summary>
-    /// The pass itself, as the game's (every card of <c>AllPiles</c>, <c>Enchantment?.RecalculateValues()</c>), knowing
-    /// which calls would do nothing; when all would, the next ones are skipped while nothing moved.
+    /// Skips the pass when the last ones found every call doing nothing and nothing moved since; otherwise lets the game's
+    /// pass run (each stacked enchantment's own call then goes through <see cref="Prefix"/>) and watches it. Until v1.0.2
+    /// this ran its own copy of the pass: an exception from an enchantment's code then made the game's pass run again from
+    /// its first card, and turned the skip off for an error that wasn't this mod's.
     /// </summary>
-    private static bool PassPrefix(PlayerCombatState __instance)
+    private static bool PassPrefix(PlayerCombatState __instance, out bool __state)
     {
-        if (!_passSkip || !Enabled || !LimitlessReserialize.Enabled || !LimitlessReserialize.CanCompareHere || _checkingPass)
+        __state = false;
+        if (_passTracked)
+        {
+            _passQuiet = false; // A pass inside a pass: not watched, the outer one counts as not quiet.
+            return true;
+        }
+        if (!_passSkip || !Enabled || !LimitlessReserialize.Enabled || !LimitlessReserialize.CanCompareHere)
         {
             return true;
         }
         try
         {
-            if (PatchSafety.IsPatchedByOthers(_pass) || PatchedByOthers())
+            // Another mod's patch on AllCards could add cards this never sees enter a pile (OnlyDefaultsBesidesStacked, CardEntered).
+            // A mod loaded after the load check that may change an inner list without bumping the quiet state: passes run.
+            if (PatchSafety.IsPatchedByOthers(_pass) || PatchSafety.IsPatchedByOthers(_allCards) || PatchedByOthers()
+                || !LimitlessHookSkip.InnerListWritersKnown)
             {
                 return true;
             }
@@ -205,74 +245,93 @@ public static class LimitlessRecalcSkip
                 return false;
             }
             _sincePassCheck = 0;
-            long version = _quiet;
             PassesRun++;
-            bool quiet = true;
-            IReadOnlyList<CardPile> piles = __instance.AllPiles;
-            _checkingPass = true;
-            try
+            _passVersion = _quiet;
+            _passData = dataStamp;
+            _passWasQuiet = wasQuiet;
+            _passQuiet = true;
+            _passTracked = true;
+            __state = true;
+        }
+        catch (Exception e)
+        {
+            StopPasses(e);
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// After a watched pass: quiet when every call did nothing (memos held, the rest keep the empty default) and nothing
+    /// moved meanwhile. An exception from the pass is the game's, passed on unchanged: nothing is concluded from that pass.
+    /// </summary>
+    private static Exception? PassFinalizer(Exception? __exception, PlayerCombatState __instance, bool __state)
+    {
+        if (!__state)
+        {
+            return __exception;
+        }
+        _passTracked = false;
+        try
+        {
+            if (__exception != null)
             {
-                for (int l = 0; l < piles.Count; l++)
-                {
-                    IReadOnlyList<CardModel> cards = piles[l].Cards;
-                    foreach (CardModel card in cards)
-                    {
-                        EnchantmentModel? enchantment = card.Enchantment;
-                        if (enchantment == null || KeepsDefault(enchantment.GetType()))
-                        {
-                            continue;
-                        }
-                        if (ReferenceEquals(enchantment.GetType(), _multi) && _memos.TryGetValue(enchantment, out Memo? memo) && memo.Holds(enchantment))
-                        {
-                            // One in VerifyEvery goes through Prefix, which checks it with the full comparison.
-                            if (++_sinceVerify >= VerifyEvery)
-                            {
-                                enchantment.RecalculateValues();
-                            }
-                            else
-                            {
-                                Skipped++;
-                            }
-                            continue;
-                        }
-                        quiet = false;
-                        enchantment.RecalculateValues();
-                    }
-                }
+                _quietAt = -1;
+                return __exception;
             }
-            finally
-            {
-                _checkingPass = false;
-            }
-            if (wasQuiet && !quiet)
+            bool quiet = _passQuiet && _quiet == _passVersion && OnlyDefaultsBesidesStacked(__instance);
+            if (_passWasQuiet && !quiet)
             {
                 PassMismatches++;
                 _passSkip = false;
                 Log.Error($"[{ModEntry.Id}] {Name}: a stacked enchantment changed unseen between recalculations, every pass runs from now on");
             }
-            _quietAt = quiet && version == _quiet ? version : -1;
-            _quietData = dataStamp;
+            _quietAt = quiet ? _passVersion : -1;
+            _quietData = _passData;
             _quietState.SetTarget(__instance);
-            return false;
         }
         catch (Exception e)
         {
-            _checkingPass = false;
-            _passSkip = false;
-            Log.Error($"[{ModEntry.Id}] {Name}: recalculation passes not skipped any more, after an error: {e}");
-            return true;
+            StopPasses(e);
         }
+        return __exception;
     }
 
-    private static bool KeepsDefault(Type type)
+    /// <summary>Whether every card's enchantment in the piles is a stacked one (judged by its calls) or keeps the empty default.</summary>
+    private static bool OnlyDefaultsBesidesStacked(PlayerCombatState state)
     {
-        if (!_defaultRecalculates.TryGetValue(type, out bool keeps))
+        IReadOnlyList<CardPile> piles = state.AllPiles;
+        Type? last = null;
+        for (int l = 0; l < piles.Count; l++)
         {
-            keeps = AccessTools.Method(type, nameof(EnchantmentModel.RecalculateValues), Type.EmptyTypes)?.DeclaringType == typeof(EnchantmentModel);
-            _defaultRecalculates[type] = keeps;
+            IReadOnlyList<CardModel> cards = piles[l].Cards;
+            for (int i = 0; i < cards.Count; i++)
+            {
+                Type? type = cards[i].Enchantment?.GetType();
+                if (type == null || ReferenceEquals(type, last) || ReferenceEquals(type, _multi))
+                {
+                    continue;
+                }
+                if (!KeepsDefault(type))
+                {
+                    return false;
+                }
+                last = type;
+            }
         }
-        return keeps;
+        return true;
     }
+
+    /// <summary>This mod's own error around a pass: passes stop being skipped (the game's pass runs, unwatched).</summary>
+    private static void StopPasses(Exception e)
+    {
+        _passTracked = false;
+        _passSkip = false;
+        Log.Error($"[{ModEntry.Id}] {Name}: recalculation passes not skipped any more, after an error: {e}");
+    }
+
+    /// <summary>Whether the type keeps the game's empty RecalculateValues (any thread: card moves may happen off the main one).</summary>
+    private static bool KeepsDefault(Type type) => _defaultRecalculates.GetOrAdd(type, static t =>
+        AccessTools.Method(t, nameof(EnchantmentModel.RecalculateValues), Type.EmptyTypes)?.DeclaringType == typeof(EnchantmentModel));
 
     /// <summary>What the last comparison that kept a MultiEnchantment's list read, to tell when it would keep it again.</summary>
     private sealed class Memo
@@ -287,7 +346,7 @@ public static class LimitlessRecalcSkip
         public EnchantmentModel?[] Enchantments = Array.Empty<EnchantmentModel?>();
         public int[] Amounts = Array.Empty<int>();
         public int Count;
-        public int CardSaves, EnchantmentSaves;
+        public int CardSaves, EnchantmentSaves, SpireFields;
         public long BaseLibChanges;
         public bool Valid;
 
@@ -302,7 +361,7 @@ public static class LimitlessRecalcSkip
             if (!ReferenceEquals(stored, Stored) || stored == null || _storedVersion!(stored) != StoredVersion
                 || !ReferenceEquals(cards, Cards) || cards == null || _cardsVersion!(cards) != CardsVersion || cards.Count != Count
                 || _cardData!.SavesCount != CardSaves || _enchantmentData!.SavesCount != EnchantmentSaves
-                || BaseLibTypes.Changes != BaseLibChanges)
+                || BaseLibTypes.Changes != BaseLibChanges || BaseLibTypes.SpireFieldCount() != SpireFields)
             {
                 return false;
             }
@@ -383,7 +442,9 @@ public static class LimitlessRecalcSkip
             {
                 CardModel? card = cards[i];
                 EnchantmentModel? enchantment = card?.Enchantment;
-                if (card == null || enchantment == null || !Plain(card.GetType(), enchantment: false) || !Plain(enchantment.GetType(), enchantment: true))
+                // Inner cards are Limitless's storage cards: the only card type whose upgrade and floor move the passes' quiet state.
+                if (card == null || enchantment == null || (_storageCard != null && !ReferenceEquals(card.GetType(), _storageCard))
+                    || !Plain(card.GetType(), enchantment: false) || !Plain(enchantment.GetType(), enchantment: true))
                 {
                     Array.Clear(memo.Inner, 0, i);
                     Array.Clear(memo.Enchantments, 0, i);
@@ -408,6 +469,8 @@ public static class LimitlessRecalcSkip
             memo.CardSaves = cardData.SavesCount;
             memo.EnchantmentSaves = enchantmentData.SavesCount;
             memo.BaseLibChanges = BaseLibTypes.Changes;
+            // A SavedSpireField registered later may target these types (Plain judged them without it).
+            memo.SpireFields = BaseLibTypes.SpireFieldCount();
             memo.Valid = true;
         }
         catch (Exception e)
@@ -438,7 +501,7 @@ public static class LimitlessRecalcSkip
         {
             _patchCheckCalls = 1023;
             _patchedByOthers = PatchSafety.IsPatchedByOthers(_original) || PatchSafety.IsPatchedByOthers(_defaultRecalculate)
-                || LimitlessReserialize.PatchedByOthers();
+                || PatchSafety.IsPatchedByOthers(_getter) || LimitlessReserialize.PatchedByOthers();
         }
         return _patchedByOthers;
     }
@@ -446,6 +509,17 @@ public static class LimitlessRecalcSkip
     private static int _sinceVerify;
 
     private static bool Prefix(EnchantmentModel __instance)
+    {
+        bool runs = Runs(__instance);
+        if (runs && _passTracked)
+        {
+            _passQuiet = false; // The watched pass ran this one: something may have changed.
+        }
+        return runs;
+    }
+
+    /// <summary>Whether Limitless's RecalculateValues runs (false: skipped, it would do nothing).</summary>
+    private static bool Runs(EnchantmentModel __instance)
     {
         if (!Enabled || !LimitlessReserialize.Enabled || !LimitlessReserialize.CanCompareHere)
         {

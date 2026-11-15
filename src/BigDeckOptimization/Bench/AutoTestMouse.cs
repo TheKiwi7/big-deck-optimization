@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using BigDeckOptimization.Patches;
@@ -12,6 +13,7 @@ using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
+using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
 
 namespace BigDeckOptimization.Bench;
@@ -65,6 +67,70 @@ public static partial class AutoTest
         NInputManager manager = NInputManager.Instance ?? throw new InvalidOperationException("no input manager");
         AccessTools.Field(typeof(NInputManager), "_controllerInputMap").SetValue(manager, manager.ControllerManager.GetDefaultControllerInputMap);
         Say("  controller map: the game's defaults");
+    }
+
+    /// <summary>
+    /// Script <c>controllermap stale</c>: adds to this session's controller map actions the InputMap doesn't have, as a
+    /// <c>settings.save</c> written by an older game version leaves them on v0.107 (v0.111 and later keep the defaults for such
+    /// bindings, <c>MergeSavedControllerBindings</c>): <c>NInputManager._UnhandledInput</c> then asks about missing actions at every
+    /// unhandled event, what ControllerActionSkip answers. Not saved.
+    /// </summary>
+    private static void ControllerMapStale()
+    {
+        NInputManager manager = NInputManager.Instance ?? throw new InvalidOperationException("no input manager");
+        var field = AccessTools.Field(typeof(NInputManager), "_controllerInputMap");
+        var map = new Dictionary<StringName, StringName>((Dictionary<StringName, StringName>)field.GetValue(manager)!);
+        int added = 0;
+        // Keys are the game's actions, values the controller actions bound to them: _UnhandledInput asks the event about each value.
+        foreach (string action in new[] { "controller_d_pad_up", "controller_r_stick_up", "bdtest_removed_controller_action" })
+        {
+            if (!InputMap.HasAction(action))
+            {
+                map["bdtest_stale_binding_" + added] = action;
+                added++;
+            }
+        }
+        if (added == 0)
+        {
+            throw new InvalidOperationException("every stale action exists in this game's InputMap");
+        }
+        field.SetValue(manager, map);
+        Say($"  controller map: {added} actions this game doesn't have added");
+    }
+
+    /// <summary>
+    /// Script <c>buttoninput [expect-muted|expect-none]</c>: the buttons in the scene whose <c>_Input</c> is exactly NButton's (those
+    /// IdleButtonInput may keep from input, same rule), how many are enabled, processing input, and enabled, not pressed and not
+    /// processing input (muted: vanilla gives an enabled button its input). <c>expect-muted</c>: some must be muted (the mod on);
+    /// <c>expect-none</c>: none may be (the mod off: the unmodified game). Otherwise the line fails.
+    /// </summary>
+    private static void ButtonInput(SceneTree tree, string expect)
+    {
+        var isPressed = AccessTools.FieldRefAccess<NClickableControl, bool>("_isPressed");
+        int buttons = 0, enabled = 0, processing = 0, muted = 0;
+        foreach (NButton button in FindAll<NButton>(tree.Root))
+        {
+            System.Reflection.MethodInfo? input = button.GetType().GetMethod("_Input",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic, new[] { typeof(InputEvent) });
+            if (input?.DeclaringType != typeof(NButton))
+            {
+                continue;
+            }
+            buttons++;
+            bool on = button.IsEnabled, inputOn = button.IsProcessingInput();
+            enabled += on ? 1 : 0;
+            processing += inputOn ? 1 : 0;
+            muted += on && !inputOn && !isPressed(button) ? 1 : 0;
+        }
+        Say($"  BUTTONINPUT {expect}: buttons={buttons} enabled={enabled} processing={processing} idleEnabledNotProcessing={muted}");
+        if (expect == "expect-muted" && muted == 0)
+        {
+            throw new InvalidOperationException("no idle button is kept from input: IdleButtonInput didn't act (or no eligible button)");
+        }
+        if (expect == "expect-none" && (muted > 0 || enabled == 0))
+        {
+            throw new InvalidOperationException(enabled == 0 ? "no enabled button to look at" : $"{muted} enabled idle buttons still kept from input: not the unmodified game");
+        }
     }
 
     /// <summary>Global canvas position to the window position an input event carries.</summary>

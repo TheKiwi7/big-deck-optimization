@@ -16,7 +16,9 @@ if (Test-Path $backup) { throw "$backup exists (an earlier run stopped from outs
 $log = Join-Path (Get-VersionDir $GameDir) "release-incopy.log"
 $realAppData = $env:APPDATA
 $process = $null
+$slotLocked = $false
 try {
+    $slotLocked = Lock-Slot 90
     if (Test-Path $installed) { Rename-Item $installed $backup }
     Expand-Archive $zip.FullName -DestinationPath $mods -Force
     Add-TestMods $GameDir
@@ -33,6 +35,7 @@ try {
 finally {
     if ($process -and -not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue; Start-Sleep 3 }
     $env:APPDATA = $realAppData
+    if ($slotLocked) { Unlock-Slot 90 }
     Remove-TestMods $GameDir
     if (Test-Path $backup) {
         Remove-Item -Recurse -Force $installed -ErrorAction SilentlyContinue
@@ -43,7 +46,21 @@ if (-not (Test-Path $log)) { throw "No log: the game didn't start" }
 $text = Get-Content $log
 $init = $text | Where-Object { $_ -match "\[BigDeckOptimization\] Initialized v" } | Select-Object -First 1
 $applied = @($text | Where-Object { $_ -match "\[BigDeckOptimization\] Patch \S+ applied" }).Count
-$problems = @($text | Where-Object { $_ -match "\[BigDeckOptimization\] (Patch \S+ (skipped|could not)|.*disabled after)" })
+# Every problem judge.py sees (an error this mod logs, a part turned off, an error the game logs through this mod's code), not
+# only skipped patches: HarmonyRebuild's "patched methods run without their patches" (other mods' patches lost, v1.0.0) among them.
+# The session doesn't end by itself: closed once the patches are applied.
+$problems = @($text | Where-Object { $_ -match "\[BigDeckOptimization\] Patch \S+ (skipped|could not)" }) + @(Invoke-Judge @($log) -NoEnd)
+# HarmonyRebuild checked every patched method once the patches were applied: without that line (its internals unavailable), nothing
+# says the methods this mod and the others patch still run their patches.
+if (-not ($text | Where-Object { $_ -match "\[BigDeckOptimization\] HarmonyRebuild: all \d+ patched methods detoured" })) { $problems += "no 'HarmonyRebuild: all N patched methods detoured' line" }
+# With BaseLib among the mods, the package's settings menu must register (a missing or broken BigDeckOptimization.Menu.dll only
+# logs a warning: players would get no menu).
+if ((Get-TestModIds) -contains "BaseLib" -and -not ($text | Where-Object { $_ -match "\[BigDeckOptimization\] BaseLibSettings: registered" })) { $problems += "BaseLib loaded but no 'BaseLibSettings: registered' line: the package's settings menu didn't load" }
+# The package's version is the one being released (the newest zip could be an older build).
+$version = (Get-Content (Join-Path $PSScriptRoot "..\..\src\BigDeckOptimization\BigDeckOptimization.json") -Raw | ConvertFrom-Json).version.TrimStart('v')
+if ($init -notmatch "Initialized v$([regex]::Escape($version)) ") { $problems += "the package says '$init', the manifest version is v$version" }
+# The Workshop mods the game must have found (a mods_STEAMTEST emptied by another series would go unseen).
+$problems += @(Get-MissingTestMods $log $GameDir)
 "package  $($zip.Name)"
 "init     $init"
 "applied  $applied patches"

@@ -2,34 +2,76 @@
 # local port and its own copy of the user data, so nothing shows on screen and your settings aren't touched. Equivalence only:
 # the peers must agree (no divergence, same enemy states), timings aren't meaningful; coop.ps1 for fps or hands-on.
 # Logs: results/<game version>/<name>-host.log, -client.log.
-#   powershell -ExecutionPolicy Bypass -File tools/autotest/parcoop.ps1 -Names coopfast,coopclone -GameDir C:\Games\StS2-public-0.107.1 [-Plain] [-Jobs 6] [-TimeoutSec 900] [-Instant]
+#   powershell -ExecutionPolicy Bypass -File tools/autotest/parcoop.ps1 -Names coopfast,coopclone -GameDir C:\Games\StS2-public-0.107.1 [-Plain] [-Jobs 6] [-TimeoutSec 900] [-Instant] [-OnOff]
 # -Plain: only this mod, no other Workshop mod (coop.ps1 without -WithMods).
-param([Parameter(Mandatory)][string[]]$Names, [string]$GameDir = "", [int]$Jobs = 6, [int]$TimeoutSec = 900, [int]$StallSec = 240, [switch]$Plain, [switch]$Instant)
+# Mod on vs mod off: peers agreeing says nothing of what the game would have done (both run the same code). Each scenario
+# <x> whose mod-off twin <x>off or <x>-off is in -Names too is compared with it, peer by peer (host with host, client with
+# client): the states at each turn start (--bdturnstates), the runstate lines and the checksums taken where both peers are
+# settled (a 'checksum' line right after a 'barrier' or 'waitfor nocombat', 'wait' lines between allowed), over what both ran (a
+# shorter control compares its own length). -OnOff: every scenario also runs as its own mod-off twin (<x>-autooff: 'cmd bdopt
+# off' before its 'mplobby', so the run's creation is the game's own too, without its bdperf, bdopt, counters, effects and expect
+# lines), compared the same way.
+param([Parameter(Mandatory)][string[]]$Names, [string]$GameDir = "", [int]$Jobs = 6, [int]$TimeoutSec = 900, [int]$StallSec = 240, [switch]$Plain, [switch]$Instant, [switch]$OnOff)
 $Names = @($Names | ForEach-Object { $_ -split "," } | Where-Object { $_ })
 $copy = $GameDir
 . (Join-Path $PSScriptRoot "parlib.ps1")
 $GameDir = Resolve-GameCopy $copy
 $out = Get-VersionDir $GameDir
 $exe = Join-Path $GameDir "SlayTheSpire2.exe"
-if ($Plain) { Remove-TestMods $GameDir } else { Add-TestMods $GameDir }
+if ($Plain) {
+    Remove-TestMods $GameDir
+    # A mods_STEAMTEST that isn't this tooling's, or that another series on this copy uses, would still load: not "only this mod".
+    if (Test-Path (Join-Path $GameDir "mods_STEAMTEST")) { throw "$(Join-Path $GameDir 'mods_STEAMTEST') exists (another series on this copy uses it, or it isn't this tooling's): -Plain would load its mods." }
+}
+else { Add-TestMods $GameDir }
 $folder = Join-Path $out "coop-scripts"
 New-Item -ItemType Directory -Force $folder | Out-Null
 $waiting = [Collections.Generic.Queue[object]]::new()
 $port = 33800
-foreach ($name in $Names) {
-    $scripts = @{}
-    foreach ($role in "host", "client") {
-        $source = Join-Path $Scenarios "$name-$role.txt"
-        if (-not (Test-Path $source)) { throw "No scenario $source" }
-        $scripts[$role] = $source
-        if ($Instant) {
-            $scripts[$role] = Join-Path $folder "$name-$role.txt"
-            [IO.File]::WriteAllText($scripts[$role], ((@("speed instant") + @(Get-Content $source | Where-Object { $_ -notmatch '^speed ' })) -join "`n") + "`n")
-        }
+# A scenario's mod-off twin: 'cmd bdopt off' before the lobby, at the main menu (each peer turns its own mod off: bdopt isn't a
+# networked command and needs no run), so the run's creation is the game's own too; without the lines that only make sense with
+# the mod on (bdperf comparisons, option switches, counters, effects, positive controls).
+function New-OffTwin([string]$source, [string]$target) {
+    $lines = [Collections.Generic.List[string]]::new()
+    $placed = $false
+    foreach ($line in Get-Content $source) {
+        if ($line -match '^\s*(cmd bdperf |cmd bdopt\b|counters\b|effects\b|expect\b)') { continue }
+        if (-not $placed -and $line -match '^\s*(mplobby|newrun)\b') { $lines.Add("cmd bdopt off"); $placed = $true }
+        $lines.Add($line)
     }
-    $waiting.Enqueue([pscustomobject]@{ Name = $name; Scripts = $scripts; Port = $port; HostLog = Join-Path $out "$name-host.log"; ClientLog = Join-Path $out "$name-client.log" })
-    $port++
+    if (-not $placed) { throw "$source has no 'mplobby' line: no place for its mod-off twin's 'cmd bdopt off'" }
+    [IO.File]::WriteAllText($target, ($lines -join "`n") + "`n")
 }
+$groups = @(foreach ($name in $Names) {
+    foreach ($twin in $(if ($OnOff) { @($false, $true) } else { @($false) })) {
+        $scripts = @{}
+        $groupName = if ($twin) { "$name-autooff" } else { $name }
+        foreach ($role in "host", "client") {
+            $source = Join-Path $Scenarios "$name-$role.txt"
+            if (-not (Test-Path $source)) { throw "No scenario $source" }
+            $scripts[$role] = $source
+            if ($Instant) {
+                $scripts[$role] = Join-Path $folder "$groupName-$role.txt"
+                [IO.File]::WriteAllText($scripts[$role], ((@("speed instant") + @(Get-Content $source | Where-Object { $_ -notmatch '^speed ' })) -join "`n") + "`n")
+            }
+            if ($twin) {
+                $twinScript = Join-Path $folder "$groupName-$role.txt"
+                New-OffTwin $scripts[$role] $twinScript
+                $scripts[$role] = $twinScript
+            }
+        }
+        [pscustomobject]@{ Name = $groupName; Scripts = $scripts; Port = $port; HostLog = Join-Path $out "$groupName-host.log"; ClientLog = Join-Path $out "$groupName-client.log" }
+        $port++
+    }
+})
+foreach ($group in $groups) { $waiting.Enqueue($group) }
+# Mod on / mod off pairs: <x> with <x>off, <x>-off (scenarios) or <x>-autooff (-OnOff).
+$pairs = @(foreach ($group in $groups) {
+    foreach ($suffix in "off", "-off", "-autooff") {
+        $twin = $groups | Where-Object { $_.Name -eq "$($group.Name)$suffix" } | Select-Object -First 1
+        if ($twin) { [pscustomobject]@{ On = $group; Off = $twin } }
+    }
+})
 function Start-Peer($group, [string]$role, [string[]]$mode) {
     $log = if ($role -eq "host") { $group.HostLog } else { $group.ClientLog }
     Remove-Item $log -ErrorAction SilentlyContinue
@@ -40,10 +82,16 @@ $started = Get-Date
 $running = @{}
 $done = [Collections.Generic.List[object]]::new()
 $realAppData = $env:APPDATA
+# Slots 40 and up, each held for the whole series (Lock-Slot): a slot another series holds is skipped.
+$locked = [Collections.Generic.HashSet[int]]::new()
 try {
     while ($waiting.Count -gt 0 -or $running.Count -gt 0) {
         foreach ($slot in 0..($Jobs - 1)) {
             if ($running.ContainsKey($slot) -or $waiting.Count -eq 0) { continue }
+            if (-not $locked.Contains(40 + $slot)) {
+                if (-not (Lock-Slot (40 + $slot) -Try)) { continue }
+                [void]$locked.Add(40 + $slot)
+            }
             $group = $waiting.Dequeue()
             $env:APPDATA = Sync-Slot (40 + $slot) -Coop
             $h = Start-Peer $group "host" @("--fastmp", "host_standard")
@@ -67,7 +115,10 @@ try {
             foreach ($log in $run.Group.HostLog, $run.Group.ClientLog) {
                 if (Test-Path $log) { $silent = [Math]::Max($silent, ((Get-Date) - (Get-Item $log).LastWriteTime).TotalSeconds) }
             }
-            if ($run.Host.HasExited -and $run.Client.HasExited) { $state = "done" }
+            # The test runner never started (no Debug build in the copy, or it failed to load): nothing would ever run.
+            $runner = if ($age -gt 90 -and (Test-Path $run.Group.HostLog)) { [bool](Select-String -Path $run.Group.HostLog -Pattern "\] AutoTest " -Quiet) } else { $true }
+            if (-not $runner) { $state = "AUTOTEST NOT LOADED" }
+            elseif ($run.Host.HasExited -and $run.Client.HasExited) { $state = "done" }
             elseif ($age -gt $TimeoutSec) { $state = "TIMEOUT" }
             elseif ($silent -gt $StallSec) { $state = "STALLED" }
             elseif (($run.Host.HasExited -or $run.Client.HasExited) -and $silent -gt 30) { $state = "ONE PEER LEFT" }
@@ -76,13 +127,14 @@ try {
             $done.Add([pscustomobject]@{ Group = $run.Group; State = $state; Seconds = [int]$age })
             $running.Remove($slot)
         }
-        $lines = @("{0}  co-op {1}: {2}/{3} done, {4} running, {5:F0} min so far" -f (Get-Date -Format "HH:mm:ss"), (Get-GameTag $GameDir), $done.Count, $Names.Count, $running.Count, ((Get-Date) - $started).TotalMinutes)
+        $lines = @("{0}  co-op {1}: {2}/{3} done, {4} running, {5:F0} min so far" -f (Get-Date -Format "HH:mm:ss"), (Get-GameTag $GameDir), $done.Count, $groups.Count, $running.Count, ((Get-Date) - $started).TotalMinutes)
         Set-Content (Join-Path $Results "status.txt") $lines -Encoding utf8 -ErrorAction SilentlyContinue
     }
 }
 finally {
     $env:APPDATA = $realAppData
     foreach ($run in $running.Values) { foreach ($p in $run.Host, $run.Client) { if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } } }
+    foreach ($slot in $locked) { Unlock-Slot $slot }
     Remove-TestMods $GameDir
 }
 $bad = 0
@@ -91,9 +143,14 @@ foreach ($entry in $done) {
     if ($entry.State -ne "done") { $problems += $entry.State }
     foreach ($log in $entry.Group.HostLog, $entry.Group.ClientLog) {
         $role = if ($log -eq $entry.Group.HostLog) { "host" } else { "client" }
-        if (-not (Test-Path $log)) { $problems += "$role`: no log"; continue }
-        if (-not (Select-String -Path $log -Pattern "AutoTest\s+[\d.]+s > quit" -Quiet)) { $problems += "$role`: did not reach its end" }
-        Select-String -Path $log -CaseSensitive -Pattern "State divergence|FAILED line|MISMATCH|mismatches [1-9]|disabled after|turned off and removed" | Select-Object -First 2 | ForEach-Object { $problems += "$role`: " + ($_.Line -replace '^.*AutoTest\s+[\d.]+s\s+', '').Substring(0, [Math]::Min(110, ($_.Line -replace '^.*AutoTest\s+[\d.]+s\s+', '').Length)) }
+        # judge.py: not ended, a failed line, an error or a difference this mod found itself, a positive control that saw nothing...
+        # A mod-off side (-autooff twin, *off / *van pair): the host's 'bdopt off' at the menu is saved in the slot both peers
+        # share, so the client may start with the mod off, the game's own code: no problem there.
+        $modOff = $entry.Group.Name -match '(-autooff|off|van|vanilla)$'
+        Invoke-Judge @($log) -ModOff:$modOff | Select-Object -First 3 | ForEach-Object { $problems += "$role`: " + ($_ -replace '^PROBLEM [^:]+: ', '') }
+        Select-String -Path $log -CaseSensitive -Pattern "State divergence" -ErrorAction SilentlyContinue | Select-Object -First 1 | ForEach-Object { $problems += "$role`: state divergence" }
+        # The Workshop mods its game must have found (none with -Plain): a mods_STEAMTEST emptied by another series would go unseen.
+        if (-not $Plain) { Get-MissingTestMods $log $GameDir | Select-Object -First 2 | ForEach-Object { $problems += "$role`: $_" } }
     }
     # Each peer logs its own player and plays; the enemies are the same for both. At each turn start only (--bdturnstates): a
     # script's state line comes when that peer gets there, maybe after the other one's plays of the turn.
@@ -106,6 +163,48 @@ foreach ($entry in $done) {
     if ($enemies[0].Count -eq 0 -and $runStates[0].Count -eq 0) { $problems += "no enemy or run state line" }
     Write-Output ("{0,-16} {1,-8} {2,4} s  {3} enemy, {4} run state lines{5}" -f $entry.Group.Name, $entry.State, $entry.Seconds, $enemies[0].Count, $runStates[0].Count, $(if ($problems.Count) { "  PROBLEMS: " + ($problems -join "; ") } else { "  agree" }))
     if ($problems.Count) { $bad++ }
+}
+# The labels of a script's checksums taken where both peers are settled: right after a barrier (every player got there) or the
+# combat's end, 'wait' lines and other such checksums between allowed. Elsewhere a checksum comes when that peer gets there, maybe
+# before the other peer's last action reached it, at a pace that differs mod on and off.
+function Get-SettledChecksums([string]$script) {
+    $labels = @()
+    $settled = $false
+    foreach ($line in Get-Content $script) {
+        $text = $line.Trim()
+        if (-not $text -or $text.StartsWith('#') -or $text -match '^wait \d') { continue }
+        if ($settled -and $text -match '^checksum (.+?)( vanilla)?$') { $labels += $Matches[1].Trim(); continue }
+        $settled = $text -match '^(barrier |waitfor nocombat\b)'
+    }
+    $labels
+}
+
+# Mod on vs mod off, peer by peer: what each peer saw at each turn start (its player, its piles, the enemies), the run states and
+# the settled checksums (the whole combat state: what counts, HP and powers don't show). Checksums without their timing.
+function Get-PairLines([string]$log, [string[]]$checksums) {
+    $pattern = "STATE floor \d+ round |STATE (?![^:]*\(local\))[^:]+: (floor \d+, act |\S+ gold )"
+    if ($checksums.Count) { $pattern += "|CHECKSUM (" + (($checksums | ForEach-Object { [regex]::Escape($_) }) -join "|") + "): " }
+    @(Select-String -Path $log -Pattern $pattern -ErrorAction SilentlyContinue | ForEach-Object { ($_.Line -replace '^.*?((STATE|CHECKSUM) )', '$1') -replace '^(CHECKSUM [^:]+: \w+).*$', '$1' })
+}
+foreach ($pair in $pairs) {
+    foreach ($role in "host", "client") {
+        $onLog = if ($role -eq "host") { $pair.On.HostLog } else { $pair.On.ClientLog }
+        $offLog = if ($role -eq "host") { $pair.Off.HostLog } else { $pair.Off.ClientLog }
+        $checksums = @(Get-SettledChecksums $pair.On.Scripts[$role])
+        $on = @(Get-PairLines $onLog $checksums)
+        $off = @(Get-PairLines $offLog $checksums)
+        $common = [Math]::Min($on.Count, $off.Count)
+        $first = -1
+        for ($i = 0; $i -lt $common; $i++) { if ($on[$i] -ne $off[$i]) { $first = $i; break } }
+        # A twin made from the same script (-autooff) runs the same lines: a count that differs is a session that went another way
+        # at its end (a combat over a turn sooner), which a comparison of the common lines alone would call identical.
+        $sameScript = $pair.Off.Name -eq "$($pair.On.Name)-autooff"
+        $verdict = if ($common -eq 0) { "NOT COMPARED" } elseif ($first -ge 0) { "DIFFERENT" } elseif ($sameScript -and $on.Count -ne $off.Count) { "DIFFERENT LENGTHS" } else { "IDENTICAL" }
+        $note = if ($on.Count -ne $off.Count) { " (compared the first $common`: $($on.Count) lines mod on, $($off.Count) mod off)" } else { "" }
+        Write-Output ("{0} vs {1} ({2}): {3} lines, {4}{5}" -f $pair.On.Name, $pair.Off.Name, $role, $common, $verdict, $note)
+        if ($first -ge 0) { Write-Output "    on : $($on[$first])"; Write-Output "    off: $($off[$first])" }
+        if ($verdict -ne "IDENTICAL") { $bad++ }
+    }
 }
 Write-Output ("done in {0:F1} min, {1} with problems, logs in {2}" -f ((Get-Date) - $started).TotalMinutes, $bad, $out)
 exit $(if ($bad) { 1 } else { 0 })

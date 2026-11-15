@@ -22,6 +22,7 @@ emptyhand
 setenergy 20
 cmd draw 4
 waitfor idle 60
+pilemove hand discard 8
 cmd bdperf costwrites
 cmd bdperf costwrites
 checksum hand read

@@ -1,4 +1,6 @@
 # Positive control of deckcount-on: answers made wrong on purpose must be caught.
+expect DeckCountMemo disabled, the game counts its cards
+expect DECKCOUNT .*mismatches [1-9]
 timeout 300
 newrun NECROBINDER 1234
 waitfor run 120

@@ -1,9 +1,9 @@
 # Co-op memory over several combats, client: see coopleak-host.txt.
 timeout 1500
+cmd bdopt off
 mplobby IRONCLAD 2
 waitfor run 240
 wait 8
-cmd bdopt off
 cmd bigdeck import ref all all {hash:ref}
 cmd bigdeck import ref all cards {hash:ref}
 cmd bdperf checks off
