@@ -205,6 +205,7 @@ public static class DeckCountMemo
     {
         foreach (MethodBase? method in _skipped[kind])
         {
+            // No tolerance: calls a kept count skips.
             if (PatchSafety.IsPatchedByOthers(method))
             {
                 return true;
@@ -217,6 +218,7 @@ public static class DeckCountMemo
     {
         expected = null;
         // Inside ListenerCache.RunVanilla the result is a reference others are compared with: the game's own.
+        // No tolerance: the count's getter is answered from the memo, its patches wouldn't run.
         if (!Enabled || ListenerCache.IsSuspended || !FastListeners.PilesKnown || PatchSafety.IsPatchedByOthers(_targets[kind]) || SkippedPatched(kind))
         {
             return true;
@@ -367,6 +369,7 @@ public static class DeckCountMemo
     /// <summary>Whether another mod patches the getter, remembered so a later change reads every type's flags again.</summary>
     private static bool Watched(MethodInfo getter)
     {
+        // No tolerance: per-type getters the memo reads instead of calling.
         bool patched = PatchSafety.IsPatchedByOthers(getter);
         _watched[getter] = patched;
         return patched;
@@ -388,6 +391,7 @@ public static class DeckCountMemo
         bool changed = false;
         foreach (KeyValuePair<MethodInfo, bool> watched in _watched)
         {
+            // No tolerance: as Watched.
             if (PatchSafety.IsPatchedByOthers(watched.Key) != watched.Value)
             {
                 changed = true;

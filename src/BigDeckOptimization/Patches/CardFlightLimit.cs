@@ -104,6 +104,7 @@ public static class CardFlightLimit
         {
             // A null pile (v0.107.1 reads card.Pile when the tween fires): the game's code, whatever it does with it.
             if (!Enabled || targetPile == null || targetPile.Type is not (PileType.Draw or PileType.Discard)
+                // No tolerance: a skipped soul skips the method (and the calls it would make).
                 || Thread.CurrentThread.ManagedThreadId != _mainThread || PatchSafety.IsPatchedByOthers(_create) || SkippedPatched())
             {
                 return true;
@@ -135,12 +136,14 @@ public static class CardFlightLimit
     private static bool SkippedPatched()
     {
         _allowedOnReady ??= AllowedReady();
+        // No tolerance: as Create.
         if (PatchSafety.IsPatchedByOthers(_readyMethod, _allowedOnReady))
         {
             return true;
         }
         foreach (System.Reflection.MethodBase? method in _skipped)
         {
+            // No tolerance: as Create.
             if (PatchSafety.IsPatchedByOthers(method))
             {
                 return true;
@@ -235,6 +238,7 @@ public static class CardFlightLimit
     /// </summary>
     private static bool OnlyPileButtons(CardPile pile)
     {
+        // No tolerance: one event stands for several cards, a patch would run fewer times.
         if (PatchSafety.IsPatchedByOthers(_addCard))
         {
             return false;

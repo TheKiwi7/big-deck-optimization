@@ -312,6 +312,7 @@ public static class LimitlessCloneMemo
         bool patched = false;
         foreach ((System.Reflection.MethodBase method, System.Reflection.MethodInfo[] allowed) in ChainMethods())
         {
+            // No tolerance: the clone chain is skipped for a kept content.
             if (PatchSafety.IsPatchedByOthers(method, allowed))
             {
                 patched = true;
@@ -433,6 +434,7 @@ public static class LimitlessCloneMemo
     {
         foreach (System.Reflection.MethodInfo method in methods)
         {
+            // No tolerance: overrides skipped with the chain.
             if (PatchSafety.IsPatchedByOthers(method))
             {
                 return true;
@@ -497,6 +499,7 @@ public static class LimitlessCloneMemo
     private static long Stamp()
     {
         if (!Enabled || ListenerCache.IsSuspended || LimitlessReserialize.Faulted || !LimitlessReserialize.CanCompareHere || !GameChainKnown() || LimitlessReserialize.PatchedByOthers()
+            // No tolerance: the lambda is skipped for a kept content.
             || PatchSafety.IsPatchedByOthers(_lambda) || ChainPatched())
         {
             return -1;

@@ -73,7 +73,10 @@ public static class HookFilter
             }
         }
 
-        public bool IsSafe() => _defaultHolds && !PatchSafety.IsPatchedByOthers(BaseMethod) && !PatchSafety.IsPatchedByOthers(_hookMethod)
+        // The hook: postfixes and void prefixes Harmony runs before the mirror's prefix are let stand (the mirror computes the
+        // original's result; postfixes run after its skip on that same result, void prefixes before it as without this mod).
+        // The default: no tolerance, a skipped listener skips its call to it.
+        public bool IsSafe() => _defaultHolds && !PatchSafety.IsPatchedByOthers(BaseMethod) && !PatchSafety.IsPatchedByOthers(_hookMethod, PatchTolerance.SurroundingOnly)
             && (!_combatWalk || !CombatHookWalkPatched());
 
         /// <summary>Registers what <see cref="IsSafe"/> asks about, when it gets that far (display only, never throws).</summary>
@@ -84,7 +87,7 @@ public static class HookFilter
                 return;
             }
             PatchSafety.Watch(Name, BaseMethod);
-            PatchSafety.Watch(Name, _hookMethod);
+            PatchSafety.Watch(Name, _hookMethod, PatchTolerance.SurroundingOnly);
             if (_combatWalk)
             {
                 PatchSafety.WatchAll(Name, CombatHookWalkParts);
@@ -152,6 +155,7 @@ public static class HookFilter
             }
             foreach (MethodBase? part in _combatHookWalkParts!)
             {
+                // No tolerance: the filtered walk mirrors this walk and the getters it reads; a postfix could change the walk.
                 if (PatchSafety.IsPatchedByOthers(part, caller))
                 {
                     return true;
@@ -383,8 +387,8 @@ public static class HookFilter
         {
             hook.Watch();
         }
-        PatchSafety.Watch(Name, HookFilterCostColors.EnergyCostColor);
-        PatchSafety.Watch(Name, HookFilterCostColors.StarCostColor);
+        PatchSafety.Watch(Name, HookFilterCostColors.EnergyCostColor, PatchTolerance.SurroundingOnly);
+        PatchSafety.Watch(Name, HookFilterCostColors.StarCostColor, PatchTolerance.SurroundingOnly);
         ListenerCache.RunReleased += () =>
         {
             _filtered = null;
@@ -1156,7 +1160,8 @@ internal static class HookFilterCostColors
     /// </summary>
     internal static bool EnergyCostColorPrefix(CardModel card, ICombatState state, ref decimal hookModifiedCost, ref bool __result)
     {
-        if (!HookFilter.Active || state is not CombatState combat || PatchSafety.IsPatchedByOthers(EnergyCostColor))
+        // Mirror of the whole helper (its result and cost are the original's): postfixes and earlier void prefixes let stand.
+        if (!HookFilter.Active || state is not CombatState combat || PatchSafety.IsPatchedByOthers(EnergyCostColor, PatchTolerance.SurroundingOnly))
         {
             return true;
         }
@@ -1205,7 +1210,8 @@ internal static class HookFilterCostColors
     /// <summary>Mirrors <c>CardCostHelper.TryModifyStarCostWithHooks</c> (star cost color) over the filtered listeners.</summary>
     internal static bool StarCostColorPrefix(CardModel card, ICombatState state, ref decimal hookModifiedCost, ref bool __result)
     {
-        if (!HookFilter.Active || state is not CombatState combat || PatchSafety.IsPatchedByOthers(StarCostColor))
+        // As the energy cost color helper.
+        if (!HookFilter.Active || state is not CombatState combat || PatchSafety.IsPatchedByOthers(StarCostColor, PatchTolerance.SurroundingOnly))
         {
             return true;
         }

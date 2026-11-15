@@ -468,6 +468,7 @@ public static class ListenerCache
             {
                 // Checked per outermost scope: another mod may patch after we load. A replayed list stands for the whole
                 // walk: the iterators' state machines, Contains and the mod subscriber walks too (FastListeners knows them).
+                // No tolerance: the walks are replayed from a materialized list, a postfix there could change them.
                 _safe = _applied && !PatchSafety.IsPatchedByOthers(_combatIterate) && !PatchSafety.IsPatchedByOthers(_runIterate)
                     && !FastListeners.WalkCodePatchedByOthers();
             }

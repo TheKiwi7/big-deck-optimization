@@ -1,15 +1,15 @@
 # Another mod patching a method an optimization mirrors: the optimization backs off there and says which mod.
-# fakeconflict puts a no-op postfix (Harmony id bdtest.fakeconflict) on the energy cost color helper HookFilter
-# mirrors; after a few plays, bdopt shows "partly vanilla: also patched by bdtest.fakeconflict" on hook_filter and
+# fakeconflict puts a prefix returning true (Harmony id bdtest.fakeconflict) on the energy cost color helper HookFilter
+# mirrors (a no-op postfix there is let stand since the shape rules, foreign-shapes-2k-on); after a few plays, bdopt shows "partly vanilla: also patched by bdtest.fakeconflict" on hook_filter and
 # its menu tooltip starts with the translated "Partly inactive" sentence. The combat checksum stays the same.
 timeout 300
-expect HookFilter: CardCostHelper\.TryModifyEnergyCostWithHooks is also patched by bdtest\.fakeconflict
+expect HookFilter: CardCostHelper\.TryModifyEnergyCostWithHooks is also patched by bdtest\.fakeconflict \(postfixes and void prefixes not enough\)
 expect \[hook_filter\]: on \(partly vanilla: also patched by bdtest\.fakeconflict\)
 expect MENUTEXT HOOK_FILTER: .*Partly inactive: bdtest\.fakeconflict
 newrun NECROBINDER
 waitfor run 120
 wait 2
-fakeconflict MegaCrit.Sts2.Core.Helpers.Models.CardCostHelper:TryModifyEnergyCostWithHooks
+fakeconflict MegaCrit.Sts2.Core.Helpers.Models.CardCostHelper:TryModifyEnergyCostWithHooks boolprefix
 cmd fight CULTISTS_NORMAL
 waitfor idle 120
 play 2

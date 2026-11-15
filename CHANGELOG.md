@@ -12,6 +12,8 @@
 - The "Co-op state check" description now says it also speeds up solo games on the game's beta.
 - The settings and the `bdopt` command now show, from the main menu, which other mods keep part of the optimizations off, and why (`bdopt why`).
 - Safer with other mods and future game updates: more of the game and mod code the optimizations rely on is checked, and a change there leaves only that part to the game.
+- Works better alongside big mod packs (RitsuLib, Spire Synergies, Zone the Spire, Ascended Expansion...): when another mod only adds its own effects around the game code the mod speeds up, or only reacts to its own cards and relics, that optimization now keeps running instead of falling back to the normal game. Other changes still leave that part to the game, as before.
+- Less work for cross-version loaders on the game's beta: the mod no longer refers to a game value that the beta removed.
 
 ## v1.0.3
 

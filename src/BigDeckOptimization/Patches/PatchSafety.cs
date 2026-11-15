@@ -317,14 +317,14 @@ public static partial class PatchSafety
         info.Prefixes.Concat(info.Postfixes).Concat(info.Transpilers).Concat(info.Finalizers).Concat(info.InnerPrefixes).Concat(info.InnerPostfixes);
 
     /// <summary>Other mods' patches on a method a patch backs off from, keyed by (patch name, method).</summary>
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Patch, MethodBase Method), string[]> _conflicts = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Patch, MethodBase Method, PatchTolerance Tolerance), string[]> _conflicts = new();
 
     /// <summary>
     /// The mods last recorded per call site (its source path) and method. Several patches can check the same method within
     /// <see cref="RecheckAfterMs"/>: each records its back-off from the shared cached answer, once per answer (a new array at
     /// each check), not at every hook call.
     /// </summary>
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Caller, MethodBase Method), string[]> _recordedFrom =
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Caller, MethodBase Method, PatchTolerance Tolerance), string[]> _recordedFrom =
         new(new CallSiteComparer());
 
     /// <summary>Some back-off was recorded this session: only then can a cached "not patched" end one (hot path otherwise untouched).</summary>
@@ -334,26 +334,30 @@ public static partial class PatchSafety
     /// The caller path is a [CallerFilePath] literal, the same interned string at every call from a file: compared by
     /// reference (cheap per hook call). Another string with the same text only means one more <see cref="Record"/>.
     /// </summary>
-    private sealed class CallSiteComparer : IEqualityComparer<(string Caller, MethodBase Method)>
+    private sealed class CallSiteComparer : IEqualityComparer<(string Caller, MethodBase Method, PatchTolerance Tolerance)>
     {
-        public bool Equals((string Caller, MethodBase Method) a, (string Caller, MethodBase Method) b) =>
-            ReferenceEquals(a.Caller, b.Caller) && a.Method == b.Method;
+        public bool Equals((string Caller, MethodBase Method, PatchTolerance Tolerance) a, (string Caller, MethodBase Method, PatchTolerance Tolerance) b) =>
+            ReferenceEquals(a.Caller, b.Caller) && a.Method == b.Method && a.Tolerance == b.Tolerance;
 
-        public int GetHashCode((string Caller, MethodBase Method) key) =>
-            HashCode.Combine(RuntimeHelpers.GetHashCode(key.Caller), key.Method);
+        public int GetHashCode((string Caller, MethodBase Method, PatchTolerance Tolerance) key) =>
+            HashCode.Combine(RuntimeHelpers.GetHashCode(key.Caller), key.Method, key.Tolerance);
     }
 
     private static string[] ModNames(IEnumerable<Patch> others) =>
         others.Select(ModName).Distinct().OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToArray();
 
-    private static void RecordOnce(string caller, MethodBase method, string[] mods)
+    /// <summary>
+    /// Records a check's answer under its call site. Keyed by the tolerance too: one patch may check a method strictly for one
+    /// part and with a tolerance for another, two answers that must not undo each other at every call.
+    /// </summary>
+    private static void RecordOnce(string caller, MethodBase method, string[] mods, PatchTolerance tolerance = PatchTolerance.None)
     {
-        if (_recordedFrom.TryGetValue((caller, method), out string[]? recorded) && ReferenceEquals(recorded, mods))
+        if (_recordedFrom.TryGetValue((caller, method, tolerance), out string[]? recorded) && ReferenceEquals(recorded, mods))
         {
             return;
         }
-        _recordedFrom[(caller, method)] = mods;
-        Record(caller, method, mods);
+        _recordedFrom[(caller, method, tolerance)] = mods;
+        Record(caller, method, mods, tolerance);
     }
 
     /// <summary>
@@ -366,7 +370,7 @@ public static partial class PatchSafety
         {
             return;
         }
-        foreach ((string Patch, MethodBase Method) key in _conflicts.Keys)
+        foreach ((string Patch, MethodBase Method, PatchTolerance Tolerance) key in _conflicts.Keys)
         {
             if (key.Method == method)
             {
@@ -375,19 +379,20 @@ public static partial class PatchSafety
         }
     }
 
-    private static void Record(string caller, MethodBase method, string[] mods)
+    private static void Record(string caller, MethodBase method, string[] mods, PatchTolerance tolerance = PatchTolerance.None)
     {
         string patch = PatchName(caller);
         if (mods.Length == 0)
         {
-            _conflicts.TryRemove((patch, method), out _);
+            _conflicts.TryRemove((patch, method, tolerance), out _);
             return;
         }
         _anyConflict = true;
-        if (!_conflicts.TryGetValue((patch, method), out string[]? known) || !known.SequenceEqual(mods))
+        if (!_conflicts.TryGetValue((patch, method, tolerance), out string[]? known) || !known.SequenceEqual(mods))
         {
-            _conflicts[(patch, method)] = mods;
-            MegaCrit.Sts2.Core.Logging.Log.Info($"[{ModEntry.Id}] {patch}: {method.DeclaringType?.Name}.{method.Name} is also patched by {string.Join(", ", mods)}: normal game for that part");
+            _conflicts[(patch, method, tolerance)] = mods;
+            MegaCrit.Sts2.Core.Logging.Log.Info($"[{ModEntry.Id}] {patch}: {method.DeclaringType?.Name}.{method.Name} is also patched by {string.Join(", ", mods)}"
+                + (tolerance == PatchTolerance.None ? "" : $" ({ToleranceText(tolerance)} not enough)") + ": normal game for that part");
         }
     }
 

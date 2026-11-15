@@ -201,6 +201,8 @@ public static partial class AutoTest
         Say($"  deckfilter: removed {removed.Count} cards ({removed.Count(c => ids.Contains(c.Id.Entry))} by id), deck {me.Deck.Cards.Count} cards");
     }
 
+    private static bool TruePrefix() => true;
+
     private static void NoOpPostfix()
     {
     }
@@ -1221,11 +1223,28 @@ public static partial class AutoTest
                     await Language(tree, arg.Trim());
                     break;
                 case "fakeconflict":
-                    // Another "mod" patching a game method (no-op postfix under another Harmony id): the optimization
-                    // using it must back off and report it.
-                    MethodInfo conflictTarget = AccessTools.Method(arg.Trim()) ?? throw new InvalidOperationException("no method " + arg.Trim());
-                    new Harmony("bdtest.fakeconflict").Patch(conflictTarget, postfix: new HarmonyMethod(typeof(AutoTest), nameof(NoOpPostfix)));
-                    Say($"  patched {conflictTarget.DeclaringType?.Name}.{conflictTarget.Name} as bdtest.fakeconflict");
+                    // Another "mod" patching a game method (no-op postfix under another Harmony id, or with "boolprefix" a prefix
+                    // returning true: one no tolerance lets stand, for a method whose checks let postfixes stand): the optimization
+                    // using it must back off and report it. Other shapes: foreignpatch (ForeignPatches).
+                    string[] conflictArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    MethodInfo conflictTarget = AccessTools.Method(conflictArgs[0]) ?? throw new InvalidOperationException("no method " + conflictArgs[0]);
+                    bool boolPrefix = conflictArgs.Length > 1 && conflictArgs[1] == "boolprefix";
+                    if (boolPrefix)
+                    {
+                        new Harmony("bdtest.fakeconflict").Patch(conflictTarget, prefix: new HarmonyMethod(typeof(AutoTest), nameof(TruePrefix)));
+                    }
+                    else
+                    {
+                        new Harmony("bdtest.fakeconflict").Patch(conflictTarget, postfix: new HarmonyMethod(typeof(AutoTest), nameof(NoOpPostfix)));
+                    }
+                    Say($"  patched {conflictTarget.DeclaringType?.Name}.{conflictTarget.Name} as bdtest.fakeconflict ({(boolPrefix ? "bool prefix" : "postfix")})");
+                    break;
+                case "foreignpatch":
+                    // Synthetic patches of each shape under a foreign Harmony id, and PatchSafety's verdict on them (ForeignPatches).
+                    foreach (string foreignLine in ForeignPatches.Run(arg))
+                    {
+                        Say(foreignLine.StartsWith("STATE ", StringComparison.Ordinal) ? foreignLine : "  " + foreignLine);
+                    }
                     break;
                 case "selector" when arg.Trim() is "ui" or "auto":
                     // ui: no automatic selector, the game opens its card choice screens (deck grids) and autoroom's handlers answer them.

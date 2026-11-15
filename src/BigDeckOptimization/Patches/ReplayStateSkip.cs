@@ -51,6 +51,7 @@ public static class ReplayStateSkip
     {
         // Only where the game would add to the recording: disabled or out of combat it does nothing (nothing to count); not
         // recording, its own error stays.
+        // No tolerance: the entry is left out, its patches wouldn't run.
         if (!Enabled || !__instance.IsEnabled || !__instance.IsRecordingReplay || !CombatManager.Instance.IsInProgress || PatchSafety.IsPatchedByOthers(_record))
         {
             return true;

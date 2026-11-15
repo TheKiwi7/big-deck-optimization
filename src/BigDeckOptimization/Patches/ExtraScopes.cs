@@ -246,6 +246,7 @@ public static class ExtraScopes
         {
             foreach (MethodBase method in _betterSpireMethods)
             {
+                // No tolerance: listener lists are replayed inside the scope, a patch could make the methods walk differently.
                 if (PatchSafety.IsPatchedByOthers(method))
                 {
                     return;

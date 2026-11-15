@@ -87,6 +87,7 @@ public static class TypePlaqueSkip
     /// <summary>Whether BaseLib's walk can only find nothing for this card (its result is then the original text).</summary>
     public static bool CanSkip(CardModel card)
     {
+        // No tolerance: BaseLib's method is skipped, its patches wouldn't run.
         if (!Enabled || _customText!.IsInstanceOfType(card) || PatchSafety.IsPatchedByOthers(_original))
         {
             return false;

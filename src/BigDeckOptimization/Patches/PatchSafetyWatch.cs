@@ -30,9 +30,11 @@ public static partial class PatchSafety
         public readonly Func<IEnumerable<MethodBase?>>? Source;
         /// <summary>Methods known only later, each with its own allowed patches.</summary>
         public readonly Func<IEnumerable<(MethodBase? Method, MethodInfo[]? Allowed)>>? Pairs;
+        /// <summary>The tolerance the runtime check passes (<see cref="PatchTolerance"/>).</summary>
+        public readonly PatchTolerance Tolerance;
 
         public Watched(string patch, MethodBase? method, MethodInfo[]? allowed, Func<MethodInfo[]>? lazyAllowed, Func<IEnumerable<MethodBase?>>? source,
-            Func<IEnumerable<(MethodBase? Method, MethodInfo[]? Allowed)>>? pairs = null)
+            Func<IEnumerable<(MethodBase? Method, MethodInfo[]? Allowed)>>? pairs = null, PatchTolerance tolerance = PatchTolerance.None)
         {
             Patch = patch;
             Method = method;
@@ -40,11 +42,12 @@ public static partial class PatchSafety
             LazyAllowed = lazyAllowed;
             Source = source;
             Pairs = pairs;
+            Tolerance = tolerance;
         }
     }
 
     private static readonly List<Watched> _watched = new();
-    private static readonly HashSet<(string, MethodBase, object?)> _watchedKeys = new();
+    private static readonly HashSet<(string, MethodBase, object?, PatchTolerance)> _watchedKeys = new();
     private static readonly List<(string Patch, Action Check)> _noteChecks = new();
 
     /// <summary>
@@ -68,7 +71,7 @@ public static partial class PatchSafety
             lock (_watched)
             {
                 // The allowed list by reference: the patches pass the array their runtime check passes.
-                if (_watchedKeys.Add((patch, method, allowed)))
+                if (_watchedKeys.Add((patch, method, allowed, PatchTolerance.None)))
                 {
                     _watched.Add(new Watched(patch, method, allowed, null, null));
                 }
@@ -94,10 +97,56 @@ public static partial class PatchSafety
             }
             lock (_watched)
             {
-                if (_watchedKeys.Add((patch, method, allowed)))
+                if (_watchedKeys.Add((patch, method, allowed, PatchTolerance.None)))
                 {
                     _watched.Add(new Watched(patch, method, null, allowed, null));
                 }
+            }
+        }
+        catch
+        {
+            // Display only.
+        }
+    }
+
+    /// <summary>
+    /// <see cref="Watch(string, MethodBase?, MethodInfo[]?)"/> for a runtime check passing a tolerance (and possibly allowed
+    /// patches, eager or lazy): the preflight asks with the same tolerance. Never throws.
+    /// </summary>
+    internal static void Watch(string patch, MethodBase? method, PatchTolerance tolerance, MethodInfo[]? allowed = null, Func<MethodInfo[]>? lazyAllowed = null)
+    {
+        try
+        {
+            if (method == null || patch == null)
+            {
+                return;
+            }
+            lock (_watched)
+            {
+                if (_watchedKeys.Add((patch, method, (object?)allowed ?? lazyAllowed, tolerance)))
+                {
+                    _watched.Add(new Watched(patch, method, allowed, lazyAllowed, null, null, tolerance));
+                }
+            }
+        }
+        catch
+        {
+            // Display only.
+        }
+    }
+
+    /// <summary>Several methods with one tolerance (each as <see cref="Watch(string, MethodBase?, PatchTolerance, MethodInfo[]?, Func{MethodInfo[]}?)"/>).</summary>
+    internal static void Watch(string patch, IEnumerable<MethodBase?>? methods, PatchTolerance tolerance)
+    {
+        try
+        {
+            if (methods == null)
+            {
+                return;
+            }
+            foreach (MethodBase? method in methods)
+            {
+                Watch(patch, method, tolerance);
             }
         }
         catch
@@ -141,7 +190,7 @@ public static partial class PatchSafety
             }
             lock (_watched)
             {
-                if (_watchedKeys.Add((patch, methods.Method, methods.Target)))
+                if (_watchedKeys.Add((patch, methods.Method, methods.Target, PatchTolerance.None)))
                 {
                     _watched.Add(new Watched(patch, null, null, allowed, methods));
                 }
@@ -167,7 +216,7 @@ public static partial class PatchSafety
             }
             lock (_watched)
             {
-                if (_watchedKeys.Add((patch, pairs.Method, pairs.Target)))
+                if (_watchedKeys.Add((patch, pairs.Method, pairs.Target, PatchTolerance.None)))
                 {
                     _watched.Add(new Watched(patch, null, null, null, null, pairs));
                 }
@@ -193,7 +242,7 @@ public static partial class PatchSafety
             }
             lock (_watched)
             {
-                if (_watchedKeys.Add((patch, check.Method, check.Target)))
+                if (_watchedKeys.Add((patch, check.Method, check.Target, PatchTolerance.None)))
                 {
                     _noteChecks.Add((patch, check));
                 }
@@ -231,7 +280,8 @@ public static partial class PatchSafety
 
     /// <summary>Every back-off and note recorded now, sorted by patch then by what.</summary>
     public static IReadOnlyList<BackOff> BackOffs() =>
-        _conflicts.Select(entry => new BackOff(entry.Key.Patch, $"{entry.Key.Method.DeclaringType?.Name}.{entry.Key.Method.Name}", entry.Value, false))
+        _conflicts.Select(entry => new BackOff(entry.Key.Patch, $"{entry.Key.Method.DeclaringType?.Name}.{entry.Key.Method.Name}"
+                + (entry.Key.Tolerance == PatchTolerance.None ? "" : $" (beyond {ToleranceText(entry.Key.Tolerance)})"), entry.Value, false))
             .Concat(_notes.Select(entry => new BackOff(entry.Key.Patch, entry.Value.Text, entry.Value.Mods, true)))
             .OrderBy(b => b.Patch, StringComparer.Ordinal).ThenBy(b => b.IsNote).ThenBy(b => b.What, StringComparer.Ordinal).ToList();
 
@@ -300,7 +350,8 @@ public static partial class PatchSafety
                 MethodInfo[]? allowed = listed != null && Array.IndexOf(listed, null) >= 0 ? listed.Where(a => a != null).ToArray() : listed;
                 try
                 {
-                    _ = allowed == null ? CheckPatched(method, entry.Patch) : CheckPatched(method, allowed, entry.Patch);
+                    _ = entry.Tolerance != PatchTolerance.None ? CheckTolerant(method, allowed ?? Array.Empty<MethodInfo>(), entry.Tolerance, entry.Patch, out _)
+                        : allowed == null ? CheckPatched(method, entry.Patch) : CheckPatched(method, allowed, entry.Patch);
                     checks.Value++;
                 }
                 catch (Exception e)

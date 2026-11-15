@@ -639,6 +639,7 @@ public static class SnapshotCardReuse
         long now = Environment.TickCount64;
         if (now - _gettersCheckedAt >= 2000)
         {
+            // No tolerance: getters whose calls trusted piles skip (a patch there would miss them or answer otherwise).
             _gettersPatched = _skippedGetters.Any(getter => PatchSafety.IsPatchedByOthers(getter));
             _gettersCheckedAt = now;
         }
@@ -948,6 +949,7 @@ public static class SnapshotCardReuse
         MethodInfo[] allowed = RelicStateReuse.UnlimitedTranspilerMethod is { } unlimited ? _baseLibWrites.Append(unlimited).ToArray() : _baseLibWrites;
         foreach (MethodBase method in methods)
         {
+            // No tolerance: serializers whose output is reused instead of written again.
             if (PatchSafety.IsPatchedByOthers(method, allowed))
             {
                 return true;
@@ -1154,6 +1156,7 @@ public static class SnapshotCardReuse
         {
             foreach (AbstractModel model in list)
             {
+                // No tolerance: listener overrides a trusted pile doesn't call again.
                 if (PureOverrides(model.GetType()) is not { } methods || methods.Any(m => PatchSafety.IsPatchedByOthers(m)))
                 {
                     return null;
@@ -1197,6 +1200,7 @@ public static class SnapshotCardReuse
         long stamp = LimitlessReserialize.MemoStamp();
         bool keywordsPatched = !_fastReads || KeywordsPatched();
         // No listeners (null): no pile trusted or kept as moved.
+        // No tolerance: GetWithModifiers is answered from kept reads, not called.
         if (!_fastReads || !HookFilter.Active || keywordsPatched || PatchSafety.IsPatchedByOthers(_withModifiers) || GettersPatched()
             || pile.Cards.Count == 0 || pile.Cards[0].Owner?.Creature.CombatState is not CombatState combat)
         {
@@ -1216,6 +1220,7 @@ public static class SnapshotCardReuse
     {
         // Inside RunVanilla the result is the reference this code is compared with (SnapshotVerifier, bdperf): the game's own.
         if (!Enabled || ListenerCache.IsSuspended || !LimitlessReserialize.CanCompareHere || LimitlessReserialize.Faulted
+            // No tolerance: From is answered with the previous list, its patches wouldn't run.
             || PatchSafety.IsPatchedByOthers(_pileFrom) || PatchSafety.IsPatchedByOthers(_cardFrom) || LimitlessReserialize.PatchedByOthers())
         {
             return true;
@@ -1712,6 +1717,7 @@ public static class SnapshotCardReuse
     private static readonly MethodInfo? _keywordsGetter = AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.Keywords));
 
     /// <summary>Another mod patches what <c>card.Keywords</c> runs (the snapshot then reads it as the game does).</summary>
+    // No tolerance: keyword reads answered from kept state, not called.
     private static bool KeywordsPatched() => PatchSafety.IsPatchedByOthers(_keywordsMethod) || PatchSafety.IsPatchedByOthers(_keywordsGetter);
 
     /// <summary><c>card.Keywords</c> (<c>GetKeywordsWithSources(All)</c>) as the snapshot's enum-ordered list; null when empty.</summary>

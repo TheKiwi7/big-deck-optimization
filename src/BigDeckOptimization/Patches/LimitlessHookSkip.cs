@@ -121,6 +121,7 @@ public static class LimitlessHookSkip
             bool patched = false;
             foreach (MethodBase method in _watched)
             {
+                // No tolerance: forwarded hooks and defaults whose calls a dropped enchantment skips.
                 patched |= PatchSafety.IsPatchedByOthers(method);
             }
             // A clone's inner cards are built by the getter's CardModel.FromSerializable on its first forwarded call: a drop

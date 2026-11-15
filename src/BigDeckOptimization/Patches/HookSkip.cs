@@ -74,6 +74,23 @@ public static partial class HookSkip
         public MethodBase? Body;
         public PileFilter? Filter;
 
+        private sealed record Combined(Type[] A, Type[] B, Type[] Both);
+
+        /// <summary>A reference, read and replaced whole (a hook may run off the main thread).</summary>
+        private Combined? _combined;
+
+        /// <summary>Gates of two of this hook's defaults together, kept while PatchSafety's answers (their arrays) stay the same.</summary>
+        public Type[] CombinedGates(Type[] a, Type[] b)
+        {
+            if (_combined is { } known && ReferenceEquals(known.A, a) && ReferenceEquals(known.B, b))
+            {
+                return known.Both;
+            }
+            Type[] both = a.Concat(b).Distinct().ToArray();
+            _combined = new Combined(a, b, both);
+            return both;
+        }
+
         public Entry(string hook, string fingerprint, bool subscribed, int profile, params string[] methods)
         {
             Hook = hook;
@@ -172,6 +189,7 @@ public static partial class HookSkip
     {
         foreach (MethodBase helper in HelperMethods(profile))
         {
+            // No tolerance: a dropped listener skips its calls to these helpers, so a patch on one would miss those calls.
             if (PatchSafety.IsPatchedByOthers(helper))
             {
                 return true;
@@ -327,7 +345,7 @@ public static partial class HookSkip
     /// </summary>
     private static void Watch(Entry entry)
     {
-        PatchSafety.Watch(Name, entry.Method, AllowedForPreflight);
+        PatchSafety.Watch(Name, entry.Method, PatchTolerance.SurroundingOnly, lazyAllowed: AllowedForPreflight);
         if (entry.Body != entry.Method)
         {
             PatchSafety.Watch(Name, entry.Body, AllowedForPreflight);
@@ -342,7 +360,7 @@ public static partial class HookSkip
         }
         if (entry.Filter?.BaseMethods is { } bases)
         {
-            PatchSafety.Watch(Name, bases);
+            PatchSafety.Watch(Name, bases, PatchTolerance.TypeGated);
         }
     }
 
@@ -526,19 +544,34 @@ public static partial class HookSkip
         // never sees it), so it turns HookSkip off and this walk runs vanilla.
         try
         {
-            if (PatchSafety.IsPatchedByOthers(entry.Method, AllowedBodyPatches()) || (entry.Body != entry.Method && PatchSafety.IsPatchedByOthers(entry.Body, AllowedBodyPatches()))
+            // The hook itself: postfixes and void prefixes are let stand. The transpiled body runs the same listeners with the same
+            // effects (only no-op calls are left out), so a patch around it sees what it sees without this mod (RitsuLib's
+            // lifecycle postfixes wrapping the returned task). Not on an async hook's state machine: a patch there can read the
+            // machine's fields, the walk's enumerator among them, which the redirect makes another object.
+            if (PatchSafety.IsPatchedByOthers(entry.Method, AllowedBodyPatches(), PatchTolerance.SurroundingOnly)
+                || (entry.Body != entry.Method && PatchSafety.IsPatchedByOthers(entry.Body, AllowedBodyPatches()))
                 || (entry.Profile >= 0 && HelpersPatched(entry.Profile)))
             {
                 return null;
             }
-            foreach (MethodInfo baseMethod in entry.Filter!.BaseMethods!)
+            // The defaults a dropped listener's call would run: a postfix or prefix there would miss the skipped calls, so only
+            // patches doing nothing unless the listener is of some types stand (TypeGated), and those types keep their calls
+            // (the filter treats them as overriders); any other patch keeps the hook vanilla.
+            Type[]? gates = null;
+            int gated = 0;
+            MethodInfo[] bases = entry.Filter!.BaseMethods!;
+            for (int i = 0; i < bases.Length; i++)
             {
-                if (PatchSafety.IsPatchedByOthers(baseMethod))
+                if (PatchSafety.IsPatchedByOthers(bases[i], out Type[] found))
                 {
                     return null;
                 }
+                if (found.Length > 0)
+                {
+                    gates = gated++ == 0 ? found : entry.CombinedGates(gates!, found);
+                }
             }
-            return entry.Filter;
+            return gates == null ? entry.Filter : entry.Filter.WithGates(gates);
         }
         catch (Exception e)
         {
@@ -780,6 +813,7 @@ public static partial class HookSkip
         /// <summary>The next RunState.IterateHookListeners call (this method's own walk) keeps only implementers.</summary>
         private static void Prefix(MethodBase __originalMethod)
         {
+            // No tolerance: a void prefix of another mod running after this one would take the pending filter for its own walk.
             if (Enabled && FastListeners.RunMirrored && !ListenerCache.IsSuspended && !PatchSafety.IsPatchedByOthers(__originalMethod))
             {
                 FastListeners.PendingRunFilter = _filters[__originalMethod];

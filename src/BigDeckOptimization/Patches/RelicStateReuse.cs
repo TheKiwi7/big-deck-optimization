@@ -331,6 +331,7 @@ public static class RelicStateReuse
         {
 #if BENCH
             ScalarWhy = !ScalarEnabled || !_scalarGuardsPass ? "off or patched" : !_last.TryGetValue(relic, out SerializableRelic? p) ? "no previous" : p.Id != relic.Id || p.FloorAddedToDeck != relic.FloorAddedToDeck ? "id/floor"
+                // No tolerance: serialization reused instead of run.
                 : PatchSafety.IsPatchedByOthers(_fromInternal!, _allowedOnFromInternal) ? "FromInternal patched" : PatchSafety.IsPatchedByOthers(_shouldSerialize!) ? "ShouldSerialize patched"
                 : FieldTargeted(relic.GetType()) ? "BaseLib field on " + relic.GetType().Name : "no plan " + relic.GetType().Name;
 #endif
@@ -697,6 +698,7 @@ public static class RelicStateReuse
         if (now != _guardsAt)
         {
             _guardsPass = !(_registeredSaves != null && _registeredSaves().Count != 0)
+                // No tolerance: the previous object is given again instead of a new ToSerializable.
                 && !PatchSafety.IsPatchedByOthers(_toSerializable, _allowedOnToSerializable) && !PatchSafety.IsPatchedByOthers(_serialize, _allowedOnSerialize)
                 && !PatchSafety.IsPatchedByOthers(_savedPropertiesFrom)
                 && !PatchSafety.IsPatchedByOthers(_propertiesSerialize, _allowedUnlimitedOnly) && !PatchSafety.IsPatchedByOthers(_relicStateSerialize, _allowedUnlimitedOnly);

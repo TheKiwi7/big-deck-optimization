@@ -32,7 +32,7 @@ $waiting = [Collections.Generic.Queue[object]]::new()
 # too; without the lines that only make sense with the mod on (bdperf comparisons, option switches, counters, effects and their
 # checks, positive controls, the mod's own probes: button input checks, tip rebuilds, a fake conflicting patch, a fault probe, a
 # rebuild check).
-$ModOnlyLine = '^\s*(cmd bdperf |cmd bdopt\b|counters\b|effects\b|effectcheck\b|expect\b|buttoninput\s+expect|tipsrebuilt\b|checktips\b|fakeconflict\b|faultprobe\b|rebuildcheck\b)'
+$ModOnlyLine = '^\s*(cmd bdperf |cmd bdopt\b|counters\b|effects\b|effectcheck\b|expect\b|buttoninput\s+expect|tipsrebuilt\b|checktips\b|fakeconflict\b|foreignpatch\b|faultprobe\b|rebuildcheck\b)'
 function New-OffTwin([string]$source, [string]$target) {
     $lines = [Collections.Generic.List[string]]::new()
     $placed = $false

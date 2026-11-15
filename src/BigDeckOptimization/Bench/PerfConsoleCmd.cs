@@ -57,7 +57,7 @@ public class PerfConsoleCmd : AbstractConsoleCmd
 
     public override string CmdName => "bdperf";
 
-    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | verify [off|sample|all] | combatstart | grid [cards:int] | probe [reset|log|on|off|nodes|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | sortkeys [wrong] | checks on|off | opt on|off [yes] | listeners [iterations:int] | costwrites | fault piles|walk | snapgameerror <n> | reserialize [verify <n>] | clonememo [verify <n>] | conflicts";
+    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | verify [off|sample|all] | combatstart | grid [cards:int] | probe [reset|log|on|off|nodes|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | sortkeys [wrong] | checks on|off | opt on|off [yes] | listeners [iterations:int] | costwrites | fault piles|walk | snapgameerror <n> | reserialize [verify <n>] | clonememo [verify <n>] | conflicts | foreign <shape> <Type:Method> [gate] [priority N] | foreign remove|report|classify <Type:Method>";
 
     public override string Description => "[BigDeckOptimization] Measures the multiplayer post-action checksum cost, vanilla vs optimized, or shows/sets live snapshot verification.";
 
@@ -177,7 +177,18 @@ public class PerfConsoleCmd : AbstractConsoleCmd
                 // bdopt why's report, plus the preflight's effect counters (checks run, back-offs and notes recorded).
                 Config.Settings.RefreshConflicts();
                 return new CmdResult(success: true, Config.Settings.WhyReport()
-                    + $"\nPreflight: {PatchSafety.PreflightRuns} runs, {PatchSafety.PreflightChecks} checks, {PatchSafety.RecordedBackOffs} back-offs and notes recorded");
+                    + $"\nPreflight: {PatchSafety.PreflightRuns} runs, {PatchSafety.PreflightChecks} checks, {PatchSafety.RecordedBackOffs} back-offs and notes recorded"
+                    + $"\nTolerated: {PatchSafety.ToleratedChecks} checks" + string.Concat(PatchSafety.ToleratedReport().Select(t => "\n  " + t)));
+            case "foreign":
+                // ForeignPatches: synthetic patches of each shape under a foreign Harmony id (same arguments as the script's foreignpatch).
+                try
+                {
+                    return new CmdResult(success: true, string.Join('\n', ForeignPatches.Run(string.Join(" ", args.Skip(1)))));
+                }
+                catch (Exception e)
+                {
+                    return new CmdResult(success: false, "bdperf foreign: " + e.Message);
+                }
             case "checksum":
                 int iterations = args.Length >= 2 && int.TryParse(args[1], out int n) && n > 0 ? n : 5;
                 return CompareChecksum(iterations);

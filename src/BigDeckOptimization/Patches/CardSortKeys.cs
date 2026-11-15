@@ -142,6 +142,13 @@ public static class CardSortKeys
     /// <summary>What a sort answered here reproduces or skips calling: another mod's patch on one leaves the sort to the game.</summary>
     private static MethodBase?[] _watched = Array.Empty<MethodBase?>();
 
+    /// <summary>
+    /// The cost hooks' AbstractModel defaults: a sort runs the cost hook once per card instead of once per comparison, so a patch
+    /// there would run fewer times. Patches gated on the listener's type are let stand (TypeGated) while no listener of the
+    /// combat is of a gate type (then each of their calls does nothing, however many); any other patch: the game's sort.
+    /// </summary>
+    private static MethodBase?[] _costDefaults = Array.Empty<MethodBase?>();
+
     /// <summary>Per card of the sort: its cost and ordered keys once read.</summary>
     private struct Entry
     {
@@ -188,8 +195,9 @@ public static class CardSortKeys
         _watched = new MethodBase?[]
         {
             compareTo, baseCompareTo, modelIdCompare, shuffle, shuffle.MakeGenericMethod(typeof(CardModel)), getResolved, withModifiers,
-            localModify, costHook, costDefault, costLateDefault, energyCost, dynamicVars, keys, pile,
+            localModify, costHook, energyCost, dynamicVars, keys, pile,
         };
+        _costDefaults = new MethodBase?[] { costDefault, costLateDefault };
         try
         {
             // Only what a sort with a keyword-reading cost listener relies on: a change leaves those sorts alone to the game.
@@ -241,6 +249,7 @@ public static class CardSortKeys
         // far are asked again at each preflight. The keyword reads (_keywordWatched) only matter in a combat where a cost hook
         // reads keywords (Veilpiercer): not known at the menu, so they show when such a sort checks them.
         PatchSafety.Watch(Name, _watched);
+        PatchSafety.Watch(Name, _costDefaults, PatchTolerance.TypeGated);
         PatchSafety.WatchAll(Name, HookFilter.CombatHookWalkParts);
         PatchSafety.WatchAll(Name, MetCostHooks);
         PatchSafety.WatchNote(Name, NoteModTypes);
@@ -355,9 +364,22 @@ public static class CardSortKeys
         {
             foreach (MethodBase? method in _watched)
             {
+                // No tolerance: the comparison, its keys and the cost are computed here once per card instead of per comparison.
                 if (PatchSafety.IsPatchedByOthers(method))
                 {
                     return Refuse($"another mod patches {method?.DeclaringType?.Name}.{method?.Name}");
+                }
+            }
+            Type[]? costGates = null;
+            foreach (MethodBase? method in _costDefaults)
+            {
+                if (PatchSafety.IsPatchedByOthers(method, out Type[] gates))
+                {
+                    return Refuse($"another mod patches {method?.DeclaringType?.Name}.{method?.Name}");
+                }
+                if (gates.Length > 0)
+                {
+                    costGates = costGates == null ? gates : costGates.Concat(gates).ToArray();
                 }
             }
             Dictionary<CardModel, Entry> cards = new(list.Count, ReferenceEqualityComparer.Instance);
@@ -394,7 +416,7 @@ public static class CardSortKeys
                 }
                 foreach (ICombatState combat in combats)
                 {
-                    if (ImpureCostListener(combat) is { } impure)
+                    if (ImpureCostListener(combat, costGates) is { } impure)
                     {
                         return Refuse($"{impure} may change a cost");
                     }
@@ -471,7 +493,7 @@ public static class CardSortKeys
     /// reads <c>card.Keywords</c> (<see cref="KeywordReaders"/>), the keyword hook it runs too: every keyword listener of the
     /// combat (the same walk, <c>IterateHookListeners</c>) must only add to the set, and the keyword read must be the known code.
     /// </summary>
-    private static string? ImpureCostListener(ICombatState combat)
+    private static string? ImpureCostListener(ICombatState combat, Type[]? costGates)
     {
         Type? lastType = null;
         bool readsKeywords = false;
@@ -486,6 +508,10 @@ public static class CardSortKeys
             if (type != lastType)
             {
                 lastType = type;
+                if (costGates != null && costGates.Any(gate => gate.IsAssignableFrom(type)))
+                {
+                    return type.Name + " (another mod's patch on a cost hook default is gated on it)";
+                }
                 ListenerReads? reads = CostOverrides(type);
                 if (reads == null)
                 {
@@ -493,6 +519,7 @@ public static class CardSortKeys
                 }
                 foreach (MethodInfo method in reads.Cost)
                 {
+                    // No tolerance: cost overrides run once per sort instead of per comparison (a patch would run fewer times).
                     if (PatchSafety.IsPatchedByOthers(method))
                     {
                         return type.Name + " (patched)";
@@ -517,6 +544,7 @@ public static class CardSortKeys
         }
         foreach (MethodBase? method in _keywordWatched)
         {
+            // No tolerance: keyword reads run once per sort instead of per comparison.
             if (PatchSafety.IsPatchedByOthers(method))
             {
                 return $"a cost hook reading keywords ({method?.DeclaringType?.Name}.{method?.Name} patched)";

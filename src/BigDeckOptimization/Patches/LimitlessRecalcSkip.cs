@@ -255,6 +255,7 @@ public static class LimitlessRecalcSkip
         {
             // Another mod's patch on AllCards could add cards this never sees enter a pile (OnlyDefaultsBesidesStacked, CardEntered).
             // A mod loaded after the load check that may change an inner list without bumping the quiet state: passes run.
+            // No tolerance: a quiet pass is skipped whole.
             if (PatchSafety.IsPatchedByOthers(_pass) || PatchSafety.IsPatchedByOthers(_allCards) || PatchedByOthers()
                 || !LimitlessHookSkip.InnerListWritersKnown)
             {
@@ -529,6 +530,7 @@ public static class LimitlessRecalcSkip
         if (--_patchCheckCalls < 0)
         {
             _patchCheckCalls = 1023;
+            // No tolerance: memoized calls are skipped.
             _patchedByOthers = PatchSafety.IsPatchedByOthers(_original) || PatchSafety.IsPatchedByOthers(_defaultRecalculate)
                 || PatchSafety.IsPatchedByOthers(_getter) || LimitlessReserialize.PatchedByOthers();
         }

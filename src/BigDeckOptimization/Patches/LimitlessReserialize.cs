@@ -470,6 +470,7 @@ public static class LimitlessReserialize
         long now = Environment.TickCount64;
         if (now - _patchesCheckedAt >= 2000)
         {
+            // No tolerance: the comparison mirrors these methods and skips SetSerializableCards' rebuild.
             _patchedByOthers = (_original != null && (PatchSafety.IsPatchedByOthers(_original) || PatchSafety.IsPatchedByOthers(_setter)))
                 || PatchSafety.IsPatchedByOthers(_savedPropertiesFrom)
                 || PatchSafety.IsPatchedByOthers(_fromInternal, _allowedOnFromInternal)

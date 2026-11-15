@@ -1,0 +1,48 @@
+# Foreign patches judged by their shape: the positive controls. Each of these synthetic patches of "another mod" (Harmony ids
+# bdtest.foreign.*, Bench/ForeignPatches.cs) can change what the patched method does or skip it, so the optimization relying on that
+# method must back off there ("normal game for that part"), as before the shape rules; the expect lines must all be seen.
+timeout 600
+expect HookSkip: Hook\.AfterCardPlayed is also patched by bdtest\.foreign\.bool-prefix \(postfixes and void prefixes not enough\): normal game for that part
+expect HookSkip: Hook\.AfterCardDrawn is also patched by bdtest\.foreign\.ref-prefix \(postfixes and void prefixes not enough\): normal game for that part
+expect PileIndex: CardPile\.AddInternal is also patched by bdtest\.foreign\.identity-transpiler \(postfixes and void prefixes not enough\)
+expect FastListeners: CardPile\.AddInternal is also patched by bdtest\.foreign\.identity-transpiler \(postfixes and void prefixes not enough\)
+expect CardDbScan: CardPile\.AddInternal is also patched by bdtest\.foreign\.identity-transpiler \(postfixes and void prefixes not enough\)
+expect HookFilter: Hook\.ShouldPlay is also patched by bdtest\.foreign\.noop-prefix \(postfixes and void prefixes not enough\)
+expect FOREIGN classify Hook\.ShouldPlay: bdtest\.foreign\.noop-prefix Prefix .*SurroundingOnly backs off \(void prefix running after a prefix of this mod that may skip the original\)
+expect FOREIGN classify Hook\.AfterCardPlayed: bdtest\.foreign\.inner-postfix InnerPostfix \(synthetic\): SurroundingOnly backs off \(inner postfix
+expect HookSkip: AbstractModel\.AfterCardPlayed is also patched by bdtest\.foreign\.nearmiss-postfix-squeeze \(patches gated on the listener's type not enough\)
+expect FOREIGN classify AbstractModel\.AfterCardPlayed: bdtest\.foreign\.nearmiss-postfix-squeeze Postfix .*TypeGated backs off \(postfix not provably gated
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all cards
+enemyhp 999999
+# (4) must back off: a bool prefix returning true, a prefix with ref __result, an identity transpiler, an inner postfix (classified only).
+foreignpatch bool-prefix MegaCrit.Sts2.Core.Hooks.Hook:AfterCardPlayed
+foreignpatch ref-prefix MegaCrit.Sts2.Core.Hooks.Hook:AfterCardDrawn
+foreignpatch identity-transpiler MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal
+foreignpatch inner-postfix MegaCrit.Sts2.Core.Hooks.Hook:AfterCardPlayed
+# A void prefix Harmony runs after HookFilter's mirror (same priority, registered later): may never run, so not tolerated.
+foreignpatch noop-prefix MegaCrit.Sts2.Core.Hooks.Hook:ShouldPlay
+# (5) near miss: a static write before the type test, so it runs for every listener: not gated.
+foreignpatch nearmiss-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardPlayed squeeze
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+play 3
+waitfor idle 120
+endturn
+waitfor idle 300
+checksum t1 end
+play 3
+waitfor idle 120
+wait 3
+cmd bdopt why
+cmd bdperf conflicts
+foreignpatch report end
+cmd kill all
+waitfor nocombat 300
+wait 2
+foreignpatch remove
+quit

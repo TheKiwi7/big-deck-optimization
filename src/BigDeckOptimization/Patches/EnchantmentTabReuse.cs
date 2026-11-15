@@ -143,6 +143,7 @@ public static class EnchantmentTabReuse
     {
         CardModel? model = nCard.Model;
         // Limitless throws on a null model and logs bare (non-multi) enchantments once: let it do both.
+        // No tolerance: mirrors the method with other node operations (UI).
         if (model == null || !nCard.IsInsideTree() || PatchSafety.IsPatchedByOthers(_original))
         {
             return false;

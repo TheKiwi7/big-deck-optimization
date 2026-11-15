@@ -115,11 +115,19 @@ public static class PileIndex
         bool others = false;
         foreach (MethodBase? method in _listMethods)
         {
-            others |= PatchSafety.IsPatchedByOthers(method);
+            // AddInternal and RemoveInternal: postfixes and void prefixes are let stand. They can't skip the original nor change
+            // its arguments, so the index is updated by this class's own prefix and finalizer as without them; a card they move
+            // goes through these methods again, counted there; one they throw is judged by the pile's list (Judge). The other
+            // list methods (clear, moves, shuffle): no tolerance.
+            others |= method == _addMethod || method == _removeMethod
+                ? PatchSafety.IsPatchedByOthers(method, PatchTolerance.SurroundingOnly)
+                : PatchSafety.IsPatchedByOthers(method);
         }
         _others = others;
-        _moveOthers = (_addMethod != null && PatchSafety.IsPatchedByOthers(_addMethod))
-            || (_removeMethod != null && PatchSafety.IsPatchedByOthers(_removeMethod));
+        // Any other mod's patch, not recorded as a back-off: the index keeps answering, only a card whose own move is under way
+        // gets the game's scan (a prefix after this class's could read card.Pile before the list changes).
+        _moveOthers = (_addMethod != null && PatchSafety.HasOtherPatches(_addMethod))
+            || (_removeMethod != null && PatchSafety.HasOtherPatches(_removeMethod));
     }
 
     /// <summary>
@@ -221,8 +229,9 @@ public static class PileIndex
         PatchGuard.Patch(harmony, _getter, prefix: Method(nameof(PilePrefix)));
         Applied = true;
         // What RefreshOthers and GetterPatched ask about (display only).
-        PatchSafety.Watch(Name, _listMethods);
-        PatchSafety.Watch(Name, new[] { _addMethod, _removeMethod, _getter, _playerPiles, _cardsGetter });
+        PatchSafety.Watch(Name, _listMethods.Where(m => m != _addMethod && m != _removeMethod));
+        PatchSafety.Watch(Name, new[] { _addMethod, _removeMethod }, PatchTolerance.SurroundingOnly);
+        PatchSafety.Watch(Name, new[] { _getter, _playerPiles, _cardsGetter });
         try
         {
             MethodInfo addInternal = AccessTools.Method(typeof(CardPile), nameof(CardPile.AddInternal))!;
@@ -364,6 +373,7 @@ public static class PileIndex
     /// <summary><c>_allCards.Contains(card)</c> from the end: the same answer, found at once for cards just created.</summary>
     private static bool ContainsCardPrefix(RunState __instance, CardModel card, ref bool __result)
     {
+        // No tolerance: this prefix replaces the method (a postfix would see its result, but a void prefix runs after it).
         if (!(Enabled || ContainsCardEnabled) || ListenerCache.IsSuspended || PatchSafety.IsPatchedByOthers(_containsCard))
         {
             return true;
@@ -828,6 +838,7 @@ public static class PileIndex
             _getterCheckCalls = 1023;
             // Also Player.Piles, which the answer reads the piles of directly (a mod adding a pile there), and CardPile.Cards,
             // through which the game's scan reads each pile (a mod answering another list there).
+            // No tolerance: getters answered from the index or read around (a postfix there could answer otherwise).
             _getterPatched = PatchSafety.IsPatchedByOthers(_getter) || PatchSafety.IsPatchedByOthers(_playerPiles)
                 || PatchSafety.IsPatchedByOthers(_cardsGetter);
         }

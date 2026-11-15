@@ -220,6 +220,7 @@ public static class RichTextEnvRelease
         if (now != _checkedAt)
         {
             _checkedAt = now;
+            // No tolerance: the effects' dictionary is disposed of, a postfix reading it would find it disposed.
             _othersPatched = _patched.Any(m => PatchSafety.IsPatchedByOthers(m));
         }
         return _othersPatched;

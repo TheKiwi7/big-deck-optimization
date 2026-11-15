@@ -149,6 +149,7 @@ public static class RelicFlashMerge
         }
         foreach (System.Reflection.MethodBase? method in skipped)
         {
+            // No tolerance: merged flashes skip calls.
             if (PatchSafety.IsPatchedByOthers(method))
             {
                 return false;

@@ -600,6 +600,100 @@ public static class MethodFingerprint
         return false;
     }
 
+    /// <summary>One decoded instruction: its offset, opcode, the offset after it, and its operand (a branch's absolute target,
+    /// a variable index, an integer constant, a resolved member; null when it has none or doesn't resolve).</summary>
+    public readonly record struct Instruction(int Offset, OpCode Op, int Next, object? Operand);
+
+    /// <summary>
+    /// The method's own instructions in order (<see cref="PatchSafety"/>'s shape checks of other mods' patch methods). Tokens
+    /// that don't resolve give a null operand rather than a throw; a switch's operand is its absolute targets.
+    /// </summary>
+    public static List<Instruction> Instructions(MethodBase method)
+    {
+        MethodBody body = method.GetMethodBody() ?? throw new ArgumentException($"{method} has no body");
+        byte[] il = body.GetILAsByteArray() ?? Array.Empty<byte>();
+        Type[]? typeArgs = method.DeclaringType is { IsGenericType: true } t ? t.GetGenericArguments() : null;
+        Type[]? methodArgs = method.IsGenericMethod ? method.GetGenericArguments() : null;
+        var list = new List<Instruction>();
+        int pos = 0;
+        while (pos < il.Length)
+        {
+            int start = pos;
+            short value = il[pos++];
+            if (value == 0xFE)
+            {
+                value = (short)(0xFE00 | il[pos++]);
+            }
+            OpCode op = _opCodes[value];
+            object? operand = null;
+            switch (op.OperandType)
+            {
+                case OperandType.InlineNone:
+                    break;
+                case OperandType.ShortInlineBrTarget:
+                    operand = pos + 1 + (sbyte)il[pos];
+                    pos += 1;
+                    break;
+                case OperandType.ShortInlineI:
+                    operand = op == OpCodes.Ldc_I4_S ? (sbyte)il[pos] : il[pos];
+                    pos += 1;
+                    break;
+                case OperandType.ShortInlineVar:
+                    operand = (int)il[pos];
+                    pos += 1;
+                    break;
+                case OperandType.InlineVar:
+                    operand = (int)BitConverter.ToUInt16(il, pos);
+                    pos += 2;
+                    break;
+                case OperandType.InlineBrTarget:
+                    operand = pos + 4 + BitConverter.ToInt32(il, pos);
+                    pos += 4;
+                    break;
+                case OperandType.InlineI:
+                    operand = BitConverter.ToInt32(il, pos);
+                    pos += 4;
+                    break;
+                case OperandType.ShortInlineR:
+                    pos += 4;
+                    break;
+                case OperandType.InlineI8:
+                case OperandType.InlineR:
+                    pos += 8;
+                    break;
+                case OperandType.InlineSwitch:
+                    int count = BitConverter.ToInt32(il, pos);
+                    pos += 4;
+                    int end = pos + 4 * count;
+                    var targets = new int[count];
+                    for (int i = 0; i < count; i++)
+                    {
+                        targets[i] = end + BitConverter.ToInt32(il, pos + 4 * i);
+                    }
+                    operand = targets;
+                    pos = end;
+                    break;
+                case OperandType.InlineString:
+                case OperandType.InlineSig:
+                    pos += 4;
+                    break;
+                default: // InlineField, InlineMethod, InlineType, InlineTok
+                    try
+                    {
+                        operand = method.Module.ResolveMember(BitConverter.ToInt32(il, pos), typeArgs, methodArgs);
+                    }
+                    catch (Exception e) when (e is ArgumentException or MissingMemberException or TypeLoadException or BadImageFormatException)
+                    {
+                        operand = null;
+                    }
+                    pos += 4;
+                    break;
+            }
+            list.Add(new Instruction(start, op, pos, operand));
+        }
+        return list;
+    }
+
     /// <summary>
     /// The method a key <c>Namespace.Type::Name(ParamType,...)</c> names (parameter types by short name, nested types as
     /// <c>Outer+Inner</c>) in an assembly, or null when that version doesn't have it.

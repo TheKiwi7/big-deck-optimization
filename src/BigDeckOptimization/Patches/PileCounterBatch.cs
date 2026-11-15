@@ -101,6 +101,7 @@ public static class PileCounterBatch
     /// <summary>Vanilla: <c>_currentCount = Math.Max(_currentCount - 1, _pile.Cards.Count)</c>, then fits the label.</summary>
     private static bool RemoveCardPrefix(NCombatCardPile __instance)
     {
+        // No tolerance: the label fit is deferred, a patch would see it unfitted.
         if (!Enabled || _clearDepth == 0 || PatchSafety.IsPatchedByOthers(_removeCard))
         {
             return true;

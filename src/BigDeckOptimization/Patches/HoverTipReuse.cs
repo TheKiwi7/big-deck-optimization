@@ -91,6 +91,7 @@ public static class HoverTipReuse
     {
         foreach (MethodBase method in _skipped)
         {
+            // No tolerance: the rebuild these methods do is skipped.
             if (PatchSafety.IsPatchedByOthers(method))
             {
                 return true;
@@ -153,6 +154,7 @@ public static class HoverTipReuse
     private static bool Prefix(NCreature __instance)
     {
         // Asked at each call: a mod loading later may patch it too.
+        // No tolerance: the handler's rebuild is skipped.
         if (!Enabled || PatchSafety.IsPatchedByOthers(_handler) || SkippedPatched())
         {
             return true;

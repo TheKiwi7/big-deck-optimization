@@ -121,7 +121,7 @@ public static class CardDbScan
         // What WalkPrefix asks about (display only); Limitless's allowed id patches built at the preflight, once mods loaded.
         PatchSafety.Watch(Name, walk);
         PatchSafety.Watch(Name, id, AllowedOnId);
-        PatchSafety.Watch(Name, add);
+        PatchSafety.Watch(Name, add, PatchTolerance.SurroundingOnly);
     }
 
     /// <summary>Recorded whatever <see cref="Enabled"/> says, so turning the patch on mid-combat stays exact.</summary>
@@ -176,7 +176,7 @@ public static class CardDbScan
     {
         _pending.Clear();
         // Tracking starts again from the piles themselves: earlier unseen adds no longer matter.
-        _addPatchedSinceStart = PatchSafety.IsPatchedByOthers(_add);
+        _addPatchedSinceStart = PatchSafety.IsPatchedByOthers(_add, PatchTolerance.SurroundingOnly);
         try
         {
             Dictionary<CardModel, uint> ids = _cardToId!(__instance);
@@ -208,11 +208,15 @@ public static class CardDbScan
     private static bool WalkPrefix(NetCombatCardDb __instance, CardPile pile)
     {
         Walks++;
+        // The walk and the ids: no tolerance (this prefix skips the walk, so a patch there, or on the calls it makes, would miss them).
         if (!Enabled || PatchSafety.IsPatchedByOthers(_walk) || PatchSafety.IsPatchedByOthers(_id, AllowedOnId()))
         {
             return true;
         }
-        if (_addPatchedSinceStart || PatchSafety.IsPatchedByOthers(_add))
+        // AddInternal: postfixes and void prefixes let stand. They can't skip the original (RecordAdd, a prefix taking the card,
+        // always runs then), and a card they put in a pile goes through AddInternal again, recorded there (and its own
+        // ContentsChanged walks it); the sampled whole-pile check stays.
+        if (_addPatchedSinceStart || PatchSafety.IsPatchedByOthers(_add, PatchTolerance.SurroundingOnly))
         {
             _addPatchedSinceStart = true;
             return true;

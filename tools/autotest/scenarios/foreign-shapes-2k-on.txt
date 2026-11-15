@@ -1,0 +1,125 @@
+# Foreign patches judged by their shape (A/B, mod on): the same synthetic patches of "another mod" (Harmony ids bdtest.foreign.*, Bench/ForeignPatches.cs) as foreign-shapes-2k-off; CHECKSUM and STATE lines (the foreign patches' call counts included) must match line for line. ab-2k-on otherwise.
+# The mod side must also let every one of them stand (logged "kept") and its optimizations still run (effectcheck).
+timeout 2400
+expect HookSkip: Hook\.AfterCardDrawn is also patched by .*bdtest\.foreign\.noop-postfix.*: kept
+expect HookSkip: Hook\.AfterCardPlayed is also patched by bdtest\.foreign\.count-postfix \(postfixes and void prefixes: run around
+expect PileIndex: CardPile\.AddInternal is also patched by bdtest\.foreign\.count-prefix, bdtest\.foreign\.nested-postfix \(postfixes and void prefixes
+expect PileIndex: CardPile\.RemoveInternal is also patched by bdtest\.foreign\.noop-prefix \(postfixes and void prefixes
+expect FastListeners: CardPile\.AddInternal is also patched by bdtest\.foreign\.count-prefix, bdtest\.foreign\.nested-postfix \(postfixes
+expect CardDbScan: CardPile\.AddInternal is also patched by bdtest\.foreign\.count-prefix, bdtest\.foreign\.nested-postfix \(postfixes
+expect HookFilter: Hook\.ModifyEnergyCostInCombat is also patched by bdtest\.foreign\.noop-postfix \(postfixes
+expect HookFilter: Hook\.ShouldPlay is also patched by bdtest\.foreign\.noop-prefix \(postfixes
+expect HookSkip: AbstractModel\.AfterCardPlayed is also patched by bdtest\.foreign\.gated-postfix-squeeze \(patches gated on the listener's type: Squeeze treated as overriding it\): kept
+expect HookSkip: AbstractModel\.AfterCardDrawn is also patched by bdtest\.foreign\.gated-prefix-squeeze \(patches gated
+expect HookSkip: AbstractModel\.BeforeCardPlayed is also patched by bdtest\.foreign\.gated-or-postfix-squeeze-relic \(patches gated on the listener's type: Squeeze, RelicModel treated
+expect STATE foreign end count-postfix Hook\.AfterCardPlayed [1-9]
+expect STATE foreign end nested-postfix moves [1-9]
+expect STATE foreign end gated-postfix squeeze [1-9]
+expect FOREIGN tolerated checks [1-9]
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+enemyhp 999999
+# (1) no-op postfix and void prefix: tolerated, the optimizations keep running.
+foreignpatch noop-postfix MegaCrit.Sts2.Core.Hooks.Hook:AfterCardDrawn
+foreignpatch noop-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:RemoveInternal
+foreignpatch noop-postfix MegaCrit.Sts2.Core.Hooks.Hook:ModifyEnergyCostInCombat
+# A void prefix Harmony runs before HookFilter's mirror (priority First): tolerated.
+foreignpatch noop-prefix MegaCrit.Sts2.Core.Hooks.Hook:ShouldPlay priority 800
+# (2) a real side effect vanilla has too: calls counted, the same counts with the mod on and off (STATE lines).
+foreignpatch count-postfix MegaCrit.Sts2.Core.Hooks.Hook:AfterCardPlayed
+foreignpatch count-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal
+# (3) a nested pile change: a card added to a discard pile takes the draw pile's last card with it (RemoveInternal + AddInternal).
+foreignpatch nested-postfix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal
+# (5) patches of AbstractModel defaults gated on the listener's type: recognized, Squeeze / relics keep their calls.
+foreignpatch gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardPlayed squeeze
+foreignpatch gated-prefix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardDrawn squeeze
+foreignpatch gated-or-postfix MegaCrit.Sts2.Core.Models.AbstractModel:BeforeCardPlayed squeeze-relic
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+effects start
+fpsstat
+gcstat
+play 4
+waitfor idle 120
+fpsstat plays t1
+checksum t1 plays
+fpsstat
+endturn
+waitfor idle 300
+fpsstat end of turn t1
+gcstat turn t1
+checksum t1 end
+state t1
+fpsstat
+gcstat
+play 4
+waitfor idle 120
+fpsstat plays t2
+checksum t2 plays
+fpsstat
+endturn
+waitfor idle 300
+fpsstat end of turn t2
+gcstat turn t2
+checksum t2 end
+state t2
+fpsstat
+gcstat
+play 4
+waitfor idle 120
+fpsstat plays t3
+checksum t3 plays
+fpsstat
+endturn
+waitfor idle 300
+fpsstat end of turn t3
+gcstat turn t3
+checksum t3 end
+state t3
+fpsstat
+gcstat
+play 4
+waitfor idle 120
+fpsstat plays t4
+checksum t4 plays
+fpsstat
+endturn
+waitfor idle 300
+fpsstat end of turn t4
+gcstat turn t4
+checksum t4 end
+state t4
+fpsstat
+gcstat
+play 4
+waitfor idle 120
+fpsstat plays t5
+checksum t5 plays
+fpsstat
+endturn
+waitfor idle 300
+fpsstat end of turn t5
+gcstat turn t5
+checksum t5 end
+state t5
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+foreignpatch report end
+effects end
+effectcheck HookSkip grew start
+effectcheck PileIndex grew start
+effectcheck FastListeners.Cache grew start
+effectcheck HookFilter grew start
+foreignpatch require tolerated
+cmd bdperf conflicts
+counters end
+foreignpatch remove
+quit

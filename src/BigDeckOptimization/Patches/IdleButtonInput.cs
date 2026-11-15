@@ -75,6 +75,7 @@ public static class IdleButtonInput
     private static System.Reflection.MethodInfo? _input, _dragCheck;
 
     /// <summary>On, and nobody else patches what a muted button no longer runs.</summary>
+    // No tolerance: _Input is no longer called for idle buttons, its patches wouldn't run.
     private static bool Active => Enabled && !PatchSafety.IsPatchedByOthers(_input) && !PatchSafety.IsPatchedByOthers(_dragCheck);
 
     private static bool IsEligible(Node node) => IsEligibleType(node) && Active;

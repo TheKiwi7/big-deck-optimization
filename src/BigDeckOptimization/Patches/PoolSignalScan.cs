@@ -117,6 +117,7 @@ public static class PoolSignalScan
     /// <summary>Mirrors NodePool.Free → NodePool&lt;T&gt;.Free for objects the pool tracks; anything else goes vanilla.</summary>
     private static bool Prefix(IPoolable poolable)
     {
+        // No tolerance: the free is mirrored with cached signal names.
         if (!Enabled || poolable is not Node node || PatchSafety.IsPatchedByOthers(_staticFree))
         {
             return true;
@@ -183,6 +184,7 @@ public static class PoolSignalScan
             {
                 foreach (MethodInfo method in access.Mirrored)
                 {
+                    // No tolerance: as the static Free.
                     if (PatchSafety.IsPatchedByOthers(method))
                     {
                         return true;

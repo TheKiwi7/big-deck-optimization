@@ -71,6 +71,12 @@ public static class FastListeners
     private static Func<CombatState, AbstractModel?>? _combatDominion;
     private static Func<RunState, IReadOnlyList<AbstractModel>>? _runRunModels;
     private static Func<RunState, AbstractModel?>? _runDominion;
+    /// <summary>
+    /// v0.107.1 and v0.111: <c>MultiplayerScalingModel</c> of each state, a compiled getter (v0.113 made it one of the run models:
+    /// a direct reference would be a member missing there, which CrossVersionCompat-style loaders have to rewrite).
+    /// </summary>
+    private static Func<CombatState, AbstractModel?>? _combatScaling;
+    private static Func<RunState, AbstractModel?>? _runScaling;
 
     public static bool Enabled { get; set; } = true;
 
@@ -620,7 +626,7 @@ public static class FastListeners
         /// <summary>A kept MultiEnchantment that only forwards this hook to inner enchantments that all keep its default does nothing.</summary>
         private bool MultiDoesNothing(AbstractModel multi)
         {
-            if (BaseMethods == null || !LimitlessHookSkip.Active)
+            if (BaseMethods == null || !LimitlessHookSkip.Active || _noMultiDrop)
             {
                 return false;
             }
@@ -1027,6 +1033,59 @@ public static class FastListeners
 
         /// <summary>The base methods whose no-op defaults the dropped listeners rely on (null for interface filters).</summary>
         public MethodInfo[]? BaseMethods { get; private init; }
+
+        /// <summary>
+        /// A filter from <see cref="WithGates"/>: a stacked enchantment is never dropped (its inner enchantments' calls reach the
+        /// patched default, and LimitlessHookSkip's inner check doesn't know the gates).
+        /// </summary>
+        private bool _noMultiDrop;
+
+        private sealed record Gated(Type[] Gates, PileFilter Filter);
+
+        /// <summary>The last filter <see cref="WithGates"/> made, with the gates it was made for.</summary>
+        private Gated? _gated;
+
+        /// <summary>
+        /// This filter with every type assignable to one of <paramref name="gates"/> also reacting: other mods' patches on a default
+        /// this filter's dropped listeners rely on that do nothing unless the listener is of one of those types
+        /// (<see cref="PatchSafety.TypeGates"/>). Those types keep going through the game's call, the others stay dropped. A new
+        /// filter (its own caches, segments and verdicts: nothing judged without the gates is reused), kept while the gates stay
+        /// the same. Stacked enchantments are kept whenever their type overrides one of the methods (see <see cref="_noMultiDrop"/>).
+        /// </summary>
+        internal PileFilter WithGates(Type[] gates)
+        {
+            Gated? last = _gated;
+            if (last != null && (ReferenceEquals(last.Gates, gates) || last.Gates.SequenceEqual(gates)))
+            {
+                if (!ReferenceEquals(last.Gates, gates))
+                {
+                    _gated = new Gated(gates, last.Filter); // The same gates in PatchSafety's new answer: compared by reference next time.
+                }
+                return last.Filter;
+            }
+            MethodInfo[] bases = BaseMethods ?? Array.Empty<MethodInfo>();
+            Func<Type, bool> reacts = _reacts;
+            var filter = new PileFilter(type => GateMatches(gates, type)
+                    || (ReferenceEquals(type, LimitlessHookSkip.Multi) ? bases.Any(b => Overrides(type, b)) : reacts(type)), _keepSubscribed)
+            {
+                BaseMethods = BaseMethods,
+                _noMultiDrop = true,
+            };
+            _gated = new Gated(gates, filter);
+            return filter;
+        }
+
+        private static bool GateMatches(Type[] gates, Type type)
+        {
+            foreach (Type gate in gates)
+            {
+                if (gate.IsAssignableFrom(type))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
 
         /// <summary>Types overriding any of these <see cref="AbstractModel"/> virtuals.</summary>
         public static PileFilter Overriding(bool keepSubscribed, params string[] methods)
@@ -1959,6 +2018,7 @@ public static class FastListeners
             AccessTools.Method(typeof(CardPile), nameof(CardPile.MoveToTopInternal)) ?? throw new MissingMethodException(nameof(CardPile), nameof(CardPile.MoveToTopInternal)),
             AccessTools.PropertySetter(typeof(CardModel), nameof(CardModel.Affliction)) ?? throw new MissingMethodException(nameof(CardModel), "set_Affliction"),
         };
+        _trackedTolerant = _trackedCode.Select(m => TrackedTolerance(m) != PatchTolerance.None).ToArray();
         foreach (string property in new[] { nameof(CardModel.Enchantment), nameof(CardModel.Affliction) })
         {
             // The setter is the only code changing it (auto-property backing field), so bumping around it is enough.
@@ -2054,7 +2114,17 @@ public static class FastListeners
             Log.Info($"[{ModEntry.Id}] {Name}: a left run's card moves kept until the next shuffle: {e.Message}");
         }
         // What TrackedCodePatched asks at each cached walk, checked from the main menu on (display only).
-        PatchSafety.Watch(Name, _trackedCode);
+        for (int i = 0; i < _trackedCode.Length; i++)
+        {
+            if (_trackedTolerant[i])
+            {
+                PatchSafety.Watch(Name, _trackedCode[i], PatchTolerance.SurroundingOnly);
+            }
+            else
+            {
+                PatchSafety.Watch(Name, _trackedCode[i]);
+            }
+        }
         _tracking = true;
     }
 
@@ -2077,7 +2147,7 @@ public static class FastListeners
             }
             else
             {
-                PatchSafety.RequirePartResolvable(typeof(FastListeners), "scaling");
+                _combatScaling = Getter<CombatState, AbstractModel?>("MultiplayerScalingModel");
                 _combatTail = CombatScalingTail;
             }
             _allies = AccessTools.FieldRefAccess<CombatState, List<Creature>>("_allies");
@@ -2116,7 +2186,7 @@ public static class FastListeners
             }
             else
             {
-                PatchSafety.RequirePartResolvable(typeof(FastListeners), "scaling");
+                _runScaling = Getter<RunState, AbstractModel?>("MultiplayerScalingModel");
                 _runTail = RunScalingTail;
             }
             _runIterate = runIterate;
@@ -2171,23 +2241,26 @@ public static class FastListeners
             System.Linq.Expressions.Expression.Convert(System.Linq.Expressions.Expression.Property(owner, info), typeof(TResult)), owner).Compile();
     }
 
-    /// <summary>v0.107.1: <c>if (MultiplayerScalingModel != null) list.Add(MultiplayerScalingModel);</c> (a type v0.113 moved: checked on its own).</summary>
-    [PatchPart("scaling")]
+    /// <summary>
+    /// v0.107.1: <c>if (MultiplayerScalingModel != null) list.Add(MultiplayerScalingModel);</c>, the getter read once (the
+    /// game's walk reads the same property twice in a row: the same object).
+    /// </summary>
     private static void CombatScalingTail(List<AbstractModel> list, CombatState state, PileFilter? filter)
     {
-        if (state.MultiplayerScalingModel != null && (filter == null || !KindSkipEnabled || filter.Keeps(state.MultiplayerScalingModel)))
+        AbstractModel? scaling = _combatScaling!(state);
+        if (scaling != null && (filter == null || !KindSkipEnabled || filter.Keeps(scaling)))
         {
-            list.Add(state.MultiplayerScalingModel);
+            list.Add(scaling);
         }
     }
 
-    /// <summary>v0.107.1: <c>list.Add(MultiplayerScalingModel);</c> (a type v0.113 moved: checked on its own).</summary>
-    [PatchPart("scaling")]
+    /// <summary>v0.107.1: <c>list.Add(MultiplayerScalingModel);</c> (through the compiled getter, as the combat walk's).</summary>
     private static void RunScalingTail(List<AbstractModel> list, RunState run, PileFilter? filter)
     {
-        if (filter == null || !KindSkipEnabled || filter.Keeps(run.MultiplayerScalingModel))
+        AbstractModel? scaling = _runScaling!(run);
+        if (filter == null || !KindSkipEnabled || filter.Keeps(scaling!))
         {
-            list.Add(run.MultiplayerScalingModel);
+            list.Add(scaling!);
         }
     }
 
@@ -2270,9 +2343,11 @@ public static class FastListeners
 
     /// <summary>Another mod's patch on what the combat mirror reproduces: its patch must run, so the game's walk does.</summary>
     private static bool CombatWalkPatched() =>
+        // No tolerance: this mirrors the walk itself (its iterator and Contains); a postfix could change what it yields.
         PatchSafety.IsPatchedByOthers(_combatIterate) || PatchSafety.IsPatchedByOthers(_combatBody) || PatchSafety.IsPatchedByOthers(_combatContains);
 
     private static bool RunWalkPatched() =>
+        // No tolerance: as the combat walk.
         PatchSafety.IsPatchedByOthers(_runIterate) || PatchSafety.IsPatchedByOthers(_runBody) || PatchSafety.IsPatchedByOthers(_runContains);
 
     /// <summary>
@@ -2364,6 +2439,7 @@ public static class FastListeners
     {
         foreach (MethodBase method in WalkCode())
         {
+            // No tolerance: the walks' code is mirrored or replayed (iterators, Contains, ModHelper's subscriber walks).
             if (PatchSafety.IsPatchedByOthers(method, caller))
             {
                 return true;
@@ -2384,15 +2460,30 @@ public static class FastListeners
     private static bool TrackedCodePatched()
     {
         MethodBase[] getters = _trackedCode;
+        bool[] tolerant = _trackedTolerant;
         for (int i = 0; i < getters.Length; i++)
         {
-            if (PatchSafety.IsPatchedByOthers(getters[i]))
+            if (i < tolerant.Length && tolerant[i] ? PatchSafety.IsPatchedByOthers(getters[i], PatchTolerance.SurroundingOnly) : PatchSafety.IsPatchedByOthers(getters[i]))
             {
                 return true;
             }
         }
         return false;
     }
+
+    /// <summary>Per entry of <see cref="_trackedCode"/>: <see cref="TrackedTolerance"/> is SurroundingOnly.</summary>
+    private static bool[] _trackedTolerant = Array.Empty<bool>();
+
+    /// <summary>
+    /// <c>AddInternal</c> and <c>RemoveInternal</c> let postfixes and void
+    /// prefixes stand: they can't make Harmony skip this class's tracking prefix (only a skipped original or a bool prefix
+    /// returning false does), and a card they move goes through these methods again, bumping <see cref="PileVersion"/> (an add
+    /// whose version moved by more than its own two bumps records no move: the entries are rebuilt). The getters (answered from
+    /// the cached entries) and the other writers keep no tolerance.
+    /// </summary>
+    private static PatchTolerance TrackedTolerance(MethodBase method) =>
+        method.DeclaringType == typeof(CardPile) && method.Name is nameof(CardPile.AddInternal) or nameof(CardPile.RemoveInternal)
+            ? PatchTolerance.SurroundingOnly : PatchTolerance.None;
 
     /// <summary>
     /// After the game cleans a run up: the recorded moves hold that run's piles and cards (and through them the whole run)
@@ -2555,6 +2646,7 @@ public static class FastListeners
     {
         // A patch on the subscribe method could remove or replace subscribers (same count): the game's own walk then.
         System.Collections.IList? live = _combatSubscribers;
+        // No tolerance: the subscriber list is read from a snapshot instead of these methods.
         var snapshot = live == null || PatchSafety.IsPatchedByOthers(_subscribersMethod) || PatchSafety.IsPatchedByOthers(_subscribersBody)
             || PatchSafety.IsPatchedByOthers(_subscribeMethod) ? null : SubscriberSnapshot();
         if (snapshot == null)
@@ -2625,6 +2717,7 @@ public static class FastListeners
     {
         // Not inside ListenerCache.RunVanilla: the reference calls every subscriber, as the game does.
         // Another mod's patch on the delegate's method must run: the fingerprint reads the original IL, it can't see one.
+        // No tolerance: the subscriber is skipped, so a patch on it would miss its calls.
         if (id != CardModifiersId || !Enabled || ListenerCache.IsSuspended || PatchSafety.IsPatchedByOthers(del.Method))
         {
             return false;
