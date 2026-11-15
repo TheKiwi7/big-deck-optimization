@@ -54,6 +54,7 @@ public static class PileCounterBatch
             finalizer: new HarmonyMethod(typeof(PileCounterBatch), nameof(ClearFinalizer)));
         PatchGuard.Patch(harmony, removeCard, prefix: new HarmonyMethod(typeof(PileCounterBatch), nameof(RemoveCardPrefix)));
         Applied = true;
+        PatchSafety.Watch(Name, removeCard); // What RemoveCardPrefix asks about (display only).
     }
 
     /// <summary>

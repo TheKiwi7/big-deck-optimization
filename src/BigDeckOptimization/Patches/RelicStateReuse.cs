@@ -134,6 +134,38 @@ public static class RelicStateReuse
         {
             Log.Info($"[{ModEntry.Id}] {ScalarName} left vanilla, relics' saved properties read by the game each time: {e.Message}");
         }
+        WatchForPreflight();
+    }
+
+    /// <summary>
+    /// What GuardsPass asks about (display only, never throws): the allowed lists are read at each preflight (BaseLib or
+    /// Unlimited loading later changes them), and BaseLib's relic saves, which turn the whole reuse off, as a note.
+    /// </summary>
+    private static void WatchForPreflight()
+    {
+        PatchSafety.Watch(Name, _toSerializable, () => _allowedOnToSerializable);
+        PatchSafety.Watch(Name, _serialize, () => _allowedOnSerialize);
+        PatchSafety.Watch(Name, _savedPropertiesFrom);
+        PatchSafety.Watch(Name, _propertiesSerialize, () => _allowedUnlimitedOnly);
+        PatchSafety.Watch(Name, _relicStateSerialize, () => _allowedUnlimitedOnly);
+        if (ScalarApplied)
+        {
+            PatchSafety.Watch(Name, _fromInternal, () => _allowedOnFromInternal);
+            PatchSafety.Watch(Name, _shouldSerialize);
+        }
+        PatchSafety.WatchNote(Name, NoteRelicSaves);
+    }
+
+    /// <summary>Other mods' BaseLib relic saves: GuardsPass then leaves every relic to the game's serialization.</summary>
+    private static void NoteRelicSaves()
+    {
+        if (_registeredSaves?.Invoke() is not { Count: > 0 } saves)
+        {
+            PatchSafety.ClearNote(Name, "relic_saves");
+            return;
+        }
+        (string[] ids, string[] mods) = BaseLibTypes.ExtendedSaves(saves, null);
+        PatchSafety.Note(Name, "relic_saves", $"relic data other mods save with BaseLib ({string.Join(", ", ids.Take(4))}{(ids.Length > 4 ? ", ..." : "")}): every relic's state is built as the game does", mods);
     }
 
     // --- Scalar part: an unchanged relic recognized without SavedProperties.From ---

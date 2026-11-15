@@ -239,6 +239,11 @@ public static class LimitlessHookSkip
             finalizer: new HarmonyMethod(typeof(LimitlessHookSkip), nameof(AfterAdd)));
         Multi = multi;
         Applied = true;
+        // What PatchedByOthers asks about (display only): its own methods, and the clone chain and storage card overrides
+        // under LimitlessCloneMemo's name (whose code asks them, so its runtime check records them there).
+        PatchSafety.Watch(Name, _watched);
+        LimitlessCloneMemo.WatchChain();
+        PatchSafety.WatchAll(LimitlessCloneMemo.Name, () => _storageCard != null && LimitlessCloneMemo.OnTheWay(_storageCard) is { } storage ? storage : Array.Empty<MethodInfo>());
         try
         {
             ApplySamples(harmony, multi);

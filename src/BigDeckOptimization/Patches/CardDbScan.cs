@@ -118,6 +118,10 @@ public static class CardDbScan
             prefix: new HarmonyMethod(typeof(CardDbScan), nameof(WalkPrefix)),
             postfix: new HarmonyMethod(typeof(CardDbScan), nameof(WalkPostfix)));
         Applied = true;
+        // What WalkPrefix asks about (display only); Limitless's allowed id patches built at the preflight, once mods loaded.
+        PatchSafety.Watch(Name, walk);
+        PatchSafety.Watch(Name, id, AllowedOnId);
+        PatchSafety.Watch(Name, add);
     }
 
     /// <summary>Recorded whatever <see cref="Enabled"/> says, so turning the patch on mid-combat stays exact.</summary>

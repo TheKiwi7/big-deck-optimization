@@ -220,6 +220,9 @@ public static class PileIndex
             prefix: Method(nameof(BeforeRandomize)), finalizer: Method(nameof(AfterRandomize)));
         PatchGuard.Patch(harmony, _getter, prefix: Method(nameof(PilePrefix)));
         Applied = true;
+        // What RefreshOthers and GetterPatched ask about (display only).
+        PatchSafety.Watch(Name, _listMethods);
+        PatchSafety.Watch(Name, new[] { _addMethod, _removeMethod, _getter, _playerPiles, _cardsGetter });
         try
         {
             MethodInfo addInternal = AccessTools.Method(typeof(CardPile), nameof(CardPile.AddInternal))!;
@@ -236,6 +239,7 @@ public static class PileIndex
             PatchSafety.RequireFingerprint(_containsCard, ContainsCardFingerprint);
             _allCards = AccessTools.FieldRefAccess<RunState, List<CardModel>>("_allCards");
             PatchGuard.Patch(harmony, _containsCard, prefix: Method(nameof(ContainsCardPrefix)));
+            PatchSafety.Watch(Name, _containsCard); // What ContainsCardPrefix asks about (display only).
         }
         catch (Exception e)
         {

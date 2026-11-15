@@ -139,6 +139,9 @@ public static class HoverTipReuse
         _activeHoverTips = () => active;
         PatchGuard.Patch(harmony, handler, prefix: new HarmonyMethod(typeof(HoverTipReuse), nameof(Prefix)));
         Applied = true;
+        // What Prefix asks about (display only).
+        PatchSafety.Watch(Name, handler);
+        PatchSafety.Watch(Name, _skipped);
     }
 
     /// <summary>Where the game would place the panel from now; null when it couldn't (no game node: never reused).</summary>

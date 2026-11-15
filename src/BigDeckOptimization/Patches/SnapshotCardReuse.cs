@@ -365,6 +365,47 @@ public static class SnapshotCardReuse
         {
             Log.Info($"[{ModEntry.Id}] {Name}: pile lists left vanilla: {e.Message}");
         }
+        WatchForPreflight();
+    }
+
+    /// <summary>
+    /// What this class's runtime checks ask about, for the back-off preflight (display only, never throws): the pile and card
+    /// snapshot methods, the fast reads' methods and the getters kept states skip, the serializers kept bits stand for (BaseLib's
+    /// and Unlimited's allowed writes read at each preflight), LimitlessReserialize's checks this relies on, and the pure
+    /// listener overrides of the listener types met so far (who is in a combat isn't known at the menu: those of later
+    /// combats show when checked). Notes: other mods' saved data this keeps no memo for.
+    /// </summary>
+    private static void WatchForPreflight()
+    {
+        PatchSafety.Watch(Name, _pileFrom);
+        PatchSafety.Watch(Name, _cardFrom);
+        if (_fastReads)
+        {
+            PatchSafety.Watch(Name, new MethodBase?[] { _withModifiers, _keywordsMethod, _keywordsGetter });
+        }
+        PatchSafety.Watch(Name, _skippedGetters);
+        Func<MethodInfo[]> allowed = () => RelicStateReuse.UnlimitedTranspilerMethod is { } unlimited ? _baseLibWrites.Append(unlimited).ToArray() : _baseLibWrites;
+        PatchSafety.WatchAll(Name, () => (_cardSerializers ?? Array.Empty<MethodBase>()).Concat(_pileSerializers ?? Array.Empty<MethodBase>()).ToArray(), allowed);
+        PatchSafety.WatchAll(Name, () => _pureTypes.Values.ToArray().Where(methods => methods != null).SelectMany(methods => methods!).ToArray());
+        LimitlessReserialize.WatchFor(Name);
+        PatchSafety.WatchNote(Name, () => LimitlessReserialize.NoteSavedData(Name, "those cards' state is built again as the game does at every check"));
+        PatchSafety.WatchNote(Name, NoteModListeners);
+    }
+
+    /// <summary>
+    /// The note (back-off preflight) for other mods' listener types met so far whose cost or keyword hooks aren't known to only
+    /// read (<see cref="PureOverrides"/>): card costs and keywords are then read as the game does in those combats.
+    /// </summary>
+    private static void NoteModListeners()
+    {
+        string[] mods = PatchSafety.ModNamesOf(_pureTypes.ToArray().Where(entry => entry.Value == null).Select(entry => entry.Key.Assembly));
+        if (mods.Length == 0)
+        {
+            PatchSafety.ClearNote(Name, "mod_listeners");
+            return;
+        }
+        PatchSafety.Note(Name, "mod_listeners", "other mods' cards, relics or powers whose cost or keyword hooks aren't known to only read: "
+            + "card costs and keywords are read as the game does in combats with them (seen in the combats so far)", mods);
     }
 
     private static void ApplyFastReads()

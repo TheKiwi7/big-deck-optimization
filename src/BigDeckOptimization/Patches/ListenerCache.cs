@@ -212,6 +212,12 @@ public static class ListenerCache
         // Last: a throw above leaves the scopes vanilla. ModEntry then removes the invalidators, but the scopes ExtraScopes
         // and HookFilter open through this class would still cache (on a version nothing bumps any more) without this.
         _applied = true;
+        // What the scope check asks (display only): both walks, and the walk code FastListeners knows (resolved lazily).
+        PatchSafety.Watch(Name, new MethodBase?[] { _combatIterate, _runIterate });
+        PatchSafety.WatchAll(Name, FastListeners.WalkCodeMethods);
+        // Kept lists aren't reused across display scopes while card modifiers may change (CardModifiersMayChange).
+        PatchSafety.WatchNote(ReuseFault, () => BaseLibTypes.NoteIfDefined(ReuseFault, "card_modifiers", CardModifierType,
+            "listener lists are rebuilt in each refresh instead of reused: other mods define BaseLib card modifiers"));
     }
 
     /// <summary>Set once <see cref="Apply"/> got through: until then (or when it threw) no scope caches.</summary>

@@ -10,6 +10,7 @@
 - Errors from the game or other mods in code this mod touches now keep their full details in the log, which makes bug reports easier to trace.
 - Safer with Limitless: a safety check on its stacked enchantments that only ran in test builds now runs for everyone, and turns that part off if it ever finds a difference.
 - The "Co-op state check" description now says it also speeds up solo games on the game's beta.
+- The settings and the `bdopt` command now show, from the main menu, which other mods keep part of the optimizations off, and why (`bdopt why`).
 - Safer with other mods and future game updates: more of the game and mod code the optimizations rely on is checked, and a change there leaves only that part to the game.
 
 ## v1.0.3

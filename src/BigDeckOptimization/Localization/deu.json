@@ -13,6 +13,8 @@
   "why.coop_run": "Während eines Koop-Runs gesperrt: Mit ausgeschaltetem Mod würden deine Kämpfe viel später beginnen als die der anderen Spieler. Um ihn trotzdem auszuschalten, gib in der Konsole bdopt off yes ein.",
   "parts_off": "Teilweise inaktiv: Ein Teil dieser Optimierung hat sich abgeschaltet oder gilt hier nicht (normales Spiel für diesen Teil, Details im Log).",
   "conflict": "Teilweise inaktiv: {mods} ändert ebenfalls, was diese Optimierung beschleunigt (normales Spiel für diesen Teil).",
+  "conflict_summary": "Mit deinen anderen Mods läuft ein Teil dieser Optimierungen wie im normalen Spiel: {mods}. Fahre über eine Option für Details; bdopt why in der Konsole listet sie auf.",
+  "other_mods": "andere Mods",
   "coop_checksum.title": "Koop-Zustandsprüfung",
   "coop_checksum.desc": "Schnellere Zustandsprüfung nach jeder Aktion im Koop, in neueren Spielversionen auch solo (der größte Koop-Lag bei riesigen Decks).",
   "combat_refresh.title": "Kampf-Aktualisierung",

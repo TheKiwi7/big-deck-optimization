@@ -78,6 +78,10 @@ public static class TypePlaqueSkip
         _original = original;
         PatchGuard.Patch(harmony, original, prefix: new HarmonyMethod(typeof(TypePlaqueSkip), nameof(Prefix)));
         Applied = true;
+        // What CanSkip asks about (display only), and its silent condition: no mod defining a type line modifier.
+        PatchSafety.Watch(Name, original);
+        PatchSafety.WatchNote(Name, () => BaseLibTypes.NoteIfDefined(Name, "plaque_modifiers", ModifierInterface,
+            "each card's type line is searched for changes as BaseLib does: other mods define type line modifiers"));
     }
 
     /// <summary>Whether BaseLib's walk can only find nothing for this card (its result is then the original text).</summary>

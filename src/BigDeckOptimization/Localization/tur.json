@@ -13,6 +13,8 @@
   "why.coop_run": "Co-op oyun sırasında kilitli: mod kapalıyken savaşlarınız diğer oyunculardan çok daha geç başlar. Yine de kapatmak için konsola bdopt off yes yazın.",
   "parts_off": "Kısmen devre dışı: bu optimizasyonun bir bölümü kendini kapattı veya burada geçerli değil (o bölüm için normal oyun, ayrıntılar günlükte).",
   "conflict": "Kısmen devre dışı: {mods} da bu optimizasyonun hızlandırdığı şeyi değiştiriyor (o kısım için normal oyun).",
+  "conflict_summary": "Diğer modlarınla birlikte bu optimizasyonların bir kısmı normal oyun gibi çalışıyor: {mods}. Ayrıntılar için bir seçeneğin üzerine gel; konsoldaki bdopt why bunları listeler.",
+  "other_mods": "diğer modlar",
   "coop_checksum.title": "Co-op durum kontrolü",
   "coop_checksum.desc": "Co-op'ta (oyunun yeni sürümlerinde tek oyunculu modda da) her eylemden sonra daha hızlı durum kontrolü (devasa destelerle co-op'taki en büyük gecikme).",
   "combat_refresh.title": "Savaşta yenileme",

@@ -79,6 +79,15 @@ public static class RelicFlashMerge
             PatchGuard.Patch(harmony, _playerFlash, prefix: new HarmonyMethod(typeof(RelicFlashMerge), nameof(PlayerPrefix)));
         }
         Applied = true;
+        // What Usable asks about for each handler patched (display only).
+        if (holder)
+        {
+            PatchSafety.Watch(Name, _holderSkipped);
+        }
+        if (player)
+        {
+            PatchSafety.Watch(Name, _playerSkipped);
+        }
     }
 
     /// <summary>The two effects don't depend on each other: a changed one only leaves that one to the game.</summary>

@@ -6,9 +6,10 @@ using MegaCrit.Sts2.Core.Entities.Players;
 namespace BigDeckOptimization.Commands;
 
 /// <summary>
-/// bdopt [on|off] | bdopt &lt;option&gt; on|off | bdopt fast_combat_start_relics &lt;0-100&gt;: turns every optimization
+/// bdopt [on|off] | bdopt &lt;option&gt; on|off | bdopt fast_combat_start_relics &lt;0-100&gt; | bdopt why: turns every optimization
 /// (or one) on/off at runtime or sets the fast combat start's relic threshold, e.g. to check
-/// whether an issue comes from this mod, or shows their state. Local only. Each option gives the same results on or off,
+/// whether an issue comes from this mod, or shows their state; bdopt why lists the parts other mods keep on the normal game
+/// (<see cref="Settings.WhyReport"/>). Local only. Each option gives the same results on or off,
 /// so peers may differ, with one exception: the whole mod off during a co-op run also turns off the fast combat start
 /// the other players keep (see <see cref="Settings.InCoopGame"/>: a co-op run or lobby), so <c>bdopt off</c> then warns and needs
 /// <c>bdopt off yes</c>. Saved in BaseLib's mod configuration when BaseLib is installed. Part of the public build,
@@ -18,9 +19,9 @@ public class OptimizationsCmd : AbstractConsoleCmd
 {
     public override string CmdName => "bdopt";
 
-    public override string Args => "[on|off] | off yes (in a co-op run) | <option> on|off | fast_combat_start_relics <0-100, step 10>";
+    public override string Args => "[on|off] | off yes (in a co-op run) | <option> on|off | fast_combat_start_relics <0-100, step 10> | why";
 
-    public override string Description => "[BigDeckOptimization] Turns the mod's optimizations on/off (vanilla behavior when off), or shows their state.";
+    public override string Description => "[BigDeckOptimization] Turns the mod's optimizations on/off (vanilla behavior when off), or shows their state; why: which other mods keep part of them on the normal game.";
 
     public override bool IsNetworked => false;
 
@@ -33,9 +34,15 @@ public class OptimizationsCmd : AbstractConsoleCmd
     public override CmdResult Process(Player? issuingPlayer, string[] args)
     {
         string? first = args.Length > 0 ? args[0].ToLowerInvariant() : null;
+        // What other mods keep vanilla, checked now (answers younger than 2 s reused): the status and why show it.
+        Settings.RefreshConflicts();
         if (first is null)
         {
             return new CmdResult(success: true, Settings.Status());
+        }
+        if (first == "why" && args.Length == 1)
+        {
+            return new CmdResult(success: true, Settings.WhyReport());
         }
         bool confirmed = args.Length == 2 && first == "off" && args[1].ToLowerInvariant() == "yes";
         if (first is "on" or "off" && (args.Length == 1 || confirmed))

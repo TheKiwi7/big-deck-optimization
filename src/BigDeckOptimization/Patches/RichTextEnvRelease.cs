@@ -127,6 +127,7 @@ public static class RichTextEnvRelease
             Log.Warn($"[{ModEntry.Id}] {Name}: the tracker could not be patched, dictionaries stay registered: {e}");
         }
         Applied = true;
+        PatchSafety.Watch(Name, _patched.ToArray()); // What OthersPatched asks about (display only).
     }
 
     private static bool RemoveTrackerPatch(Harmony harmony, MethodInfo register)

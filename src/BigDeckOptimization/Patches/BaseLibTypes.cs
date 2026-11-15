@@ -287,6 +287,133 @@ internal static class BaseLibTypes
         return depends;
     }
 
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (int Loads, string[] Mods)> _definingMods = new();
+
+    /// <summary>
+    /// For the back-off notes (<see cref="PatchSafety.Note"/>): the mods whose assemblies define a concrete type deriving from
+    /// that BaseLib type. Reads each assembly that depends on BaseLib (what <see cref="AnyDefined"/> reads), so only called
+    /// from the preflight, once <see cref="NoneDefined"/> said some exist; kept until an assembly loads.
+    /// </summary>
+    public static string[] DefiningMods(string baseTypeName)
+    {
+        int loads = Loads;
+        if (_definingMods.TryGetValue(baseTypeName, out var known) && known.Loads == loads)
+        {
+            return known.Mods;
+        }
+        string[] mods = PatchSafety.ModNamesOf(AppDomain.CurrentDomain.GetAssemblies().Where(a => MayDefine(a) && Defines(a, baseTypeName)));
+        _definingMods[baseTypeName] = (loads, mods);
+        return mods;
+    }
+
+    /// <summary>
+    /// Records (or clears) a note of <paramref name="patch"/> when a loaded mod defines a concrete type deriving from that
+    /// BaseLib type: without BaseLib, or without that type in it, nothing is looked at (a missing type would make
+    /// <see cref="AnyDefined"/> scan every assembly). For the preflight only.
+    /// </summary>
+    public static void NoteIfDefined(string patch, string key, string baseTypeName, string text)
+    {
+        Assembly? baseLib = Loaded("BaseLib");
+        if (baseLib == null || baseLib.GetType(baseTypeName, false) == null || NoneDefined(baseTypeName))
+        {
+            PatchSafety.ClearNote(patch, key);
+            return;
+        }
+        PatchSafety.Note(patch, key, text, DefiningMods(baseTypeName));
+    }
+
+    private static int _spireNotesCounted = -1;
+    private static (string[] Fields, string[] Mods, bool AllCards) _spireNotes = (Array.Empty<string>(), Array.Empty<string>(), false);
+
+    /// <summary>
+    /// The SavedSpireFields BaseLib has registered on cards or enchantments (their target is one of those model types, or a
+    /// base of them): their names, the mods registering them (the mod's code behind the field's default value, else its
+    /// target type's mod), and whether one targets every card. Read again when the count changes. Empty without BaseLib.
+    /// </summary>
+    public static (string[] Fields, string[] Mods, bool AllCards) SpireFieldsOnCards()
+    {
+        System.Collections.IList? fields = SpireFields();
+        if (fields == null)
+        {
+            return (Array.Empty<string>(), Array.Empty<string>(), false);
+        }
+        lock (_spireLock)
+        {
+            if (fields.Count == _spireNotesCounted)
+            {
+                return _spireNotes;
+            }
+            var names = new System.Collections.Generic.List<string>();
+            var assemblies = new System.Collections.Generic.List<Assembly?>();
+            bool allCards = false;
+            Assembly? baseLib = Loaded("BaseLib");
+            foreach (object field in fields.Cast<object>().ToArray())
+            {
+                if (field?.GetType().GetProperty("TargetType")?.GetValue(field) is not Type target)
+                {
+                    continue;
+                }
+                bool all = target.IsAssignableFrom(typeof(MegaCrit.Sts2.Core.Models.CardModel));
+                bool some = typeof(MegaCrit.Sts2.Core.Models.CardModel).IsAssignableFrom(target) || typeof(MegaCrit.Sts2.Core.Models.EnchantmentModel).IsAssignableFrom(target)
+                    || target.IsAssignableFrom(typeof(MegaCrit.Sts2.Core.Models.EnchantmentModel));
+                if (!all && !some)
+                {
+                    continue;
+                }
+                allCards |= all;
+                names.Add(field.GetType().GetProperty("Name")?.GetValue(field) as string ?? target.Name);
+                Assembly? from = PatchSafety.DelegateAssembly(AccessTools.Field(field.GetType(), "_defaultVal")?.GetValue(field) as Delegate, baseLib);
+                assemblies.Add(from != null && from != baseLib ? from : target.Assembly);
+            }
+            _spireNotes = (names.ToArray(), PatchSafety.ModNamesOf(assemblies), allCards);
+            _spireNotesCounted = fields.Count;
+            return _spireNotes;
+        }
+    }
+
+    /// <summary>
+    /// Records (or clears) the note of a patch whose shortcut skips cards and enchantments a SavedSpireField targets
+    /// (<see cref="SpireFieldTargets"/>: BaseLib adds that field to their saved data). For the preflight only.
+    /// </summary>
+    public static void NoteSpireFields(string patch, string what)
+    {
+        (string[] fields, string[] mods, bool allCards) = SpireFieldsOnCards();
+        if (fields.Length == 0)
+        {
+            PatchSafety.ClearNote(patch, "spire_fields");
+            return;
+        }
+        PatchSafety.Note(patch, "spire_fields",
+            $"saved fields other mods add to {(allCards ? "every card" : "some cards or enchantments")} (BaseLib SavedSpireField: {string.Join(", ", fields.Take(4))}{(fields.Length > 4 ? ", ..." : "")}): {what}", mods);
+    }
+
+    /// <summary>
+    /// For the back-off notes: the ids of BaseLib extended saves (<c>ExtendedSaveHandlers.RegisteredSaves</c> entries) other
+    /// than <paramref name="exceptId"/>, and the mods registering them (the code of each save's getter). For the preflight only.
+    /// </summary>
+    public static (string[] Ids, string[] Mods) ExtendedSaves(System.Collections.IList saves, string? exceptId)
+    {
+        var ids = new System.Collections.Generic.List<string>();
+        var assemblies = new System.Collections.Generic.List<Assembly?>();
+        Assembly? baseLib = Loaded("BaseLib");
+        foreach (object save in saves.Cast<object>().ToArray())
+        {
+            if (save == null)
+            {
+                continue;
+            }
+            string id = AccessTools.Property(save.GetType(), "Id")?.GetValue(save) as string ?? "?";
+            if (id == exceptId)
+            {
+                continue;
+            }
+            ids.Add(id);
+            var wrapper = AccessTools.Property(save.GetType(), "Getter")?.GetValue(save) as Delegate;
+            assemblies.Add(PatchSafety.DelegateAssembly(wrapper, baseLib));
+        }
+        return (ids.Distinct().ToArray(), PatchSafety.ModNamesOf(assemblies));
+    }
+
     public static bool Defines(Assembly assembly, string baseTypeName)
     {
         try

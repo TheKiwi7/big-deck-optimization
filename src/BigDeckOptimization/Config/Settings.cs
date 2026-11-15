@@ -132,19 +132,94 @@ public static class Settings
     /// <summary>Why the menu's master switch is greyed out during a co-op run (<see cref="InCoopRun"/>).</summary>
     public static string CoopRunWhy(string? language) => Translations.Get(language, "why.coop_run", CoopRunText);
 
-    /// <summary>
-    /// The mods whose patches currently keep part of this optimization vanilla (it backs off from methods another mod
-    /// patches); empty when none. Known once the optimization has checked those methods (when it first runs).
-    /// </summary>
-    public static IReadOnlyList<string> ConflictingMods(Option option) => PatchSafety.ConflictingMods(option.Faults.Concat(option.Parts.Select(part => part.Name)));
+    /// <summary>The patch names whose back-offs and notes belong to this option (its main patches and its parts).</summary>
+    private static IEnumerable<string> PatchNames(Option option) => option.Faults.Concat(option.Parts.Select(part => part.Name));
 
-    /// <summary>The menu's sentence about <see cref="ConflictingMods"/>, or null when there is none.</summary>
+    /// <summary>
+    /// The mods whose patches, types or data currently keep part of this optimization vanilla (it backs off from methods
+    /// another mod patches, or a note says why); empty when none. Known from the main menu on: the patches register what
+    /// they check, checked after the main menu shows (<see cref="PatchSafety.Preflight"/>), and at each runtime check.
+    /// </summary>
+    public static IReadOnlyList<string> ConflictingMods(Option option) => PatchSafety.ConflictingMods(PatchNames(option));
+
+    public const string OtherModsText = "other mods";
+
+    /// <summary>The menu's sentence about <see cref="ConflictingMods"/> (notes without a mod name included), or null when there is none.</summary>
     public static string? Conflict(Option option, string? language)
     {
-        IReadOnlyList<string> mods = ConflictingMods(option);
+        List<string> mods = ConflictingMods(option).ToList();
+        if (PatchSafety.HasUnnamedNotes(PatchNames(option)))
+        {
+            mods.Add(Translations.Get(language, "other_mods", OtherModsText));
+        }
         return mods.Count == 0 ? null
             : Translations.Get(language, "conflict",
                 "Partly inactive: {mods} also changes what this optimization speeds up (normal game for that part).").Replace("{mods}", string.Join(", ", mods));
+    }
+
+    public const string ConflictSummaryText =
+        "With your other mods, part of these optimizations runs the normal game: {mods}. Hover an option for details; bdopt why in the console lists them.";
+
+    /// <summary>
+    /// The settings page's line under the co-op note when other mods keep part of the optimizations vanilla: each mod with
+    /// its count of back-offs and notes; null when there is none.
+    /// </summary>
+    public static string? ConflictSummary(string? language)
+    {
+        IReadOnlyList<(string Mod, int Count)> perMod = PatchSafety.BackOffsPerMod();
+        bool unnamed = PatchSafety.BackOffs().Any(b => b.Mods.Length == 0);
+        if (perMod.Count == 0 && !unnamed)
+        {
+            return null;
+        }
+        IEnumerable<string> mods = perMod.Select(m => $"{m.Mod} ({m.Count})");
+        if (unnamed)
+        {
+            mods = mods.Append(Translations.Get(language, "other_mods", OtherModsText));
+        }
+        return Translations.Get(language, "conflict_summary", ConflictSummaryText).Replace("{mods}", string.Join(", ", mods));
+    }
+
+    /// <summary>
+    /// Checks now what other mods keep vanilla (the settings page opening, bdopt): answers younger than 2 s come from the
+    /// runtime checks' cache. Never throws.
+    /// </summary>
+    public static void RefreshConflicts() => PatchSafety.Preflight();
+
+    /// <summary>
+    /// bdopt why: every recorded back-off and note, grouped by the options they belong to ("Patch: Type.Method &lt;- mods",
+    /// a note as its text), then a count per mod.
+    /// </summary>
+    public static string WhyReport()
+    {
+        IReadOnlyList<PatchSafety.BackOff> backOffs = PatchSafety.BackOffs();
+        if (backOffs.Count == 0)
+        {
+            return "BigDeckOptimization: no other mod keeps any part of the optimizations on the normal game"
+                + (ModEntry.StartedOff ? " (the mod is inactive this session)." : ".");
+        }
+        var sb = new StringBuilder("BigDeckOptimization: parts running the normal game because of other mods (the rest of each optimization still runs):\n");
+        foreach (IGrouping<string, PatchSafety.BackOff> group in backOffs.GroupBy(b => OptionLabels(b.Patch)).OrderBy(g => g.Key, StringComparer.Ordinal))
+        {
+            sb.Append(group.Key).Append(":\n");
+            foreach (PatchSafety.BackOff backOff in group)
+            {
+                sb.Append($"  {backOff.Patch}: {backOff.What} <- {(backOff.Mods.Length > 0 ? string.Join(", ", backOff.Mods) : OtherModsText)}\n");
+            }
+        }
+        IReadOnlyList<(string Mod, int Count)> perMod = PatchSafety.BackOffsPerMod();
+        if (perMod.Count > 0)
+        {
+            sb.Append("Per mod: ").Append(string.Join(", ", perMod.Select(m => $"{m.Mod} {m.Count}")));
+        }
+        return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>The labels of the options a patch name belongs to ("Other" when none).</summary>
+    private static string OptionLabels(string patch)
+    {
+        string[] labels = Options.Where(o => PatchNames(o).Contains(patch)).Select(o => o.Label).ToArray();
+        return labels.Length > 0 ? string.Join(" / ", labels) : "Other";
     }
 
     /// <summary>The menu's sentence when part of a switchable optimization doesn't run, or null.</summary>
@@ -474,7 +549,8 @@ public static class Settings
                 : option.Fault is { } fault ? $"OFF, disabled after an error ({fault}), see log" + (option.PartsOutliveFault && Master && option.Wanted ? ", its other parts still on" : "")
                 : !option.Wanted ? (option.Key == "fast_combat_start" && Master ? "OFF in solo (setting), always on in co-op" : "OFF (setting)")
                 : Master ? "on" : "off";
-            if (ConflictingMods(option) is { Count: > 0 } mods && option.Unavailable() == null && option.Fault == null)
+            if (ConflictingMods(option).Concat(PatchSafety.HasUnnamedNotes(PatchNames(option)) ? new[] { OtherModsText } : Array.Empty<string>()).ToList() is { Count: > 0 } mods
+                && option.Unavailable() == null && option.Fault == null)
             {
                 state += $" (partly vanilla: also patched by {string.Join(", ", mods)})";
             }
@@ -487,6 +563,10 @@ public static class Settings
             {
                 sb.Append($"  {FastStartRelicsLabel} [{FastStartRelicsKey}]: {FastStartRelics} (solo; co-op: always)\n");
             }
+        }
+        if (PatchSafety.BackOffs().Count > 0)
+        {
+            sb.Append("Other mods keep part of the optimizations on the normal game: bdopt why lists what and why.\n");
         }
         return sb.ToString().TrimEnd();
     }

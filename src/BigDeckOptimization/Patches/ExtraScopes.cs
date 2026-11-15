@@ -231,6 +231,7 @@ public static class ExtraScopes
         PatchGuard.Patch(harmony, recalculate,
             prefix: new HarmonyMethod(typeof(ExtraScopes), nameof(BetterSpirePrefix)),
             finalizer: new HarmonyMethod(typeof(ExtraScopes), nameof(BetterSpireFinalizer)));
+        PatchSafety.Watch(Name, _betterSpireMethods); // What BetterSpirePrefix asks about (display only).
     }
 
     /// <summary>A display refresh scope around BetterSpire2's preview, while what it relies on holds.</summary>

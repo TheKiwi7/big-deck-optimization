@@ -13,6 +13,8 @@
   "why.coop_run": "Bloqueado durante una partida cooperativa: con el mod desactivado, tus combates empezarían mucho más tarde que los de los demás jugadores. Para desactivarlo igualmente, escribe bdopt off yes en la consola.",
   "parts_off": "Parcialmente inactiva: una parte de esta optimización se desactivó o no se aplica aquí (juego normal para esa parte, detalles en el registro).",
   "conflict": "Parcialmente inactiva: {mods} también modifica lo que esta optimización acelera (juego normal para esa parte).",
+  "conflict_summary": "Con tus otros mods, una parte de estas optimizaciones funciona como el juego normal: {mods}. Pasa el cursor sobre una opción para ver los detalles; bdopt why en la consola las enumera.",
+  "other_mods": "otros mods",
   "coop_checksum.title": "Comprobación de estado en cooperativo",
   "coop_checksum.desc": "Comprobación de estado más rápida tras cada acción en cooperativo, y también en solitario en las versiones más recientes del juego (el mayor lag del cooperativo con mazos enormes).",
   "combat_refresh.title": "Actualización en combate",

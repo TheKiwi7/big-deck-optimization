@@ -122,6 +122,8 @@ public sealed class BaseLibSettings : SimpleModConfig
     {
         try
         {
+            // What other mods keep vanilla, checked now (answers younger than 2 s reused), before the texts are built from it.
+            Settings.RefreshConflicts();
             SettingsText.Add(); // Current reasons in the hover texts.
         }
         catch (Exception e)
@@ -145,6 +147,14 @@ public sealed class BaseLibSettings : SimpleModConfig
         catch (Exception e)
         {
             Log.Warn($"[{ModEntry.Id}] {Name}: could not add the co-op note: {e.Message}");
+        }
+        try
+        {
+            AddConflictSummary(optionContainer);
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"[{ModEntry.Id}] {Name}: could not add the other mods' summary: {e.Message}");
         }
         try
         {
@@ -188,6 +198,29 @@ public sealed class BaseLibSettings : SimpleModConfig
         margin.AddChild(label);
         optionContainer.AddChild(margin);
         optionContainer.MoveChild(margin, 0);
+    }
+
+    /// <summary>
+    /// A line under the co-op note when other mods keep part of the optimizations on the normal game: which mods, how many
+    /// parts each (<see cref="Settings.ConflictSummary"/>). Nothing when there is none.
+    /// </summary>
+    private static void AddConflictSummary(Control optionContainer)
+    {
+        if (Settings.ConflictSummary(LocManager.Instance?.Language) is not { } text)
+        {
+            return;
+        }
+        var label = ModConfig.CreateRawLabelControl($"[color=#e0a040]{text}[/color]", 22);
+        label.Name = "ConflictSummary";
+        label.FitContent = true;
+        label.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+        label.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        var margin = new MarginContainer { Name = "ConflictSummaryMargin" };
+        margin.AddThemeConstantOverride("margin_bottom", 16);
+        margin.AddChild(label);
+        optionContainer.AddChild(margin);
+        // Right under the co-op note (placed first just before); the version line goes above both.
+        optionContainer.MoveChild(margin, optionContainer.GetNodeOrNull("CoopNoteMargin") is Node note ? note.GetIndex() + 1 : 0);
     }
 
     private static void GreyOut(Node node)

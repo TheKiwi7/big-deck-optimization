@@ -13,6 +13,8 @@
   "why.coop_run": "Verrouillé pendant une partie en co-op : mod désactivé, vos combats démarreraient bien plus tard que ceux des autres joueurs. Pour le couper quand même, tapez bdopt off yes dans la console.",
   "parts_off": "Partiellement inactive : une partie de cette optimisation s'est désactivée ou ne s'applique pas ici (jeu normal pour cette partie, détails dans le journal).",
   "conflict": "Partiellement inactive : {mods} modifie aussi ce que cette optimisation accélère (jeu normal pour cette partie).",
+  "conflict_summary": "Avec vos autres mods, une partie de ces optimisations fonctionne comme le jeu normal : {mods}. Survolez une option pour les détails ; bdopt why dans la console les liste.",
+  "other_mods": "d'autres mods",
   "coop_checksum.title": "Vérification d'état en co-op",
   "coop_checksum.desc": "Vérification d'état plus rapide après chaque action en co-op, et aussi en solo sur les versions récentes du jeu (le plus gros lag du co-op avec un énorme deck).",
   "combat_refresh.title": "Rafraîchissement en combat",

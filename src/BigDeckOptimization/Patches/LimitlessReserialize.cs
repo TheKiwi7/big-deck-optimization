@@ -162,6 +162,55 @@ public static class LimitlessReserialize
         _original = original;
         PatchGuard.Patch(harmony, original, prefix: new HarmonyMethod(typeof(LimitlessReserialize), nameof(Prefix)));
         Applied = true;
+        WatchFor(Name);
+        PatchSafety.WatchNote(Name, () => NoteSavedData(Name, "the saved copy of stacked enchantments is compared the slow way for those cards"));
+    }
+
+    /// <summary>
+    /// Registers what <see cref="PatchedByOthers"/> asks about under <paramref name="patch"/> (display only, never throws):
+    /// its runtime check records under this class's name, and <see cref="SnapshotCardReuse"/> (another option) relies on it
+    /// too. The BaseLib postfixes allowed are read at each preflight.
+    /// </summary>
+    internal static void WatchFor(string patch)
+    {
+        if (_original != null)
+        {
+            PatchSafety.Watch(patch, _original);
+            PatchSafety.Watch(patch, _setter);
+        }
+        PatchSafety.Watch(patch, _savedPropertiesFrom);
+        PatchSafety.Watch(patch, _fromInternal, () => _allowedOnFromInternal);
+        PatchSafety.Watch(patch, _cardToSerializable, () => _cardData?.Postfix is { } cardPostfix ? new[] { cardPostfix } : Array.Empty<MethodInfo>());
+        PatchSafety.Watch(patch, _enchantmentToSerializable, () => _enchantmentData?.Postfix is { } enchantmentPostfix ? new[] { enchantmentPostfix } : Array.Empty<MethodInfo>());
+    }
+
+    /// <summary>
+    /// The notes (back-off preflight) of a patch relying on this class's saved-data shortcuts: other mods' BaseLib card or
+    /// enchantment saves (the data is then built for each comparison and no memo holds: <see cref="MemoStamp"/>), CardModifier
+    /// types (the same for BaseLib's own card modifier save), and SavedSpireFields on cards (<see cref="PlanOf"/>: those
+    /// types' saved properties read the game's way). <paramref name="spireFieldsEffect"/>: what the last one costs there.
+    /// </summary>
+    internal static void NoteSavedData(string patch, string spireFieldsEffect)
+    {
+        if (_cardData == null || _enchantmentData == null)
+        {
+            return;
+        }
+        (string[] cardIds, string[] cardMods) = BaseLibTypes.ExtendedSaves(_cardData.Saves, ExtendedData.KnownEmptyId);
+        (string[] enchantmentIds, string[] enchantmentMods) = BaseLibTypes.ExtendedSaves(_enchantmentData.Saves, null);
+        string[] ids = cardIds.Concat(enchantmentIds).Distinct().ToArray();
+        if (ids.Length > 0)
+        {
+            PatchSafety.Note(patch, "card_saves", $"card data other mods save with BaseLib ({string.Join(", ", ids.Take(4))}{(ids.Length > 4 ? ", ..." : "")}): "
+                + "each card's saved data is built again at every check", cardMods.Concat(enchantmentMods).ToArray());
+        }
+        else
+        {
+            PatchSafety.ClearNote(patch, "card_saves");
+        }
+        BaseLibTypes.NoteIfDefined(patch, "card_modifiers", ExtendedData.CardModifierTypeName,
+            "BaseLib's card modifier save is built again for each card at every check: other mods define card modifiers");
+        BaseLibTypes.NoteSpireFields(patch, spireFieldsEffect);
     }
 
     /// <summary>
@@ -218,6 +267,11 @@ public static class LimitlessReserialize
 
         /// <summary>The registered saves (BaseLib only ever adds to that list): what <see cref="KnownWithoutBuilding"/> depends on, with the CardModifier types.</summary>
         public int SavesCount => _registeredSaves().Count;
+
+        /// <summary>The registered saves themselves (the back-off notes name the mods registering them).</summary>
+        public IList Saves => _registeredSaves();
+
+        public const string CardModifierTypeName = CardModifierType;
 
         /// <summary>
         /// What <c>new ExtendedSaveData(model)</c> holds, built without allocating a new one: a reused data object whose

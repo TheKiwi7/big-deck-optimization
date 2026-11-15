@@ -110,6 +110,7 @@ public static class EnchantmentTabReuse
         _original = original;
         PatchGuard.Patch(harmony, original, prefix: new HarmonyMethod(typeof(EnchantmentTabReuse), nameof(Prefix)));
         Applied = true;
+        PatchSafety.Watch(Name, original); // What TryRender asks about (display only).
     }
 
     /// <summary>Renders by reusing the card's tabs; returns true (run Limitless) for anything outside that case.</summary>

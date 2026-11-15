@@ -9,7 +9,8 @@ namespace BigDeckOptimization.Config;
 /// <summary>
 /// Menu texts in the game's other languages: one flat JSON object per game language code (Localization/fra.json...),
 /// embedded in the DLL. Keys (fra.json has them all): general, optimizations, enabled.title/desc, coop_note,
-/// why.limitless/limitless_changed/game/baselib/fault/started_off/coop_run, parts_off, conflict, fast_combat_start_relics.title/desc
+/// why.limitless/limitless_changed/game/baselib/fault/started_off/coop_run, parts_off, conflict, conflict_summary, other_mods,
+/// fast_combat_start_relics.title/desc
 /// and &lt;option key&gt;.title/desc. English stays in the code (<see cref="Settings"/>, BaseLibSettings, bdopt) and is the
 /// fallback for a language without a file or a key missing from one.
 /// </summary>

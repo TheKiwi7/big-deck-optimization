@@ -148,6 +148,9 @@ public static class ModEntry
         Log.Info($"[{Id}] Load time: {MethodFingerprint.LoadBreakdown()}");
         Ready = true;
 #endif
+        // After everything above and outside its timing: the back-offs other mods cause, checked over the main menu's frames
+        // (a few ms per frame), so the menu and bdopt show them before any combat.
+        PatchSafety.PreflightOverFrames();
     }
 
     /// <summary>

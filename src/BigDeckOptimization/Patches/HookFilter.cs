@@ -76,6 +76,21 @@ public static class HookFilter
         public bool IsSafe() => _defaultHolds && !PatchSafety.IsPatchedByOthers(BaseMethod) && !PatchSafety.IsPatchedByOthers(_hookMethod)
             && (!_combatWalk || !CombatHookWalkPatched());
 
+        /// <summary>Registers what <see cref="IsSafe"/> asks about, when it gets that far (display only, never throws).</summary>
+        public void Watch()
+        {
+            if (!_defaultHolds)
+            {
+                return;
+            }
+            PatchSafety.Watch(Name, BaseMethod);
+            PatchSafety.Watch(Name, _hookMethod);
+            if (_combatWalk)
+            {
+                PatchSafety.WatchAll(Name, CombatHookWalkParts);
+            }
+        }
+
         public bool IsOverriddenBy(Type type)
         {
             if (BaseMethod == null)
@@ -129,32 +144,13 @@ public static class HookFilter
         {
             if (_combatHookWalkParts == null)
             {
-                MethodInfo? walk = AccessTools.Method(typeof(Hook), "IterateCombatHookListeners");
-                MethodBase? body = walk == null ? null : AccessTools.EnumeratorMoveNext(walk);
-                _combatHookWalkKnown = body != null && PatchSafety.FingerprintMatches(MethodFingerprint.Of(body), CombatHookWalkFingerprint);
-                if (_combatHookWalkKnown != true)
-                {
-                    Log.Info($"[{ModEntry.Id}] {Name}: Hook.IterateCombatHookListeners changed: combat hooks left vanilla");
-                }
-                var parts = new List<MethodBase?> { walk, body,
-                    AccessTools.PropertyGetter(typeof(CombatManager), nameof(CombatManager.IsOverOrEnding)),
-                    AccessTools.PropertyGetter(typeof(CombatManager), nameof(CombatManager.IsStarting)) };
-                if (AccessTools.PropertyGetter(typeof(CombatManager), "ShouldSkipCombatEffect") is { } skip)
-                {
-                    parts.Add(skip);
-                    if (_combatHookWalkKnown == true && MethodFingerprint.Of(skip) != ShouldSkipCombatEffectFingerprint)
-                    {
-                        _combatHookWalkKnown = false;
-                        Log.Info($"[{ModEntry.Id}] {Name}: CombatManager.ShouldSkipCombatEffect changed: combat hooks left vanilla");
-                    }
-                }
-                _combatHookWalkParts = parts.ToArray();
+                LookUpCombatHookWalk();
             }
             if (_combatHookWalkKnown != true)
             {
                 return true;
             }
-            foreach (MethodBase? part in _combatHookWalkParts)
+            foreach (MethodBase? part in _combatHookWalkParts!)
             {
                 if (PatchSafety.IsPatchedByOthers(part, caller))
                 {
@@ -178,6 +174,52 @@ public static class HookFilter
             }
             return true;
         }
+    }
+
+    /// <summary>
+    /// The methods <see cref="CombatHookWalkPatched"/> asks about when the walk is the known code (none otherwise: it then
+    /// answers "changed" without asking), for the back-off preflight of the patches calling it. A failed lookup gives none
+    /// here and is left to the runtime check, which handles it.
+    /// </summary>
+    internal static IEnumerable<MethodBase?> CombatHookWalkParts()
+    {
+        if (_combatHookWalkParts == null)
+        {
+            try
+            {
+                LookUpCombatHookWalk();
+            }
+            catch
+            {
+                return Array.Empty<MethodBase?>();
+            }
+        }
+        return _combatHookWalkKnown == true ? _combatHookWalkParts! : Array.Empty<MethodBase?>();
+    }
+
+    /// <summary>The walk's methods and whether they are the code mirrored (once; may throw: callers handle it).</summary>
+    private static void LookUpCombatHookWalk()
+    {
+        MethodInfo? walk = AccessTools.Method(typeof(Hook), "IterateCombatHookListeners");
+        MethodBase? body = walk == null ? null : AccessTools.EnumeratorMoveNext(walk);
+        _combatHookWalkKnown = body != null && PatchSafety.FingerprintMatches(MethodFingerprint.Of(body), CombatHookWalkFingerprint);
+        if (_combatHookWalkKnown != true)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: Hook.IterateCombatHookListeners changed: combat hooks left vanilla");
+        }
+        var parts = new List<MethodBase?> { walk, body,
+            AccessTools.PropertyGetter(typeof(CombatManager), nameof(CombatManager.IsOverOrEnding)),
+            AccessTools.PropertyGetter(typeof(CombatManager), nameof(CombatManager.IsStarting)) };
+        if (AccessTools.PropertyGetter(typeof(CombatManager), "ShouldSkipCombatEffect") is { } skip)
+        {
+            parts.Add(skip);
+            if (_combatHookWalkKnown == true && MethodFingerprint.Of(skip) != ShouldSkipCombatEffectFingerprint)
+            {
+                _combatHookWalkKnown = false;
+                Log.Info($"[{ModEntry.Id}] {Name}: CombatManager.ShouldSkipCombatEffect changed: combat hooks left vanilla");
+            }
+        }
+        _combatHookWalkParts = parts.ToArray();
     }
 
     /// <summary>Per listener type, bit i set = the type overrides hook i. One lookup per listener for all hooks.</summary>
@@ -336,6 +378,13 @@ public static class HookFilter
         {
             HookFilterCostColors.StarCostColor = starColor;
         }
+        // What the filtered lists' safety and the cost color mirrors ask about, checked from the main menu on (display only).
+        foreach (FilteredHook hook in _hooks)
+        {
+            hook.Watch();
+        }
+        PatchSafety.Watch(Name, HookFilterCostColors.EnergyCostColor);
+        PatchSafety.Watch(Name, HookFilterCostColors.StarCostColor);
         ListenerCache.RunReleased += () =>
         {
             _filtered = null;

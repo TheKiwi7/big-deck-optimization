@@ -13,6 +13,8 @@
   "why.coop_run": "Bloccato durante una partita in co-op: con la mod disattivata, i tuoi combattimenti inizierebbero molto più tardi di quelli degli altri giocatori. Per disattivarla comunque, digita bdopt off yes nella console.",
   "parts_off": "Parzialmente inattiva: una parte di questa ottimizzazione si è disattivata o qui non si applica (gioco normale per quella parte, dettagli nel log).",
   "conflict": "Parzialmente inattiva: anche {mods} modifica ciò che questa ottimizzazione accelera (gioco normale per quella parte).",
+  "conflict_summary": "Con le tue altre mod, una parte di queste ottimizzazioni funziona come il gioco normale: {mods}. Passa il mouse su un'opzione per i dettagli; bdopt why nella console le elenca.",
+  "other_mods": "altre mod",
   "coop_checksum.title": "Verifica dello stato in co-op",
   "coop_checksum.desc": "Verifica dello stato più rapida dopo ogni azione in co-op, e anche in solitario nelle versioni più recenti del gioco (il lag più grande del co-op con mazzi enormi).",
   "combat_refresh.title": "Aggiornamento in combattimento",

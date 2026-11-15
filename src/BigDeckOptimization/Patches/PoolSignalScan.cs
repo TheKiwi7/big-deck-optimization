@@ -96,7 +96,15 @@ public static class PoolSignalScan
         _pools = AccessTools.StaticFieldRefAccess<Dictionary<Type, INodePool>>(AccessTools.Field(typeof(NodePool), "_pools"));
         PatchGuard.Patch(harmony, _staticFree, prefix: new HarmonyMethod(typeof(PoolSignalScan), nameof(Prefix)));
         Applied = true;
+        // What Prefix and AnyPoolPatched ask about (display only): the pools that exist at each preflight.
+        PatchSafety.Watch(Name, _staticFree);
+        PatchSafety.WatchAll(Name, PoolMethods);
     }
+
+    /// <summary>What <see cref="AnyPoolPatched"/> asks about for the pools that exist now (back-off preflight).</summary>
+    private static IEnumerable<MethodBase?> PoolMethods() =>
+        _pools!().Values.ToArray().Where(pool => pool != null).Select(pool => Access(pool.GetType())).Where(access => access != null)
+            .SelectMany(access => access!.Mirrored).ToArray();
 
     /// <summary>NodePool&lt;T&gt;.Free(T) (the explicit INodePool.Free is a separate, non-public method).</summary>
     private static MethodInfo PublicFree(Type poolType) =>

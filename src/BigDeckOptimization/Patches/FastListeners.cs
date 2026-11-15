@@ -2053,6 +2053,8 @@ public static class FastListeners
         {
             Log.Info($"[{ModEntry.Id}] {Name}: a left run's card moves kept until the next shuffle: {e.Message}");
         }
+        // What TrackedCodePatched asks at each cached walk, checked from the main menu on (display only).
+        PatchSafety.Watch(Name, _trackedCode);
         _tracking = true;
     }
 
@@ -2085,6 +2087,14 @@ public static class FastListeners
             // After ListenerCache: inside its scopes it answers from its cache and this does nothing.
             PatchGuard.Patch(harmony, combatIterate, prefix: new HarmonyMethod(typeof(FastListeners), nameof(CombatPrefix)) { priority = Priority.Last });
             CombatMirrored = true;
+            // CombatWalkPatched's methods, and Subscribers' when it reads the subscriber list (display only).
+            PatchSafety.Watch(Name, new MethodBase?[] { _combatIterate, _combatBody, _combatContains });
+            if (_combatSubscribers != null)
+            {
+                PatchSafety.Watch(Name, new[] { _subscribersMethod, _subscribersBody, _subscribeMethod });
+                PatchSafety.WatchAll(Name, CardModifierSubscribers);
+                PatchSafety.WatchNote(Name, NoteCardModifiers);
+            }
         }
         catch (Exception e)
         {
@@ -2116,6 +2126,7 @@ public static class FastListeners
                 finalizer: new HarmonyMethod(typeof(FastListeners), nameof(DropRunFilter)));
             PatchGuard.Patch(harmony, runIterate, prefix: new HarmonyMethod(typeof(FastListeners), nameof(RunPrefix)) { priority = Priority.Last });
             RunMirrored = true;
+            PatchSafety.Watch(Name, new MethodBase?[] { _runIterate, _runBody, _runContains });
         }
         catch (Exception e)
         {
@@ -2305,6 +2316,47 @@ public static class FastListeners
             }
         }
         return _walkCode = found.ToArray();
+    }
+
+    /// <summary>
+    /// <see cref="WalkCode"/> for the back-off preflight (<see cref="ListenerCache"/> registers it under its own name: its
+    /// check passes it). Resolved lazily, inside the preflight's try.
+    /// </summary>
+    internal static IEnumerable<MethodBase?> WalkCodeMethods() => WalkCode();
+
+    /// <summary>
+    /// The delegate methods of BaseLib's card modifier subscribers, which <see cref="CardModifiersEmpty"/> asks about (for the
+    /// back-off preflight): read from the live list without the snapshot's side effects (a failure there turns the walk off).
+    /// </summary>
+    private static IEnumerable<MethodBase?> CardModifierSubscribers()
+    {
+        var methods = new List<MethodBase?>();
+        if (_combatSubscribers is { } subscribers && _subscriberId != null && _subscriberDelegate != null)
+        {
+            foreach (object? subscriber in subscribers.Cast<object?>().ToArray())
+            {
+                if (subscriber != null && _subscriberId.GetValue(subscriber) as string == CardModifiersId && _subscriberDelegate.GetValue(subscriber) is Delegate del)
+                {
+                    methods.Add(del.Method);
+                }
+            }
+        }
+        return methods;
+    }
+
+    /// <summary>
+    /// The note (back-off preflight) for BaseLib's card modifier subscriber kept: a mod defines CardModifier types, so its
+    /// list is read for every pile card at every walk, as the game does.
+    /// </summary>
+    private static void NoteCardModifiers()
+    {
+        if (!CombatMirrored || _combatSubscribers == null || !CardModifierSubscribers().Any())
+        {
+            PatchSafety.ClearNote(Name, "card_modifiers");
+            return;
+        }
+        BaseLibTypes.NoteIfDefined(Name, "card_modifiers", CardModifierType,
+            "BaseLib's card modifier list is read for every card at every effect: other mods define card modifiers");
     }
 
     /// <summary>Whether another mod patches the walks' code beyond IterateHookListeners itself (see <see cref="WalkCode"/>).</summary>

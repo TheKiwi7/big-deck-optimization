@@ -44,6 +44,7 @@ public static class ReplayStateSkip
         PatchSafety.RequireFingerprint(_record, RecordChecksumFingerprint);
         PatchGuard.Patch(harmony, _record, prefix: new HarmonyMethod(typeof(ReplayStateSkip), nameof(Prefix)));
         Applied = true;
+        PatchSafety.Watch(Name, _record); // What Prefix asks about (display only).
     }
 
     private static bool Prefix(CombatReplayWriter __instance, NetFullCombatState fullCombatState)

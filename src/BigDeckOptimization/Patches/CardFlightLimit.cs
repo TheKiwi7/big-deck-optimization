@@ -91,6 +91,11 @@ public static class CardFlightLimit
         PatchGuard.Patch(harmony, _create, prefix: new HarmonyMethod(typeof(CardFlightLimit), nameof(CreatePrefix)));
         PatchGuard.Patch(harmony, addCard, prefix: new HarmonyMethod(typeof(CardFlightLimit), nameof(AddCardPrefix)));
         Applied = true;
+        // What CreatePrefix and OnlyPileButtons ask about (display only); SpeedX's allowed patch looked up at the preflight.
+        PatchSafety.Watch(Name, _create);
+        PatchSafety.Watch(Name, _readyMethod, () => _allowedOnReady ??= AllowedReady());
+        PatchSafety.Watch(Name, _skipped);
+        PatchSafety.Watch(Name, _addCard);
     }
 
     private static bool CreatePrefix(CardPile targetPile, ref NCardFlyShuffleVfx? __result)

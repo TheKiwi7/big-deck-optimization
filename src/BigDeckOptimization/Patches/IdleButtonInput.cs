@@ -67,6 +67,9 @@ public static class IdleButtonInput
             postfix: new HarmonyMethod(typeof(IdleButtonInput), nameof(SyncPostfix)));
         PatchGuard.Patch(harmony, AccessTools.Method(typeof(NClickableControl), "CheckMouseDragThreshold"),
             postfix: new HarmonyMethod(typeof(IdleButtonInput), nameof(SyncPostfix)));
+        // What Active asks about (display only).
+        PatchSafety.Watch(Name, _input);
+        PatchSafety.Watch(Name, _dragCheck);
     }
 
     private static System.Reflection.MethodInfo? _input, _dragCheck;

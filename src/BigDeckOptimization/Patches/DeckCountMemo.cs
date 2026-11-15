@@ -146,6 +146,17 @@ public static class DeckCountMemo
             throw new PatchSkippedException("none of its cards has the known code");
         }
         Applied = true;
+        // What Answer asks about for each card kind patched (display only), and the card types' getters FlagsOf read so far
+        // (types met in combats: asked again at each preflight).
+        for (int kind = 0; kind < _targets.Length; kind++)
+        {
+            if (_targets[kind] != null)
+            {
+                PatchSafety.Watch(Name, _targets[kind]);
+                PatchSafety.Watch(Name, _skipped[kind]);
+            }
+        }
+        PatchSafety.WatchAll(Name, () => _watched.Keys.ToArray());
     }
 
     /// <summary>One card, on its own: a card that changed only leaves that card to the game.</summary>

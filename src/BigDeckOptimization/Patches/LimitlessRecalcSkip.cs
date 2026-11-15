@@ -134,9 +134,13 @@ public static class LimitlessRecalcSkip
         PatchGuard.Patch(harmony, original, prefix: new HarmonyMethod(typeof(LimitlessRecalcSkip), nameof(Prefix)));
         Applied = true;
         _multi = multi;
+        // What PatchedByOthers asks about (display only); LimitlessReserialize's part is registered under its own name.
+        PatchSafety.Watch(Name, new MethodBase?[] { _original, _defaultRecalculate, _getter });
+        PatchSafety.WatchNote(Name, () => BaseLibTypes.NoteSpireFields(Name, "their stacked enchantments are recalculated as Limitless does"));
         try
         {
             ApplyPasses(harmony, multi);
+            PatchSafety.Watch(Name, new MethodBase?[] { _pass, _allCards }); // What the pass prefix asks about.
         }
         catch (Exception e)
         {

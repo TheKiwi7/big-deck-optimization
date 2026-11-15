@@ -232,7 +232,14 @@ public static partial class PatchSafety
     /// back-off is recorded for the calling patch (its source file name, e.g. HookFilter) with the other mods' names,
     /// so the settings menu, bdopt and the log can say which mod keeps that part of an optimization vanilla.
     /// </summary>
-    public static bool IsPatchedByOthers(MethodBase? method, [CallerFilePath] string caller = "")
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool IsPatchedByOthers(MethodBase? method, [CallerFilePath] string caller = "") => CheckPatched(method, caller);
+
+    /// <summary>
+    /// The check behind <see cref="IsPatchedByOthers(MethodBase?, string)"/>: <paramref name="caller"/> is a call site's source
+    /// path (its file name is the patch name) or a patch name itself (<see cref="Preflight"/>), under which a back-off is recorded.
+    /// </summary>
+    private static bool CheckPatched(MethodBase? method, string caller)
     {
         if (method == null)
         {
@@ -268,7 +275,11 @@ public static partial class PatchSafety
     /// Like <see cref="IsPatchedByOthers(MethodBase?, string)"/>, except for these patch methods of other mods (postfixes
     /// whose effect the caller reproduces, transpilers known not to touch what it changes; checked by fingerprint).
     /// </summary>
-    public static bool IsPatchedByOthers(MethodBase? method, MethodInfo[] allowedPatches, [CallerFilePath] string caller = "")
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool IsPatchedByOthers(MethodBase? method, MethodInfo[] allowedPatches, [CallerFilePath] string caller = "") =>
+        CheckPatched(method, allowedPatches, caller);
+
+    private static bool CheckPatched(MethodBase? method, MethodInfo[] allowedPatches, string caller)
     {
         if (method == null)
         {
@@ -366,7 +377,7 @@ public static partial class PatchSafety
 
     private static void Record(string caller, MethodBase method, string[] mods)
     {
-        string patch = System.IO.Path.GetFileNameWithoutExtension(caller.Replace('\\', '/'));
+        string patch = PatchName(caller);
         if (mods.Length == 0)
         {
             _conflicts.TryRemove((patch, method), out _);
@@ -380,31 +391,48 @@ public static partial class PatchSafety
         }
     }
 
+    /// <summary>
+    /// The patch name a call site records under: a [CallerFilePath] source path gives its file name (e.g. HookFilter), a patch
+    /// name (<see cref="Preflight"/>, <see cref="Watch(string, MethodBase?, MethodInfo[]?)"/>) is used as is.
+    /// </summary>
+    private static string PatchName(string caller) =>
+        caller.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) ? System.IO.Path.GetFileNameWithoutExtension(caller.Replace('\\', '/')) : caller;
+
     /// <summary>The loaded mod whose assembly holds the patch method (its display name), else the Harmony id.</summary>
     private static string ModName(Patch patch)
     {
         Assembly? assembly = PatchMethodOf(patch)?.DeclaringType?.Assembly;
-        if (assembly != null && assembly != typeof(PatchSafety).Assembly)
+        return assembly != null && assembly != typeof(PatchSafety).Assembly && ModNameOf(assembly) is { } name ? name : patch.owner;
+    }
+
+    /// <summary>
+    /// The display name of the loaded mod holding this assembly (manifest name, else id), or null when no mod holds it (the
+    /// game, the runtime, dynamic assemblies) or it is this mod's own.
+    /// </summary>
+    internal static string? ModNameOf(Assembly? assembly)
+    {
+        if (assembly == null || assembly == typeof(PatchSafety).Assembly || assembly.IsDynamic)
         {
-            if (_modNames.TryGetValue(assembly, out string? known))
+            return null;
+        }
+        if (_modNames.TryGetValue(assembly, out string? known))
+        {
+            return known;
+        }
+        foreach (MegaCrit.Sts2.Core.Modding.Mod mod in MegaCrit.Sts2.Core.Modding.ModManager.Mods)
+        {
+            if (ModAssemblies(mod).Contains(assembly))
             {
-                return known;
-            }
-            foreach (MegaCrit.Sts2.Core.Modding.Mod mod in MegaCrit.Sts2.Core.Modding.ModManager.Mods)
-            {
-                if (ModAssemblies(mod).Contains(assembly))
+                if ((mod.manifest?.name ?? mod.manifest?.id) is { } name)
                 {
-                    if ((mod.manifest?.name ?? mod.manifest?.id) is { } name)
-                    {
-                        // A mod's assemblies and manifest don't change once loaded. Not kept: an assembly no mod holds yet.
-                        _modNames[assembly] = name;
-                        return name;
-                    }
-                    return patch.owner;
+                    // A mod's assemblies and manifest don't change once loaded. Not kept: an assembly no mod holds yet.
+                    _modNames[assembly] = name;
+                    return name;
                 }
+                return null;
             }
         }
-        return patch.owner;
+        return null;
     }
 
     /// <summary>Mod display name per assembly holding a patch method (<see cref="ModName"/>).</summary>
@@ -448,11 +476,15 @@ public static partial class PatchSafety
         _modAssembly?.GetValue(mod) is Assembly single ? new[] { single }
         : _modAssemblies?.GetValue(mod) as IEnumerable<Assembly> ?? Enumerable.Empty<Assembly>();
 
-    /// <summary>The mods other patches come from, for the methods these patches currently back off from.</summary>
+    /// <summary>
+    /// The mods other patches come from, for the methods these patches currently back off from, and the mods their notes
+    /// name (<see cref="Note"/>).
+    /// </summary>
     public static IReadOnlyList<string> ConflictingMods(IEnumerable<string> patches)
     {
         var names = new HashSet<string>(patches);
         return _conflicts.Where(entry => names.Contains(entry.Key.Patch)).SelectMany(entry => entry.Value)
+            .Concat(_notes.Where(entry => names.Contains(entry.Key.Patch)).SelectMany(entry => entry.Value.Mods))
             .Distinct().OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToList();
     }
 

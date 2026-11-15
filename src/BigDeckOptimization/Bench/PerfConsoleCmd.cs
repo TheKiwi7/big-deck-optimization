@@ -57,7 +57,7 @@ public class PerfConsoleCmd : AbstractConsoleCmd
 
     public override string CmdName => "bdperf";
 
-    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | verify [off|sample|all] | combatstart | grid [cards:int] | probe [reset|log|on|off|nodes|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | sortkeys [wrong] | checks on|off | opt on|off [yes] | listeners [iterations:int] | costwrites | fault piles|walk | snapgameerror <n> | reserialize [verify <n>] | clonememo [verify <n>]";
+    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | verify [off|sample|all] | combatstart | grid [cards:int] | probe [reset|log|on|off|nodes|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | sortkeys [wrong] | checks on|off | opt on|off [yes] | listeners [iterations:int] | costwrites | fault piles|walk | snapgameerror <n> | reserialize [verify <n>] | clonememo [verify <n>] | conflicts";
 
     public override string Description => "[BigDeckOptimization] Measures the multiplayer post-action checksum cost, vanilla vs optimized, or shows/sets live snapshot verification.";
 
@@ -173,6 +173,11 @@ public class PerfConsoleCmd : AbstractConsoleCmd
             ? EffectCounters.Freeze() : null;
         switch (sub)
         {
+            case "conflicts":
+                // bdopt why's report, plus the preflight's effect counters (checks run, back-offs and notes recorded).
+                Config.Settings.RefreshConflicts();
+                return new CmdResult(success: true, Config.Settings.WhyReport()
+                    + $"\nPreflight: {PatchSafety.PreflightRuns} runs, {PatchSafety.PreflightChecks} checks, {PatchSafety.RecordedBackOffs} back-offs and notes recorded");
             case "checksum":
                 int iterations = args.Length >= 2 && int.TryParse(args[1], out int n) && n > 0 ? n : 5;
                 return CompareChecksum(iterations);

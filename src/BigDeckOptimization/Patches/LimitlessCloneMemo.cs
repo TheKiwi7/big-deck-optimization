@@ -84,6 +84,12 @@ public static class LimitlessCloneMemo
         PatchGuard.Patch(harmony, _lambda, prefix: new HarmonyMethod(typeof(LimitlessCloneMemo), nameof(Prefix)),
             postfix: new HarmonyMethod(typeof(LimitlessCloneMemo), nameof(Postfix)));
         Applied = true;
+        // What Stamp asks about (display only): the lambda, the game's clone chain (built at the preflight, each method with
+        // its allowed patches), and the overrides on the way of the card and enchantment types met so far (those of types
+        // first cloned later show when checked).
+        PatchSafety.Watch(Name, _lambda);
+        WatchChain();
+        PatchSafety.WatchAll(Name, () => _onTheWay.Values.ToArray().Where(methods => methods != null).SelectMany(methods => methods!).ToArray());
         // Only saves work: without it Limitless's options are read at every inner card, as before.
         try
         {
@@ -302,15 +308,9 @@ public static class LimitlessCloneMemo
         {
             return _chainPatched;
         }
-        // Every overload of each method (FromSerializable, Fill): any of them patched counts. The overrides the clone reaches
-        // in the saved card's own types are checked per type (OnTheWay), not every type's.
-        _chain ??= Chain.SelectMany(c => c.Type.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly)
-                .Where(m => m.Name == c.Method)
-                .Select(m => ((System.Reflection.MethodBase)m, c.Allowed.Select(a => Allowed(a.Patch, a.Fingerprint)).OfType<System.Reflection.MethodInfo>().ToArray())))
-            .ToArray();
         // Published once known: LimitlessHookSkip may ask from another thread meanwhile.
         bool patched = false;
-        foreach ((System.Reflection.MethodBase method, System.Reflection.MethodInfo[] allowed) in _chain)
+        foreach ((System.Reflection.MethodBase method, System.Reflection.MethodInfo[] allowed) in ChainMethods())
         {
             if (PatchSafety.IsPatchedByOthers(method, allowed))
             {
@@ -322,6 +322,23 @@ public static class LimitlessCloneMemo
         _chainCheckedAt = now;
         return patched;
     }
+
+    /// <summary>
+    /// Every overload of each chain method (FromSerializable, Fill) with its allowed patches, built once: any of them patched
+    /// counts. The overrides the clone reaches in the saved card's own types are checked per type (OnTheWay), not every type's.
+    /// </summary>
+    private static (System.Reflection.MethodBase Method, System.Reflection.MethodInfo[] Allowed)[] ChainMethods() =>
+        _chain ??= Chain.SelectMany(c => c.Type.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly)
+                .Where(m => m.Name == c.Method)
+                .Select(m => ((System.Reflection.MethodBase)m, c.Allowed.Select(a => Allowed(a.Patch, a.Fingerprint)).OfType<System.Reflection.MethodInfo>().ToArray())))
+            .ToArray();
+
+    /// <summary>
+    /// Registers the chain <see cref="ChainPatched"/> asks about for the back-off preflight, under this class's name (where
+    /// its runtime check records, LimitlessHookSkip's asks included); built inside the preflight. Never throws.
+    /// </summary>
+    internal static void WatchChain() =>
+        PatchSafety.WatchPairs(Name, () => ChainMethods().Select(c => ((System.Reflection.MethodBase?)c.Method, (System.Reflection.MethodInfo[]?)c.Allowed)));
 
     /// <summary>
     /// The virtuals the chain reaches in the card's and the enchantment's own types: FromSerializable's AfterDeserialized,

@@ -170,13 +170,7 @@ public static partial class HookSkip
 
     private static bool AnyHelperPatched(int profile)
     {
-        _helperMethods ??= new MethodBase[]?[HelperProfiles.Length];
-        // An async helper (AssignTaskAndWaitForPauseOrCompletion, WhenAny...) runs its code in its state machine's MoveNext,
-        // where a MethodType.Async patch goes: both are checked, like a hook's Method and Body.
-        MethodBase[] helpers = _helperMethods[profile] ??= HelperProfiles[profile].Keys
-            .Select(key => MethodFingerprint.Resolve(typeof(AbstractModel).Assembly, key)).Where(m => m != null)
-            .SelectMany(m => StateMachineBody(m!) is { } body ? new[] { m!, body } : new[] { m! }).ToArray();
-        foreach (MethodBase helper in helpers)
+        foreach (MethodBase helper in HelperMethods(profile))
         {
             if (PatchSafety.IsPatchedByOthers(helper))
             {
@@ -184,6 +178,17 @@ public static partial class HookSkip
             }
         }
         return false;
+    }
+
+    /// <summary>The helpers of a profile present in this game, resolved once (also for the back-off preflight).</summary>
+    private static MethodBase[] HelperMethods(int profile)
+    {
+        _helperMethods ??= new MethodBase[]?[HelperProfiles.Length];
+        // An async helper (AssignTaskAndWaitForPauseOrCompletion, WhenAny...) runs its code in its state machine's MoveNext,
+        // where a MethodType.Async patch goes: both are checked, like a hook's Method and Body.
+        return _helperMethods[profile] ??= HelperProfiles[profile].Keys
+            .Select(key => MethodFingerprint.Resolve(typeof(AbstractModel).Assembly, key)).Where(m => m != null)
+            .SelectMany(m => StateMachineBody(m!) is { } body ? new[] { m!, body } : new[] { m! }).ToArray();
     }
 
     /// <summary>The MoveNext of an async or iterator method's state machine, else null.</summary>
@@ -260,6 +265,7 @@ public static partial class HookSkip
                 entry.Filter = PileFilter.Overriding(entry.Subscribed, entry.Methods);
                 _indexByBody[body] = match;
                 _toPatch.Enqueue((hookName, body));
+                Watch(entry);
             }
             catch (Exception e)
             {
@@ -274,6 +280,8 @@ public static partial class HookSkip
         }
         Applied = true;
         _absent = absent;
+        // A hook walking Hook.IterateCombatHookListeners asks HookFilter about that walk too (CombatHookWalk).
+        PatchSafety.WatchAll(Name, () => _redirectsCombatHookWalk ? HookFilter.CombatHookWalkParts() : Array.Empty<MethodBase?>());
         BaseLibHooks.Init(harmony);
         PatchOverFrames(harmony);
     }
@@ -311,6 +319,44 @@ public static partial class HookSkip
             }
         }
     }
+
+    /// <summary>
+    /// Registers what <see cref="FilterFor"/> asks about for this hook (display only, never throws): the hook and its state
+    /// machine with BaseLib's allowed patches (built once BaseLib is there: <see cref="AllowedForPreflight"/>), its version's
+    /// helpers (resolved lazily, inside the preflight), and the AbstractModel defaults its filter keeps the overriders of.
+    /// </summary>
+    private static void Watch(Entry entry)
+    {
+        PatchSafety.Watch(Name, entry.Method, AllowedForPreflight);
+        if (entry.Body != entry.Method)
+        {
+            PatchSafety.Watch(Name, entry.Body, AllowedForPreflight);
+        }
+        if (entry.Profile >= 0)
+        {
+            int profile = entry.Profile;
+            if (_watchedProfiles.Add(profile))
+            {
+                PatchSafety.WatchAll(Name, () => HelperMethods(profile));
+            }
+        }
+        if (entry.Filter?.BaseMethods is { } bases)
+        {
+            PatchSafety.Watch(Name, bases);
+        }
+    }
+
+    private static readonly HashSet<int> _watchedProfiles = new();
+
+    /// <summary>
+    /// <see cref="AllowedBodyPatches"/> for the preflight: it keeps its first answer, so it is only built once BaseLib is
+    /// loaded (as <see cref="Finished"/> does); without BaseLib, no BaseLib patch to allow, nothing kept.
+    /// </summary>
+    private static MethodInfo[] AllowedForPreflight() =>
+        _allowedBodyPatches ?? (AppDomain.CurrentDomain.GetAssemblies().Any(a => a.GetName().Name == "BaseLib") ? AllowedBodyPatches() : Array.Empty<MethodInfo>());
+
+    /// <summary>Some hook's walk call to Hook.IterateCombatHookListeners was redirected (<see cref="Transpiler"/>).</summary>
+    private static bool _redirectsCombatHookWalk;
 
     /// <summary>One of the walk calls <see cref="Transpiler"/> redirects.</summary>
     private static bool IsWalk(MethodInfo method) => Same(method, _runWalk) || Same(method, _combatWalk) || Same(method, _combatHookWalk);
@@ -451,6 +497,10 @@ public static partial class HookSkip
             {
                 yield return code;
                 continue;
+            }
+            if (redirect == _redirectCombatHook)
+            {
+                _redirectsCombatHookWalk = true;
             }
             // Same stack in, same IEnumerable out: (state[, combat]) -> (state[, combat], index) -> call redirect. In
             // `combatState?.IterateHookListeners() ?? Array.Empty<AbstractModel>()` (v0.113) the call sits on the non-null
@@ -687,6 +737,8 @@ public static partial class HookSkip
                     PatchGuard.Patch(_harmony!, method, prefix: new HarmonyMethod(typeof(BaseLibHooks), nameof(Prefix)),
                         finalizer: new HarmonyMethod(typeof(BaseLibHooks), nameof(Finalizer)));
                     PatchGuard.Watch(method);
+                    // What Prefix asks about before taking the filter (display only).
+                    PatchSafety.Watch(Name, method);
                     Log.Info($"[{ModEntry.Id}] {Name}: BaseLib {name} applied");
                 }
                 catch (Exception e)

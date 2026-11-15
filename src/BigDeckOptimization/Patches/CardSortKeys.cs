@@ -236,6 +236,14 @@ public static class CardSortKeys
             PatchGuard.Patch(harmony, caller, transpiler: new HarmonyMethod(typeof(CardSortKeys), nameof(CallerTranspiler)) { priority = Priority.Last });
         }
         Applied = true;
+        // Display only: what every sort asks about, and the combat hook walk a sort in combat asks HookFilter about. The cost
+        // hooks of the combat's listener types (ImpureCostListener) depend on who is in the combat: those of the types met so
+        // far are asked again at each preflight. The keyword reads (_keywordWatched) only matter in a combat where a cost hook
+        // reads keywords (Veilpiercer): not known at the menu, so they show when such a sort checks them.
+        PatchSafety.Watch(Name, _watched);
+        PatchSafety.WatchAll(Name, HookFilter.CombatHookWalkParts);
+        PatchSafety.WatchAll(Name, MetCostHooks);
+        PatchSafety.WatchNote(Name, NoteModTypes);
     }
 
     private static MethodInfo Require(MethodInfo? method, string fingerprint, string what)
@@ -516,6 +524,30 @@ public static class CardSortKeys
         }
         return keywordListener;
     }
+
+    /// <summary>
+    /// The note (back-off preflight) for other mods' types met by sorts so far that leave a sort to the game: cards with their
+    /// own sort order (<see cref="Plain"/>), listeners whose cost hooks aren't known to only read (<see cref="ImpureCostListener"/>).
+    /// Known once a combat sorted a pile with them: none before.
+    /// </summary>
+    private static void NoteModTypes()
+    {
+        string[] cards = PatchSafety.ModNamesOf(_plain.ToArray().Where(entry => !entry.Value).Select(entry => entry.Key.Assembly));
+        string[] listeners = PatchSafety.ModNamesOf(_costOverrides.ToArray().Where(entry => entry.Value == null).Select(entry => entry.Key.Assembly));
+        if (cards.Length == 0 && listeners.Length == 0)
+        {
+            PatchSafety.ClearNote(Name, "mod_types");
+            return;
+        }
+        PatchSafety.Note(Name, "mod_types", "other mods' cards with their own sort order, or cards and relics whose cost hooks may change more than a cost: "
+            + "sorts with them run the game's comparison (seen in the combats so far)", cards.Concat(listeners).ToArray());
+    }
+
+    /// <summary>The cost and keyword hook overrides of the listener types sorts met so far (back-off preflight).</summary>
+    private static IEnumerable<MethodBase?> MetCostHooks() =>
+        _costOverrides.Values.ToArray().Where(reads => reads != null)
+            .SelectMany(reads => reads!.Cost.Cast<MethodBase?>().Concat(reads.KeywordKnown && reads.Keyword != null ? new MethodBase?[] { reads.Keyword } : Array.Empty<MethodBase?>()))
+            .ToArray();
 
     private static ListenerReads? CostOverrides(Type type)
     {

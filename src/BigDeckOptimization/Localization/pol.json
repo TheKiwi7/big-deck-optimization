@@ -13,6 +13,8 @@
   "why.coop_run": "Zablokowane podczas gry w co-op: z wyłączonym modem twoje walki zaczynałyby się dużo później niż walki innych graczy. Aby mimo to go wyłączyć, wpisz w konsoli bdopt off yes.",
   "parts_off": "Częściowo nieaktywna: część tej optymalizacji wyłączyła się lub nie ma tu zastosowania (dla tej części normalna gra, szczegóły w logu).",
   "conflict": "Częściowo nieaktywna: {mods} również zmienia to, co ta optymalizacja przyspiesza (zwykła gra w tej części).",
+  "conflict_summary": "Z twoimi innymi modami część tych optymalizacji działa jak w zwykłej grze: {mods}. Najedź na opcję, aby zobaczyć szczegóły; bdopt why w konsoli je wypisuje.",
+  "other_mods": "inne mody",
   "coop_checksum.title": "Sprawdzanie stanu w co-opie",
   "coop_checksum.desc": "Szybsze sprawdzanie stanu po każdej akcji w co-opie, a w nowszych wersjach gry także w grze solo (największy lag co-opa przy ogromnych taliach).",
   "combat_refresh.title": "Odświeżanie w walce",
