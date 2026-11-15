@@ -49,7 +49,8 @@ $applied = @($text | Where-Object { $_ -match "\[BigDeckOptimization\] Patch \S+
 # Every problem judge.py sees (an error this mod logs, a part turned off, an error the game logs through this mod's code), not
 # only skipped patches: HarmonyRebuild's "patched methods run without their patches" (other mods' patches lost, v1.0.0) among them.
 # The session doesn't end by itself: closed once the patches are applied.
-$problems = @($text | Where-Object { $_ -match "\[BigDeckOptimization\] Patch \S+ (skipped|could not)" }) + @(Invoke-Judge @($log) -NoEnd)
+# "skipped: not needed": a part this game version has nothing for (CardSortKeys before v0.113), not a problem.
+$problems = @($text | Where-Object { $_ -match "\[BigDeckOptimization\] Patch \S+ (skipped|could not)" -and $_ -notmatch "skipped: not needed" }) + @(Invoke-Judge @($log) -NoEnd)
 # HarmonyRebuild checked every patched method once the patches were applied: without that line (its internals unavailable), nothing
 # says the methods this mod and the others patch still run their patches.
 if (-not ($text | Where-Object { $_ -match "\[BigDeckOptimization\] HarmonyRebuild: all \d+ patched methods detoured" })) { $problems += "no 'HarmonyRebuild: all N patched methods detoured' line" }

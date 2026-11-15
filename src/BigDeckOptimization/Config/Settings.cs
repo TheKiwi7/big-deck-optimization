@@ -15,8 +15,11 @@ namespace BigDeckOptimization.Config;
 /// </summary>
 public static class Settings
 {
-    /// <summary>A part of an option with its own patch or fault. <paramref name="NeedsMods"/>: it can only apply with Limitless and BaseLib.</summary>
-    public readonly record struct OptionPart(string Name, bool NeedsMods = false);
+    /// <summary>
+    /// A part of an option with its own patch or fault. <paramref name="NeedsMods"/>: it can only apply with Limitless and BaseLib.
+    /// <paramref name="NotNeeded"/>: true when this game version has nothing for it to do (not applied, and nothing missing).
+    /// </summary>
+    public readonly record struct OptionPart(string Name, bool NeedsMods = false, Func<bool>? NotNeeded = null);
 
     /// <param name="parts">What runs under this option apart from its main patch (<paramref name="faults"/>).</param>
     /// <param name="setParts">Switches the parts: they don't depend on the main patch, so its fault or absence leaves them on.</param>
@@ -70,7 +73,7 @@ public static class Settings
                 {
                     yield return part.Name + " (error)";
                 }
-                else if (ModEntry.NotApplied(part.Name) && (!part.NeedsMods || LimitlessReason() == LimitlessChanged))
+                else if (ModEntry.NotApplied(part.Name) && part.NotNeeded?.Invoke() != true && (!part.NeedsMods || LimitlessReason() == LimitlessChanged))
                 {
                     yield return part.Name + " (not applied)";
                 }
@@ -224,7 +227,10 @@ public static class Settings
         new("pile_lookup", "Card pile lookup",
             "Finds which pile a card is in without scanning every card (used by costs, keywords, playability...), and checks a card added to a pile (draws, reshuffles, clones) without scanning that pile.",
             new[] { PileIndex.Name }, on => PileIndex.Enabled = on,
-            () => Missing(PileIndex.Applied)),
+            () => NoneApplied(PileIndex.Name, CardSortKeys.Name),
+            // Sorting a pile before a reshuffle (game v0.113's card comparison): its own part, not needed on earlier versions.
+            parts: new OptionPart[] { new(CardSortKeys.Name, NotNeeded: () => CardSortKeys.NotNeeded) },
+            setParts: on => Flag(() => CardSortKeys.Enabled = Part(on, CardSortKeys.Name))),
         new("card_ids", "Combat card IDs",
             "Skips re-scanning whole card piles for new cards on every card move (reshuffles, end of combat).",
             new[] { CardDbScan.Name }, on => CardDbScan.Enabled = on,

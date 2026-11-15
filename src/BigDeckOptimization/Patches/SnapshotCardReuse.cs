@@ -1016,8 +1016,10 @@ public static class SnapshotCardReuse
     /// keywords, affliction or pile type (all of it written through the counted writers, or fixed for a pile's cards) and on the
     /// listener's own amount and owner (v0.107.1 and v0.111). While the same listeners stand with the same amounts, a pile's
     /// unwritten cards keep the costs and keywords they had. Not Void Form or Brilliant Scarf: they count the cards played this turn.
+    /// Same fingerprints on v0.113. Also <see cref="CardSortKeys"/>' judgment: a listener of these only reads, so a card's cost
+    /// can't change while a sort runs.
     /// </summary>
-    private static readonly (string Type, string Method, string Fingerprint)[] PureHooks =
+    internal static readonly (string Type, string Method, string Fingerprint)[] PureHooks =
     {
         ("MegaCrit.Sts2.Core.Models.Powers.CuriousPower", "TryModifyEnergyCostInCombat", "F8A0E3D0504A6C32"),
         ("MegaCrit.Sts2.Core.Models.Powers.BorrowedTimePower", "TryModifyEnergyCostInCombat", "2CFAD6BDBD87020F"),

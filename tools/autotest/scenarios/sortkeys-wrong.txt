@@ -1,0 +1,20 @@
+# Positive control of CardSortKeys (game v0.113+ only: not applied before): answers reversed on purpose must be caught by
+# bdperf sortkeys and by the part's own check (it turns itself off).
+expect SORTKEYS .*MISMATCH
+expect CardSortKeys disabled, the game compares its cards
+expect CardSortKeys sorts .*mismatches [1-9]
+timeout 900
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all cards
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd bdperf sortkeys wrong
+onfail continue
+cmd bdperf sortkeys
+counters end
+quit

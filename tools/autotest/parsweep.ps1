@@ -78,6 +78,9 @@ $round = foreach ($chunk in 0..($chunkCount - 1)) {
     if ($Chunks.Count -and $Chunks -notcontains $chunk) { continue }
     foreach ($side in $(if ($Imports) { @("on") } else { @("off", "on") })) { New-PartJob $side $chunk 0 ($chunk * $ChunkItems) ([Math]::Min($ChunkItems, $items - $chunk * $ChunkItems)) }
 }
+# The mod-off parts first: 5 to 20 times longer each, they set the sweep's length; the mod-on ones then fill the free slots
+# instead of a long mod-off part starting last.
+$round = @($round | Where-Object { $_.Side -eq "off" }) + @($round | Where-Object { $_.Side -ne "off" })
 $sessionProblems = [Collections.Generic.List[string]]::new()
 $count = 0
 while (@($round).Count -gt 0) {

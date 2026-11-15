@@ -1,5 +1,5 @@
 # Release checklist bdperf comparisons (vanilla first, so ~935 cards: the reference run once with its relics):
-# checksum, refresh, grid and pile must all say OK: identical.
+# checksum, refresh, grid and pile must all say OK: identical; sortkeys too on game v0.113+ (not applied before: nothing to compare).
 timeout 1200
 newrun NECROBINDER
 waitfor run 120
@@ -14,4 +14,5 @@ cmd bdperf refresh 10
 cmd bdperf grid
 cmd bdperf pile
 cmd bdperf listeners 10
+cmd bdperf sortkeys
 quit

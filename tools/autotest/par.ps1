@@ -22,6 +22,8 @@ $list = foreach ($name in $Names) {
     }
     [pscustomobject]@{ Name = $name; Script = $script; Log = Join-Path $out "$name.log" }
 }
+# Mod-off sessions first (the longest by far at these deck sizes): shorter ones fill the free slots instead of one starting last.
+$list = @($list | Where-Object { $_.Name -match '-off(\d*$|-)' }) + @($list | Where-Object { $_.Name -notmatch '-off(\d*$|-)' })
 $started = Get-Date
 $runs = Invoke-Sessions -Jobs $list -GameDir $GameDir -MaxJobs $Jobs -TimeoutSec $TimeoutSec -StallSec $StallSec -Rendered:$Rendered -UseBaselines:$UseBaselines -Label "par $(Get-GameTag $GameDir)"
 Remove-TestMods $GameDir

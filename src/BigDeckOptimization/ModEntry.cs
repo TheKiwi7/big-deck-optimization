@@ -53,6 +53,7 @@ public static class ModEntry
         (RelicStateReuse.Name, RelicStateReuse.Apply),
         (RichTextEnvRelease.Name, RichTextEnvRelease.Apply),
         (DeckCountMemo.Name, DeckCountMemo.Apply),
+        (CardSortKeys.Name, CardSortKeys.Apply),
     });
 
     /// <summary>Time given to patching per frame: each patched method takes ~1.5 ms, ~400 ms in all.</summary>

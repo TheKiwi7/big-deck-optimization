@@ -277,19 +277,50 @@ function Test-SessionLog([string]$name, [string]$pattern, [bool]$expected, [stri
 # (what a run offers), the other mods' settings and data the slots copy (mod_configs; mod_data, e.g. LobbyBanlist's ban
 # profiles), the test tooling or the scenario changes.
 $script:BaselineSalt = $null
+# The test tooling a script runs: the scenario engine and its helpers always, each optional part only when one of its commands is
+# in the script (AutoTest.cs reaches them only through those commands; a few CPU-time helpers feed timings, which no comparison
+# reads). A change elsewhere in Bench/ leaves this scenario's baseline valid.
+$BaselineBenchParts = [ordered]@{
+    'AutoTestRooms.cs'      = '^\s*(autoroom|automap|barrier|continuerun|runstate|restsite|selector|eventoption)\b'
+    'AutoTestMouse.cs'      = '^\s*(hover|checktips|mouseplay|mousesweep|movehovered|buttoninput|controllermap|forcefocus|tipsrebuilt)\b'
+    'AutoTestSweep.cs'      = '^\s*(sweep|sweeptimeout)\b'
+    'AutoTestLeak.cs'       = '^\s*leakcheck\b'
+    'AutoTestTrace.cs'      = '^\s*eventtrace\b'
+    'BigDeckConsoleCmd.cs'  = '^\s*cmd\s+bigdeck\b'
+    'RebuildCheck.cs'       = '^\s*rebuildcheck\b'
+    'FaultProbe.cs'         = '^\s*faultprobe\b'
+    'PerfConsoleCmd.cs'     = '^\s*cmd\s+bdperf\b'
+    'GridBench.cs'          = '^\s*cmd\s+bdperf\s+grid\b'
+    'PerfProbe.cs'          = '^\s*cmd\s+bdperf\s+(probe|nodes|hitch)\b'
+    'RelicBench.cs'         = '^\s*cmd\s+bdperf\s+relics\b'
+    'ShuffleBench.cs'       = '^\s*cmd\s+bdperf\s+shufflebench\b'
+    'UpgradeBench.cs'       = '^\s*cmd\s+bdperf\s+upgradebench\b'
+    'SortKeysBench.cs'      = '^\s*cmd\s+bdperf\s+sortkeys\b'
+}
+function Get-BaselineBenchFiles([string]$scriptText) {
+    $bench = Join-Path $PSScriptRoot "..\..\src\BigDeckOptimization\Bench"
+    foreach ($file in Get-ChildItem $bench -Filter *.cs) {
+        if ($file.Name -eq 'AutoTestVideo.cs') { continue }  # local only: video scenarios, never cached
+        $pattern = $BaselineBenchParts[$file.Name]
+        # A file not in the table (the engine, its helpers, a new file) always counts: unknown is never left out.
+        if (-not $pattern -or [regex]::IsMatch($scriptText, $pattern, 'Multiline')) { $file }
+    }
+}
+
 function Get-BaselineKey([string]$gameDir, [string]$scriptPath) {
     if (-not $script:BaselineSalt) {
-        $bench = Join-Path $PSScriptRoot "..\..\src\BigDeckOptimization\Bench"
         $profileSaves = Join-Path (Get-SteamAccountDir) "modded\profile3\saves"
-        $files = @(Get-ChildItem (Join-Path $gameDir "data_sts2_windows_x86_64\sts2.dll")) + @(Get-ChildItem $Workshop -Recurse -Filter *.dll) + @(Get-ChildItem $bench -Filter *.cs) +
+        $files = @(Get-ChildItem (Join-Path $gameDir "data_sts2_windows_x86_64\sts2.dll")) + @(Get-ChildItem $Workshop -Recurse -Filter *.dll) +
             @(Get-ChildItem (Join-Path $UserData "bigdeck") -Filter *.run -ErrorAction SilentlyContinue) +
             @(Get-ChildItem (Join-Path $profileSaves "*") -File -Include progress.save, prefs.save -ErrorAction SilentlyContinue) +
             @(Get-ChildItem (Join-Path $UserData "mod_configs") -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne "BigDeckOptimization.cfg" }) +
             @(Get-ChildItem (Join-Path $UserData "mod_data") -Recurse -File -ErrorAction SilentlyContinue)
         $script:BaselineSalt = "no-steam|mods=" + (@(Get-TestModIds) -join ",") + "|" + (($files | Sort-Object FullName | ForEach-Object { "$($_.Name)=" + (Get-FileHash $_.FullName -Algorithm SHA256).Hash }) -join "")
     }
+    $scriptText = [IO.File]::ReadAllText($scriptPath)
+    $bench = (@(Get-BaselineBenchFiles $scriptText) | Sort-Object Name | ForEach-Object { "$($_.Name)=" + (Get-FileHash $_.FullName -Algorithm SHA256).Hash }) -join ""
     $sha = [Security.Cryptography.SHA256]::Create()
-    $bytes = [Text.Encoding]::UTF8.GetBytes($script:BaselineSalt + [IO.File]::ReadAllText($scriptPath))
+    $bytes = [Text.Encoding]::UTF8.GetBytes($script:BaselineSalt + "|bench=" + $bench + "|" + $scriptText)
     ([BitConverter]::ToString($sha.ComputeHash($bytes)) -replace "-", "").Substring(0, 16)
 }
 
@@ -377,6 +408,8 @@ function Get-EarlyExitProblem([string]$log, $exitCode) {
     $started = [bool](Select-String -Path $log -Pattern "AutoTest\s+[\d.]+s > " -Quiet)
     if ($problems.Count) { return "ended early (exit code $exitCode, log $(Split-Path $log -Leaf)) with a problem: $($problems[0])" }
     if (-not $started -or $last -match '^\[WARN\] Asset not cached: ') { return }
+    # The game's own loader stopped at the menu (AutoTest's WaitCommonPreload): started over, nothing of the mod involved.
+    if (Select-String -Path $log -SimpleMatch "RESTART: the game's Common preload stopped loading" -Quiet) { return }
     "ended early (exit code $exitCode), not the known renderer crash: last line '$("$last".Substring(0, [Math]::Min(120, "$last".Length)))' ($(Split-Path $log -Leaf))"
 }
 

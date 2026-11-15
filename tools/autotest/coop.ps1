@@ -104,7 +104,8 @@ try {
     Write-Output "done in $t s: $hostLog, $clientLog"
     # Each peer's problems (judge.py): a failed line, an error or a difference this mod found itself, a session cut short...
     # A divergence is one too (judge.py), seen here as in parcoop.ps1 and coop4.ps1 even when no wait of the client's script was on.
-    $judged = @(Show-Judgment @($hostLog, $clientLog))
+    # -StopWhen ends both sessions on purpose (a client without this mod has no test runner to end it): no end expected there.
+    $judged = @(Show-Judgment @($hostLog, $clientLog) -NoEnd:([bool]$StopWhen))
     # -WithMods: the Workshop mods each game must have found (a client without a mod, -ClientWithout, still finds its files).
     if ($modsAdded) { foreach ($log in $hostLog, $clientLog) { Get-MissingTestMods $log $GameDir | ForEach-Object { $judged += "PROBLEM $(Split-Path $log -Leaf): $_" } } }
     foreach ($log in $hostLog, $clientLog) {

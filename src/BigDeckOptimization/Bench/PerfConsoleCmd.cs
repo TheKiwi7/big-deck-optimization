@@ -45,7 +45,7 @@ public class PerfConsoleCmd : AbstractConsoleCmd
 
     public override string CmdName => "bdperf";
 
-    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | verify [off|sample|all] | combatstart | grid [cards:int] | probe [reset|log|on|off|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | checks on|off | opt on|off | listeners [iterations:int]";
+    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | verify [off|sample|all] | combatstart | grid [cards:int] | probe [reset|log|on|off|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | sortkeys [wrong] | checks on|off | opt on|off | listeners [iterations:int]";
 
     public override string Description => "[BigDeckOptimization] Measures the multiplayer post-action checksum cost, vanilla vs optimized, or shows/sets live snapshot verification.";
 
@@ -116,7 +116,7 @@ public class PerfConsoleCmd : AbstractConsoleCmd
     public override CmdResult Process(Player? issuingPlayer, string[] args)
     {
         string sub = args.Length > 0 ? args[0].ToLowerInvariant() : "";
-        if (sub is "checksum" or "refresh" or "listeners" or "pile" or "text" or "scan" or "plaque" or "grid" && !(sub == "pile" && args.Length > 1) && ModOff() is { } off)
+        if (sub is "checksum" or "refresh" or "listeners" or "pile" or "text" or "scan" or "plaque" or "grid" or "sortkeys" && !(sub is "pile" or "sortkeys" && args.Length > 1) && ModOff() is { } off)
         {
             return off;
         }
@@ -295,6 +295,8 @@ public class PerfConsoleCmd : AbstractConsoleCmd
             case "snapmoved" when args.Length >= 2 && args[1] is "on" or "off":
                 SnapshotCardReuse.MovedPiles = args[1] == "on";
                 return new CmdResult(success: true, $"{SnapshotCardReuse.Name} moved piles {args[1]}.");
+            case "sortkeys":
+                return SortKeysBench.Run(args.Length >= 2 && args[1] == "wrong");
             case "plaque":
                 int plaqueCards = args.Length >= 2 && int.TryParse(args[1], out int pc) && pc > 0 ? pc : 200;
                 return CompareTypePlaque(plaqueCards);
@@ -305,7 +307,9 @@ public class PerfConsoleCmd : AbstractConsoleCmd
             case "checks" when args.Length >= 2 && args[1] is "on" or "off":
                 ExtraScopes.BenchChecks = args[1] == "on";
                 PileIndex.VerifyEvery = ExtraScopes.BenchChecks ? 1024 : int.MaxValue;
-                return new CmdResult(success: true, $"Bench re-checks {args[1]} (first-turn filter, ShouldAllowHitting, PileIndex 1/1024).");
+                // CardSortKeys keeps its release builds' check: 1 answer in 1024.
+                CardSortKeys.VerifyEvery = ExtraScopes.BenchChecks ? 16 : 1024;
+                return new CmdResult(success: true, $"Bench re-checks {args[1]} (first-turn filter, ShouldAllowHitting, PileIndex 1/1024, CardSortKeys 1/{CardSortKeys.VerifyEvery}).");
             case "fault" when args.Length >= 2 && args[1] == "piles":
                 FastListeners.FailNextPileWalk = true;
                 return new CmdResult(success: true, "The next filtered pile walk throws inside FastListeners' cache (test of its fallback).");

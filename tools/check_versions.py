@@ -67,7 +67,7 @@ VANILLA = re.compile(r"\[BigDeckOptimization\].*(Patch \w+ skipped|could not be 
                      r"|missing or changed|getter kept|is also patched by|read through the game's own calls|read every time|not reused"
                      r"|not skipped|left uncached|not found, it sets)")
 # Normal: an optional mod absent, a summary with nothing left vanilla.
-EXPECTED = re.compile(r"(Limitless|BaseLib) not loaded|no --bdtest argument| 0 left vanilla")
+EXPECTED = re.compile(r"(Limitless|BaseLib) not loaded|no --bdtest argument| 0 left vanilla|skipped: not needed")
 
 
 def installed() -> dict:

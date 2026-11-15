@@ -448,6 +448,7 @@ public static partial class AutoTest
     /// <summary>Each optimization's effect counter (the <c>effects</c> line), by name.</summary>
     private static (string Name, long Count)[] EffectCounts() => new (string, long)[]
     {
+        // CardSortKeys only where it applies (game v0.113+): on earlier versions there is nothing for it to do.
         (ListenerCache.Name, ListenerCache.Served), (HookFilter.Name, HookFilter.ListenersDropped), (ExtraScopes.Name, ExtraScopes.FirstTurnPasses),
         (IdleButtonInput.Name, IdleButtonInput.Muted), (GridSortCache.Name, GridSortCache.Sorts), (EnchantmentTabReuse.Name, EnchantmentTabReuse.Reused),
         (PoolSignalScan.Name, PoolSignalScan.Nodes), (CardDbScan.Name, CardDbScan.Skipped), (PileIndex.Name, PileIndex.Fast), (PileIndex.Name + ".Duplicates", PileIndex.FastDuplicateChecks),
@@ -461,15 +462,17 @@ public static partial class AutoTest
         (DeckCountMemo.Name, DeckCountMemo.Kept + DeckCountMemo.Updated), (DeckCountMemo.Name + ".Checks", DeckCountMemo.Checks), (LimitlessHookSkip.Name, LimitlessHookSkip.Dropped), (LimitlessHookSkip.Name + ".Saved", LimitlessHookSkip.NotesFromSaved), (LimitlessCloneMemo.Name, LimitlessCloneMemo.Reused), (TextPoolReuse.Name, TextPoolReuse.Served), (ThemeColorSkip.Name, ThemeColorSkip.Skipped), (ReplayStateSkip.Name, ReplayStateSkip.Skipped),
         (GcPacing.Name, GcPacing.Regions), (RelicFlashMerge.Name, RelicFlashMerge.Merged), (CardFlightLimit.Name, CardFlightLimit.Skipped), (TypePlaqueSkip.Name, TypePlaqueSkip.Skipped),
         (ControllerActionSkip.Name, ControllerActionSkip.Skipped), (RoomCollect.Name, RoomCollect.Background), (PooledCardRelease.Name, PooledCardRelease.Released), (SyncedCardRelease.Name, SyncedCardRelease.Released), (SavedPropertyLookup.Name, SavedPropertyLookup.Served), (RelicStateReuse.Name, RelicStateReuse.Reused), (RelicStateReuse.ScalarName, RelicStateReuse.ScalarReused), (RichTextEnvRelease.Name, RichTextEnvRelease.Released), (RichTextEnvRelease.Name + ".Untracked", RichTextEnvRelease.Untracked), ("InlineGuard", InlineGuard.Protected),
-    };
+    }.Concat(CardSortKeys.Applied ? new (string, long)[] { (CardSortKeys.Name, CardSortKeys.Sorts), (CardSortKeys.Name + ".Answers", CardSortKeys.Answered) } : Array.Empty<(string, long)>()).ToArray();
 
     /// <summary>
     /// The game starts its "Common" preload at the main menu without awaiting it. A run started meanwhile (a script's newrun 0.4 s
     /// after the menu; a player takes seconds) unloads what that preload is still loading, and the run's own preload never
     /// completes: the session stops in "Preloading 'characters=...'", mod on or off (v0.113.1, 2026-11-15). Waits until the Common and
-    /// main menu sets are loaded; assets that failed to load never show up, so it also goes on once nothing changed for 5 s.
+    /// main menu sets are loaded. Nothing loaded for 15 s with some still missing: the game's loader stopped (seen once under a full
+    /// machine, the run's preload then never ends): false, and the session starts over. A game whose own assets fail to load
+    /// would start every session over: the runner reports that after its retries.
     /// </summary>
-    private static async Task WaitCommonPreload(SceneTree tree)
+    private static async Task<bool> WaitCommonPreload(SceneTree tree)
     {
         try
         {
@@ -477,7 +480,7 @@ public static partial class AutoTest
             long start = Stopwatch.GetTimestamp();
             long changed = start;
             int missing = -1;
-            while (Stopwatch.GetElapsedTime(start).TotalSeconds < 30)
+            while (Stopwatch.GetElapsedTime(start).TotalSeconds < 60)
             {
                 IReadOnlySet<string> loaded = MegaCrit.Sts2.Core.Assets.PreloadManager.Cache.GetLoadedCacheAssets();
                 int now = wanted.Count(path => !loaded.Contains(path));
@@ -491,17 +494,19 @@ public static partial class AutoTest
                     missing = now;
                     changed = Stopwatch.GetTimestamp();
                 }
-                else if (Stopwatch.GetElapsedTime(changed).TotalSeconds > 5)
+                else if (Stopwatch.GetElapsedTime(changed).TotalSeconds > 15)
                 {
                     break;
                 }
                 await Frames(tree, 5);
             }
             Say($"  common preload: {(missing == 0 ? "complete" : $"{missing} asset(s) never loaded")} after {Stopwatch.GetElapsedTime(start).TotalSeconds:F1} s");
+            return missing == 0;
         }
         catch (Exception e)
         {
             Say($"  common preload not checked: {e.GetType().Name}: {e.Message}");
+            return true;
         }
     }
 
@@ -946,7 +951,14 @@ public static partial class AutoTest
         Say($"script {_script} ({lines.Length} lines)");
         await Until(tree, () => NGame.Instance?.MainMenu != null && ModEntry.Ready, 300, "menu");
         await Frames(tree, 60);
-        await WaitCommonPreload(tree);
+        if (!await WaitCommonPreload(tree))
+        {
+            // The game's loader stopped (seen under a full machine: a run started then never finishes its own preload). Nothing
+            // can go on: quit at once, the runner starts the session over (parlib.ps1, Get-EarlyExitProblem) instead of a stall.
+            Say("RESTART: the game's Common preload stopped loading: the session starts over");
+            Quit();
+            return;
+        }
         NGame game = NGame.Instance!;
         if (DisplayServer.GetName() == "headless")
         {
@@ -1203,7 +1215,8 @@ public static partial class AutoTest
                         + $"verify mismatches {LimitlessReserialize.VerifyMismatches}; {LimitlessRecalcSkip.Name} passes skipped {LimitlessRecalcSkip.PassesSkipped}, run {LimitlessRecalcSkip.PassesRun}, mismatches {LimitlessRecalcSkip.PassMismatches}, skipped {LimitlessRecalcSkip.Skipped}, verified {LimitlessRecalcSkip.Verified}, mismatches {LimitlessRecalcSkip.Mismatches}; {LimitlessHookSkip.Name} samples {LimitlessHookSkip.Samples}, mismatches {LimitlessHookSkip.SampleMismatches}; {SnapshotCardReuse.Name} reused {SnapshotCardReuse.Reused}, built {SnapshotCardReuse.Built}, upgraded {SnapshotCardReuse.LightBuilt}, piles trusted {SnapshotCardReuse.PilesTrusted}, pile bits reused {SnapshotCardReuse.PileBitsReused}, composed {SnapshotCardReuse.PileBitsComposed}, pile mismatches {SnapshotCardReuse.PileMismatches}, verified {SnapshotCardReuse.Verified}, mismatches {SnapshotCardReuse.Mismatches}, piles reused {SnapshotCardReuse.PilesReused}, built {SnapshotCardReuse.PilesBuilt}, bits reused {SnapshotCardReuse.BitsReused}, captured {SnapshotCardReuse.BitsCaptured}, checked {SnapshotCardReuse.BitChecks}; {FastListeners.Name} cache mismatches {FastListeners.CacheMismatches}, "
                         + $"segments rebuilt {FastListeners.SegmentRebuilds} (versions {FastListeners.RebuiltVersions}, pile version {FastListeners.PileVersion}), "
                         + $"extended {FastListeners.SegmentExtends}, kept across moves {FastListeners.SegmentMoveHits}, snapshot catch-ups {FastListeners.SnapshotCatchUps}, rebuilds {FastListeners.SnapshotRebuilds}, move checks {FastListeners.MoveChecks}, mismatches {FastListeners.MoveMismatches}, hits {FastListeners.SegmentHits}, uncached walks {FastListeners.UncachedWalks}; "
-                        + $"{HookFilter.Name} walk checks {HookFilter.WalkChecks}, mismatches {HookFilter.WalkMismatches}, cost color checks {HookFilter.CostColorChecks / 64}, mismatches {HookFilter.CostColorMismatches}; {RelicFlashMerge.Name} merged {RelicFlashMerge.Merged}; {CardFlightLimit.Name} skipped {CardFlightLimit.Skipped}; {ReplayStateSkip.Name} skipped {ReplayStateSkip.Skipped}; {ThemeColorSkip.Name} skipped {ThemeColorSkip.Skipped}, set {ThemeColorSkip.Set}; {GcPacing.Name} regions {GcPacing.Regions}, refused {GcPacing.RegionsRefused}, exhausted {GcPacing.Exhausted}, {GcPacing.RegionMs:F0} ms, collections {GcPacing.Collections} (full {GcPacing.Fulls}) in {GcPacing.CollectMs:F0} ms, worst {GcPacing.WorstCollectMs:F0} ms; {PileIndex.Name} duplicate checks fast {PileIndex.FastDuplicateChecks}, slow {PileIndex.SlowDuplicateChecks}; subscriber checks {FastListeners.SubscriberChecks} in {FastListeners.SubscriberCheckTicks * 1000.0 / Stopwatch.Frequency:F1} ms");
+                        + $"{HookFilter.Name} walk checks {HookFilter.WalkChecks}, mismatches {HookFilter.WalkMismatches}, cost color checks {HookFilter.CostColorChecks / 64}, mismatches {HookFilter.CostColorMismatches}; {RelicFlashMerge.Name} merged {RelicFlashMerge.Merged}; {CardFlightLimit.Name} skipped {CardFlightLimit.Skipped}; {ReplayStateSkip.Name} skipped {ReplayStateSkip.Skipped}; {ThemeColorSkip.Name} skipped {ThemeColorSkip.Skipped}, set {ThemeColorSkip.Set}; {GcPacing.Name} regions {GcPacing.Regions}, refused {GcPacing.RegionsRefused}, exhausted {GcPacing.Exhausted}, {GcPacing.RegionMs:F0} ms, collections {GcPacing.Collections} (full {GcPacing.Fulls}) in {GcPacing.CollectMs:F0} ms, worst {GcPacing.WorstCollectMs:F0} ms; {PileIndex.Name} duplicate checks fast {PileIndex.FastDuplicateChecks}, slow {PileIndex.SlowDuplicateChecks}; subscriber checks {FastListeners.SubscriberChecks} in {FastListeners.SubscriberCheckTicks * 1000.0 / Stopwatch.Frequency:F1} ms; "
+                        + $"{CardSortKeys.Name} sorts {CardSortKeys.Sorts}, answered {CardSortKeys.Answered}, refused {CardSortKeys.Refused} (last: {CardSortKeys.LastRefusal ?? "none"}), checks {CardSortKeys.Checks}, mismatches {CardSortKeys.Mismatches}");
                     break;
                 case "effects":
                     // What each optimization really did so far: tools/autotest/effects.py checks none stayed at zero. Kept per

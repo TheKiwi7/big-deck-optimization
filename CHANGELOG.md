@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.0.3
+
+- On the game's current beta (v0.113): reshuffling a big draw pile and starting a combat with Stone Cracker no longer freeze the game for seconds (with four players and big decks, that freeze could disconnect a player), and every game effect is now optimized (four of its new ones were still left to the game).
+- Fixed: an enemy's hover tip panel could stay where it was when the enemy moved or changed size while keeping the same tips (when a summon lays the enemies out again, for example).
+- Fixed: if the mod's settings page ever failed to load (after a BaseLib update, for example) while the mod was saved as turned off, it stayed off at every start with no way to turn it back on.
+- Fixed: a finished run's data stayed in memory until the next run's first shuffle.
+- Turning the mod off now really gives every idle button its normal input back (some still waited for a click).
+- Safer with other mods and future game updates: the mod now notices more ways another mod or a game update can change the code it relies on (how cards are copied and saved, Limitless's stacked enchantments, the cards that count others in your piles), and then leaves only that part to the game.
+
 ## v1.0.2
 
 - Works with the game's current beta (v0.113): its new run and dominion effects are handled, and the optimizations stay on there. The same version still works on the public game.
