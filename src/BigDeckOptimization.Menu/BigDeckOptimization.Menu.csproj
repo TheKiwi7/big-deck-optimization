@@ -10,7 +10,8 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <AssemblyName>BigDeckOptimization.Menu</AssemblyName>
-    <!-- BaseLib names the config file and its texts after the root namespace: keep BigDeckOptimization. -->
+    <!-- BaseLib names the config file and its texts' prefix after the first part of BaseLibSettings' C# namespace
+         (Type.Namespace, BigDeckOptimization.Config), not this property: kept the same, BigDeckOptimization. -->
     <RootNamespace>BigDeckOptimization</RootNamespace>
     <GenerateDependencyFile>false</GenerateDependencyFile>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>

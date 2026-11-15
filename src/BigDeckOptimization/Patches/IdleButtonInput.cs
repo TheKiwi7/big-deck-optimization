@@ -21,9 +21,16 @@ public static class IdleButtonInput
 {
     public const string Name = "IdleButtonInput";
 
-    /// <summary>v0.107.1 and v0.111: <c>_Input</c> only calls this check, which only acts on a pressed button.</summary>
+    /// <summary>v0.107.1 to v0.113.1: <c>_Input</c> only calls this check, which only acts on a pressed button (its v0.113 code in EquivalentFingerprints).</summary>
     private const string InputFingerprint = "78557E27E72174AF";
     private const string DragCheckFingerprint = "60208EA15DC82512";
+
+    /// <summary>What changes <c>NClickableControl._isPressed</c>, the same on v0.107.1, v0.111.0, v0.113.0 and v0.113.1.</summary>
+    private static readonly string[] PressedWriters =
+    {
+        "CheckMouseDragThreshold", "Disable", "OnPressHandler", "OnReleaseHandler",
+        "GetGodotClassPropertyValue", "SetGodotClassPropertyValue", "SaveGodotObjectData", "RestoreGodotObjectData",
+    };
 
     public static bool Enabled { get; set; } = true;
 
@@ -43,6 +50,10 @@ public static class IdleButtonInput
             ?? throw new MissingMethodException(nameof(NClickableControl), "CheckMouseDragThreshold");
         PatchSafety.RequireFingerprint(_input, InputFingerprint);
         PatchSafety.RequireFingerprint(_dragCheck, DragCheckFingerprint);
+        // Input comes back only from the postfixes below: a new way of pressing a button (a method setting _isPressed without
+        // OnPressHandler) would leave it muted while pressed, its drag cancel never run. The Godot-generated property methods
+        // (Get/Set/Save/Restore, ldflda counts as a write) run only for editor-style property access and hot reload.
+        PatchSafety.RequireFieldWriters(typeof(NClickableControl), "_isPressed", PressedWriters);
         _isPressed = AccessTools.FieldRefAccess<NClickableControl, bool>("_isPressed");
         _isEnabled = AccessTools.FieldRefAccess<NClickableControl, bool>("_isEnabled");
         PatchGuard.Patch(harmony, AccessTools.Method(typeof(Node), nameof(Node.SetProcessInput)),
@@ -163,7 +174,7 @@ public static class IdleButtonInput
         }
     }
 
-    /// <summary>Twice a second: once off, the muted buttons get the input vanilla gives an enabled button.</summary>
+    /// <summary>Every 30 frames (about half a second at 60 fps): once off, the muted buttons get the input vanilla gives an enabled button.</summary>
     private static void Tick()
     {
         try

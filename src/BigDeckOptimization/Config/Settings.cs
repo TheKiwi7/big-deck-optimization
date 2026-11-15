@@ -126,6 +126,12 @@ public static class Settings
 
     public static string StartedOffWhy(string? language) => Translations.Get(language, "why.started_off", StartedOffText);
 
+    public const string CoopRunText =
+        "Locked during a co-op run: with the mod off, your combats would start far later than the other players'. To turn it off anyway, type bdopt off yes in the console.";
+
+    /// <summary>Why the menu's master switch is greyed out during a co-op run (<see cref="InCoopRun"/>).</summary>
+    public static string CoopRunWhy(string? language) => Translations.Get(language, "why.coop_run", CoopRunText);
+
     /// <summary>
     /// The mods whose patches currently keep part of this optimization vanilla (it backs off from methods another mod
     /// patches); empty when none. Known once the optimization has checked those methods (when it first runs).
@@ -146,6 +152,13 @@ public static class Settings
         : Translations.Get(language, "parts_off", "Partly inactive: part of this optimization turned itself off or doesn't apply here (normal game for that part, details in the log).");
 
     public static bool Master { get; private set; } = true;
+
+    /// <summary>
+    /// The player's choice of <see cref="Master"/> (menu, saved file, bdopt), what BaseLib saves: the test tooling's
+    /// <c>bdperf opt</c> changes only <see cref="Master"/>, so BaseLib's save on quit (every config, on NGame.Quit) doesn't
+    /// record it and the next launch isn't "started off".
+    /// </summary>
+    public static bool MasterChoice { get; private set; } = true;
 
     public const string FastStartRelicsKey = "fast_combat_start_relics";
     public const string FastStartRelicsLabel = "Fast combat start: minimum relics";
@@ -173,7 +186,7 @@ public static class Settings
 
     public static IReadOnlyList<Option> Options { get; } = new Option[]
     {
-        // Combat pace first (same order as the menu).
+        // Combat pace first, as in the menu; the rest of this order (bdopt lists it) isn't the menu's, which is BaseLibSettings' own.
         new("instant_combats", "Instant combat animations",
             "Visual, off by default: every fight plays without animation waits (attacks, hits, enemy turns). Outside of fights, nothing changes. In co-op it only affects your own screen: the other players still see the normal animations. Same results.",
             new[] { FastCombatStart.Name }, on => FastCombatStart.InstantCombats = on, defaultOn: false),
@@ -181,7 +194,7 @@ public static class Settings
             "Visual: plays the combat-start relic effects without their animation waits (like the game's Instant speed), from the number of relics set below (0 = always, the default). Same results. Solo only: always on in co-op, so every player starts the combat at the same pace.",
             new[] { FastCombatStart.Name }, on => FastCombatStart.Enabled = on),
         new("coop_checksum", "Co-op state check",
-            "Faster state check after every action in co-op (the biggest co-op lag with huge decks).",
+            "Faster state check after every action in co-op, and in solo too on newer game versions (the biggest co-op lag with huge decks).",
             new[] { ListenerCache.Name, ListenerCache.SnapshotFault }, on => ListenerCache.SnapshotEnabled = on,
             () => NoneApplied(ListenerCache.Name, ReplayStateSkip.Name, SavedPropertyLookup.Name, RelicStateReuse.Name, SnapshotCardReuse.Name),
             parts: new OptionPart[] { new(SnapshotCardReuse.Name, NeedsMods: true), new(ReplayStateSkip.Name), new(SavedPropertyLookup.Name), new(RelicStateReuse.Name), new(RelicStateReuse.ScalarName) },
@@ -212,7 +225,7 @@ public static class Settings
             new[] { CardFlightLimit.Name }, on => CardFlightLimit.Enabled = on,
             () => Missing(CardFlightLimit.Applied)),
         new("gc_pacing", "Memory cleanups at quiet moments",
-            "In combats with 1,000 cards or more, .NET's memory cleanups (the short freezes while cards are played) wait for a moment when nothing is animating. The cleanup after each room loads runs in the background, and finished combats are freed from memory (with BaseLib they stayed until the end of the run). Animated texts also free their temporary memory right away, which shortens the cleanups everywhere. Uses a few hundred MB more memory during those combats. Same results.",
+            "In combats with 1,000 cards or more, .NET's memory cleanups (the short freezes while cards are played) wait for a moment when nothing is animating. The cleanup after each room loads runs in the background, and finished combats are freed from memory (with BaseLib they stayed until the end of the run). Animated texts also free their temporary memory right away, which shortens the cleanups everywhere. Uses up to about 1.4 GB more memory during those combats. Same results.",
             new[] { GcPacing.Name }, on => GcPacing.Enabled = on,
             () => NoneApplied(GcPacing.Name, RoomCollect.Name, PooledCardRelease.Name, SyncedCardRelease.Name, RichTextEnvRelease.Name),
             parts: new OptionPart[] { new(RoomCollect.Name), new(PooledCardRelease.Name), new(SyncedCardRelease.Name), new(RichTextEnvRelease.Name) },
@@ -230,7 +243,8 @@ public static class Settings
             () => NoneApplied(PileIndex.Name, CardSortKeys.Name),
             // Sorting a pile before a reshuffle (game v0.113's card comparison): its own part, not needed on earlier versions.
             parts: new OptionPart[] { new(CardSortKeys.Name, NotNeeded: () => CardSortKeys.NotNeeded) },
-            setParts: on => Flag(() => CardSortKeys.Enabled = Part(on, CardSortKeys.Name))),
+            // PileIndex.ContainsCardEnabled: the RunState.ContainsCard shortcut reads no index, so a PileIndex fault doesn't stop it.
+            setParts: on => { Flag(() => CardSortKeys.Enabled = Part(on, CardSortKeys.Name)); Flag(() => PileIndex.ContainsCardEnabled = on); }),
         new("card_ids", "Combat card IDs",
             "Skips re-scanning whole card piles for new cards on every card move (reshuffles, end of combat).",
             new[] { CardDbScan.Name }, on => CardDbScan.Enabled = on,
@@ -293,10 +307,98 @@ public static class Settings
 
     public static Option? Find(string key) => Options.FirstOrDefault(o => o.Key == key);
 
-    public static void SetMaster(bool on, bool notify = true)
+    /// <summary>
+    /// A co-op run is in progress here. Turning the whole mod off then also turns off the fast combat start this player's
+    /// co-op partners keep: this player starts each combat much later (tens of seconds with many relics) and the game drops
+    /// the actions reaching a player still starting a combat (desync or a stuck turn, DESIGN "Co-op with a player without
+    /// the mod"). bdopt asks for a confirmation then, and the menu's master switch can't be unticked.
+    /// </summary>
+    public static bool InCoopRun
+    {
+        get
+        {
+            try
+            {
+                return MegaCrit.Sts2.Core.Runs.RunManager.Instance is { IsInProgress: true, IsSingleplayerOrFakeMultiplayer: false };
+            }
+            catch
+            {
+                return false; // Can't tell (game starting or closing): no co-op run to protect.
+            }
+        }
+    }
+
+    /// <summary>
+    /// In a co-op run, or in a co-op lobby: the players there were let in with the mod on (<see cref="Patches.CoopModeTag"/>
+    /// checks only at the join), so turning it off now makes this player the one starting combats late. bdopt asks for a
+    /// confirmation then. The menu needs no lobby check: BaseLib's mod configuration can't be opened from a lobby.
+    /// </summary>
+    public static bool InCoopGame => InCoopRun || InCoopLobby();
+
+    /// <summary>
+    /// A lobby screen in the scene tree holds a connected multiplayer lobby (host or client). The game keeps no global
+    /// reference to it: every screen holding one has a <c>StartRunLobby</c> field (character select, custom, daily, and later
+    /// versions' other modes), found by type. Only run when bdopt turns the mod off: a walk of the tree costs nothing then.
+    /// </summary>
+    private static bool InCoopLobby()
+    {
+        try
+        {
+            return Godot.Engine.GetMainLoop() is Godot.SceneTree { Root: { } root } && HoldsCoopLobby(root);
+        }
+        catch
+        {
+            return false; // Can't tell: the run check above still protects the run itself.
+        }
+    }
+
+    private static readonly Dictionary<Type, System.Reflection.FieldInfo[]> _lobbyFields = new();
+
+    private static bool HoldsCoopLobby(Godot.Node node)
+    {
+        Type type = node.GetType();
+        if (!_lobbyFields.TryGetValue(type, out System.Reflection.FieldInfo[]? fields))
+        {
+            fields = type.GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)
+                .Where(f => f.FieldType == typeof(MegaCrit.Sts2.Core.Multiplayer.Game.Lobby.StartRunLobby)).ToArray();
+            _lobbyFields[type] = fields;
+        }
+        foreach (System.Reflection.FieldInfo field in fields)
+        {
+            if (field.GetValue(node) is MegaCrit.Sts2.Core.Multiplayer.Game.Lobby.StartRunLobby { NetService: { IsConnected: true } net }
+                && net.Type is MegaCrit.Sts2.Core.Multiplayer.Game.NetGameType.Host or MegaCrit.Sts2.Core.Multiplayer.Game.NetGameType.Client)
+            {
+                return true;
+            }
+        }
+        foreach (Godot.Node child in node.GetChildren())
+        {
+            if (HoldsCoopLobby(child))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>With the mod off, co-op games only with players who have it off too (<see cref="Patches.CoopModeTag"/>).</summary>
+    public const string CoopOffOnly =
+        "Co-op: with the mod off you can only play with players who also have it off (the game reports a mod mismatch otherwise).";
+
+    public const string CoopOffWarning =
+        "WARNING: this is a co-op game. With the mod off, your combats start at the unmodified game's pace while the other "
+        + "players' start fast: with many relics you start each combat far later than them, and the game can then drop their "
+        + "actions (desync or a stuck turn).";
+
+    /// <summary>The master switch; <paramref name="sessionOnly"/> (test tooling) leaves <see cref="MasterChoice"/>, what is saved, as it is.</summary>
+    public static void SetMaster(bool on, bool notify = true, bool sessionOnly = false)
     {
         bool changed = Master != on;
         Master = on;
+        if (!sessionOnly)
+        {
+            MasterChoice = on;
+        }
         ApplyAll();
         if (changed && notify)
         {
@@ -354,9 +456,18 @@ public static class Settings
         if (ModEntry.StartedOff)
         {
             return $"BigDeckOptimization: inactive this session (turned off when the game started, nothing applied: unmodified game). "
-                + (Master ? "Turned on: takes effect when you restart the game." : "To use it: bdopt on, then restart the game.");
+                + (Master ? "Turned on: takes effect when you restart the game." : "To use it: bdopt on, then restart the game.")
+                + " " + CoopOffOnly;
         }
         StringBuilder sb = new($"BigDeckOptimization: {(Master ? "on" : "OFF (vanilla)")}\n");
+        if (!Master && InCoopGame)
+        {
+            sb.Append(CoopOffWarning).Append(" bdopt on turns it back on.\n");
+        }
+        else if (!Master)
+        {
+            sb.Append(CoopOffOnly).Append('\n');
+        }
         foreach (Option option in Options)
         {
             string state = option.Unavailable() is { } why ? why

@@ -4,7 +4,8 @@
 # v0.107.1 (the game checksums a solo combat only since v0.111: RunManager enables its ChecksumTracker in co-op). ControllerActionSkip
 # through 'controllermap stale' (actions a v0.107 settings.save keeps; later versions drop such bindings themselves), the
 # snapshot of piles with pure cost/keyword listeners (SnapshotCardReuse.Hooks) through Curious. CardSortKeys (game v0.113+ only, listed
-# there only) through Stone Cracker at the combat starts and the reshuffle after pilemove; bdperf sortkeys doesn't count in its effects.
+# there only) through Stone Cracker at the combat starts and the reshuffle after pilemove; no bdperf comparison counts in the
+# effects (they are frozen around each bench): every effect must come from the game's own calls.
 timeout 900
 newrun NECROBINDER 1234
 waitfor run 120

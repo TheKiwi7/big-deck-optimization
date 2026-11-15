@@ -145,18 +145,33 @@ public static class CombatStartTimer
         _marks.Add((_clock.Elapsed.TotalMilliseconds, label));
     }
 
+    /// <summary>
+    /// A combat start that never reaches its first turn (left to the menu during it, the combat torn down before StartTurn)
+    /// would keep recording every frame and every later room's marks until the next combat start: given up after this long.
+    /// </summary>
+    private const double AbandonAfterMs = 600_000;
+
     private static void OnFrame()
     {
+        if (!_running)
+        {
+            return; // Finished or abandoned, its unsubscription deferred to the end of the frame.
+        }
         double now = _clock.Elapsed.TotalMilliseconds;
         _frames.Add((now, now - _lastFrameMs, _phase));
         _lastFrameMs = now;
+        if (now > AbandonAfterMs)
+        {
+            Finish(abandoned: true);
+        }
     }
 
-    private static void Finish()
+    private static void Finish(bool abandoned = false)
     {
         _running = false;
         Callable.From(() =>
         {
+            // One subscription removed: a combat start begun meanwhile added its own, which stays.
             if (_tree != null)
             {
                 _tree.ProcessFrame -= OnFrame;
@@ -166,7 +181,9 @@ public static class CombatStartTimer
         StringBuilder sb = new();
         double total = _clock.Elapsed.TotalMilliseconds;
         TimeSpan gcPause = GC.GetTotalPauseDuration() - _gcPauseStart;
-        sb.Append($"combat start: {total:F0} ms total, GC pauses {gcPause.TotalMilliseconds:F0} ms ({GC.CollectionCount(2) - _gen2Start} gen2)\n");
+        sb.Append(abandoned
+            ? $"combat start abandoned: no first turn after {total:F0} ms (left during the start, or the combat ended before it), GC pauses {gcPause.TotalMilliseconds:F0} ms ({GC.CollectionCount(2) - _gen2Start} gen2)\n"
+            : $"combat start: {total:F0} ms total, GC pauses {gcPause.TotalMilliseconds:F0} ms ({GC.CollectionCount(2) - _gen2Start} gen2)\n");
         foreach ((double ms, string label) in _marks)
         {
             sb.Append($"  {ms,7:F0} ms  {label}\n");

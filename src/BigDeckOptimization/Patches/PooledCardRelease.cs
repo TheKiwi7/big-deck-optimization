@@ -17,7 +17,7 @@ namespace BigDeckOptimization.Patches;
 /// (every cloned card of every pile): every combat of a run stayed in memory, ~40 MB each with 10,000 cards, mod on or off, and each new
 /// combat start got slower as the heap grew.
 ///
-/// The card nodes a hand holder took are noted (weakly); about once a second, the handlers of theirs whose target is a freed node are
+/// The card nodes a hand holder took are noted (weakly); every 60 frames, the handlers of theirs whose target is a freed node are
 /// removed (a freed holder can do nothing right with a card any more), and a card node itself freed lets go of its model, preview
 /// target and enchantment (nothing can show or use a freed node). UI only.
 /// </summary>

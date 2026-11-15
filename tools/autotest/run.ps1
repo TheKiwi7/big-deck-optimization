@@ -9,6 +9,8 @@
 # restart), your files untouched. Through Steam it uses yours: with BaseLib, bdopt saves its changes in
 # mod_configs/BigDeckOptimization.cfg, restored byte for byte after the session (a scenario stopped before its final 'bdopt on'
 # would leave the mod off), unless -KeepConfig. Only this session's game is waited on and closed (by process id), never yours.
+# Through Steam only with a Debug build in the Steam install's mods folder (the Workshop's Release build has no test runner): refused
+# otherwise. A game whose test runner never logs a line is closed after 90 s. Exit code 1 when the session has a problem.
 param([Parameter(Mandatory)][string]$Name, [int]$TimeoutSec = 900, [int]$TraceSec = 0, [string]$TraceProfile = "cpu-sampling", [string]$TraceProviders = "", [switch]$KeepConfig, [switch]$Visible, [switch]$Sound, [int]$Screen = 1, [switch]$Show, [string]$GameDir = "", [int]$StallSec = 300, [switch]$KeepSlot, [switch]$PresentMon)
 # -GameDir, else STS2_GAME_DIR (scripts calling run.ps1, e.g. settings.ps1, then test that copy too).
 $copyDir = if ($GameDir) { $GameDir } else { "$env:STS2_GAME_DIR" }
@@ -18,6 +20,13 @@ Assert-GameNotRunning
 $noSteam = [bool]$copyDir
 $script = Join-Path $Scenarios "$Name.txt"
 if (-not (Test-Path $script)) { throw "No scenario $script" }
+# Through Steam the game loads the Steam install's mods folder and the Workshop: the test runner (AutoTest, in Bench/) is only in a
+# Debug build, never in the Workshop's Release one. Without a Debug build there, nothing would run, hide or mute the game: it would
+# sit on screen with sound at the main menu until the stall check.
+if (-not $noSteam) {
+    $steamDll = Join-Path $GameDir "mods\BigDeckOptimization\BigDeckOptimization.dll"
+    if (-not (Test-Path $steamDll) -or -not (Test-DebugBuild $steamDll)) { throw "Through Steam no test runner would load: no Debug build in $(Split-Path $steamDll) (the Workshop copy is a Release build, without AutoTest). Give -GameDir <copy> or set STS2_GAME_DIR." }
+}
 $log = if ($noSteam) { Join-Path $Results "$Name.session.log" } else { Join-Path $UserData "logs\godot.log" }
 $UserDataParent = $env:APPDATA
 $config = Join-Path $UserData "mod_configs\BigDeckOptimization.cfg"
@@ -33,7 +42,7 @@ $touchConfig = -not $noSteam -and -not $KeepConfig
 $marker = Join-Path $Results "run.inprogress"
 function Get-ConfigHash { if (-not (Test-Path $config)) { return "none" }; try { (Get-FileHash $config -ErrorAction Stop).Hash } catch { $null } }
 if (Test-Path $marker) {
-    $lines = @(Get-Content $marker)
+    $lines = @(Get-Content $marker -Encoding UTF8)
     $state = $lines[0]
     $seen = @($lines | Where-Object { $_ -like "seen *" } | ForEach-Object { $_.Substring(5) }) | Select-Object -First 1
     $markLog = @($lines | Where-Object { $_ -like "log *" } | ForEach-Object { $_.Substring(4) }) | Select-Object -First 1
@@ -48,7 +57,12 @@ if (Test-Path $marker) {
     }
     # A marker of an older run.ps1 (no hash): its rule, a file written over 15 s after the last mark is yours.
     if (-not $seen -and $now -ne "none") { $byTest = (Get-Item $config).LastWriteTime -le (Get-Item $marker).LastWriteTime.AddSeconds(15) }
-    if (-not $byTest) { Write-Output "previous session was interrupted: BigDeckOptimization.cfg changed since, kept as it is (the one before that session: $backup)" }
+    if (-not $byTest) {
+        # This run writes its own backup over $backup below: the one from before that session moves aside, under the name said.
+        $older = "none"
+        if (Test-Path $backup) { $older = "$backup.$(Get-Date -Format yyyyMMdd-HHmmss)"; Move-Item $backup $older -Force }
+        Write-Output "previous session was interrupted: BigDeckOptimization.cfg changed since, kept as it is (the one before that session: $older)"
+    }
     elseif ($state -eq "config" -and (Test-Path $backup)) { Copy-Item $backup $config -Force; Write-Output "previous session was interrupted: BigDeckOptimization.cfg restored" }
     elseif ($state -eq "no config" -and (Test-Path $config)) { Remove-Item $config; Write-Output "previous session was interrupted: its BigDeckOptimization.cfg removed" }
     Remove-Item $marker
@@ -58,12 +72,13 @@ if ($touchConfig) {
     if ($hadConfig) { Copy-Item $config $backup -Force; $before = (Get-FileHash $config).Hash }
     $markState = if ($hadConfig) { "config" } else { "no config" }
     if ($hadConfig) { Remove-Item $config -Force }
-    Set-Content $marker @($markState, "seen none", "log $log", "script $script")
+    Set-Content $marker @($markState, "seen none", "log $log", "script $script") -Encoding UTF8
 }
 $resultLog = Join-Path $Results "$Name.log"
 $slotLocked = $false
 $modsAdded = $false
 $game = $null
+$exitCode = 0
 try {
     # A log left by an earlier session must never be judged as this one's.
     Remove-Item $resultLog -ErrorAction SilentlyContinue
@@ -99,10 +114,12 @@ try {
         Start-Process -FilePath $SteamExe -ArgumentList (@("-applaunch", $AppId) + $launch)
         # Steam starts the game: found by its command line (this scenario's --bdtest), never by its name alone, which would also
         # find your own game if you start it meanwhile.
+        # Steam may start cold, update or log in first: up to 3 minutes. A game that starts even later is looked for once more and
+        # closed in the cleanup below, and the marker stays for the next run (it would play the scenario in your user data).
         $t = 0
-        while (-not $game -and $t -lt 60) { Start-Sleep 2; $t += 2; $game = Find-TestGame $script $launched }
+        while (-not $game -and $t -lt 180) { Start-Sleep 2; $t += 2; $game = Find-TestGame $script $launched }
     }
-    if (-not $game) { throw "the game did not start" }
+    if (-not $game) { throw "the game did not start within 3 minutes" }
     [void]$game.Handle # or HasExited can't be read once it ends
     # -PresentMon: frame times measured outside the game, GPU included (results/<Name>.presentmon.csv, presentmon.py). Windows
     # throttles the presents of a window entirely off-screen: one column of pixels stays on screen (--bdedge). By process id:
@@ -124,11 +141,12 @@ try {
     }
     $t = 0
     $waitStart = Get-Date
+    $runnerSeen = $false
     # This session's game only, by its process id: another game running meanwhile (yours, another test's) is never waited on nor closed.
     while (-not $game.HasExited -and $t -lt $TimeoutSec) {
         Start-Sleep 5; $t += 5
         # The hash only when readable (the game may be writing the file).
-        if ($touchConfig -and ($hash = Get-ConfigHash)) { Set-Content $marker @($markState, "seen $hash", "log $log", "script $script") }
+        if ($touchConfig -and ($hash = Get-ConfigHash)) { Set-Content $marker @($markState, "seen $hash", "log $log", "script $script") -Encoding UTF8 }
         # A silent log: nothing is moving, the rest of the timeout would only wait. A session handed to the player stays.
         if ($t -gt 60 -and (Test-Path $log) -and ((Get-Date) - (Get-Item $log).LastWriteTime).TotalSeconds -gt $StallSec -and -not (Select-String -Path $log -SimpleMatch "handed over to the player" -Quiet)) {
             Write-Output "STALLED: no log for $StallSec s, closing the game"
@@ -143,6 +161,17 @@ try {
             Stop-Process -Id $game.Id -Force -ErrorAction SilentlyContinue
             Start-Sleep 3
             break
+        }
+        # The test runner never started (no Debug build in the copy, the mod not loaded or disabled): nothing would hide, mute nor
+        # run the game, which would sit at the main menu until the stall check. Its first line comes within seconds of the menu.
+        if ($t -ge 90 -and -not $runnerSeen -and (Test-Path $log) -and (Get-Item $log).LastWriteTime -ge $launched) {
+            $runnerSeen = [bool](Select-String -Path $log -Pattern "\] AutoTest " -Quiet)
+            if (-not $runnerSeen) {
+                Write-Output "AUTOTEST NOT LOADED: no test runner line after $t s (no Debug build, or the mod not loaded): closing the game"
+                Stop-Process -Id $game.Id -Force -ErrorAction SilentlyContinue
+                Start-Sleep 3
+                break
+            }
         }
     }
     if (-not $game.HasExited) {
@@ -171,10 +200,20 @@ try {
     $judged = @(Show-Judgment @($resultLog)) + @($missing | Where-Object { $_ } | ForEach-Object { "PROBLEM $Name.log: $_" })
     $judged | ForEach-Object { Write-Output "  $_" }
     if (-not ($judged -like "PROBLEM *")) { Write-Output "  no problem in the log" }
+    # Exit code 1 on any problem (a session cut short, stalled or timed out has no end line: judge.py says so), for the scripts and
+    # monitors waiting on this one.
+    else { $exitCode = 1 }
 }
 finally {
     $env:APPDATA = $UserDataParent
     if ($game -and -not $game.HasExited) { Stop-Process -Id $game.Id -Force -ErrorAction SilentlyContinue }
+    # Through Steam and no game found in time: one that starts later would play the scenario unwatched, off-screen, in your user data.
+    $lateGame = $false
+    if (-not $game -and -not $noSteam -and $launched) {
+        for ($wait = 0; $wait -lt 60 -and -not $game; $wait += 2) { Start-Sleep 2; $game = Find-TestGame $script $launched }
+        if ($game) { Stop-Process -Id $game.Id -Force -ErrorAction SilentlyContinue; Start-Sleep 3; Write-Output "the game started late: closed" }
+        else { $lateGame = $true }
+    }
     if ($slotLocked) { Unlock-Slot $KeptSlot }
     if ($modsAdded) { Remove-TestMods $copyDir }
     if ($touchConfig) {
@@ -183,6 +222,13 @@ finally {
             if ($before -ne (Get-FileHash $config).Hash) { Write-Output "WARNING: BigDeckOptimization.cfg not restored, copy $backup back" }
         }
         elseif (Test-Path $config) { Remove-Item $config }
-        Remove-Item $marker -ErrorAction SilentlyContinue
+        # A game Steam may still start: the marker stays, with the file as restored, so that the next run.ps1 puts it back if that
+        # game's session changes it (its log names this scenario).
+        if ($lateGame) {
+            Set-Content $marker @($markState, "seen $(Get-ConfigHash)", "log $log", "script $script") -Encoding UTF8
+            Write-Output "no game found: if Steam starts it later, close it; the next run.ps1 restores BigDeckOptimization.cfg if that session changed it"
+        }
+        else { Remove-Item $marker -ErrorAction SilentlyContinue }
     }
 }
+exit $exitCode

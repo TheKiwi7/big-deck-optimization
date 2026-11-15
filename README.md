@@ -6,7 +6,7 @@ Removes the lag of huge decks in Slay the Spire 2: thousands of cards, hundreds 
 
 **Playing with Limitless or BaseLib?** The mod also speeds up a large part of their work during combat, with the same results.
 
-**In co-op, every player needs this mod.** The game won't let a player without it join.
+**In co-op, every player needs this mod, and every player must have it on (or every player off).** The game won't let a player without it, or with it turned off while the others have it on, join (it says the mods don't match).
 Why: with a huge deck, the mod speeds the game up so much that a player without it falls far behind. For example, with about 8,000 cards and a few hundred relics, starting a combat takes about 4 seconds with the mod and over 30 seconds without it. The game can't handle players that far apart: the cards played in the meantime get lost, and the run desyncs or freezes.
 
 **Want a settings menu?** Install [BaseLib](https://steamcommunity.com/sharedfiles/filedetails/?id=3737335127) (optional) to turn each improvement on or off from the game's settings.
@@ -30,7 +30,7 @@ With a huge deck, the game slows down more and more until every action freezes i
 ## What it doesn't change
 
 - **The game itself:** same rules, same results, same saves. The mod only makes the game do the same work faster.
-- **Your other mods:** it needs no other mod and works alongside Limitless, BetterSpire2, CampfireTrade, ModConfig and Unlimited. If another mod changes the same part of the game, this mod steps aside there.
+- **Your other mods:** it needs no other mod and works alongside Limitless, BetterSpire2, CampfireTrade, ModConfig and Unlimited. Where it would replace something another mod changes, this mod steps aside there.
 - **Its safety:** after a game or mod update, any part of the mod that no longer fits turns itself off instead of guessing.
 
 Co-op with very big decks is much better, but not instant: going from one turn to the next can still take a few seconds.
@@ -50,7 +50,7 @@ Slay the Spire 2 isn't made for thousands of cards and hundreds of relics, but a
 
 ## Settings
 
-Everything is on by default. With [BaseLib](https://steamcommunity.com/sharedfiles/filedetails/?id=3737335127) (optional), each improvement has its own switch under **Mod Configuration → Big Deck Optimization**. The menu follows the game's language (every language the game offers; English otherwise). Some players have reported problems with BaseLib: this mod works without it, you just won't have that settings menu. You can also use the console (`` ` `` key, `*` or `^` on AZERTY; without BaseLib, these changes last until you quit the game):
+Everything is on by default, except **Instant combat animations** (off: purely visual, every fight without animation pauses, on your screen only). With [BaseLib](https://steamcommunity.com/sharedfiles/filedetails/?id=3737335127) (optional), each improvement has its own switch under **Mod Configuration → Big Deck Optimization**. The menu follows the game's language (every language the game offers; English otherwise). Some players have reported problems with BaseLib: this mod works without it, you just won't have that settings menu. You can also use the console (`` ` `` key, `*` or `^` on AZERTY; without BaseLib, these changes last until you quit the game):
 
 - `bdopt` shows what is on.
 - `bdopt off` / `bdopt on` turns the whole mod off or back on, without restarting.
@@ -65,7 +65,7 @@ Check whether the bug still happens with the mod turned off, then switch it back
 - With BaseLib: in **Mod Configuration → Big Deck Optimization**, untick **Optimizations enabled**.
 - With or without BaseLib: open the console and type `bdopt off` (`bdopt on` to switch it back on).
 
-In co-op, every player turns it off (and back on) together, for the same reason: a player with the mod off falls far behind the others.
+In co-op, every player turns it off (and back on) together, for the same reason: a player with the mod off falls far behind the others. A player with it off can't join a game where it's on, and the other way round (the game says the mods don't match); turn it off before hosting or joining. During a co-op run the menu switch is locked and the console asks for `bdopt off yes`.
 
 If the problem is still there with the mod off, it doesn't come from this mod. Otherwise, please open an issue saying whether it happens with the mod on, off, or both. Feedback is very welcome!
 

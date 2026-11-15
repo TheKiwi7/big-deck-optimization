@@ -18,8 +18,12 @@ namespace BigDeckOptimization.Patches;
 /// Harmony patches are removed on the next frame. Patches catch their own errors; this covers what they can't, e.g.
 /// a patch method the JIT can't compile, which throws before its own Enabled check and try/catch run.</item>
 /// </list>
-/// Each patched method gets <see cref="Guard"/> as a finalizer: it only watches (void, so Harmony rethrows the
-/// exception unchanged) and costs one call per call of the method.
+/// Each patched method gets <see cref="Guard"/> as a finalizer: it only watches and costs one call per call of the method.
+/// It is void, and so are this mod's other pass-through finalizers: Harmony 2.4 decides per method, and only when every
+/// finalizer on it (every mod's) is void does it rethrow the exception as it was (<c>rethrow</c>). One finalizer returning
+/// an Exception makes it <c>throw</c> the exception again, its stack trace then starting at the replacement method, the
+/// frames below (the game's or another mod's code that threw) gone. Only HookFilter's mirrored hooks keep one
+/// (<c>RethrowFinalizer</c>, which substitutes an exception): it logs the full trace before.
 /// </summary>
 public static class PatchGuard
 {

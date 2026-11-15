@@ -45,6 +45,8 @@ $slotLocked = $false
 $modsAdded = $false
 
 $h = $null; $c = $null
+# Exit code 1 when either log has a problem (or the script failed before judging), for the scripts and monitors waiting on this one.
+$exitCode = 0
 # As run.ps1: both windows off-screen and muted, unless -Visible / -Sound.
 $extra = @()
 if (-not $Visible) { $extra += "--bdhidden", "--windowed", "--resolution", "1920x1080" }
@@ -113,6 +115,7 @@ try {
     }
     $judged | Select-Object -Unique | ForEach-Object { Write-Output "  $_" }
     if (-not ($judged -like "PROBLEM *")) { Write-Output "  no problem in either log" }
+    else { $exitCode = 1 }
 }
 finally {
     $env:APPDATA = $realAppData
@@ -120,3 +123,4 @@ finally {
     if ($slotLocked) { Unlock-Slot $CoopSlot }
     if ($modsAdded) { Remove-TestMods $GameDir; Write-Output "test mods released: mods_STEAMTEST $(if (Test-Path $testMods) { 'kept (another series on this copy uses it)' } else { 'removed' })" }
 }
+exit $exitCode

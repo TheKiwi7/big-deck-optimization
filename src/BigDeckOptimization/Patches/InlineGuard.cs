@@ -17,9 +17,20 @@ namespace BigDeckOptimization.Patches;
 /// a cache still holds (setters are the smallest methods there are), a write it doesn't see.
 ///
 /// So each patched method gets the runtime's "no inlining" flag, what <c>[MethodImpl(NoInlining)]</c> sets when a class
-/// loads (<c>mdfNotInline</c> in the runtime's MethodDesc; the method MonoMod's RuntimeDetour used). That word isn't a public
-/// API: <see cref="Available"/> checks at load, on methods of this class declared either way, that the flag is where it is
-/// expected, and otherwise nothing is written anywhere and the patches that need this stay off.
+/// loads (<c>mdfNotInline</c> in the runtime's MethodDesc). Harmony 2.4's MonoMod.Core sets the same flag on every method
+/// it detours (<c>PlatformTripleDetourFactory.CreateDetour</c> -> <c>TryDisableInlining</c>, the same word and bit), this
+/// mod's and other mods' alike; <see cref="Protect"/> sets it a moment earlier, before the patch, and records the method.
+/// That word isn't a public API: <see cref="Available"/> checks at load, on methods of this class declared either way, that
+/// the flag is where it is expected, and otherwise this mod writes nothing anywhere (MonoMod still does) and the patches that
+/// need the check stay off. What this class adds to MonoMod is <see cref="RecompileInliners"/>: replacements compiled before
+/// the flags were set, which it rebuilds whether or not <see cref="Available"/> (it only needs <see cref="HarmonyRebuild"/>).
+///
+/// Code that isn't a Harmony replacement is never recompiled, so this relies on no such code having inlined a protected
+/// method before it was patched. True today: sts2.dll is IL only (no ReadyToRun code with cross-method inlining), tier 0
+/// never inlines and tier 1 needs ~30 calls, and every patch applies before the main menu, while the methods counted
+/// (card piles, card and enchantment setters) only run inside a run. A patch applied later (an Apply run again when an
+/// optional mod's assembly loads, or a game or mod starting a run before the main menu) could be outrun by tier-1 code
+/// already compiled, and no recompile follows it.
 /// </summary>
 public static class InlineGuard
 {
@@ -85,10 +96,11 @@ public static class InlineGuard
     /// <summary>
     /// Left as they are: generic methods (shared code between instantiations) and methods of structs (with the flag set
     /// through reflection's handle, <c>CombatPileState.Serialize</c> still got inlined): no patch that counts writes is on one.
+    /// Recorded for <see cref="RecompileInliners"/> even when <see cref="Available"/> is false: MonoMod flags the method anyway.
     /// </summary>
     public static void Protect(MethodBase method)
     {
-        if (!Available || method.ContainsGenericParameters || method.IsGenericMethod || method.DeclaringType is not { IsGenericType: false, IsValueType: false })
+        if (method.ContainsGenericParameters || method.IsGenericMethod || method.DeclaringType is not { IsGenericType: false, IsValueType: false })
         {
             return;
         }
@@ -96,6 +108,10 @@ public static class InlineGuard
         {
             IntPtr handle = method.MethodHandle.Value;
             _protected.Add(method);
+            if (!Available)
+            {
+                return;
+            }
             short flags = Marshal.ReadInt16(handle, FlagsOffset);
             if ((flags & NotInline) == 0)
             {
@@ -109,8 +125,12 @@ public static class InlineGuard
         }
     }
 
-    /// <summary>Calls of a callee the JIT may inline are followed this deep: the JIT inlines inside what it inlines.</summary>
-    private const int CalleeDepth = 2;
+    /// <summary>
+    /// Calls of a callee the JIT may inline are followed this deep: the JIT inlines inside what it inlines (its own depth
+    /// limit is far larger, its time budget stops it first). Four small wrappers between a replacement and a protected
+    /// method; the per-method answers (<see cref="Reach"/>) keep the deeper search cheap.
+    /// </summary>
+    private const int CalleeDepth = 4;
 
     /// <summary>
     /// The largest IL the JIT inlines without profile data (.NET 8+ extended default policy, <c>JitExtDefaultPolicyMaxIL</c>
@@ -133,11 +153,12 @@ public static class InlineGuard
     /// A rebuild can fail, and a failed one used to leave the method with no patches of any mod (v1.0.0: BaseLib's postfix
     /// on <c>NGlobalUi._Ready</c> gone, see <see cref="HarmonyRebuild"/>): each goes through <see cref="HarmonyRebuild.Run{T}"/>,
     /// which refuses what can't be rebuilt and puts the previous code back after a failure. Without its Harmony internals
-    /// nothing is rebuilt: inlined callees are a smaller loss than another mod's patches.
+    /// nothing is rebuilt: inlined callees are a smaller loss than another mod's patches. <see cref="Available"/> isn't needed:
+    /// MonoMod set the flags when it detoured the protected methods.
     /// </summary>
     public static IEnumerable<bool> RecompileInliners(Harmony harmony)
     {
-        if (!Available || _protected.Count == 0)
+        if (_protected.Count == 0)
         {
             yield break;
         }
@@ -189,7 +210,7 @@ public static class InlineGuard
     /// What is known of a method: it reaches a protected method within <c>FoundAt</c> calls (int.MaxValue: not
     /// known to), and doesn't within <c>NotWithin</c> calls (-1: not known). An answer only holds for the depth it was
     /// searched to: a method first met as a callee at depth 0 (its own calls only) must be searched again when it is met
-    /// again as a patched method (depth 2), or its callees' calls would never be looked at.
+    /// again at a greater depth (as a patch method, <see cref="CalleeDepth"/> - 1), or its callees' calls would never be looked at.
     /// </summary>
     private record struct Reach(int FoundAt, int NotWithin);
 

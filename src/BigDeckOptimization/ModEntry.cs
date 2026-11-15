@@ -17,6 +17,8 @@ public static class ModEntry
     /// <summary>What applies at the mod's start, in this order (an Apply may rely on the ones before it).</summary>
     private static readonly Queue<(string Name, Action<Harmony> Apply)> _toApply = new(new (string, Action<Harmony>)[]
     {
+        // First, and even when the mod was turned off at the start: co-op players must all have the mod on, or all off.
+        (CoopModeTag.Name, CoopModeTag.Apply),
         (ListenerCache.Name, ListenerCache.Apply),
         (HookFilter.Name, HookFilter.Apply),
         (ExtraScopes.Name, ExtraScopes.Apply),
@@ -86,8 +88,8 @@ public static class ModEntry
     private static double _initMs;
 
     /// <summary>
-    /// The patches, a few per frame while the game loads, so the mod adds no pause to the game's start. Nothing they touch
-    /// runs before a run starts, and a run starts from the main menu: as soon as that shows, whatever is left applies at
+    /// The patches, a few per frame while the game loads, so the mod adds no pause to the game's start. Nothing they speed up
+    /// matters before a run starts (menu UI patches do run while the rest is still being applied), and a run starts from the main menu: as soon as that shows, whatever is left applies at
     /// once. All of them then come after every other mod's, whatever the load order. Falls back to applying them all now
     /// when frames can't be awaited.
     /// </summary>
@@ -98,13 +100,14 @@ public static class ModEntry
         int frames = 0;
         try
         {
-            if (Godot.Engine.GetMainLoop() is not Godot.SceneTree tree)
+            Godot.SceneTree? tree = Godot.Engine.GetMainLoop() as Godot.SceneTree;
+            if (tree == null)
             {
-                ApplySome(double.MaxValue);
-                return;
+                // No frames to await: all at once, then the recompile and the check below as usual.
+                spent += ApplySome(double.MaxValue);
             }
             long last = started;
-            while (_toApply.Count > 0)
+            while (tree != null && _toApply.Count > 0)
             {
                 await tree.ToSignal(tree, Godot.SceneTree.SignalName.ProcessFrame);
                 frames++;
@@ -247,13 +250,22 @@ public static class ModEntry
     /// <summary>
     /// Applies one patch in isolation: if the game changed and the target is gone, only that patch is lost, and
     /// nothing of it stays installed. Each patch gets its own Harmony id (this mod's id + "." + its name), so what it
-    /// installed is just what that id owns: no need to compare every patch of the mod before and after.
+    /// installed is just what that id owns: no need to compare every patch of the mod before and after. Once per name: a
+    /// second call for a name already applied (an optional mod's late load, a test verb) does nothing, since a second Apply
+    /// under the same Harmony id would install its patches twice, and a failing one would remove the first one's too.
     /// </summary>
     internal static void TryApply(string name, Action<Harmony> apply)
     {
+        if (_applied.Contains(name))
+        {
+            Log.Info($"[{Id}] Patch {name} already applied");
+            return;
+        }
         Type patchClass = apply.Method.DeclaringType!;
         bool testTooling = patchClass.Namespace == typeof(ModEntry).Namespace + ".Bench";
-        if (StartedOff && !testTooling)
+        // CoopModeTag applies even then: it only tags this mod's entry in the gameplay mod list ("off"), so a player who
+        // started with the mod off can't join a co-op game whose players have it on (CoopModeTag's summary).
+        if (StartedOff && !testTooling && patchClass != typeof(CoopModeTag))
         {
             _notApplied.Add(name);
             Log.Info($"[{Id}] Patch {name} not applied: the mod was turned off when the game started");
@@ -266,6 +278,7 @@ public static class ModEntry
             PatchSafety.RequireResolvable(patchClass);
             apply(harmony);
             PatchGuard.Register(name, patchClass, PatchGuard.Owned(harmony));
+            _applied.Add(name);
             _notApplied.Remove(name); // Skipped earlier, applied now (an optional mod that loaded after this one).
             Log.Info($"[{Id}] Patch {name} applied ({System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds:F0} ms)");
         }
@@ -306,6 +319,12 @@ public static class ModEntry
 
     private static readonly HashSet<string> _notApplied = new();
 
-    /// <summary>Whether this patch was skipped or failed when the mod loaded.</summary>
-    internal static bool NotApplied(string name) => _notApplied.Contains(name);
+    /// <summary>The names <see cref="TryApply"/> applied (each once).</summary>
+    private static readonly HashSet<string> _applied = new();
+
+    /// <summary>
+    /// Whether this patch was skipped or failed when the mod loaded. RelicStateReuse's scalar part is applied inside
+    /// RelicStateReuse's own Apply: listed as not applied when that one applied without it.
+    /// </summary>
+    internal static bool NotApplied(string name) => _notApplied.Contains(name) || (name == RelicStateReuse.ScalarName && RelicStateReuse.ScalarNotApplied);
 }

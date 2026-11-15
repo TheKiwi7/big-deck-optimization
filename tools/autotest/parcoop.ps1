@@ -27,15 +27,17 @@ else { Add-TestMods $GameDir }
 $folder = Join-Path $out "coop-scripts"
 New-Item -ItemType Directory -Force $folder | Out-Null
 $waiting = [Collections.Generic.Queue[object]]::new()
-$port = 33800
 # A scenario's mod-off twin: 'cmd bdopt off' before the lobby, at the main menu (each peer turns its own mod off: bdopt isn't a
-# networked command and needs no run), so the run's creation is the game's own too; without the lines that only make sense with
-# the mod on (bdperf comparisons, option switches, counters, effects, positive controls).
+# networked command and needs no run; at the menu no co-op run asks for 'bdopt off yes'), so the run's creation is the game's own
+# too; without the lines that only make sense with the mod on (bdperf comparisons, option switches, counters, effects and their
+# checks, positive controls, the mod's own probes: button input checks, tip rebuilds, a fake conflicting patch, a fault probe, a
+# rebuild check).
+$ModOnlyLine = '^\s*(cmd bdperf |cmd bdopt\b|counters\b|effects\b|effectcheck\b|expect\b|buttoninput\s+expect|tipsrebuilt\b|checktips\b|fakeconflict\b|faultprobe\b|rebuildcheck\b)'
 function New-OffTwin([string]$source, [string]$target) {
     $lines = [Collections.Generic.List[string]]::new()
     $placed = $false
     foreach ($line in Get-Content $source) {
-        if ($line -match '^\s*(cmd bdperf |cmd bdopt\b|counters\b|effects\b|expect\b)') { continue }
+        if ($line -match $ModOnlyLine) { continue }
         if (-not $placed -and $line -match '^\s*(mplobby|newrun)\b') { $lines.Add("cmd bdopt off"); $placed = $true }
         $lines.Add($line)
     }
@@ -60,8 +62,8 @@ $groups = @(foreach ($name in $Names) {
                 $scripts[$role] = $twinScript
             }
         }
-        [pscustomobject]@{ Name = $groupName; Scripts = $scripts; Port = $port; HostLog = Join-Path $out "$groupName-host.log"; ClientLog = Join-Path $out "$groupName-client.log" }
-        $port++
+        # Port: set from the slot the group runs in (Start-Peer's caller), unique while that slot is locked.
+        [pscustomobject]@{ Name = $groupName; Scripts = $scripts; Port = 0; HostLog = Join-Path $out "$groupName-host.log"; ClientLog = Join-Path $out "$groupName-client.log" }
     }
 })
 foreach ($group in $groups) { $waiting.Enqueue($group) }
@@ -93,6 +95,9 @@ try {
                 [void]$locked.Add(40 + $slot)
             }
             $group = $waiting.Dequeue()
+            # Each test slot has its own port: two series side by side (other slots) never share one, as a port per group of this
+            # series would (both from 33800: a host failing to listen, a client joining the other series' lobby).
+            $group.Port = Get-SlotPort (40 + $slot)
             $env:APPDATA = Sync-Slot (40 + $slot) -Coop
             $h = Start-Peer $group "host" @("--fastmp", "host_standard")
             $env:APPDATA = $realAppData

@@ -27,6 +27,7 @@ namespace BigDeckOptimization.Bench;
 ///   sort — the deck view's sort orders (same comparison as NCardGrid.SetCards), checks the resulting orders match.
 ///   tabs — re-renders cards one after another on one node, as scrolling does, checks Limitless' enchantment tabs end
 ///          up in the exact same state.
+///   pool free — grid holders and card nodes freed to their pools, the game's way and with PoolSignalScan: same connections left.
 /// UI only: touches no game state.
 /// </summary>
 public static class GridBench
@@ -133,18 +134,31 @@ public static class GridBench
                 }
 
                 List<CardModel> vanilla = deck.ToList(), cached = deck.ToList();
-                Stopwatch sw = Stopwatch.StartNew();
-                // The whole mod off: a cost sort reads costs through hooks the other optimizations walk.
-                PerfConsoleCmd.Vanilla(() => { vanilla.Sort(Compare); return 0; });
-                vanillaMs += sw.Elapsed.TotalMilliseconds;
+                // The whole mod off: a cost sort reads costs through hooks the other optimizations walk. Timed inside, so
+                // Vanilla's two switch passes aren't counted as the game's sort.
+                vanillaMs += PerfConsoleCmd.Vanilla(() =>
+                {
+                    Stopwatch inside = Stopwatch.StartNew();
+                    vanilla.Sort(Compare);
+                    return inside.Elapsed.TotalMilliseconds;
+                });
+                if (PatchSafety.IsFaulted(GridSortCache.Name))
+                {
+                    return ($"  sort: {GridSortCache.Name} faulted during the bench (see the log)", false);
+                }
                 GridSortCache.Enabled = true;
-                sw.Restart();
+                Stopwatch sw = Stopwatch.StartNew();
                 GridSortCache.RunInScope(grid, () => cached.Sort(Compare));
                 cachedMs += sw.Elapsed.TotalMilliseconds;
                 if (!vanilla.SequenceEqual(cached, ReferenceEqualityComparer.Instance))
                 {
                     mismatches++;
                 }
+            }
+            // A fault in the last cached sort fell back to the game's comparer: identical orders, but nothing compared.
+            if (PatchSafety.IsFaulted(GridSortCache.Name))
+            {
+                return ($"  sort: {GridSortCache.Name} faulted during the bench (see the log)", false);
             }
             int n = _priorities.Length;
             return ($"  sort ({n} orders){vanillaNote}: vanilla {vanillaMs / n:F1} ms, cached {cachedMs / n:F1} ms per sort — "
@@ -153,14 +167,19 @@ public static class GridBench
         }
         finally
         {
-            GridSortCache.Enabled = wasEnabled;
+            // Off when it faulted meanwhile: a fault keeps its part off for the session.
+            GridSortCache.Enabled = PerfConsoleCmd.Restored(wasEnabled, GridSortCache.Name);
             grid.Free();
         }
     }
 
     /// <summary>
     /// Builds grid holders as NCardGrid.InitGrid does, frees half to the pool the vanilla way and half with
-    /// PoolSignalScan, and checks every node is left with the same connections.
+    /// PoolSignalScan, and checks every node is left with the same connections. A holder taken out of the tree frees its
+    /// card node itself (NGridCardHolder._ExitTree: taken out of the holder at once, freed deferred), so the holder is
+    /// freed without it, as in the game. That card node is first moved out of the holder (its _ExitTree then leaves it
+    /// alone) and freed here as the card row (the bulk of what the scan walks): a deferred free would run after the bench,
+    /// once the effect counters are put back (<see cref="EffectCounters"/>), and count as the game's own call.
     /// </summary>
     private static (string, bool) ComparePoolFree(List<CardModel> cards)
     {
@@ -174,50 +193,103 @@ public static class GridBench
         }
         Control container = new() { Visible = false };
         bool wasEnabled = PoolSignalScan.Enabled;
-        long scannedBefore = PoolSignalScan.Nodes;
         try
         {
             NGame.Instance!.AddChild(container);
             double vanillaMs = 0, scanMs = 0;
-            int mismatches = 0;
+            int holderMismatches = 0, cardMismatches = 0;
+            long holderNodes = 0, cardNodes = 0;
             string? firstMismatch = null;
-            Stopwatch sw = new();
-            foreach (CardModel card in cards)
+            bool faulted = false;
+
+            // One node freed the game's way (the whole mod off, timed inside), then its twin with the scan; their connections after.
+            bool FreeBoth(Node vanillaNode, Node scanNode, ref long scanned, ref int mismatches)
             {
-                NGridCardHolder vanillaHolder = CreateHolder(card, container), scanHolder = CreateHolder(card, container);
-                container.RemoveChild(vanillaHolder);
-                container.RemoveChild(scanHolder);
-
-                sw.Restart();
-                PerfConsoleCmd.Vanilla(() => { NodePool.Free(vanillaHolder); return 0; });
-                vanillaMs += sw.Elapsed.TotalMilliseconds;
-
+                vanillaMs += PerfConsoleCmd.Vanilla(() =>
+                {
+                    long t = Stopwatch.GetTimestamp();
+                    NodePool.Free((IPoolable)vanillaNode);
+                    return Stopwatch.GetElapsedTime(t).TotalMilliseconds;
+                });
+                if (PatchSafety.IsFaulted(PoolSignalScan.Name))
+                {
+                    NodePool.Free((IPoolable)scanNode); // Back to its pool the game's way (the scan is off for the session).
+                    return false;
+                }
                 PoolSignalScan.Enabled = true;
-                sw.Restart();
-                NodePool.Free(scanHolder);
-                scanMs += sw.Elapsed.TotalMilliseconds;
-
-                string expected = Connections(vanillaHolder), actual = Connections(scanHolder);
+                long before = PoolSignalScan.Nodes, t0 = Stopwatch.GetTimestamp();
+                NodePool.Free((IPoolable)scanNode);
+                scanMs += Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+                scanned += PoolSignalScan.Nodes - before;
+                string expected = Connections(vanillaNode), actual = Connections(scanNode);
                 if (expected != actual)
                 {
                     mismatches++;
-                    firstMismatch ??= $"\n    vanilla: {expected}\n    scan   : {actual}";
+                    firstMismatch ??= $"\n    {vanillaNode.GetType().Name} vanilla: {expected}\n    {scanNode.GetType().Name} scan   : {actual}";
+                }
+                // The scan faulted on this node (its own check saw a difference): vanilla redid the free; stop there.
+                return !PatchSafety.IsFaulted(PoolSignalScan.Name);
+            }
+
+            foreach (CardModel card in cards)
+            {
+                NGridCardHolder vanillaHolder = CreateHolder(card, container), scanHolder = CreateHolder(card, container);
+                NCard vanillaCard = TakeCard(vanillaHolder, container), scanCard = TakeCard(scanHolder, container);
+                container.RemoveChild(vanillaHolder);
+                container.RemoveChild(scanHolder);
+                if (!FreeBoth(vanillaHolder, scanHolder, ref holderNodes, ref holderMismatches))
+                {
+                    // Their card nodes back to the pool the game's way (the scan is off for the session), not left to the container.
+                    container.RemoveChild(vanillaCard);
+                    container.RemoveChild(scanCard);
+                    NodePool.Free((IPoolable)vanillaCard);
+                    NodePool.Free((IPoolable)scanCard);
+                    faulted = true;
+                    break;
+                }
+                container.RemoveChild(vanillaCard);
+                container.RemoveChild(scanCard);
+                if (!FreeBoth(vanillaCard, scanCard, ref cardNodes, ref cardMismatches))
+                {
+                    faulted = true;
+                    break;
                 }
             }
-            if (PoolSignalScan.Nodes == scannedBefore && mismatches == 0)
+            int mismatches = holderMismatches + cardMismatches;
+            if (faulted)
             {
-                // Every free left to the game (a back-off, holders the pool doesn't track): vanilla against vanilla.
-                return ($"  pool free ({cards.Count} grid holders): {PoolSignalScan.Name} scanned none, nothing to compare", true);
+                return ($"  pool free: {PoolSignalScan.Name} faulted during the bench (see the log){(mismatches > 0 ? $", MISMATCH on {mismatches} nodes{firstMismatch}" : "")}", false);
             }
-            return ($"  pool free ({cards.Count} grid holders, {PoolSignalScan.Nodes - scannedBefore} nodes scanned): vanilla {vanillaMs / cards.Count:F2} ms, scan {scanMs / cards.Count:F2} ms per holder — "
-                + (mismatches == 0 ? $"OK: identical connections, x{vanillaMs / Math.Max(0.001, scanMs):F1} faster" : $"MISMATCH on {mismatches} holders!{firstMismatch}"),
+            if (holderNodes + cardNodes == 0 && mismatches == 0)
+            {
+                // Every free left to the game (a back-off, nodes the pool doesn't track): vanilla against vanilla.
+                return ($"  pool free ({cards.Count} grid holders and card nodes): {PoolSignalScan.Name} scanned none, nothing to compare", true);
+            }
+            // A row whose scan never ran compared the game's free with itself: said, not "OK".
+            string notScanned = holderNodes == 0 ? " (holders: none scanned, not compared)" : cardNodes == 0 ? " (card nodes: none scanned, not compared)" : "";
+            // "mismatched", not "differ": mutations.ps1 takes any "differ" for a failed comparison, a count of 0 included.
+            return ($"  pool free ({cards.Count} grid holders: {holderNodes} nodes scanned, {holderMismatches} mismatched; {cards.Count} card nodes: {cardNodes} nodes scanned, "
+                + $"{cardMismatches} mismatched){notScanned}: vanilla {vanillaMs / cards.Count:F2} ms, scan {scanMs / cards.Count:F2} ms per card — "
+                + (mismatches == 0 ? $"OK: identical connections, x{vanillaMs / Math.Max(0.001, scanMs):F1} faster" : $"MISMATCH on {mismatches} nodes!{firstMismatch}"),
                 mismatches == 0);
         }
         finally
         {
-            PoolSignalScan.Enabled = wasEnabled;
+            // Off when it faulted meanwhile: a fault keeps its part off for the session.
+            PoolSignalScan.Enabled = PerfConsoleCmd.Restored(wasEnabled, PoolSignalScan.Name);
             container.QueueFree();
         }
+    }
+
+    /// <summary>
+    /// A grid holder's card node moved out to <paramref name="parent"/> (still in the tree, its visuals as the grid set them),
+    /// for freeing on its own: the holder's _ExitTree then no longer queues its deferred free (the card isn't its descendant).
+    /// </summary>
+    private static NCard TakeCard(NGridCardHolder holder, Node parent)
+    {
+        NCard nCard = holder.CardNode ?? throw new InvalidOperationException("the grid holder has no card node");
+        nCard.Reparent(parent);
+        return nCard;
     }
 
     /// <summary>A grid holder with its card, connected and in the tree like NCardGrid.InitGrid leaves it.</summary>
@@ -230,6 +302,25 @@ public static class GridBench
         parent.AddChild(holder);
         nCard.UpdateVisuals(PileType.None, CardPreviewMode.Normal);
         return holder;
+    }
+
+    /// <summary>A pooled card node back to its pool at once (out of its parent first), as QueueFreeSafely does deferred.</summary>
+    private static void FreeNow(NCard? node)
+    {
+        if (node == null || !GodotObject.IsInstanceValid(node))
+        {
+            return;
+        }
+        try
+        {
+            node.GetParent()?.RemoveChild(node);
+            NodePool.Free((IPoolable)node);
+        }
+        catch (Exception e)
+        {
+            // In a finally: never hide the bench's own result.
+            Log.Warn($"[{ModEntry.Id}] bdperf grid: a card node wasn't freed to its pool: {e.GetBaseException().Message}");
+        }
     }
 
     /// <summary>Every node's outgoing connections per signal and incoming connection count, read the vanilla way.</summary>
@@ -266,6 +357,11 @@ public static class GridBench
         if (cards.Count == 0)
         {
             return ("  tabs: no cards", true);
+        }
+        // Faulted earlier in the session: it stays off, not forced back on for the bench.
+        if (PerfConsoleCmd.FaultedBefore(EnchantmentTabReuse.Name) is { } fault)
+        {
+            return ($"  tabs: {EnchantmentTabReuse.Name} faulted earlier in the session ({fault}, see the log): nothing to compare", false);
         }
         Control container = new() { Visible = false };
         NCard? vanillaNode = null, reuseNode = null;
@@ -326,9 +422,12 @@ public static class GridBench
         }
         finally
         {
-            EnchantmentTabReuse.Enabled = wasEnabled;
-            vanillaNode?.QueueFreeSafely();
-            reuseNode?.QueueFreeSafely();
+            // Off when it faulted meanwhile: a fault keeps its part off for the session.
+            EnchantmentTabReuse.Enabled = PerfConsoleCmd.Restored(wasEnabled, EnchantmentTabReuse.Name);
+            // Back to the pool now, not deferred (QueueFreeSafely): a deferred free would run after the bench, once the effect
+            // counters are put back (EffectCounters), and count in PoolSignalScan's as the game's own call.
+            FreeNow(vanillaNode);
+            FreeNow(reuseNode);
             container.QueueFree();
         }
     }

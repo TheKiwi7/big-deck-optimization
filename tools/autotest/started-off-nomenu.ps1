@@ -11,6 +11,7 @@ $menuDll = Join-Path $GameDir "mods\BigDeckOptimization\BigDeckOptimization.Menu
 $asideDll = "$menuDll.bdtest-aside"
 if (-not (Test-Path $menuDll)) { throw "no menu DLL at ${menuDll}: deploy the Debug build first" }
 # The kept slot, held until the end (other series skip it; run.ps1 -KeepSlot below holds it too).
+$runProblems = 0
 [void](Lock-Slot $KeptSlot)
 try {
     $slot = Sync-Slot $KeptSlot
@@ -20,6 +21,7 @@ try {
     Move-Item $menuDll $asideDll -Force
     try {
         & (Join-Path $PSScriptRoot "run.ps1") -Name started-off-nomenu -TimeoutSec 300 -GameDir $GameDir -KeepSlot
+        if ($LASTEXITCODE) { $runProblems++ }
     }
     finally {
         Move-Item $asideDll $menuDll -Force
@@ -30,3 +32,5 @@ try {
     Test-SessionLog "started-off-nomenu" "CHECKSUM started-off-nomenu" $true "a fight played"
 }
 finally { Unlock-Slot $KeptSlot }
+# Exit code 1 on any PROBLEM line above or a session run.ps1 judged with a problem.
+exit $(if ($script:SessionLogProblems -or $runProblems) { 1 } else { 0 })

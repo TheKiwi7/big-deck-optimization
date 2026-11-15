@@ -2,6 +2,17 @@
 # the combat hook walk, the keyword reads, the pile owner lookup and idle buttons skip. Each falls back to the game's code: the lines must
 # match ab-2k-off, and the log names each back-off ("also patched by bdtest.fakeconflict").
 timeout 2400
+# Each back-off the log names (positive controls: a refactor breaking one still matches ab-2k-off). The ToSerializable and
+# GetKeywordsWithSources back-offs log no line in a solo combat: not asserted here.
+expect CardDbScan: NetCombatCardDb\.IdCardIfNecessary is also patched by bdtest\.fakeconflict
+expect HookFilter: Hook\.IterateCombatHookListeners is also patched by bdtest\.fakeconflict
+expect HookSkip: Hook\.IterateCombatHookListeners is also patched by bdtest\.fakeconflict
+expect IdleButtonInput: NButton\._Input is also patched by bdtest\.fakeconflict
+expect LimitlessReserialize: SavedProperties\.FromInternal is also patched by bdtest\.fakeconflict
+expect RelicStateReuse: SavedProperties\.FromInternal is also patched by bdtest\.fakeconflict
+expect PileIndex: Player\.get_Piles is also patched by bdtest\.fakeconflict
+expect \[limitless_saves\]: on \(partly vanilla: also patched by bdtest\.fakeconflict\)
+expect \[relic_input\]: on \(partly vanilla: also patched by bdtest\.fakeconflict\)
 newrun NECROBINDER
 waitfor run 120
 wait 2

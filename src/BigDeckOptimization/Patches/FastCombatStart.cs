@@ -8,6 +8,7 @@ using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
@@ -31,20 +32,23 @@ namespace BigDeckOptimization.Patches;
 /// <see cref="InstantCombats"/> (option, off by default): every wait of every combat instant, this player only.
 ///
 /// Always on in co-op, whatever the relics (its own option and threshold then ignored; the master switch and faults
-/// still apply): the game drops combat
+/// still apply: <c>bdopt off</c> then needs a confirmation, the menu's master switch is greyed out, a fault is logged as
+/// such, see <see cref="Config.Settings.InCoopRun"/>): the game drops combat
 /// actions that reach a player still starting the combat, so a player starting ~70 s later than the others (option off)
 /// would desync or freeze the run as soon as someone plays (`coopsolo1/2` scenarios).
 ///
-/// The window must never outlive its combat: outside one, the game has waits that nothing else paces. <c>NTransformPreview</c> loops on
-/// <c>Cmd.Wait</c> (only its Instant branch uses <c>Task.Delay</c>), so an instant wait there never gives the frame back: a frozen game,
-/// then a crash. A won combat is entered again as pre-finished when a run is continued, and that never reaches a first turn: no window
-/// then. <c>CombatManager.Reset</c> (the room left, the run left) closes one still open.
+/// The window must never outlive its combat: outside one, the game has waits that nothing else paces. On v0.107.1 and v0.111
+/// <c>NTransformPreview</c> (and the PunchOff event) loop on <c>Cmd.Wait</c> (only the preview's Instant branch uses <c>Task.Delay</c>), so an
+/// instant wait there never gives the frame back: a frozen game, then a crash. On v0.113 they call <c>Cmd.TryWait</c>, which ends the loop
+/// when the wait completed at once: the preview would stop cycling instead (no game caller opens it during a combat). A won combat is
+/// entered again as pre-finished when a run is continued, and that never reaches a first turn: no window then.
+/// <c>CombatManager.Reset</c> (the room left, the run left) closes one still open.
 /// </summary>
 public static class FastCombatStart
 {
     public const string Name = "FastCombatStart";
 
-    /// <summary>v0.107.1 and v0.111: the state machines of <c>Cmd.Wait</c> and <c>Cmd.CustomScaledWait</c>.</summary>
+    /// <summary>v0.107.1, v0.111.0, v0.113.0 and v0.113.1: the state machines of <c>Cmd.Wait</c> and <c>Cmd.CustomScaledWait</c>.</summary>
     private const string WaitFingerprint = "3A639D986AA66976";
     private const string ScaledWaitFingerprint = "D5717F5FE3E04BAA";
 
@@ -60,6 +64,7 @@ public static class FastCombatStart
     /// <summary>Option, off by default: the animation waits of whole combats are instant (a visual choice of this player).</summary>
     public static bool InstantCombats { get; set; }
 
+    /// <summary>Waits of the combat-start window the game would really have waited for (not at Instant speed, not in its non-interactive mode, a positive time).</summary>
     public static long SkippedWaits { get; private set; }
     public static double SkippedSeconds { get; private set; }
 
@@ -104,7 +109,12 @@ public static class FastCombatStart
 
     private static bool Known(MethodInfo method, string fingerprint)
     {
-        string actual = MethodFingerprint.Of(AccessTools.AsyncMoveNext(method));
+        if (AccessTools.AsyncMoveNext(method) is not { } body)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: Cmd.{method.Name} is not async any more: left vanilla");
+            return false;
+        }
+        string actual = MethodFingerprint.Of(body);
         if (PatchSafety.FingerprintMatches(actual, fingerprint))
         {
             return true;
@@ -176,8 +186,9 @@ public static class FastCombatStart
     }
 
     /// <summary>
-    /// More than any combat start asks in one frame. Past it, code is looping on a wait to pace itself (the transform preview, a mod's): an
-    /// instant wait there would never give the frame back, so this one really waits, and the next frame starts over.
+    /// More than any combat start asks in one frame. Past it, code is looping on a wait to pace itself (the transform preview on v0.107.1 and
+    /// v0.111, a mod's on any version): an instant wait there would never give the frame back, so this one really waits, and the next frame
+    /// starts over.
     /// </summary>
     private const int MaxSkipsPerFrame = 2000;
     private static ulong _skipFrame;
@@ -194,8 +205,11 @@ public static class FastCombatStart
         return ++_skipsThisFrame > MaxSkipsPerFrame;
     }
 
-    /// <summary>Whether this wait returns at once: combat loading (counted), or any combat wait with <see cref="InstantCombats"/>.</summary>
-    private static bool Skip(Func<double> seconds)
+    /// <summary>
+    /// Whether this wait returns at once: combat loading (counted), or any combat wait with <see cref="InstantCombats"/>. The raw times, not
+    /// a closure: this runs for every wait of the game.
+    /// </summary>
+    private static bool Skip(float fastSeconds, float standardSeconds, bool scaled)
     {
         if ((_window || InstantCombats) && LoopingOnWaits())
         {
@@ -203,18 +217,34 @@ public static class FastCombatStart
         }
         if (Loading())
         {
-            SkippedWaits++;
-            SkippedSeconds += Math.Max(0, seconds());
+            CountSkipped(fastSeconds, standardSeconds, scaled);
             return true;
         }
         return InstantCombats && CombatManager.Instance.IsInProgress;
+    }
+
+    /// <summary>Only what the game would have waited (<c>Cmd.Wait</c>'s own early returns): a wait it skips anyway saved nothing.</summary>
+    private static void CountSkipped(float fastSeconds, float standardSeconds, bool scaled)
+    {
+        if (NonInteractiveMode.IsActive)
+        {
+            return;
+        }
+        FastModeType mode = SaveManager.Instance.PrefsSave?.FastMode ?? FastModeType.Normal;
+        float seconds = scaled && mode == FastModeType.Normal ? standardSeconds : fastSeconds;
+        if (mode == FastModeType.Instant || !(seconds > 0f))
+        {
+            return;
+        }
+        SkippedWaits++;
+        SkippedSeconds += seconds;
     }
 
     private static bool WaitPrefix(float seconds, ref Task __result)
     {
         try
         {
-            if (!Skip(() => seconds))
+            if (!Skip(seconds, seconds, scaled: false))
             {
                 return true;
             }
@@ -232,7 +262,7 @@ public static class FastCombatStart
     {
         try
         {
-            if (!Skip(() => SaveManager.Instance.PrefsSave.FastMode == FastModeType.Normal ? standardSeconds : fastSeconds))
+            if (!Skip(fastSeconds, standardSeconds, scaled: true))
             {
                 return true;
             }
@@ -253,5 +283,10 @@ public static class FastCombatStart
         _window = false;
         PatchSafety.Fault(Name);
         Log.Error($"[{ModEntry.Id}] {Name} disabled after exception: {e}");
+        if (Config.Settings.InCoopRun)
+        {
+            // The other players keep their fast start: this one now starts each combat at the game's pace, far later.
+            Log.Error($"[{ModEntry.Id}] {Name}: off during a co-op run. {Config.Settings.CoopOffWarning} Restarting the game turns it back on.");
+        }
     }
 }

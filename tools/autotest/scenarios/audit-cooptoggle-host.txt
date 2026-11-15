@@ -26,7 +26,7 @@ endturn
 waitfor turn 300
 cmd bdopt coop_checksum on
 state t3
-cmd bdopt off
+cmd bdopt off yes
 play 5
 endturn
 waitfor turn 300

@@ -558,6 +558,8 @@ public static class MethodFingerprint
     {
         "Add", "AddRange", "Insert", "InsertRange", "Remove", "RemoveAt", "RemoveAll", "RemoveRange", "Clear", "set_Item",
         "Sort", "Reverse", "CopyTo", "EnsureCapacity", "TrimExcess", "Push", "Pop", "Enqueue", "Dequeue", "TryAdd", "TryRemove",
+        // HashSet<T> / ISet<T> in-place set operations (a pinned HashSet field changed through them has a writer too).
+        "UnionWith", "ExceptWith", "IntersectWith", "SymmetricExceptWith", "RemoveWhere",
     };
 
     /// <summary>Whether the method's code stores to the field (stfld / stsfld) or takes its address (ldflda / ldsflda).</summary>

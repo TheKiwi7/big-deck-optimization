@@ -89,9 +89,9 @@ while (@($round).Count -gt 0) {
     $next = foreach ($job in $round) {
         $result = $outcome | Where-Object { $_.Name -eq $job.Name }
         if ($result.State -notin "done", "cached") { $sessionProblems.Add("$($job.Name): $($result.State)") }
-        # What sweepreport.py doesn't see in the parts' logs: an earlier session of this part that ended early (not the known
+        # What sweepreport.py doesn't see in the parts' logs: an earlier session of this part that ended early or froze in this mod's code (not the known
         # renderer crash), a test mod the game didn't find.
-        $result.Failed | Where-Object { $_ -match '^(ended early|test mod not loaded)' } | ForEach-Object { $sessionProblems.Add("$($job.Name): $_") }
+        $result.Failed | Where-Object { $_ -match '^(ended early|froze|test mod )' } | ForEach-Object { $sessionProblems.Add("$($job.Name): $_") }
         $abort = Select-String -Path $job.Log -Pattern "SWEEP ABORT next=(\d+)" -ErrorAction SilentlyContinue | Select-Object -Last 1
         if ($abort) {
             $from = [int]$abort.Matches[0].Groups[1].Value

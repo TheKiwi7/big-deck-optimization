@@ -4,7 +4,7 @@ onfail continue
 timeout 1800
 mplobby NECROBINDER 2
 waitfor run 240
-cmd bdopt off
+cmd bdopt off yes
 cmd bdperf checks off
 wait 8
 cmd bigdeck import ref all all {hash:ref}

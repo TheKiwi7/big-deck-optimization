@@ -24,7 +24,7 @@ public sealed class BaseLibSettings : SimpleModConfig
     private static bool _loading;
 
     [ConfigSection("General")]
-    public static bool Enabled { get => Settings.Master; set => Apply(nameof(Enabled), value); }
+    public static bool Enabled { get => Settings.MasterChoice; set => Apply(nameof(Enabled), value); }
 
     // Combat pace first: the opt-in instant combats, then the fast combat start and its relic threshold.
     [ConfigSection("Optimizations")]
@@ -96,6 +96,12 @@ public sealed class BaseLibSettings : SimpleModConfig
     {
         if (property == nameof(Enabled))
         {
+            if (!on && !_loading && Settings.Master && Settings.InCoopRun)
+            {
+                // The box is greyed out then (GreyOut): only the console turns the mod off in a co-op run, after a warning.
+                Log.Warn($"[{ModEntry.Id}] {Name}: the mod stays on during a co-op run; to turn it off anyway: bdopt off yes. {Settings.CoopOffWarning}");
+                return;
+            }
             Settings.SetMaster(on, notify: false);
         }
         else
@@ -164,7 +170,7 @@ public sealed class BaseLibSettings : SimpleModConfig
     }
 
     public const string CoopNote =
-        "Co-op: every player needs this mod, same version. The fast combat start is always on there, so everyone starts each combat at the same pace; the other switches can be changed freely (same results either way, no desync).";
+        "Co-op: every player needs this mod, same version. The fast combat start is always on there, so everyone starts each combat at the same pace; the other switches can be changed freely (same results either way, no desync). During a co-op run the whole mod can only be turned off from the console (bdopt off yes): your combats would then start far later than the others'. With the mod off, you can only play co-op with players who also have it off.";
 
     /// <summary>A short note above the options, in the game's language: what co-op requires and forces.</summary>
     private static void AddCoopNote(Control optionContainer)
@@ -190,17 +196,41 @@ public sealed class BaseLibSettings : SimpleModConfig
         {
             if (child is NConfigOptionRow row)
             {
-                if (Settings.Find(Key(row.Name)) is { } option && Settings.Why(option, language: null) != null)
+                string name = row.Name.ToString();
+                // In a co-op run the whole mod goes off only through the console, after a warning (bdopt off yes).
+                bool coopMaster = name == nameof(Enabled) && Settings.Master && Settings.InCoopRun;
+                // The relic threshold slider belongs to the fast combat start: greyed out with it.
+                string key = name == nameof(FastCombatStartRelics) ? "fast_combat_start" : Key(name);
+                if (coopMaster || (Settings.Find(key) is { } option && Settings.Why(option, language: null) != null))
                 {
                     row.Modulate = new Color(1f, 1f, 1f, 0.45f);
                     if (row.SettingControl is NConfigTickbox tickbox)
                     {
                         tickbox.Disable();
                     }
+                    else if (row.SettingControl is NConfigSlider slider)
+                    {
+                        // No Disable() on BaseLib's slider: no mouse, focus or keys reach it or its inner slider. The row
+                        // itself still takes the mouse, so its hover text (why it's greyed out) still shows.
+                        StopInput(slider);
+                    }
                 }
                 continue;
             }
             GreyOut(child);
+        }
+    }
+
+    private static void StopInput(Control control)
+    {
+        control.MouseFilter = Control.MouseFilterEnum.Ignore;
+        control.FocusMode = Control.FocusModeEnum.None;
+        foreach (Node child in control.GetChildren())
+        {
+            if (child is Control inner)
+            {
+                StopInput(inner);
+            }
         }
     }
 
@@ -265,12 +295,16 @@ public sealed class BaseLibSettings : SimpleModConfig
                     [$"{Prefix}-GENERAL.title"] = Translations.Get(language, "general", "General"),
                     [$"{Prefix}-OPTIMIZATIONS.title"] = Translations.Get(language, "optimizations", "Optimizations"),
                     [$"{Prefix}-ENABLED.title"] = Translations.Get(language, "enabled.title", "Optimizations enabled"),
-                    [$"{Prefix}-ENABLED.hover.desc"] = Translations.Get(language, "enabled.desc",
-                        "Turns the whole mod on or off (off = unmodified game), no restart needed. If it's off when the game starts, none of the mod is loaded: turning it back on then takes effect at the next start."),
+                    // Greyed out in a co-op run (GreyOut): the reason first, as on the options' rows.
+                    [$"{Prefix}-ENABLED.hover.desc"] = WithReason(Settings.Master && Settings.InCoopRun ? Settings.CoopRunWhy(language) : null,
+                        Translations.Get(language, "enabled.desc",
+                            "Turns the whole mod on or off (off = unmodified game), no restart needed. If it's off when the game starts, none of the mod is loaded: turning it back on then takes effect at the next start.")),
                     [$"{Prefix}-{Settings.FastStartRelicsKey.ToUpperInvariant()}.title"] =
                         Translations.Get(language, Settings.FastStartRelicsKey + ".title", Settings.FastStartRelicsLabel),
-                    [$"{Prefix}-{Settings.FastStartRelicsKey.ToUpperInvariant()}.hover.desc"] =
-                        Translations.Get(language, Settings.FastStartRelicsKey + ".desc", Settings.FastStartRelicsDescription),
+                    // Greyed out with the fast combat start (GreyOut): that option's reason.
+                    [$"{Prefix}-{Settings.FastStartRelicsKey.ToUpperInvariant()}.hover.desc"] = WithReason(
+                        Settings.Find("fast_combat_start") is { } fastStart ? Settings.Why(fastStart, language) : null,
+                        Translations.Get(language, Settings.FastStartRelicsKey + ".desc", Settings.FastStartRelicsDescription)),
                 };
                 foreach (Settings.Option option in Settings.Options)
                 {
@@ -278,9 +312,8 @@ public sealed class BaseLibSettings : SimpleModConfig
                     texts[$"{Prefix}-{slug}.title"] = Translations.Get(language, option.Key + ".title", option.Label);
                     string description = Translations.Get(language, option.Key + ".desc", option.Description);
                     // Greyed out (Why), or still switchable but part of it doesn't run (PartlyOff) or is vanilla because of another mod (Conflict).
-                    texts[$"{Prefix}-{slug}.hover.desc"] = (Settings.Why(option, language) ?? Settings.PartlyOff(option, language) ?? Settings.Conflict(option, language)) is { } why
-                        ? $"[color=#e0a040]{why}[/color]\n{description}"
-                        : description;
+                    texts[$"{Prefix}-{slug}.hover.desc"] = WithReason(
+                        Settings.Why(option, language) ?? Settings.PartlyOff(option, language) ?? Settings.Conflict(option, language), description);
                 }
                 table.MergeWith(texts);
             }
@@ -289,5 +322,8 @@ public sealed class BaseLibSettings : SimpleModConfig
                 Log.Warn($"[{ModEntry.Id}] {Name}: could not add the menu texts: {e.Message}");
             }
         }
+
+        /// <summary>The hover text: the reason (orange) above the description, or the description alone.</summary>
+        private static string WithReason(string? why, string description) => why != null ? $"[color=#e0a040]{why}[/color]\n{description}" : description;
     }
 }

@@ -46,11 +46,17 @@ public static class HookFilter
         private readonly MethodInfo? _hookMethod;
         /// <summary>The AbstractModel default still has the no-op code the filtering skips (checked once).</summary>
         private readonly bool _defaultHolds;
+        /// <summary>
+        /// A use of this list walks <c>Hook.IterateCombatHookListeners</c> in the game (its "combat ending" check mirrored):
+        /// it then also backs off when that walk changed or is patched. The others walk the state's listeners directly.
+        /// </summary>
+        private readonly bool _combatWalk;
 
-        public FilteredHook(string baseMethodName, string defaultFingerprint, MethodInfo? hookMethod, bool optional = false)
+        public FilteredHook(string baseMethodName, string defaultFingerprint, MethodInfo? hookMethod, bool combatWalk, bool optional = false)
         {
             BaseMethod = Find(typeof(AbstractModel), baseMethodName);
             _hookMethod = hookMethod;
+            _combatWalk = combatWalk;
             if (BaseMethod == null)
             {
                 if (!optional)
@@ -67,7 +73,8 @@ public static class HookFilter
             }
         }
 
-        public bool IsSafe() => _defaultHolds && !PatchSafety.IsPatchedByOthers(BaseMethod) && !PatchSafety.IsPatchedByOthers(_hookMethod) && !CombatHookWalkPatched();
+        public bool IsSafe() => _defaultHolds && !PatchSafety.IsPatchedByOthers(BaseMethod) && !PatchSafety.IsPatchedByOthers(_hookMethod)
+            && (!_combatWalk || !CombatHookWalkPatched());
 
         public bool IsOverriddenBy(Type type)
         {
@@ -110,8 +117,9 @@ public static class HookFilter
     private const string ShouldSkipCombatEffectFingerprint = "43E664940DA33607";
 
     /// <summary>
-    /// The combat hooks mirrored here, and HookSkip's combat walk, go through <c>Hook.IterateCombatHookListeners</c> in the
-    /// game, whose "combat ending" check they mirror (<see cref="CombatHookListenersEmpty"/>): true when that code isn't the
+    /// The combat hooks mirrored here that go through <c>Hook.IterateCombatHookListeners</c> in the game (energy cost,
+    /// ShouldPlay, ShouldAllowHitting), and HookSkip's combat walk, mirror its "combat ending" check
+    /// (<see cref="CombatHookListenersEmpty"/>): true when that code isn't the
     /// one mirrored, or another mod patches it or the getters it reads (v0.113: <c>ShouldSkipCombatEffect</c>, which the
     /// mirror reads as the two getters it combines): the game's hooks then.
     /// </summary>
@@ -229,7 +237,7 @@ public static class HookFilter
     private const string ModifyDamageInternalLateFingerprint = "F7ABF27EB7D96625";
 
     /// <summary>
-    /// Code of the <see cref="AbstractModel"/> defaults the filtering skips (the same in v0.107.1 and v0.111): "try"
+    /// Code of the <see cref="AbstractModel"/> defaults the filtering skips (the same in v0.107.1, v0.111.0, v0.113.0 and v0.113.1): "try"
     /// methods copying the cost to the out parameter and returning false, ShouldX returning true, keywords returning false,
     /// damage +0, ×1, cap MaxValue. A changed default leaves its hook vanilla.
     /// </summary>
@@ -266,18 +274,22 @@ public static class HookFilter
         // Optional: a missing or changed cost color helper only leaves that helper vanilla.
         MethodInfo? energyColor = AccessTools.Method(typeof(MegaCrit.Sts2.Core.Helpers.Models.CardCostHelper), "TryModifyEnergyCostWithHooks");
         MethodInfo? starColor = AccessTools.Method(typeof(MegaCrit.Sts2.Core.Helpers.Models.CardCostHelper), "TryModifyStarCostWithHooks");
+        // combatWalk: the game's hook walks IterateCombatHookListeners (energy cost, ShouldPlay, hitting). Keywords, the cost
+        // color helpers and the damage hook walk the state's listeners directly: a mod patching that walk or the combat
+        // getters it reads doesn't change them. The energy cost lists also serve the energy cost color helper (direct walk)
+        // and SnapshotCardReuse's cost reads (the combat walk's), so they keep the check.
         _hooks = new[]
         {
-            new FilteredHook(nameof(AbstractModel.TryModifyEnergyCostInCombat), TryOutDefault, energyHook),
-            new FilteredHook(nameof(AbstractModel.TryModifyEnergyCostInCombatLate), TryOutDefault, energyHook),
-            new FilteredHook(nameof(AbstractModel.TryModifyKeywordsInCombat), KeywordsDefault, keywordsHook),
-            new FilteredHook(nameof(AbstractModel.ShouldPlay), TrueDefault, shouldPlayHook),
-            new FilteredHook(nameof(AbstractModel.ModifyDamageAdditive), DamageAdditiveDefault, damageHook),
-            new FilteredHook(nameof(AbstractModel.ModifyDamageMultiplicative), DamageMultiplicativeDefault, damageHook),
-            new FilteredHook(nameof(AbstractModel.ModifyDamageCap), DamageCapDefault, damageHook),
-            new FilteredHook(nameof(AbstractModel.ShouldAllowHitting), TrueDefault, hittingHook),
-            new FilteredHook(nameof(AbstractModel.TryModifyStarCost), TryOutDefault, starColor ?? hittingHook),
-            new FilteredHook("ModifyDamageMultiplicativeLate", DamageMultiplicativeDefault, damageHook, optional: true),
+            new FilteredHook(nameof(AbstractModel.TryModifyEnergyCostInCombat), TryOutDefault, energyHook, combatWalk: true),
+            new FilteredHook(nameof(AbstractModel.TryModifyEnergyCostInCombatLate), TryOutDefault, energyHook, combatWalk: true),
+            new FilteredHook(nameof(AbstractModel.TryModifyKeywordsInCombat), KeywordsDefault, keywordsHook, combatWalk: false),
+            new FilteredHook(nameof(AbstractModel.ShouldPlay), TrueDefault, shouldPlayHook, combatWalk: true),
+            new FilteredHook(nameof(AbstractModel.ModifyDamageAdditive), DamageAdditiveDefault, damageHook, combatWalk: false),
+            new FilteredHook(nameof(AbstractModel.ModifyDamageMultiplicative), DamageMultiplicativeDefault, damageHook, combatWalk: false),
+            new FilteredHook(nameof(AbstractModel.ModifyDamageCap), DamageCapDefault, damageHook, combatWalk: false),
+            new FilteredHook(nameof(AbstractModel.ShouldAllowHitting), TrueDefault, hittingHook, combatWalk: true),
+            new FilteredHook(nameof(AbstractModel.TryModifyStarCost), TryOutDefault, starColor ?? hittingHook, combatWalk: false),
+            new FilteredHook("ModifyDamageMultiplicativeLate", DamageMultiplicativeDefault, damageHook, combatWalk: false, optional: true),
         };
         Mirror(harmony, typeof(HookFilterEnergyCost), energyHook, ModifyEnergyCostFingerprint, "ModifyEnergyCostPrefix");
         Mirror(harmony, typeof(HookFilterKeywords), keywordsHook, ModifyKeywordsFingerprint, "ModifyKeywordsPrefix");
@@ -390,6 +402,12 @@ public static class HookFilter
     }
 
     internal static bool Active => Enabled && ListenerCache.IsCaching;
+
+    /// <summary>
+    /// Whether filtering this hook is safe in this scope (what <see cref="ForCombat"/> and <see cref="ForRun"/> answer null
+    /// for), without building its list: a mirror asks it before the game's own early exits, which come before any walk.
+    /// </summary>
+    internal static bool HookSafe(int hook) => (_safe ??= CurrentSafety())[hook];
 
     /// <summary>Filtered listeners for one hook, or null when filtering that hook isn't safe right now.</summary>
     private static List<AbstractModel>? Get(IReadOnlyList<AbstractModel> listeners, int hook)
@@ -650,8 +668,10 @@ public static class HookFilter
     /// Last finalizer of each mirrored hook (<see cref="Priority.Last"/>: after PatchGuard's guard, which then sees no
     /// exception, so HookFilter isn't faulted by its frames): throws the listener exception the mirror caught, from the hook.
     /// Harmony throws a returned exception with its stack trace restarting at the hook (this mod's frames gone, so no guard
-    /// further up blames this patch either), as it does for the game's own exceptions passing through these hooks: both
-    /// are logged here with their full trace first.
+    /// further up blames this patch either). A method with a finalizer returning an exception does that for every exception,
+    /// so the game's own exceptions passing through these hooks lose their trace too, whether the mirror ran or not (outside
+    /// scopes, HookFilter or the mod off: the finalizer stays for the session): both are logged here with their full trace
+    /// first, the only place it is kept (one warning per exception).
     /// </summary>
     internal static Exception? RethrowFinalizer(Exception? __exception)
     {
@@ -854,7 +874,19 @@ internal static class HookFilterEnergyCost
         List<AbstractModel>? early, late;
         try
         {
-            // This mod's code only (an exception here is never the game's, however the JIT inlines it).
+            // This mod's code, and the two combat getters the game reads first (one throwing: HookFilter off, the game's
+            // hook then reads them and throws the same).
+            if (!HookFilter.HookSafe(HookFilter.EnergyCost) || !HookFilter.HookSafe(HookFilter.EnergyCostLate))
+            {
+                return true;
+            }
+            // Vanilla: negative costs return before any walk; IterateCombatHookListeners walks nothing while combat is
+            // ending. No list built for them either.
+            if (originalCost < 0m || HookFilter.CombatHookListenersEmpty)
+            {
+                __result = originalCost;
+                return false;
+            }
             early = HookFilter.ForCombat(state, HookFilter.EnergyCost);
             late = HookFilter.ForCombat(state, HookFilter.EnergyCostLate);
         }
@@ -869,12 +901,6 @@ internal static class HookFilterEnergyCost
         }
         try
         {
-            // Vanilla: negative costs return early; IterateCombatHookListeners yields nothing while combat is ending.
-            if (originalCost < 0m || HookFilter.CombatHookListenersEmpty)
-            {
-                __result = originalCost;
-                return false;
-            }
             decimal modifiedCost = originalCost;
             foreach (AbstractModel item in early)
             {
@@ -952,7 +978,19 @@ internal static class HookFilterShouldPlay
         List<AbstractModel>? listeners;
         try
         {
-            // This mod's code only (an exception here is never the game's, however the JIT inlines it).
+            // This mod's code, and the combat getters the game's walk reads first (one throwing: HookFilter off, the
+            // game's hook then reads them and throws the same).
+            if (!HookFilter.HookSafe(HookFilter.ShouldPlay))
+            {
+                return true;
+            }
+            // Vanilla's walk (IterateCombatHookListeners) yields nothing while combat is ending: no list built for it.
+            if (HookFilter.CombatHookListenersEmpty)
+            {
+                preventer = null;
+                __result = true;
+                return false;
+            }
             listeners = HookFilter.ForCombat(state, HookFilter.ShouldPlay);
         }
         catch (Exception e)
@@ -966,16 +1004,13 @@ internal static class HookFilterShouldPlay
         }
         try
         {
-            if (!HookFilter.CombatHookListenersEmpty)
+            foreach (AbstractModel item in listeners)
             {
-                foreach (AbstractModel item in listeners)
+                if (!item.ShouldPlay(card, autoPlayType))
                 {
-                    if (!item.ShouldPlay(card, autoPlayType))
-                    {
-                        preventer = item;
-                        __result = false;
-                        return false;
-                    }
+                    preventer = item;
+                    __result = false;
+                    return false;
                 }
             }
             preventer = null;
@@ -1004,7 +1039,18 @@ internal static class HookFilterHitting
         List<AbstractModel>? listeners;
         try
         {
-            // This mod's code only (an exception here is never the game's, however the JIT inlines it).
+            // This mod's code, and the combat getters the game's walk reads first (one throwing: HookFilter off, the
+            // game's hook then reads them and throws the same).
+            if (!HookFilter.HookSafe(HookFilter.AllowHitting))
+            {
+                return true;
+            }
+            // Vanilla goes through IterateCombatHookListeners, which yields nothing while combat is ending: no list built.
+            if (HookFilter.CombatHookListenersEmpty)
+            {
+                __result = true;
+                return false;
+            }
             listeners = HookFilter.ForCombat(state, HookFilter.AllowHitting);
         }
         catch (Exception e)
@@ -1018,17 +1064,13 @@ internal static class HookFilterHitting
         }
         try
         {
-            // Vanilla goes through IterateCombatHookListeners, which yields nothing while combat is ending.
             bool allowed = true;
-            if (!HookFilter.CombatHookListenersEmpty)
+            foreach (AbstractModel item in listeners)
             {
-                foreach (AbstractModel item in listeners)
+                if (!item.ShouldAllowHitting(creature))
                 {
-                    if (!item.ShouldAllowHitting(creature))
-                    {
-                        allowed = false;
-                        break;
-                    }
+                    allowed = false;
+                    break;
                 }
             }
 #if BENCH

@@ -18,5 +18,9 @@ waitfor idle 120
 play 3
 waitfor idle 120
 effects end
+# With the option off from before the fight, nothing uses FastListeners' cached entries or walks, filtered walks included.
+effectcheck FastListeners.Cache same start
+effectcheck FastListeners.CombatWalk same start
+effectcheck FastListeners.RunWalk same start
 counters end
 quit

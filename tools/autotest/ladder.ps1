@@ -97,6 +97,11 @@ $setup = @("cmd bdperf checks off", "cmd bdperf probe off", "cmd bdperf segments
 $probeBefore = if ($ProbeStart) { @("cmd bdperf probe on", "cmd bdperf probe reset") } else { @() }
 $probeAfter = if ($ProbeStart) { @("cmd bdperf probe log", "cmd bdperf probe off") } else { @() }
 $fight = if ($Party5) { "SOUL_NEXUS_ELITE" } else { "CULTISTS_NORMAL" }
+# The generated scenarios are removed and STS2_GAME_DIR (coop.ps1 reads its copy there) put back whatever happens: a session that
+# throws (a game already running...) would leave lad-*.txt in the repo's scenarios and the copy as this shell's target.
+$previousGameDir = $env:STS2_GAME_DIR
+$generated = [Collections.Generic.List[string]]::new()
+try {
 foreach ($n in ($Sizes -split ',' | ForEach-Object { [int]$_ })) {
     $wait = 10 + 2 * $n
     if ($Coop) {
@@ -106,6 +111,7 @@ foreach ($n in ($Sizes -split ',' | ForEach-Object { [int]$_ })) {
             @("wait $wait", "enemyhp 999999", "wait 25") + $probeBefore + @("fpsstat", "gcstat", "cmd fight $fight", "waitfor idle 900", "fpsstat combat start", "gcstat combat start") + $probeAfter + @("wait 8", "fpsstat idle") + (Get-Body) + $(if ($Probe) { @("cmd bdperf probe log") } else { @() }) + $(if ($Verify) { @("cmd bdperf verify", "counters verified") } else { @() }) + @("effects end", "wait 15", "quit")
         $clientLines = @("timeout $($TimeoutSec - 60)", "mplobby IRONCLAD 2", "waitfor run 240", "immortal until 99", "forcefocus") + (Get-CoopImports $n $false) + $setup +
             @("wait $($wait + 6)", "enemyhp 999999", "waitfor combat 900", "waitfor idle 900", "wait 8") + (Get-Body) + $(if ($Verify) { @("wait 1500") } else { @() }) + @("wait 15", "quit")
+        $generated.Add((Join-Path $scenarioDir "$name-host.txt")); $generated.Add((Join-Path $scenarioDir "$name-client.txt"))
         [IO.File]::WriteAllLines((Join-Path $scenarioDir "$name-host.txt"), [string[]]$hostLines)
         [IO.File]::WriteAllLines((Join-Path $scenarioDir "$name-client.txt"), [string[]]$clientLines)
         Write-Output "START $name $(Get-Date -Format HH:mm:ss)"
@@ -118,11 +124,17 @@ foreach ($n in ($Sizes -split ',' | ForEach-Object { [int]$_ })) {
         $name = "lad-$($Tag)s$n"
         $lines = @("timeout $($TimeoutSec - 60)", "newrun NECROBINDER 1234", "waitfor run 120", "wait 2", "uncap", "framedetail", "forcefocus", "immortal") + (Get-Imports $n "") + $setup +
             @("enemyhp 999999", "wait 3", "fpsstat", "gcstat", "cmd fight CULTISTS_NORMAL", "waitfor idle 900", "fpsstat combat start", "gcstat combat start", "wait 8", "fpsstat idle") + (Get-Body) + @("effects end", "wait 2", "quit")
+        $generated.Add((Join-Path $scenarioDir "$name.txt"))
         [IO.File]::WriteAllLines((Join-Path $scenarioDir "$name.txt"), [string[]]$lines)
         Write-Output "START $name $(Get-Date -Format HH:mm:ss)"
         & (Join-Path $PSScriptRoot "run.ps1") -Name $name -GameDir $GameDir -TimeoutSec $TimeoutSec -TraceSec $TraceSec -TraceProfile $TraceProfile
         Remove-Item (Join-Path $scenarioDir "$name.txt")
     }
     Write-Output "END $name $(Get-Date -Format HH:mm:ss)"
+}
+}
+finally {
+    $generated | Where-Object { Test-Path $_ } | ForEach-Object { Remove-Item $_ -ErrorAction SilentlyContinue }
+    $env:STS2_GAME_DIR = $previousGameDir
 }
 Write-Output "ALL DONE"

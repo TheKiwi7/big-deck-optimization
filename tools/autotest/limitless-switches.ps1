@@ -9,6 +9,7 @@ $copy = $GameDir
 $GameDir = Resolve-GameCopy $copy
 Assert-GameNotRunning
 # The kept slot, held until the end (other series skip it; run.ps1 -KeepSlot below holds it too).
+$runProblems = 0
 [void](Lock-Slot $KeptSlot)
 try {
     $slot = Sync-Slot $KeptSlot
@@ -16,10 +17,12 @@ try {
 
     Set-SlotModEnabled $slot "Limitless" $false
     & (Join-Path $PSScriptRoot "run.ps1") -Name limitless-absent -TimeoutSec 240 -GameDir $GameDir -KeepSlot
+    if ($LASTEXITCODE) { $runProblems++ }
     if (Test-Path $config) { Write-Output "--- saved after limitless-absent:"; Get-Content $config }
 
     Set-SlotModEnabled $slot "Limitless" $true
     & (Join-Path $PSScriptRoot "run.ps1") -Name limitless-present -TimeoutSec 240 -GameDir $GameDir -KeepSlot
+    if ($LASTEXITCODE) { $runProblems++ }
     if (Test-Path $config) { Write-Output "--- saved after limitless-present:"; Get-Content $config }
     Test-SessionLog "limitless-absent" "Finished mod initialization for 'Limitless'" $false "Limitless did not load"
     Test-SessionLog "limitless-absent" "MENU absent:.*LimitlessSaves=False" $true "its switches show unticked"
@@ -27,3 +30,5 @@ try {
     Test-SessionLog "limitless-present" "MENU present:.*LimitlessSaves=True" $true "its switches show ticked: the cfg kept the wanted state"
 }
 finally { Unlock-Slot $KeptSlot }
+# Exit code 1 on any PROBLEM line above or a session run.ps1 judged with a problem.
+exit $(if ($script:SessionLogProblems -or $runProblems) { 1 } else { 0 })

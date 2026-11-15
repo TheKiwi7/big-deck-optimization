@@ -24,6 +24,7 @@ namespace BigDeckOptimization.Patches;
 /// upgrade, floor, amounts, saved properties (cards by reference) and extended save data. When all of it is equal the
 /// list in place stays: same content, and its objects keep their BaseLib entries (nothing is removed from any table, a
 /// mod looking them up still finds them). Anything else, or another mod patching these methods: Limitless runs as is.
+/// One kept list in <see cref="VerifyEvery"/> is serialized against a rebuilt one: a difference turns this off.
 /// </summary>
 public static class LimitlessReserialize
 {
@@ -33,14 +34,14 @@ public static class LimitlessReserialize
     internal const string MultiEnchantmentType = "Limitless.LimitlessCode.UncappedEnchantments.MultiEnchantment";
     private const string HandlersType = "BaseLib.Patches.Saves.ExtendedSaveHandlers`2";
 
-    /// <summary>Limitless v1.1.7 <c>MultiEnchantment.SetSerializableCards</c>: the list it builds is what this compares with.</summary>
+    /// <summary>Limitless 1.1.7 to 1.2.1 <c>MultiEnchantment.SetSerializableCards</c>: the list it builds is what this compares with.</summary>
     private const string SetSerializableCardsFingerprint = "916B119C60C89D96";
     /// <summary>Limitless 1.2.1 <c>set_SerializableEnchantmentsOnCards</c> (auto-property): only stores the list, so skipping it changes nothing else.</summary>
     private const string StoredSetterFingerprint = "C70F0868040EF2A5";
-    /// <summary>v0.107.1 <c>CardModel.ToSerializable</c> and <c>EnchantmentModel.ToSerializable</c>, mirrored by the comparison.</summary>
+    /// <summary>v0.107.1 to v0.113.1 <c>CardModel.ToSerializable</c> and <c>EnchantmentModel.ToSerializable</c>, mirrored by the comparison.</summary>
     private const string CardToSerializableFingerprint = "BBD751B8837741A9";
     private const string EnchantmentToSerializableFingerprint = "9AD225E2780EB1EA";
-    /// <summary>BaseLib 3.4.7: the postfixes storing <c>new ExtendedSaveData(model)</c> for the new object, that data's
+    /// <summary>BaseLib 3.4.7 to 3.4.8: the postfixes storing <c>new ExtendedSaveData(model)</c> for the new object, that data's
     /// constructor (runs the registered getters) and <c>DictForType</c> (a missing dictionary reads as an empty one).</summary>
     private const string ExtendedDataForCardFingerprint = "0122CA32FEFEE27D";
     private const string ExtendedDataForEnchantmentFingerprint = "426B8A8581C7A3C1";
@@ -85,6 +86,8 @@ public static class LimitlessReserialize
 
     public static void Apply(Harmony harmony)
     {
+        // The queue applies this on the game's main thread; a late Limitless load may run ApplyNow on the loading thread.
+        _mainThread = Environment.CurrentManagedThreadId;
         if (AppDomain.CurrentDomain.GetAssemblies().Any(a => a.GetName().Name == LimitlessAssembly))
         {
             ApplyNow(harmony);
@@ -100,11 +103,28 @@ public static class LimitlessReserialize
         if (args.LoadedAssembly.GetName().Name == LimitlessAssembly)
         {
             AppDomain.CurrentDomain.AssemblyLoad -= OnAssemblyLoad;
-            ModEntry.TryApply(Name, ApplyNow);
-            ModEntry.TryApply(LimitlessRecalcSkip.Name, LimitlessRecalcSkip.Apply);
-            ModEntry.TryApply(SnapshotCardReuse.Name, SnapshotCardReuse.Apply);
-            ModEntry.TryApply(LimitlessHookSkip.Name, LimitlessHookSkip.Apply);
-            ModEntry.TryApply(LimitlessCloneMemo.Name, LimitlessCloneMemo.Apply);
+            // Never a second time: a patch the queue already applied would get its prefixes twice under the same Harmony id
+            // (a second Apply failing would also remove the first one's patches). Mods all load before the queue starts today.
+            if (!Applied)
+            {
+                ModEntry.TryApply(Name, ApplyNow);
+            }
+            if (!LimitlessRecalcSkip.Applied)
+            {
+                ModEntry.TryApply(LimitlessRecalcSkip.Name, LimitlessRecalcSkip.Apply);
+            }
+            if (!SnapshotCardReuse.Applied)
+            {
+                ModEntry.TryApply(SnapshotCardReuse.Name, SnapshotCardReuse.Apply);
+            }
+            if (!LimitlessHookSkip.Applied)
+            {
+                ModEntry.TryApply(LimitlessHookSkip.Name, LimitlessHookSkip.Apply);
+            }
+            if (!LimitlessCloneMemo.Applied)
+            {
+                ModEntry.TryApply(LimitlessCloneMemo.Name, LimitlessCloneMemo.Apply);
+            }
         }
     }
 
@@ -128,7 +148,6 @@ public static class LimitlessReserialize
             "BaseLib.Patches.Saves.ExtendedSavePatches+PrepExtendedCardData:ExtendedDataForCard", ExtendedDataForCardFingerprint);
         _enchantmentData = new ExtendedData(handlers, typeof(EnchantmentModel), typeof(SerializableEnchantment),
             "BaseLib.Patches.Saves.ExtendedSavePatches+PrepExtendedEnchantmentData:ExtendedDataForEnchantment", ExtendedDataForEnchantmentFingerprint);
-        _mainThread = Environment.CurrentManagedThreadId;
         ComparisonReady = true;
 
         Type multi = AccessTools.TypeByName(MultiEnchantmentType) ?? throw new PatchSkippedException("Limitless has no " + MultiEnchantmentType);
@@ -143,6 +162,45 @@ public static class LimitlessReserialize
         _original = original;
         PatchGuard.Patch(harmony, original, prefix: new HarmonyMethod(typeof(LimitlessReserialize), nameof(Prefix)));
         Applied = true;
+    }
+
+    /// <summary>
+    /// For the patches that take a saved list for unchanged while its setter wasn't called (<see cref="LimitlessRecalcSkip"/>'s
+    /// passes): throws <see cref="PatchSkippedException"/> when code other than the known one may change it. The backing field's
+    /// writers are the initializer and the setter; the private getter hands out the list itself, so a new caller could change
+    /// it in place without the setter: its callers are the known readers (Limitless 1.1.7 to 1.2.1).
+    /// </summary>
+    internal static void RequireKnownSavedListUsers(Type multi)
+    {
+        PatchSafety.RequireFieldWriters(multi, "<SerializableEnchantmentsOnCards>k__BackingField", ".ctor", "set_SerializableEnchantmentsOnCards");
+        MethodInfo getter = AccessTools.PropertyGetter(multi, "SerializableEnchantmentsOnCards")
+            ?? throw new MissingMethodException(MultiEnchantmentType, "get_SerializableEnchantmentsOnCards");
+        string[] known = { "get_EnchantmentsOnCards", "DeepCloneFields" };
+        const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
+        var unknown = new List<string>();
+        void Scan(Type type, string prefix)
+        {
+            foreach (MethodBase method in type.GetMethods(all).Cast<MethodBase>().Concat(type.GetConstructors(all)))
+            {
+                if (method.Equals(getter) || (prefix.Length == 0 && known.Contains(method.Name)))
+                {
+                    continue;
+                }
+                if (MethodFingerprint.UsedMembers(method).Any(used => used is MethodBase called && called.Equals(getter)))
+                {
+                    unknown.Add(prefix + method.Name);
+                }
+            }
+            foreach (Type nested in type.GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic))
+            {
+                Scan(nested, prefix + nested.Name + "+");
+            }
+        }
+        Scan(multi, "");
+        if (unknown.Count > 0)
+        {
+            throw new PatchSkippedException($"{multi.Name}.{getter.Name} is now also used by {string.Join(", ", unknown)} (update?): left vanilla");
+        }
     }
 
     /// <summary>
@@ -215,7 +273,7 @@ public static class LimitlessReserialize
         public const string KnownEmptyId = EmptyModifiersId;
 
         /// <summary>
-        /// BaseLib 3.4.7's card save "BaseLibCardModifiers": the getter <c>DirectModifiers(card).Select(...).ToList()</c>
+        /// BaseLib 3.4.7 to 3.4.8's card save "BaseLibCardModifiers": the getter <c>DirectModifiers(card).Select(...).ToList()</c>
         /// (its lambda, fingerprinted) through RegisterSave's wrapper (adds the value under its id when not null). The
         /// list holds CardModifier instances only (a NotNullSpireField, empty by default): with no concrete
         /// CardModifier type loaded it is always empty. ~40% of the memory allocated during turns at 32,000 cards.
@@ -268,15 +326,21 @@ public static class LimitlessReserialize
             return _checkedSaveMatches;
         }
 
-        /// <summary>The ids of the registered saves (the only keys a getter adds), refreshed when one is registered.</summary>
+        /// <summary>
+        /// The distinct ids of the registered saves (the only keys a getter adds), refreshed when one is registered. BaseLib
+        /// allows one id registered twice (two value types): listed once, or <see cref="SameData"/> would count its key twice
+        /// and stop before comparing another key.
+        /// </summary>
         public string[] Ids
         {
             get
             {
                 IList saves = _registeredSaves();
-                if (_ids.Length != saves.Count)
+                if (_idsFor != saves.Count)
                 {
-                    _ids = saves.Cast<object>().Select(save => (string)AccessTools.Property(save.GetType(), "Id").GetValue(save)!).ToArray();
+                    _ids = saves.Cast<object>().Select(save => (string)AccessTools.Property(save.GetType(), "Id").GetValue(save)!)
+                        .Distinct(StringComparer.Ordinal).ToArray();
+                    _idsFor = saves.Count;
                 }
                 return _ids;
             }
@@ -286,6 +350,7 @@ public static class LimitlessReserialize
         private readonly Action<object, object> _fill;
         private readonly Func<IList> _registeredSaves;
         private string[] _ids = Array.Empty<string>();
+        private int _idsFor = -1;
 
         public ExtendedData(Type handlersDefinition, Type model, Type serializable, string postfix, string postfixFingerprint)
         {
@@ -378,13 +443,23 @@ public static class LimitlessReserialize
         {
             if (Unchanged(__instance, cards))
             {
-                Kept++;
-#if BENCH
-                if (Kept % VerifyEvery == 0)
+                if (++_sinceVerify >= VerifyEvery)
                 {
-                    Verify(__instance, cards);
+                    _sinceVerify = 0;
+                    if (!Verify(__instance, cards))
+                    {
+                        // Limitless rebuilds this one, and every list from now on.
+                        Enabled = false;
+                        Faulted = true;
+                        PatchSafety.Fault(Name);
+                        LimitlessRecalcSkip.Forget(__instance);
+                        Log.Error($"[{ModEntry.Id}] {Name} disabled, a kept list differs from a rebuilt one ({_keptWriter!.BitPosition} vs "
+                            + $"{_freshWriter!.BitPosition} bits, {__instance.Id} on {__instance.Card?.Id}): falling back to Limitless");
+                        Rebuilt++;
+                        return true;
+                    }
                 }
-#endif
+                Kept++;
                 LimitlessRecalcSkip.Remember(__instance, cards, _cardData!, _enchantmentData!);
                 return false;
             }
@@ -481,6 +556,9 @@ public static class LimitlessReserialize
         return x == null || y == null ? x == y : Equals(x.Id, y.Id) && x.Amount == y.Amount && SameProps(x.Props, y.Props);
     }
 
+    /// <summary>The game's main thread (where the patches were applied from the queue).</summary>
+    internal static bool OnMainThread => Environment.CurrentManagedThreadId == _mainThread;
+
     /// <summary>Main thread, outside a comparison: where <see cref="LimitlessRecalcSkip"/> may skip or verify.</summary>
     internal static bool CanCompareHere => !_comparing && Environment.CurrentManagedThreadId == _mainThread;
 
@@ -501,15 +579,25 @@ public static class LimitlessReserialize
         }
     }
 
-#if BENCH
-    /// <summary>One kept list in this many is compared with what Limitless would have built (Debug builds).</summary>
-    private const int VerifyEvery = 4096;
+    /// <summary>
+    /// One kept list in this many is compared with what Limitless would have built, in every build (until v1.0.3 only in
+    /// Debug builds, and only logged): a difference turns this off for the session, as <see cref="LimitlessCloneMemo"/>
+    /// and <see cref="SnapshotCardReuse"/> do with theirs.
+    /// </summary>
+    internal static int VerifyEvery { get; set; } = 4096;
+    public static long Verified { get; private set; }
     public static long VerifyMismatches { get; private set; }
+    private static int _sinceVerify;
+    // Main thread only (Prefix), like the comparison's scratch data.
     private static MegaCrit.Sts2.Core.Multiplayer.Serialization.PacketWriter? _keptWriter, _freshWriter;
 
-    /// <summary>Packet bytes (BaseLib's extended data included) of the kept list and of a list built as Limitless would.</summary>
-    private static void Verify(EnchantmentModel multi, List<CardModel> cards)
+    /// <summary>
+    /// Packet bytes (BaseLib's extended data included) of the kept list and of a list built as Limitless would
+    /// (<c>cards.Select(c => c.ToSerializable())</c>, fingerprinted): the fresh objects are only garbage, the kept list stays.
+    /// </summary>
+    private static bool Verify(EnchantmentModel multi, List<CardModel> cards)
     {
+        Verified++;
         _keptWriter ??= new() { WarnOnGrow = false };
         _freshWriter ??= new() { WarnOnGrow = false };
         _keptWriter.Reset();
@@ -522,13 +610,14 @@ public static class LimitlessReserialize
         {
             card.ToSerializable().Serialize(_freshWriter);
         }
-        if (!_keptWriter.Buffer.AsSpan(0, _keptWriter.BytePosition).SequenceEqual(_freshWriter.Buffer.AsSpan(0, _freshWriter.BytePosition)))
+        if (_keptWriter.BitPosition == _freshWriter.BitPosition
+            && _keptWriter.Buffer.AsSpan(0, _keptWriter.BytePosition).SequenceEqual(_freshWriter.Buffer.AsSpan(0, _freshWriter.BytePosition)))
         {
-            VerifyMismatches++;
-            Log.Error($"[{ModEntry.Id}] {Name}: kept list differs from a rebuilt one ({_keptWriter.BytePosition} vs {_freshWriter.BytePosition} bytes)");
+            return true;
         }
+        VerifyMismatches++;
+        return false;
     }
-#endif
 
     /// <summary>
     /// The BaseLib data objects of a stored list's cards and enchantments, found in BaseLib's table on a first
@@ -610,7 +699,7 @@ public static class LimitlessReserialize
     private sealed class PropsPlan
     {
         public bool None;
-        /// <summary>The type's only saved property, when it is a list of cards (Limitless's stacked enchantments).</summary>
+        /// <summary>The type's only saved property, when it is a list of cards always saved (Limitless's stacked enchantments).</summary>
         public string? ListName;
         public Func<object, List<SerializableCard>?>? ListGetter;
     }
@@ -644,7 +733,10 @@ public static class LimitlessReserialize
             List<System.Reflection.PropertyInfo>? properties = _jsonProperties!(type);
             bool spireField = BaseLibTypes.SpireFieldTargets(type);
             plan.None = properties == null && !spireField;
-            if (!spireField && properties is { Count: 1 } && properties[0].PropertyType == typeof(List<SerializableCard>) && properties[0].GetMethod is { } getter)
+            // Only a list saved whatever its value (AlwaysSave): with another condition FromInternal may leave it out (an empty
+            // list), and a saved object read back holding it would pass the shortcut where From gives no props.
+            if (!spireField && properties is { Count: 1 } && properties[0].PropertyType == typeof(List<SerializableCard>) && properties[0].GetMethod is { } getter
+                && properties[0].GetCustomAttribute<SavedPropertyAttribute>() is { defaultBehaviour: SerializationCondition.AlwaysSave })
             {
                 ParameterExpression model = Expression.Parameter(typeof(object));
                 plan.ListName = properties[0].Name;

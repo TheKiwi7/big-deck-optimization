@@ -4,14 +4,17 @@
 
 Checks that the CHECKSUM, STATE and CARDPLAY lines match line for line (values only, not timings): a mismatch shows the
 first line that differs, and which values in it. Then each log's problems (judge.py: a failed line, a session cut short,
-an error or a difference this mod found itself, a positive control that saw nothing). Then the per-card times of
-'playcard' ("played X in N ms") side by side.
+an error or a difference this mod found itself, a positive control that saw nothing), and the game errors B logs alone or far
+more often than A (B is the side under test, par.ps1's mod on: an exception in game code from this mod's data has no frame of
+this mod), but the engine's timing noise (judge.GAME_NOISE). Then the per-card times of 'playcard' ("played X in N ms") side
+by side.
 
 Verdict (last word of its line, exit code 0 only for IDENTICAL):
   IDENTICAL       the same lines, at least one, and no problem in either log
   DIFFERENT       the lines differ (or one log stopped early)
   NOT COMPARED    no line to compare on either side: nothing was proven
-  PROBLEMS        the same lines, but a log has a problem (a check of the mod failed, a session didn't end...)
+  PROBLEMS        the same lines, but a log has a problem (a check of the mod failed, a session didn't end, a game error with B
+                  only...)
 --lines-only: the verdict is about the lines alone (mutations.ps1, which judges the errors itself).
 """
 import os
@@ -74,6 +77,14 @@ def errors_only_in(a, b):
     return {k: v for k, v in a.items() if k not in b}
 
 
+def errors_grown(a, b):
+    """The game error kinds B logs and A doesn't, or more than twice as often (3 more at least), but the engine's timing noise
+    (judge.GAME_NOISE): with B the side under test, an exception in game code from this mod's data (a stale cache read later,
+    thrown outside any patched method) has no frame of this mod, and judge.py alone wouldn't see it."""
+    return {k: v for k, v in b.items()
+            if not judge.GAME_NOISE.search(k) and (k not in a or (v > 2 * a[k] and v - a[k] >= 3))}
+
+
 def main(a_path, b_path, times=True, lines_only=False):
     for path in (a_path, b_path):
         if not os.path.exists(path):
@@ -96,6 +107,11 @@ def main(a_path, b_path, times=True, lines_only=False):
         for text, count in list(only.items())[:8]:
             print(f'errors only in {name}: {count}x {text}')
     problems = 0
+    # B is the side under test (par.ps1: mod on): a game error it logs alone, or far more often, is a problem.
+    for text, count in errors_grown(a_errors, b_errors).items():
+        problems += 1
+        if problems <= 8:
+            print(f'problem in B: game error only (or {count} times vs {a_errors.get(text, 0)}) with B: {text}')
     for name, path in (('A', a_path), ('B', b_path)):
         found, expected = judge.judge(path)
         problems += len(found)
@@ -132,4 +148,6 @@ def main(a_path, b_path, times=True, lines_only=False):
 
 
 if __name__ == '__main__':
+    # Under python -I stdout is the ANSI code page (PYTHONIOENCODING ignored): a log's character it lacks must not crash the report.
+    sys.stdout.reconfigure(errors='backslashreplace')
     sys.exit(main(sys.argv[1], sys.argv[2], '--no-times' not in sys.argv, '--lines-only' in sys.argv))

@@ -28,7 +28,7 @@ public static class TypePlaqueSkip
     private const string ModifierInterface = "BaseLib.Hooks.ICardTypeTextModifier";
     private const string CustomTextInterface = "BaseLib.Abstracts.ICustomTypeTextCard";
 
-    /// <summary>BaseLib 3.4.7 <c>AddSubtypesToTypePlaquePatch.TryModifyPlaqueText</c>.</summary>
+    /// <summary>BaseLib 3.4.7 and 3.4.8 (identical) <c>AddSubtypesToTypePlaquePatch.TryModifyPlaqueText</c>.</summary>
     private const string Fingerprint = "2D24047BA6035BAF";
 
     public static bool Enabled { get; set; } = true;

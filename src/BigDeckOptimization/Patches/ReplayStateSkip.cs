@@ -1,6 +1,7 @@
 using System;
 using System.Reflection;
 using HarmonyLib;
+using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
@@ -23,7 +24,10 @@ public static class ReplayStateSkip
 {
     public const string Name = "ReplayStateSkip";
 
-    /// <summary>v0.107.1 and v0.111 <c>CombatReplayWriter.RecordChecksum</c>: only adds to the recording.</summary>
+    /// <summary>
+    /// v0.107.1, v0.111, v0.113.x <c>CombatReplayWriter.RecordChecksum</c>: in a combat, while enabled, adds to the recording, or throws
+    /// when nothing is being recorded (<c>RecordInitialState</c> not called); nothing else.
+    /// </summary>
     private const string RecordChecksumFingerprint = "EB218CAA224E4EC5";
 
     private const int MaxCards = 1000;
@@ -42,9 +46,11 @@ public static class ReplayStateSkip
         Applied = true;
     }
 
-    private static bool Prefix(NetFullCombatState fullCombatState)
+    private static bool Prefix(CombatReplayWriter __instance, NetFullCombatState fullCombatState)
     {
-        if (!Enabled || PatchSafety.IsPatchedByOthers(_record))
+        // Only where the game would add to the recording: disabled or out of combat it does nothing (nothing to count); not
+        // recording, its own error stays.
+        if (!Enabled || !__instance.IsEnabled || !__instance.IsRecordingReplay || !CombatManager.Instance.IsInProgress || PatchSafety.IsPatchedByOthers(_record))
         {
             return true;
         }

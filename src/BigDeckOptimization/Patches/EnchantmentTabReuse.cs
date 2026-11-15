@@ -29,8 +29,17 @@ public static class EnchantmentTabReuse
     private const string LimitlessAssembly = "Limitless";
     private const string CardExtensionsType = "Limitless.LimitlessCode.UncappedEnchantments.CardPatches.CardExtensions";
 
-    /// <summary>Limitless v1.1.7 <c>CardExtensions.UpdateEnchantmentVisuals</c>, the code mirrored below.</summary>
+    /// <summary>Limitless v1.1.7 to v1.2.1 (same code) <c>CardExtensions.UpdateEnchantmentVisuals</c>, the code mirrored below.</summary>
     private const string MirroredFingerprint = "045A3C7DEE0B15C2";
+
+    /// <summary>
+    /// Limitless v1.2.1 code the mirror calls and relies on: SetEnchantmentStatus sets the same properties in both of its
+    /// branches (so a tab reused across a Disabled/Normal change ends up as a fresh duplicate would), TabStride gives the
+    /// layout, EnsureAttached only attaches the host once.
+    /// </summary>
+    private const string SetEnchantmentStatusFingerprint = "3954DA23C0363FCE";
+    private const string TabStrideFingerprint = "5EFCC271DBF5A1D9";
+    private const string EnsureAttachedFingerprint = "CC9FE40565198C1E";
 
     public static bool Enabled { get; set; } = true;
 
@@ -82,11 +91,15 @@ public static class EnchantmentTabReuse
         _multiEnchantment = AccessTools.TypeByName("Limitless.LimitlessCode.UncappedEnchantments.MultiEnchantment");
         _innerEnchantments = AccessTools.Method(_multiEnchantment, "InnerEnchantments")
             .CreateDelegate<Func<EnchantmentModel?, IReadOnlyList<EnchantmentModel>>>();
-        _ensureAttached = AccessTools.Method("Limitless.LimitlessCode.UncappedEnchantments.UI.EnchantmentTabHost:EnsureAttached")
-            .CreateDelegate<Func<NCard, Control?>>();
-        _tabStride = AccessTools.Method(extensions, "TabStride").CreateDelegate<Func<Control, Vector2>>();
-        _setEnchantmentStatus = AccessTools.Method(extensions, "SetEnchantmentStatus")
-            .CreateDelegate<Action<NCard, EnchantmentStatus, Control, TextureRect, MegaLabel>>();
+        MethodInfo ensureAttached = AccessTools.Method("Limitless.LimitlessCode.UncappedEnchantments.UI.EnchantmentTabHost:EnsureAttached");
+        MethodInfo tabStride = AccessTools.Method(extensions, "TabStride");
+        MethodInfo setEnchantmentStatus = AccessTools.Method(extensions, "SetEnchantmentStatus");
+        PatchSafety.RequireFingerprint(ensureAttached, EnsureAttachedFingerprint);
+        PatchSafety.RequireFingerprint(tabStride, TabStrideFingerprint);
+        PatchSafety.RequireFingerprint(setEnchantmentStatus, SetEnchantmentStatusFingerprint);
+        _ensureAttached = ensureAttached.CreateDelegate<Func<NCard, Control?>>();
+        _tabStride = tabStride.CreateDelegate<Func<Control, Vector2>>();
+        _setEnchantmentStatus = setEnchantmentStatus.CreateDelegate<Action<NCard, EnchantmentStatus, Control, TextureRect, MegaLabel>>();
         object hideForAnim = AccessTools.Field(
             AccessTools.TypeByName("Limitless.LimitlessCode.UncappedEnchantments.EnchantmentModelPatches.SpireFields_EnchantmentModel"),
             "HideForAnim").GetValue(null)!;
@@ -173,30 +186,49 @@ public static class EnchantmentTabReuse
             host.RemoveChild(extra);
             extra.QueueFree();
         }
-        for (int i = 0; i < inner.Count; i++)
+        // A new tab is added to the host only once configured, in Limitless's order (MegaLabel's _Ready runs after its text
+        // is set): until then it is ours to free if anything throws, before Limitless rebuilds the tabs.
+        Node? pending = null;
+        try
         {
-            EnchantmentModel enchantmentModel = inner[i];
-            bool isNew = i >= existing;
-            TextureRect textureRect = isNew ? (TextureRect)template.Duplicate() : (TextureRect)host.GetChild(i);
-            TextureRect icon = (TextureRect)textureRect.GetChild(0);
-            MegaLabel label = (MegaLabel)textureRect.GetChild(1);
-            textureRect.Visible = true;
-            bool flag = !_hideForAnim!(enchantmentModel);
-            // Limitless reads the Modulate of a fresh duplicate, i.e. the template's.
-            textureRect.SelfModulate = new Color(template.Modulate.R, template.Modulate.G, template.Modulate.B, flag ? 1f : 0f);
-            icon.SelfModulate = new Color(templateIcon.Modulate.R, templateIcon.Modulate.G, templateIcon.Modulate.B, flag ? 1f : 0f);
-            label.SelfModulate = new Color(templateLabel.Modulate.R, templateLabel.Modulate.G, templateLabel.Modulate.B, flag ? 1f : 0f);
-            icon.Texture = enchantmentModel.Icon;
-            label.SetTextAutoSize(enchantmentModel.DisplayAmount.ToString());
-            label.Visible = enchantmentModel.ShowAmount;
-            _setEnchantmentStatus!(nCard, enchantmentModel.Status, textureRect, icon, label);
-            textureRect.SetAnchorsPreset(Control.LayoutPreset.TopLeft);
-            textureRect.Position = new Vector2((float)(i / 3) * size.X, (float)(i % 3) * size.Y);
-            textureRect.Size = size;
-            if (isNew)
+            for (int i = 0; i < inner.Count; i++)
             {
-                host.AddChild(textureRect, forceReadableName: false, Node.InternalMode.Disabled);
+                EnchantmentModel enchantmentModel = inner[i];
+                bool isNew = i >= existing;
+                if (isNew)
+                {
+                    pending = template.Duplicate();
+                }
+                TextureRect textureRect = isNew ? (TextureRect)pending! : (TextureRect)host.GetChild(i);
+                TextureRect icon = (TextureRect)textureRect.GetChild(0);
+                MegaLabel label = (MegaLabel)textureRect.GetChild(1);
+                textureRect.Visible = true;
+                bool flag = !_hideForAnim!(enchantmentModel);
+                // Limitless reads the Modulate of a fresh duplicate, i.e. the template's.
+                textureRect.SelfModulate = new Color(template.Modulate.R, template.Modulate.G, template.Modulate.B, flag ? 1f : 0f);
+                icon.SelfModulate = new Color(templateIcon.Modulate.R, templateIcon.Modulate.G, templateIcon.Modulate.B, flag ? 1f : 0f);
+                label.SelfModulate = new Color(templateLabel.Modulate.R, templateLabel.Modulate.G, templateLabel.Modulate.B, flag ? 1f : 0f);
+                icon.Texture = enchantmentModel.Icon;
+                label.SetTextAutoSize(enchantmentModel.DisplayAmount.ToString());
+                label.Visible = enchantmentModel.ShowAmount;
+                _setEnchantmentStatus!(nCard, enchantmentModel.Status, textureRect, icon, label);
+                textureRect.SetAnchorsPreset(Control.LayoutPreset.TopLeft);
+                textureRect.Position = new Vector2((float)(i / 3) * size.X, (float)(i % 3) * size.Y);
+                textureRect.Size = size;
+                if (isNew)
+                {
+                    host.AddChild(textureRect, forceReadableName: false, Node.InternalMode.Disabled);
+                    pending = null;
+                }
             }
+        }
+        catch
+        {
+            if (pending != null && GodotObject.IsInstanceValid(pending) && pending.GetParent() == null)
+            {
+                pending.Free();
+            }
+            throw;
         }
         Vector2 defaultPosition = _defaultEnchantmentPosition!(nCard);
         host.Position = model.HasStarCostX || model.CurrentStarCost >= 0 ? defaultPosition : defaultPosition + Vector2.Up * 45f;

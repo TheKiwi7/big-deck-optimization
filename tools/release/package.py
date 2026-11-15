@@ -1,6 +1,12 @@
 """Builds the public (Release) mod and lays out what each distribution channel needs.
 
-Usage (repo root):  python -I tools/release/package.py
+Usage (repo root):  python -I tools/release/package.py [--draft]
+
+The package is built from the release commit: src/ must have no uncommitted change, since the DLL's embedded Source Link
+names HEAD (stack traces from players resolve to that commit on GitHub). --draft builds anyway, to test the package on a
+copy before the commit; package again once committed. The build is not incremental, compiles against
+refs/v<min_game_version> (the manifest's oldest supported game, whatever Steam has installed), and the csproj <Version>
+must match the manifest's version (the game logs the first, co-op compares the second).
 
 Produces, under dist/ (gitignored):
   BigDeckOptimization-vX.Y.Z.zip     GitHub release / Nexus: a BigDeckOptimization/ folder to drop into <game>/mods/
@@ -34,9 +40,31 @@ def dotnet() -> str:
     return str(default) if default.exists() else "dotnet"
 
 
-def build() -> None:
-    subprocess.run([dotnet(), "build", str(PROJECT / "BigDeckOptimization.csproj"), "-c", "Release",
-                    "-p:DeployToGame=false", "-nologo", "-v", "q"], check=True)
+def check_sources(manifest: dict, draft: bool) -> Path:
+    """Version in step, sources committed, reference assemblies there. Returns the reference assemblies' folder."""
+    version = manifest["version"]
+    csproj = (PROJECT / "BigDeckOptimization.csproj").read_text(encoding="utf-8")
+    match = re.search(r"<Version>([^<]+)</Version>", csproj)
+    if not match or "v" + match.group(1).strip() != version:
+        sys.exit(f"BigDeckOptimization.csproj <Version> {match.group(1) if match else '(none)'} doesn't match the manifest's {version}")
+    refs = ROOT / "refs" / f"v{manifest.get('min_game_version', '')}"
+    missing = [name for name in ("sts2.dll", "GodotSharp.dll", "0Harmony.dll") if not (refs / name).exists()]
+    if missing:
+        sys.exit(f"{refs} lacks {', '.join(missing)}: the release compiles against the oldest supported game "
+                 f"(min_game_version), copy its assemblies there")
+    status = subprocess.run(["git", "status", "--porcelain", "--", "src"], cwd=ROOT, capture_output=True, text=True, check=True).stdout
+    if status.strip():
+        head = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+        text = f"src/ has uncommitted changes: the DLL's Source Link would name {head}, whose sources differ:\n{status.rstrip()}"
+        if not draft:
+            sys.exit(text + "\nCommit first (on the user's word), or --draft to test the package on a copy.")
+        print("DRAFT, not for publishing: " + text)
+    return refs
+
+
+def build(refs: Path) -> None:
+    subprocess.run([dotnet(), "build", str(PROJECT / "BigDeckOptimization.csproj"), "-c", "Release", "--no-incremental",
+                    "-p:DeployToGame=false", f"-p:GameDataDir={refs}", "-nologo", "-v", "q"], check=True)
     dll = (OUTPUT / "BigDeckOptimization.dll").read_bytes()
     # Test tooling (console commands, unattended test runner, profiler) must not ship.
     for marker in ("bdperf", "bigdeck", "--bdtest", "PerfProbe"):
@@ -45,14 +73,34 @@ def build() -> None:
     check_translations(dll)
 
 
+def menu_keys() -> set:
+    """Every key the settings menu asks Translations for: '<option>.title/.desc' of each option of Settings.Options and of
+    the fast-start relics line, and every literal key of a Translations.Get call."""
+    settings = (PROJECT / "Config" / "Settings.cs").read_text(encoding="utf-8")
+    options = re.findall(r'\bnew\("([a-z_]+)",\s*"', settings)
+    fast = re.search(r'FastStartRelicsKey\s*=\s*"([a-z_]+)"', settings)
+    if len(options) < 10 or not fast:
+        sys.exit("Settings.cs: options or FastStartRelicsKey not found (tools/release/package.py's menu_keys needs updating)")
+    keys = {key + suffix for key in options + [fast.group(1)] for suffix in (".title", ".desc")}
+    for file in (ROOT / "src").rglob("*.cs"):
+        if "obj" in file.relative_to(ROOT).parts or "bin" in file.relative_to(ROOT).parts:
+            continue
+        keys |= set(re.findall(r'Translations\.Get\([^,()]*(?:\([^()]*\))?[^,()]*,\s*"([^"]+)"', file.read_text(encoding="utf-8")))
+    return keys
+
+
 def check_translations(dll: bytes) -> None:
-    """Settings menu translations (Localization/<game language>.json): same keys, no empty text, embedded in the DLL."""
+    """Settings menu translations (Localization/<game language>.json): every key the menu asks for, the same keys in every
+    file, no empty text, embedded in the DLL. A missing key would show English in that language without any error."""
     files = sorted((PROJECT / "Localization").glob("*.json"))
     if not files:
         sys.exit("No settings menu translations in src/BigDeckOptimization/Localization")
+    needed = menu_keys()
     reference = None
     for file in files:
         texts = json.loads(file.read_text(encoding="utf-8"))
+        if needed - set(texts):
+            sys.exit(f"{file.name} lacks the menu's keys {sorted(needed - set(texts))}")
         reference = reference or (file.name, set(texts))
         if set(texts) != reference[1]:
             sys.exit(f"{file.name} and {reference[0]} have different keys: {sorted(set(texts) ^ reference[1])}")
@@ -106,11 +154,13 @@ def workshop(version: str) -> None:
 
 
 def main() -> None:
-    version = json.loads(MANIFEST.read_text(encoding="utf-8"))["version"]
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    version = manifest["version"]
+    refs = check_sources(manifest, "--draft" in sys.argv[1:])
     if DIST.exists():
         shutil.rmtree(DIST)
     DIST.mkdir()
-    build()
+    build(refs)
 
     archive = DIST / f"BigDeckOptimization-{version}.zip"
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:

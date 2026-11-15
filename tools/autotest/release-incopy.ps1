@@ -56,7 +56,8 @@ $problems = @($text | Where-Object { $_ -match "\[BigDeckOptimization\] Patch \S
 if (-not ($text | Where-Object { $_ -match "\[BigDeckOptimization\] HarmonyRebuild: all \d+ patched methods detoured" })) { $problems += "no 'HarmonyRebuild: all N patched methods detoured' line" }
 # With BaseLib among the mods, the package's settings menu must register (a missing or broken BigDeckOptimization.Menu.dll only
 # logs a warning: players would get no menu).
-if ((Get-TestModIds) -contains "BaseLib" -and -not ($text | Where-Object { $_ -match "\[BigDeckOptimization\] BaseLibSettings: registered" })) { $problems += "BaseLib loaded but no 'BaseLibSettings: registered' line: the package's settings menu didn't load" }
+# The mods this session loaded (Add-TestMods), not the account's list.
+if (@($global:BdTestModIds[(Get-CopyKey $GameDir)]) -contains "BaseLib" -and -not ($text | Where-Object { $_ -match "\[BigDeckOptimization\] BaseLibSettings: registered" })) { $problems += "BaseLib loaded but no 'BaseLibSettings: registered' line: the package's settings menu didn't load" }
 # The package's version is the one being released (the newest zip could be an older build).
 $version = (Get-Content (Join-Path $PSScriptRoot "..\..\src\BigDeckOptimization\BigDeckOptimization.json") -Raw | ConvertFrom-Json).version.TrimStart('v')
 if ($init -notmatch "Initialized v$([regex]::Escape($version)) ") { $problems += "the package says '$init', the manifest version is v$version" }
@@ -68,3 +69,4 @@ $problems += @(Get-MissingTestMods $log $GameDir)
 $text | Where-Object { $_ -match "\[BigDeckOptimization\] (HookSkip: \d+ hooks|InlineGuard: \d+|Patches applied)" } | ForEach-Object { "         " + ($_ -replace '^.*\[BigDeckOptimization\] ', '') }
 if ($problems.Count) { "PROBLEMS:"; $problems | ForEach-Object { "  $_" } } else { "no patch skipped, failed or disabled" }
 "debug build back: $(Test-Path (Join-Path $installed 'BigDeckOptimization.dll')), test mods removed: $(-not (Test-Path (Join-Path $GameDir 'mods_STEAMTEST')))"
+exit $(if ($problems.Count) { 1 } else { 0 })

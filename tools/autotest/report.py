@@ -85,5 +85,7 @@ def main(a_path, b_path, markdown):
 
 
 if __name__ == '__main__':
+    # Under python -I stdout is the ANSI code page (PYTHONIOENCODING ignored): a log's character it lacks must not crash the report.
+    sys.stdout.reconfigure(errors='backslashreplace')
     args = [x for x in sys.argv[1:] if x != '--markdown']
     sys.exit(main(args[0], args[1], '--markdown' in sys.argv))

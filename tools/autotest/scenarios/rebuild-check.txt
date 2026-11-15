@@ -9,6 +9,8 @@ wait 3
 rebuildcheck
 rebuildcheck again NGlobalUi._Ready
 rebuildcheck again NRewardButton._Ready
+# The forced failure warns, by design: its previous code back, every mod's patches with it (checked by the next line).
+expect HarmonyRebuild: rebuildcheck force on NRelicInventory\.AnimShow failed
 rebuildcheck force NRelicInventory.AnimShow
 rebuildcheck
 newrun NECROBINDER

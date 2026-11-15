@@ -15,15 +15,20 @@ namespace BigDeckOptimization.Patches;
 /// Limitless-enchanted cards (the hand's texts are formatted again after every action).
 ///
 /// That call returns the shared pool instead. The buffer only receives the unescaped options (written from its start,
-/// then copied into the cached string), so the text is the same; nothing else in the getter changes.
+/// then copied into the cached string), so the text is the same; nothing else in the getter changes. A shared buffer may
+/// hold old characters where a new pool's is zeroed: <c>EscapedLiteral.UnEscapeCharLiterals</c>, which fills it and returns
+/// only what it wrote, is fingerprinted too.
 /// </summary>
 public static class TextPoolReuse
 {
     public const string Name = "TextPoolReuse";
 
     private const string PlaceholderType = "SmartFormat.Core.Parsing.Placeholder";
-    /// <summary>SmartFormat 3.3.0 (game v0.107.1 and v0.111) <c>Placeholder.FormatterOptions</c> getter.</summary>
+    /// <summary>SmartFormat 3.3.0 (game v0.107.1, v0.111.0, v0.113.0 and v0.113.1, the same DLL) <c>Placeholder.FormatterOptions</c> getter.</summary>
     private const string FormatterOptionsFingerprint = "8B7803D2AE1BD745";
+    private const string EscapedLiteralType = "SmartFormat.Core.Parsing.EscapedLiteral";
+    /// <summary>Same SmartFormat: what fills the rented buffer, from its start, and returns only the part it wrote.</summary>
+    private const string UnEscapeFingerprint = "C3C407989B7DF429";
 
     public static bool Enabled { get; set; } = true;
     public static bool Applied { get; private set; }
@@ -38,6 +43,13 @@ public static class TextPoolReuse
         Type placeholder = AccessTools.TypeByName(PlaceholderType) ?? throw new PatchSkippedException("no " + PlaceholderType);
         MethodInfo getter = AccessTools.PropertyGetter(placeholder, "FormatterOptions") ?? throw new MissingMethodException(PlaceholderType, "get_FormatterOptions");
         PatchSafety.RequireFingerprint(getter, FormatterOptionsFingerprint);
+        Type escaped = AccessTools.TypeByName(EscapedLiteralType) ?? throw new PatchSkippedException("no " + EscapedLiteralType);
+        List<MethodInfo> unEscape = AccessTools.GetDeclaredMethods(escaped).FindAll(m => m.Name == "UnEscapeCharLiterals");
+        if (unEscape.Count != 1)
+        {
+            throw new PatchSkippedException($"{unEscape.Count} EscapedLiteral.UnEscapeCharLiterals methods, 1 expected");
+        }
+        PatchSafety.RequireFingerprint(unEscape[0], UnEscapeFingerprint);
         PatchGuard.Patch(harmony, getter, transpiler: new HarmonyMethod(typeof(TextPoolReuse), nameof(Transpiler)));
         if (!_replaced)
         {

@@ -11,7 +11,8 @@ using MegaCrit.Sts2.Core.Logging;
 namespace BigDeckOptimization.Patches;
 
 /// <summary>
-/// Five of the game's text effects (<c>[sine]</c>, fade-in, fly-in, jitter, thinking dots) read <c>charFx.Env</c> for every glyph at
+/// Five of the game's text effects (<c>[sine]</c>, fade-in, fly-in, jitter, thinking dots; from v0.111 a sixth, <c>[scramble]</c>, which
+/// reads it three times) read <c>charFx.Env</c> for every glyph at
 /// every frame: GodotSharp gives a new <c>Godot.Collections.Dictionary</c> each time, an object with a finalizer, registered in its
 /// disposables tracker (a weak reference and a dictionary node each). On the map at a few hundred frames a second they were three
 /// quarters of everything allocated, and dead objects with finalizers are what made each ephemeral collection last: their marking
@@ -39,14 +40,19 @@ public static class RichTextEnvRelease
     private const string RegisterFingerprint = "1A192A2B1982B847";
     private const string DisposeFingerprint = "66658970BA5C94BB";
 
-    /// <summary>The effects and their <c>_ProcessCustomFX</c> (v0.107.1 and v0.111): <c>Env</c> read into a local, used, never stored.</summary>
-    private static readonly (string Type, string Fingerprint)[] Effects =
+    /// <summary>
+    /// The effects and their <c>_ProcessCustomFX</c> (v0.107.1, v0.111.0, v0.113.0 and v0.113.1): <c>Env</c> read into a local or
+    /// inline, used, never stored. <c>Later</c>: only in later game versions (<c>RichTextScramble</c> from v0.111), its absence is
+    /// no change (not reported as left vanilla on v0.107.1).
+    /// </summary>
+    private static readonly (string Type, string Fingerprint, bool Later)[] Effects =
     {
-        ("RichTextSine", "F115E6206403A0BF"),
-        ("RichTextFadeIn", "3807CB16B275C4CC"),
-        ("RichTextFlyIn", "D379078722018CDE"),
-        ("RichTextJitter", "954F4DE27F361120"),
-        ("RichTextThinkyDots", "44813E7C11DF1717"),
+        ("RichTextSine", "F115E6206403A0BF", false),
+        ("RichTextFadeIn", "3807CB16B275C4CC", false),
+        ("RichTextFlyIn", "D379078722018CDE", false),
+        ("RichTextJitter", "954F4DE27F361120", false),
+        ("RichTextThinkyDots", "44813E7C11DF1717", false),
+        ("RichTextScramble", "9AE255C80AF67670", true),
     };
 
     private static readonly MethodInfo _env = AccessTools.PropertyGetter(typeof(CharFXTransform), nameof(CharFXTransform.Env));
@@ -60,10 +66,14 @@ public static class RichTextEnvRelease
     public static void Apply(Harmony harmony)
     {
         List<string> left = new();
-        foreach ((string type, string fingerprint) in Effects)
+        foreach ((string type, string fingerprint, bool later) in Effects)
         {
-            MethodInfo? method = AccessTools.TypeByName("MegaCrit.Sts2.Core.RichTextTags." + type) is { } effect
-                ? AccessTools.DeclaredMethod(effect, "_ProcessCustomFX", new[] { typeof(CharFXTransform) }) : null;
+            System.Type? effect = AccessTools.TypeByName("MegaCrit.Sts2.Core.RichTextTags." + type);
+            if (effect == null && later)
+            {
+                continue;
+            }
+            MethodInfo? method = effect == null ? null : AccessTools.DeclaredMethod(effect, "_ProcessCustomFX", new[] { typeof(CharFXTransform) });
             if (method == null || !PatchSafety.FingerprintMatches(MethodFingerprint.Of(method), fingerprint))
             {
                 left.Add(type);
@@ -81,10 +91,10 @@ public static class RichTextEnvRelease
         {
             Log.Info($"[{ModEntry.Id}] {Name}: changed or missing, left vanilla: {string.Join(", ", left)}");
         }
-        Applied = true;
+        MethodInfo? register = null;
         try
         {
-            MethodInfo register = AccessTools.Method(AccessTools.TypeByName("Godot.DisposablesTracker"), "RegisterDisposable")
+            register = AccessTools.Method(AccessTools.TypeByName("Godot.DisposablesTracker"), "RegisterDisposable")
                 ?? throw new MissingMethodException("DisposablesTracker", "RegisterDisposable");
             MethodInfo dispose = AccessTools.Method(typeof(Dictionary), nameof(Dictionary.Dispose), new[] { typeof(bool) })
                 ?? throw new MissingMethodException(nameof(Dictionary), nameof(Dictionary.Dispose));
@@ -97,6 +107,36 @@ public static class RichTextEnvRelease
         {
             Log.Info($"[{ModEntry.Id}] {Name}: the tracker's code changed, dictionaries stay registered: {e.Message}");
         }
+        catch (Exception e)
+        {
+            // The tracker part is optional: its failure (Harmony couldn't patch it) mustn't take the effects with it. Only when
+            // what it may have installed came off; otherwise the whole patch comes off (the caller removes everything).
+            bool removed;
+            try
+            {
+                removed = register == null || RemoveTrackerPatch(harmony, register);
+            }
+            catch (Exception)
+            {
+                removed = false;
+            }
+            if (!removed)
+            {
+                throw;
+            }
+            Log.Warn($"[{ModEntry.Id}] {Name}: the tracker could not be patched, dictionaries stay registered: {e}");
+        }
+        Applied = true;
+    }
+
+    private static bool RemoveTrackerPatch(Harmony harmony, MethodInfo register)
+    {
+        List<PatchGuard.Installed> installed = PatchGuard.Owned(harmony).Where(p => p.Original == register).ToList();
+        if (installed.Count > 0)
+        {
+            PatchGuard.Remove(installed);
+        }
+        return !PatchGuard.Owned(harmony).Any(p => p.Original == register);
     }
 
     private static bool RegisterPrefix(ref WeakReference<IDisposable>? __result)

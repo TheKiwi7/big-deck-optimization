@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Co-op: every player must now have the mod on, or every player off: a player with it off can't join a game where it's on (the game says the mods don't match). During a co-op run, `bdopt off` now shows a warning and only turns the mod off after `bdopt off yes`, and the main switch in the settings menu can't be unticked (hover it to see why). With the mod off, your combats would start much later than the other players', and the game could then lose their actions.
+- The settings menu's minimum-relics slider for the fast combat start is now greyed out, with the reason on hover, whenever the fast combat start can't run.
+- Fixed: a creature's tooltip could stay on screen over an open potion menu when the combat changed in co-op.
+- On the game's beta (v0.113), using `bdopt` no longer marks your run as one where a debug command was used.
+- With the mod turned off, the mods screen now shows the game's own image for it, like the rest of the game.
+- Errors from the game or other mods in code this mod touches now keep their full details in the log, which makes bug reports easier to trace.
+- Safer with Limitless: a safety check on its stacked enchantments that only ran in test builds now runs for everyone, and turns that part off if it ever finds a difference.
+- The "Co-op state check" description now says it also speeds up solo games on the game's beta.
+- Safer with other mods and future game updates: more of the game and mod code the optimizations rely on is checked, and a change there leaves only that part to the game.
+
 ## v1.0.3
 
 - On the game's current beta (v0.113): reshuffling a big draw pile and starting a combat with Stone Cracker no longer freeze the game for seconds (with four players and big decks, that freeze could disconnect a player), and every game effect is now optimized (four of its new ones were still left to the game).

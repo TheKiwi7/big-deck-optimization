@@ -39,7 +39,8 @@ AbstractModel default it calls ("Name=FP"), and, for hooks using choice contexts
 helpers' fingerprints of that version (HelperProfiles, reviewed by hand: tools/fpdiff review flags them when they change).
 HookSkip turns a hook on only when all of these match the running game.
 
-Usage (repo root), per version: decompile the game (ilspycmd -p) and dump the fingerprints, then classify all at once:
+Usage (repo root), per version: decompile the game (ilspycmd -p) and dump the fingerprints, then classify all at once
+(from Git Bash; in Windows PowerShell 5.1 `>` writes UTF-16, which load() also reads, or pipe to `Out-File -Encoding utf8`):
   dotnet run --project tools/fpdiff -c Release -- hookfps <game>/data_sts2_windows_x86_64 > fps-<version>.txt
   python -I tools/hookskip/classify.py v0.107.1 decompiled/sts2 fps-v0.107.1.txt v0.111.0 decompiled/sts2-beta fps-v0.111.0.txt \
       v0.113.1 decompiled/sts2-beta-0.113.1 fps-v0.113.1.txt
@@ -76,7 +77,10 @@ def load(root, fps_path):
     ROOT = root
     abstract = open(ROOT + '/MegaCrit.Sts2.Core.Models/AbstractModel.cs', encoding='utf-8').read()
     fps, default_fps, helpers = {}, {}, {}
-    for line in open(fps_path, encoding='utf-8-sig'):
+    raw = open(fps_path, 'rb').read()
+    # Windows PowerShell 5.1's `>` writes UTF-16 LE with a BOM.
+    text = raw.decode('utf-16') if raw[:2] in (b'\xff\xfe', b'\xfe\xff') else raw.decode('utf-8-sig')
+    for line in text.splitlines():
         m = re.match(r'(Hook|AbstractModel|Helper)\.(.+): ([0-9A-F]{16}|-)$', line.strip())
         if not m:
             continue
@@ -524,7 +528,7 @@ def model_equality_overloaded():
 
 def need(meth, kinds, used):
     params, kind = defaults.get(meth, (None, ('missing',)))
-    if kind[0] not in [k[0] for k in [kinds]]:
+    if kind[0] not in kinds:
         raise Unsafe(f'{meth}: default {kind}, need {kinds}')
     used['methods'].add(meth)
 
@@ -576,8 +580,10 @@ def classify():
                     raise Unsafe('walk: ' + header)
                 body, _ = block(text, m.end() - 1)
                 var = m.group(1)
+                # The loop variable escapes the loop only where a default listener never gets: C# scopes it to the loop,
+                # and check_loop's closed list of statements (anything else raises Unsafe) stores it outside only in
+                # blocks that don't run for a default (the "changed" list.Add(VAR)). No separate check.
                 check_loop(var, body, used)
-                # the loop variable must not escape the loop
                 loops += 1
             m = re.search(r'if \((runState\.IterateHookListeners\(combatState\)|IterateCombatHookListeners\(combatState\))\.Contains\((\w+)\)\)\s*\n', text)
             if m and loops == 0:
@@ -599,8 +605,7 @@ def classify():
             if not used['methods']:
                 raise Unsafe('no listener method')
             check_hook_level(rest, used)
-            kind = 'iterator' if 'yield' in text else ('async' if ' async ' in sig else 'plain')
-            safe.append((name, fps[name][0], kind, sorted(used['methods']), used['subscribed'], used['contexts'] or used['subscribed']))
+            safe.append((name, fps[name][0], sorted(used['methods']), used['subscribed'], used['contexts'] or used['subscribed']))
         except Unsafe as e:
             unsafe.append((name, str(e)))
         except Exception as e:  # parse problems: unsafe
@@ -621,7 +626,7 @@ for label, root, fps_path in VERSIONS:
     print(f'{label}: SAFE {len(safe)}  UNSAFE {len(unsafe)}')
     for n, why in unsafe:
         print('  -', n, ':', why[:110])
-    for name, fp, kind, methods, subscribed, contexts in safe:
+    for name, fp, methods, subscribed, contexts in safe:
         pins = []
         for meth in methods:
             if len(default_fps.get(meth, [])) != 1:

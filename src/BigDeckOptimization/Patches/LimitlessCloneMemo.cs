@@ -11,18 +11,20 @@ using MegaCrit.Sts2.Core.Saves.Runs;
 namespace BigDeckOptimization.Patches;
 
 /// <summary>
-/// Limitless 1.1.7's <c>MultiEnchantment.DeepCloneFields</c> rebuilds every saved inner card when a card is cloned:
+/// Limitless's (1.1.7 to 1.2.1, same code) <c>MultiEnchantment.DeepCloneFields</c> rebuilds every saved inner card when a card is cloned:
 /// <c>CardModel.FromSerializable(c).MutableClone().ToSerializable()</c>, for every card of the deck at each combat start
 /// (~210 ms with 2 x 10,000 cards). That result depends only on the saved card's content, never changed once made (no code of the
 /// game, Limitless or BaseLib writes to a <c>SerializableCard</c> after making it), and on BaseLib's registered saves
 /// (<see cref="LimitlessReserialize.MemoStamp"/>; -1 when unknown, then always rebuilt). The result made for a content is given for the
 /// same content again, read-only like any saved card: a big deck holds few different inner cards, a first combat gains as much as the
 /// next ones, and so do other players' decks, rebuilt as new objects at each co-op combat. A saved card with real BaseLib data isn't kept,
-/// nor one whose card or enchantment type has code of another mod on the way (<see cref="OnTheWay"/>: only the game's and known code
-/// is taken to depend on the saved card alone), and only while the game's own code of that clone is the checked one
-/// (<see cref="GameChain"/>).
+/// nor one whose card or enchantment type has, below CardModel / EnchantmentModel, an override on the way that isn't pinned or a
+/// mod's saved property (<see cref="OnTheWay"/>: what is checked is those overrides and the saved properties' accessors, run by
+/// reflection), and only while the game's own code of that clone is the checked one (<see cref="GameChain"/>).
 ///
 /// One answer in <see cref="VerifyEvery"/> is rebuilt and both serialized: a byte difference turns it off for the session.
+/// The memo is a bounded cache across runs by design (<see cref="MaxContents"/> saved contents, pure data with no model or
+/// run reference): a later run with the same inner cards reuses it, and it is cleared when the stamp changes.
 /// </summary>
 public static class LimitlessCloneMemo
 {
@@ -34,7 +36,7 @@ public static class LimitlessCloneMemo
     public static long Reused { get; private set; }
     public static long Verified { get; private set; }
 
-    /// <summary>Limitless 1.1.7: the method and the lambda it maps each saved inner card with.</summary>
+    /// <summary>Limitless 1.1.7 to 1.2.1 (same code): the method and the lambda it maps each saved inner card with.</summary>
     private const string DeepCloneFieldsFingerprint = "B0598AD4D39BD71C";
     private const string LambdaFingerprint = "70B31715ABF34F7B";
 
@@ -82,6 +84,41 @@ public static class LimitlessCloneMemo
         PatchGuard.Patch(harmony, _lambda, prefix: new HarmonyMethod(typeof(LimitlessCloneMemo), nameof(Prefix)),
             postfix: new HarmonyMethod(typeof(LimitlessCloneMemo), nameof(Postfix)));
         Applied = true;
+        // Only saves work: without it Limitless's options are read at every inner card, as before.
+        try
+        {
+            PatchGuard.Patch(harmony, deepClone, prefix: new HarmonyMethod(typeof(LimitlessCloneMemo), nameof(CloneEnter)),
+                finalizer: new HarmonyMethod(typeof(LimitlessCloneMemo), nameof(CloneExit)));
+        }
+        catch (Exception e)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: Limitless's options read at every inner card: {e.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Nesting of <c>MultiEnchantment.DeepCloneFields</c> calls on this thread, and Limitless's options read once in the
+    /// outermost one: nothing a clone's inner cards run can start or end a run or change the config, while the options'
+    /// getters each ask the run by reflection (~2 calls per inner card, ~60,000 at a 2 x 10,000-card combat start).
+    /// </summary>
+    [ThreadStatic] private static int _cloneDepth;
+    [ThreadStatic] private static bool _cloneOptionsKnown;
+    [ThreadStatic] private static long _cloneOptions;
+#if BENCH
+    /// <summary>Options answered from the clone's first read (the effects check).</summary>
+    public static long OptionsReused { get; private set; }
+#endif
+
+    private static void CloneEnter() => _cloneDepth++;
+
+    private static void CloneExit()
+    {
+        // Never below 0: an exit without its enter (should a prefix ever be skipped) only makes the next reads uncached.
+        if (--_cloneDepth <= 0)
+        {
+            _cloneDepth = 0;
+            _cloneOptionsKnown = false;
+        }
     }
 
     /// <summary>
@@ -90,7 +127,8 @@ public static class LimitlessCloneMemo
     /// <c>MutableClone</c> (its dynamic variables' copies). The known patches there only shape the clone, which the lambda
     /// serializes and drops, from the saved card, the loaded types (in the stamp) and Limitless's uncapped options (in the
     /// stamp): BaseLib's extended data, SavedSpireField, modifier, resource and dynamic variable patches, Limitless's
-    /// enchantment, upgrade and status scaling ones (fingerprinted). Any other patch there: no memo.
+    /// enchantment, upgrade and status scaling ones (fingerprinted), and BaseLib's custom piles lookup on the card's node
+    /// (none for a clone). Any other patch there, or on what that code calls (the last block): no memo.
     /// </summary>
     private static readonly (Type Type, string Method, (string Patch, string Fingerprint)[] Allowed)[] Chain =
     {
@@ -144,6 +182,21 @@ public static class LimitlessCloneMemo
         (typeof(MegaCrit.Sts2.Core.Localization.DynamicVars.DynamicVarSet), "FinalizeUpgrade", Array.Empty<(string, string)>()),
         (typeof(MegaCrit.Sts2.Core.Entities.Cards.CardEnergyCost), "Clone", Array.Empty<(string, string)>()),
         (typeof(MegaCrit.Sts2.Core.Entities.Cards.CardEnergyCost), "FinalizeUpgrade", Array.Empty<(string, string)>()),
+        // What the game code above and GameOverrides call in turn, one level down (a patch deeper still isn't seen; their
+        // effects there touch only keywords, energy costs, dynamic variables and nodes, none saved): keywords (Goopy, RoyallyApproved, Steady, TezcatarasEmber, SoulsPower's OnEnchant),
+        // the energy cost and dynamic variable upgrades (TezcatarasEmber, BaseLib's UpgradeVars), the upgrade cap
+        // set_CurrentUpgradeLevel reads, the card's node lookup (none for a clone). A memo hit skips them all.
+        (typeof(CardModel), "AddKeyword", Array.Empty<(string, string)>()),
+        (typeof(CardModel), "RemoveKeyword", Array.Empty<(string, string)>()),
+        (typeof(MegaCrit.Sts2.Core.Commands.CardCmd), "RemoveKeyword", Array.Empty<(string, string)>()),
+        (typeof(MegaCrit.Sts2.Core.Nodes.Cards.NCard), "FindOnTable", new[] { ("BaseLib.Patches.Content.GetNCardPile:CheckCustomPiles", "0831B6FE3286A8E1") }),
+        (typeof(MegaCrit.Sts2.Core.Entities.Cards.CardEnergyCost), "UpgradeBy", new[] { ("Limitless.LimitlessCode.UncappedUpgrades.CardEnergyCostPatches.Patch_UpgradeBy:Prefix", "2BAB48D331AC40BF") }),
+        (typeof(MegaCrit.Sts2.Core.Localization.DynamicVars.DynamicVar), "UpgradeValueBy", new[]
+        {
+            ("Limitless.LimitlessCode.UncappedUpgrades.DynamicVarPatches.Patch_UpgradeValueBy:Prefix", "54AD057553603BD4"),
+            ("Limitless.LimitlessCode.UncappedActs.DynamicVarPatches.Patch_UpgradeValueBy:Prefix", "A2B0BBF41BF2C079"),
+        }),
+        (typeof(CardModel), "get_MaxUpgradeLevel", new[] { ("Limitless.LimitlessCode.UncappedUpgrades.CardModelPatches.Patch_MaxUpgradeLevel:Postfix", "2E571E10224C0E6E") }),
     };
 
     /// <summary>
@@ -303,28 +356,18 @@ public static class LimitlessCloneMemo
         ["MegaCrit.Sts2.Core.Models.Enchantments.TezcatarasEmber::OnEnchant"] = "D794311BEE023C2F",
     };
 
-    private static readonly Dictionary<Type, System.Reflection.MethodInfo[]?> _onTheWay = new();
-    private static readonly object _onTheWayLock = new();
+    /// <summary>Per type, never changed once added: read without a lock (asked per inner card by the filters).</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, System.Reflection.MethodInfo[]?> _onTheWay = new();
 
     /// <summary>
     /// The overrides of <see cref="OverriddenOnTheWay"/> a card or enchantment type has (its own and its ancestors' below
     /// CardModel / EnchantmentModel), when each is pinned (<see cref="GameOverrides"/>, <see cref="KnownOverrides"/>); null when
-    /// one isn't: other code there may read more than the saved card (the run, an RNG, a counter), so what the clone
-    /// gives can't be kept, and a build of it skipped (<see cref="LimitlessHookSkip"/>) may not give what is saved.
-    /// Fixed per type: cached.
+    /// one isn't, or when a mod's type there declares a saved property (its accessors run by reflection in the game's
+    /// SavedProperties.Fill and From, unchecked): other code there may read more than the saved card (the run, an RNG, a
+    /// counter), so what the clone gives can't be kept, and a build of it skipped (<see cref="LimitlessHookSkip"/>) may not
+    /// give what is saved. Fixed per type: cached (computed twice at worst by two threads, same answer).
     /// </summary>
-    internal static System.Reflection.MethodInfo[]? OnTheWay(Type type)
-    {
-        lock (_onTheWayLock)
-        {
-            if (!_onTheWay.TryGetValue(type, out System.Reflection.MethodInfo[]? methods))
-            {
-                methods = FindOnTheWay(type);
-                _onTheWay[type] = methods;
-            }
-            return methods;
-        }
-    }
+    internal static System.Reflection.MethodInfo[]? OnTheWay(Type type) => _onTheWay.GetOrAdd(type, FindOnTheWay);
 
     private static System.Reflection.MethodInfo[]? FindOnTheWay(Type type)
     {
@@ -332,6 +375,15 @@ public static class LimitlessCloneMemo
         System.Reflection.Assembly game = typeof(CardModel).Assembly;
         for (Type? t = type; t != null && t != typeof(CardModel) && t != typeof(EnchantmentModel) && t != typeof(AbstractModel); t = t.BaseType)
         {
+            // A mod's saved property: the game's Fill sets it and SavedProperties.From reads it back on the clone's way, code
+            // no fingerprint here covers (none today: Limitless's storage card and BaseLib's bases declare none, and
+            // MultiEnchantment, which does, is never an inner type). The game's own are the game's code, as the rest.
+            if (t.Assembly != game && t.GetProperties(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public
+                    | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.DeclaredOnly)
+                .Any(p => p.IsDefined(typeof(SavedPropertyAttribute), true)))
+            {
+                return null;
+            }
             foreach (System.Reflection.MethodInfo method in t.GetMethods(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.DeclaredOnly))
             {
                 if (!OverriddenOnTheWay.Contains(method.Name) || method.GetParameters().Length != 0 || method.GetBaseDefinition() == method)
@@ -433,7 +485,26 @@ public static class LimitlessCloneMemo
             return -1;
         }
         long stamp = LimitlessReserialize.MemoStamp();
-        return stamp < 0 ? -1 : stamp | OptionsStamp();
+        return stamp < 0 ? -1 : stamp | CloneOptionsStamp();
+    }
+
+    /// <summary><see cref="OptionsStamp"/>, read once per outermost <c>DeepCloneFields</c> call (every call outside one).</summary>
+    private static long CloneOptionsStamp()
+    {
+        if (_cloneDepth <= 0)
+        {
+            return OptionsStamp();
+        }
+        if (_cloneOptionsKnown)
+        {
+#if BENCH
+            OptionsReused++;
+#endif
+            return _cloneOptions;
+        }
+        _cloneOptions = OptionsStamp();
+        _cloneOptionsKnown = true;
+        return _cloneOptions;
     }
 
     private static bool Prefix(SerializableCard __0, ref SerializableCard __result, out int __state)

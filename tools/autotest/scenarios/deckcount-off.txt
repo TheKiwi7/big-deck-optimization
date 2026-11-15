@@ -487,7 +487,6 @@ setenergy 5
 cmd card WISH hand
 playcard WISH free
 checksum after WISH
-cmd bdopt on
 counters end
 endturn
 waitfor idle 200
@@ -496,4 +495,6 @@ cmd card SQUEEZE hand
 cmd card PERFECTED_STRIKE hand
 cmd card CRESCENT_SPEAR hand
 wait 0.5
+# The mod back on only after the last turn: everything before, the end of turn included, is the game's own code.
+cmd bdopt on
 quit

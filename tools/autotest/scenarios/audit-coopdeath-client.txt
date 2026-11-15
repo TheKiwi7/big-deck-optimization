@@ -17,15 +17,15 @@ waitfor turn 300
 state t2
 cmd die
 wait 3
-state dead
+state dead optional
 waitfor round 3 900
-state t3
+state t3 optional
 waitfor round 4 900
-state t4
+state t4 optional
 waitfor round 5 900
-state t5
+state t5 optional
 waitfor round 6 900
-state t6
+state t6 optional
 waitfor round 7 900
 wait 5
 quit

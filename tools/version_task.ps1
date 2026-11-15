@@ -1,6 +1,7 @@
-# Daily check of the game, BaseLib and Limitless versions (check_versions.py, published builds included): a Windows
-# notification, kept on screen until dismissed, when one differs from what the mod was verified with or when the check
-# could not run (Steam not reached, Python failing). Nothing changed: check_versions.py records the date as last checked.
+# Daily check of the game, BaseLib, Limitless and the other watched mods' versions (check_versions.py, published builds
+# included): a Windows notification, kept on screen until dismissed, when one differs from what the mod was verified with
+# or when the check could not run (Steam not reached, Python failing). Nothing changed: check_versions.py records the
+# date as last checked.
 # Runs as the current user, no admin rights.
 #   powershell -ExecutionPolicy Bypass -File tools/version_task.ps1 -Install [-At 12:00]   registers the scheduled task
 #   powershell -ExecutionPolicy Bypass -File tools/version_task.ps1 -Remove
@@ -49,7 +50,9 @@ $code = $LASTEXITCODE
 $found = @($output | Where-Object { $_ -cmatch "CHANGED|PUBLISHED UPDATE NOT VERIFIED" })
 # A check that didn't run would hide a new version: say so too.
 $failed = @($output | Where-Object { $_ -cmatch "^NOT CHECKED|failed:|not found \(" })
+# Exit 1 without a changed row is not a change either (a crash of Python itself; check_versions.py exits 2 on its own).
 if ($code -ne 0 -and $code -ne 1) { $failed += "check_versions.py exited with $code" }
+elseif ($code -eq 1 -and $found.Count -eq 0) { $failed += "check_versions.py exited with 1 without a changed version" }
 (@("$(Get-Date -Format 'yyyy-MM-dd HH:mm') exit $code") + $output) | Set-Content (Join-Path $dir "version-check.log") -Encoding utf8
 $short = { param($lines) ($lines | ForEach-Object { ($_ -replace '\s+', ' ').Trim() }) -join "; " }
 if ($TestNotification) { Show-Notification "Big Deck Optimization" "Test: this is how a version change is announced. Current result: $(if ($found.Count) { "$($found.Count) change(s)" } else { "nothing changed" })$(if ($failed.Count) { ", check incomplete" })." }

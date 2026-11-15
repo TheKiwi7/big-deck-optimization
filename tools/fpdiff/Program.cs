@@ -9,13 +9,12 @@
 //       EquivalentFingerprints.cs once the change is reviewed as harmless for the patch.
 //   list <data dir> [--mods dir]
 //       Which method each constant belongs to in that version (and the constants matching nothing).
-//   migrate <data dir of the version the constants were made on> [<other version data dir>]
-//       One-off: rewrites constants of the legacy (raw IL) algorithm into the current one (EquivalentFingerprints values
-//       from the other version).
+//   hookfps, deps, fieldusers, describe: see each command below.
 //
 // Data dirs: a game's data_sts2_windows_x86_64 folder or a refs/v<version> folder (missing assemblies come from the
-// installed game). Mods: BaseLib, Limitless, BetterSpire2 from Steam's Workshop folder unless --old-mods/--new-mods
-// holds them (e.g. a modified copy).
+// installed game). Mods: every mod some constant pins (BaseLib, Limitless, BetterSpire2, SpeedX, sts2unlimited: the
+// watched mods of tools/check_versions.py) from Steam's Workshop folder unless --old-mods/--new-mods holds them (e.g. a
+// modified copy, or the previous version of an updated mod); one not found is said, and its constants count as "not in old".
 using System.Collections.Concurrent;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -23,11 +22,11 @@ using System.Runtime.Loader;
 using System.Text;
 using System.Text.RegularExpressions;
 using BigDeckOptimization.Patches;
-using FpDiff;
 
 const string Installed = @"C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2\data_sts2_windows_x86_64";
 const string Workshop = @"C:\Program Files (x86)\Steam\steamapps\workshop\content\2868840";
-string[] modNames = { "BaseLib", "Limitless", "BetterSpire2" };
+// Assembly names of the mods some constant pins (keep in step with WATCHED in tools/check_versions.py).
+string[] modNames = { "BaseLib", "Limitless", "BetterSpire2", "SpeedX", "sts2unlimited" };
 // Code HookSkip's hooks rely on beyond their own (tools/hookskip/classify.py assumes it): a listener keeping the defaults
 // gets a choice context that only pushes/pops its model and signals ExecutionFinished. Checked at runtime per version.
 string[] HookHelpers =
@@ -70,6 +69,10 @@ List<Assembly> Load(string dataDir, string modsDir)
         if (path != null)
         {
             try { result.Add(context.LoadFromAssemblyPath(path)); } catch (Exception e) { Console.Error.WriteLine($"{mod}: {e.Message}"); }
+        }
+        else
+        {
+            Console.Error.WriteLine($"{mod}: {mod}.dll not found{(modsDir != "" ? " in " + modsDir : "")} or the Workshop folder: the constants pinning it are not looked up");
         }
     }
     return result;
@@ -238,36 +241,10 @@ HashSet<string> Callees(MethodBase m)
     return set;
 }
 
-if (args.Length == 0) { Console.WriteLine("usage: review <old> <new> [...] | list <dir> | migrate <dir> [<other>]"); return 1; }
+if (args.Length == 0) { Console.WriteLine("usage: review <old> <new> [...] | list <dir> | hookfps <dir> | deps <dll> <dir> | fieldusers <dir> <type> <field> | describe <dir> <type> <method|*>"); return 1; }
 
 switch (args[0])
 {
-    case "migrate":
-    {
-        var asmOld = Load(args[1], "");
-        var legacy = Index(asmOld, LegacyFingerprint.Of);
-        var legacyOther = args.Length > 2 && !args[2].StartsWith("--") ? Index(Load(args[2], ""), LegacyFingerprint.Of) : null;
-        var map = new Dictionary<string, string>();
-        var unmapped = new List<string>();
-        foreach (var (fp, where, line) in Constants().DistinctBy(c => c.Fp + c.Where))
-        {
-            if (map.ContainsKey(fp)) continue;
-            var source = legacy.TryGetValue(fp, out var ms) ? ms : legacyOther != null && legacyOther.TryGetValue(fp, out var ms2) ? ms2 : null;
-            if (source == null) { unmapped.Add($"{fp} {where}: {line}"); continue; }
-            var news = source.Select(MethodFingerprint.Of).Distinct().ToList();
-            if (news.Count != 1) { unmapped.Add($"{fp} {where}: ambiguous ({string.Join(", ", source.Select(Key))})"); continue; }
-            map[fp] = news[0];
-        }
-        foreach (string file in Directory.GetFiles(srcRoot, "*.cs", SearchOption.AllDirectories).Where(f => !f.Contains("\\obj\\")))
-        {
-            string text = File.ReadAllText(file);
-            string updated = Regex.Replace(text, "\"([0-9A-F]{16})\"", m => map.TryGetValue(m.Groups[1].Value, out string? n) ? $"\"{n}\"" : m.Value);
-            if (updated != text) { File.WriteAllText(file, updated, new UTF8Encoding(false)); Console.WriteLine("updated " + file); }
-        }
-        Console.WriteLine($"{map.Count} constants migrated, {unmapped.Count} not:");
-        unmapped.ForEach(u => Console.WriteLine("  " + u));
-        return 0;
-    }
     case "hookfps":
     {
         // hookfps <data dir>: input of tools/hookskip/classify.py for one game version: the code fingerprint of every Hook

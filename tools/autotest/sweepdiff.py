@@ -1,6 +1,7 @@
 """Compares two sweep sessions (AutoTest 'sweep'): the items whose time depends the most on the deck size.
    python -I sweepdiff.py <big.log> <small.log> [top n]"""
 import re, sys
+sys.stdout.reconfigure(errors='backslashreplace')  # stdout is the ANSI code page under python -I: never crash on a character
 
 LINE = re.compile(r"SWEEP (\S+) (.+?) (\S+) wall (\d+) worst (\d+) over50 (\d+) gc (\d+) mb ([\d.]+) combat (\d+) deck (\d+)")
 

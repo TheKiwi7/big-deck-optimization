@@ -1,5 +1,7 @@
 # Local co-op control, both peers with the mod off (host): any divergence here is the game's (or another mod's), not this mod's.
-# See coopoff-client.txt.
+# See coopoff-client.txt. Same lines as coop-host.txt (one combat, 'kill all' last: anywhere else a false divergence), the mod
+# off first; 'parcoop.ps1 -OnOff -Names coop' makes the same twin itself. The full reference deck with the mod off: its combat
+# start may freeze the host past the network timeout (v0.113), as for coop's own -OnOff twin.
 timeout 2400
 cmd bdopt off
 mplobby NECROBINDER 2
@@ -24,17 +26,6 @@ play 4
 endturn
 waitfor idle 900
 state t3
-cmd bdperf verify
-cmd kill all
-waitfor nocombat 600
-wait 8
-cmd fight CULTISTS_NORMAL
-waitfor idle 900
-state f2t1
-play 3
-endturn
-waitfor idle 900
-state f2t2
 cmd bdperf verify
 cmd kill all
 waitfor nocombat 600

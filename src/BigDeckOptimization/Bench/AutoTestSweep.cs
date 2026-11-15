@@ -27,7 +27,8 @@ public static partial class AutoTest
     private static double SweepItemTimeout = 30;
     private static bool _sweepChecksum, _sweepState;
 
-    private static async Task Sweep(SceneTree tree, string arg)
+    /// <summary>False when an item failed: the session is quitting (SWEEP ABORT) and the script must stop at this line.</summary>
+    private static async Task<bool> Sweep(SceneTree tree, string arg)
     {
         string[] parts = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         List<string> numbers = parts.Skip(1).Where(p => char.IsDigit(p[0])).ToList();
@@ -80,15 +81,17 @@ public static partial class AutoTest
                 Say($"  SWEEP FAILED {parts[0]} {id}: {e.GetType().Name}: {e.Message}");
                 Say($"  SWEEP ABORT next={index}");
                 Quit();
-                return;
+                return false;
             }
         }
         Say($"  SWEEP {parts[0]} done");
+        return true;
     }
 
     /// <summary>Runs one step and logs its SWEEP line.</summary>
     private static async Task SweepMeasure(SceneTree tree, string kind, string id, string step, Func<Task> body)
     {
+        _recordFrames = true;
         _frameMs.Clear();
         TimeSpan pause = GC.GetTotalPauseDuration();
         long allocated = GC.GetTotalAllocatedBytes(false);

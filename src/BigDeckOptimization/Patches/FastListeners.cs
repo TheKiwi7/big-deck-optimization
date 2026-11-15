@@ -36,7 +36,7 @@ namespace BigDeckOptimization.Patches;
 /// the game's own walk runs, and a filter drops its entries as they come (<see cref="KeptOnly"/>);</item>
 /// <item>the cached pile entries (<see cref="_tracking"/>), which rely on no pile list changing outside the methods bumping
 /// <see cref="PileVersion"/>, whatever these do: without them each filter reads the piles at each walk;</item>
-/// <item>moves applied to the cached entries (<see cref="_scopedMoves"/>, <see cref="_shiftMoves"/>), which rely on what those
+/// <item>moves applied to the cached entries (<see cref="_scopedMoves"/>, <see cref="_shiftMoves"/>, <see cref="_appendMoves"/>), which rely on what those
 /// methods do: without them any move counts as any other change.</item>
 /// </list>
 /// </summary>
@@ -203,7 +203,24 @@ public static class FastListeners
                 // loaded lazily mid-combat (each made the next walk scan every type again).
                 AppDomain.CurrentDomain.AssemblyLoad += (_, args) => _stale |= MayDefineModels(args.LoadedAssembly);
             }
+            // Cleared before the scan: an assembly loading during it marks the kinds stale again for the next walk.
             _stale = false;
+            try
+            {
+                Scan();
+            }
+            catch (Exception e)
+            {
+                // Inside walks (often in async hooks): no kind is known not to react, so none is left out (see Any) until
+                // an assembly loads and the types are looked for again.
+                _types = null;
+                _stamp++;
+                Log.Error($"[{ModEntry.Id}] {Name}: listener types unreadable, no kind of listener left out of walks: {e}");
+            }
+        }
+
+        private static void Scan()
+        {
             var found = new List<Type>[Count];
             for (int i = 0; i < Count; i++)
             {
@@ -257,14 +274,21 @@ public static class FastListeners
                     }
                 }
             }
+            // Published before the stamp: a filter seeing the new stamp asks the new types.
             _types = found;
             _stamp++;
         }
 
+        /// <summary>Whether some type of this kind reacts; true while the types aren't known (a failed scan, or another
+        /// thread's first scan still running): keeping a kind is always a superset.</summary>
         internal static bool Any(int kind, PileFilter filter)
         {
             Refresh();
-            foreach (Type type in _types![kind])
+            if (_types is not { } types)
+            {
+                return true;
+            }
+            foreach (Type type in types[kind])
             {
                 if (filter.TypeReacts(type))
                 {
@@ -321,7 +345,8 @@ public static class FastListeners
 
         /// <summary>
         /// The pile entries this filter keeps depend only on what the piles hold (and in which order) and on each
-        /// card's enchantment/affliction: all of it changes through the methods that bump <see cref="PileVersion"/>.
+        /// card's enchantment/affliction: all of it changes through the methods that bump <see cref="PileVersion"/>, or only
+        /// <see cref="AfflictionVersion"/> for an affliction change between known types (checked separately, see <see cref="AfflictionFree"/>).
         /// Filters keeping ExecutionFinished subscribers also depend on who subscribes, which changes through the
         /// methods that bump <see cref="SubscriptionVersion"/>; without that tracking they walk the shared
         /// <see cref="PileSnapshot"/> and check subscribers live.
@@ -678,10 +703,68 @@ public static class FastListeners
         }
 
 #if BENCH
+        /// <summary>
+        /// The verifiers' reference: the piles read now, each entry judged anew by the filter's predicate (a dictionary of
+        /// this call only: none of the type id tables, per-filter caches or <see cref="SyncMulti"/> resets the cached
+        /// paths share), then the stacked enchantment and subscriber tests. So a wrong cached verdict shows as a mismatch,
+        /// not only a stale pile.
+        /// </summary>
+        private void AddReference(List<AbstractModel> list, IReadOnlyList<CardPile> piles, bool withAfflictions)
+        {
+            var verdicts = new Dictionary<Type, bool>();
+            // The reference's verdicts drop nothing from a walk: they don't count in the effects check.
+            long dropped = LimitlessHookSkip.Dropped;
+            try
+            {
+                for (int l = 0; l < piles.Count; l++)
+                {
+                    IReadOnlyList<CardModel> cards = piles[l].Cards;
+                    for (int m = 0; m < cards.Count; m++)
+                    {
+                        CardModel card = cards[m];
+                        AddIfReference(list, card, verdicts);
+                        if (withAfflictions && card.Affliction != null)
+                        {
+                            AddIfReference(list, card.Affliction, verdicts);
+                        }
+                        if (card.Enchantment != null)
+                        {
+                            AddIfReference(list, card.Enchantment, verdicts);
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                LimitlessHookSkip.Dropped = dropped;
+            }
+        }
+
+        private void AddIfReference(List<AbstractModel> list, AbstractModel model, Dictionary<Type, bool> verdicts)
+        {
+            Type type = model.GetType();
+            bool reacts;
+            if (ReferenceEquals(type, LimitlessHookSkip.Multi))
+            {
+                // Judged for each one: its verdict depends on the inner types known, which noting it may add to.
+                NoteMulti(model);
+                reacts = _reacts(type) && !MultiDoesNothing(model);
+            }
+            else if (!verdicts.TryGetValue(type, out reacts))
+            {
+                reacts = _reacts(type);
+                verdicts[type] = reacts;
+            }
+            if (reacts || (_keepSubscribed && _executionFinished!(model) != null))
+            {
+                list.Add(model);
+            }
+        }
+
         private void VerifySegment(Segment segment, IReadOnlyList<CardPile> piles, bool withAfflictions)
         {
             var fresh = new List<AbstractModel>();
-            AddNow(fresh, piles, withAfflictions);
+            AddReference(fresh, piles, withAfflictions);
             if (!fresh.SequenceEqual(segment.Items, ReferenceEqualityComparer.Instance))
             {
                 CacheMismatches++;
@@ -702,7 +785,7 @@ public static class FastListeners
                 return;
             }
             var fresh = new List<AbstractModel>();
-            AddNow(fresh, piles, withAfflictions);
+            AddReference(fresh, piles, withAfflictions);
             if (!fresh.SequenceEqual(list.Skip(start), ReferenceEqualityComparer.Instance))
             {
                 CacheMismatches++;
@@ -1002,7 +1085,8 @@ public static class FastListeners
     /// tests an array per type id instead of looking each entry's type up. When the changes since are all card moves in
     /// <see cref="_moves"/>, they are applied to the arrays instead of rebuilding them (one array shift per move, far less
     /// than reading every card). Cards appended to the last of its piles (cloning cards into the deck) keep the entries
-    /// before them in place: same <see cref="Generation"/>. Main thread only.
+    /// before them in place: same <see cref="Generation"/>. Shifts follow <see cref="_shiftMoves"/>, appends
+    /// <see cref="_appendMoves"/> (both off when a CardPile method they rely on changed). Main thread only.
     /// </summary>
     private sealed class PileSnapshot
     {
@@ -1098,6 +1182,10 @@ public static class FastListeners
                 }
                 if (move.Add && move.AtEnd && l == last)
                 {
+                    if (!_appendMoves)
+                    {
+                        return false;
+                    }
                     AddCard(move.Card, withAfflictions);
                     _starts[piles.Count] = Count;
                     continue;
@@ -1179,7 +1267,7 @@ public static class FastListeners
 
         /// <summary>
         /// Every build, at most once per <see cref="SubscriptionCheckMs"/>: shifted entries against the piles (one read of
-        /// the piles, no allocation). A difference stops shifting for the session.
+        /// the piles, no allocation). A difference stops shifting and appending for the session.
         /// </summary>
         private bool MatchesPiles(bool withAfflictions)
         {
@@ -1210,6 +1298,7 @@ public static class FastListeners
             }
             MoveMismatches++;
             _shiftMoves = false;
+            _appendMoves = false;
             Log.Error($"[{ModEntry.Id}] {Name}: pile entries differ from the piles after card moves, moves now rebuild them");
             return false;
         }
@@ -1364,8 +1453,14 @@ public static class FastListeners
 
     /// <summary>Off after a mismatch found by <see cref="PileFilter.CheckMoveHit"/>: moves count as any other change.</summary>
     private static bool _scopedMoves = true;
-    /// <summary>Off after a mismatch found by <see cref="PileSnapshot.MatchesPiles"/>.</summary>
+    /// <summary>Off after a mismatch found by <see cref="PileSnapshot.MatchesPiles"/>, or when a CardPile method's code changed.</summary>
     private static bool _shiftMoves = true;
+    /// <summary>
+    /// Adds at a pile's end applied to the snapshots (see <see cref="PileSnapshot.CatchUp"/>): off when <c>AddInternal</c>'s
+    /// code changed (they rely on what it does) or after a mismatch found by <see cref="PileSnapshot.MatchesPiles"/>
+    /// (which can't tell an append from a shift); every add then reads the piles again.
+    /// </summary>
+    private static bool _appendMoves = true;
     private const int MaxShiftsPerCatchUp = 64;
     private static long _nextMoveCheck, _nextShiftCheck;
     /// <summary>Live checks of kept segments and shifted snapshots, and the differences found (0 expected).</summary>
@@ -1414,7 +1509,9 @@ public static class FastListeners
 
     /// <summary>
     /// Bumped before and after every change to a pile's cards or order, and every enchantment/affliction change of a
-    /// card in a pile (a card in none, like a fresh clone, is in no snapshot).
+    /// card in a pile (a card in none, like a fresh clone, is in no snapshot), except an affliction change between two
+    /// known affliction types, which bumps <see cref="AfflictionVersion"/> only: a cache of pile entries keys on
+    /// <see cref="EntriesVersion"/>, or on both.
     /// </summary>
     internal static long PileVersion;
 
@@ -1569,13 +1666,13 @@ public static class FastListeners
     }
 
     /// <summary>Records the add when it went as asked and nothing else changed meanwhile.</summary>
-    private static Exception? AfterAdd(Exception? __exception, CardPile __instance, CardModel card, int index, MoveState __state)
+    private static void AfterAdd(Exception? __exception, CardPile __instance, CardModel card, int index, MoveState __state)
     {
         if (!__state.Ran)
         {
             // Another mod's prefix skipped ours (and maybe the original, doing the add its own way): any change counts.
             BumpPileVersion();
-            return __exception;
+            return;
         }
         PileVersion++;
         MarkMoved(card);
@@ -1585,18 +1682,18 @@ public static class FastListeners
         }
         if (Thread.CurrentThread.ManagedThreadId != _mainThread)
         {
-            return __exception;
+            return;
         }
         IReadOnlyList<CardModel> cards = __instance.Cards;
         int at = index >= 0 ? index : __state.Count;
-        if (__exception != null || PileVersion != __state.From + 2 || cards.Count != __state.Count + 1
+        // AddInternal's code unknown (or a mismatch found): no add is applied to the snapshots, so none is kept either.
+        if (!_appendMoves || __exception != null || PileVersion != __state.From + 2 || cards.Count != __state.Count + 1
             || at >= cards.Count || !ReferenceEquals(cards[at], card))
         {
             _moves.Clear();
-            return __exception;
+            return;
         }
         Record(new Move(__state.From, __instance, card, Add: true, AtEnd: at == __state.Count, at));
-        return __exception;
     }
 
     private static void BeforeRemove(CardPile __instance, CardModel card, out MoveState __state)
@@ -1606,12 +1703,12 @@ public static class FastListeners
         MarkMoved(card);
     }
 
-    private static Exception? AfterRemove(Exception? __exception, CardPile __instance, CardModel card, MoveState __state)
+    private static void AfterRemove(Exception? __exception, CardPile __instance, CardModel card, MoveState __state)
     {
         if (!__state.Ran)
         {
             BumpPileVersion(); // Prefix skipped: see AfterAdd.
-            return __exception;
+            return;
         }
         PileVersion++;
         MarkMoved(card);
@@ -1621,15 +1718,14 @@ public static class FastListeners
         }
         if (Thread.CurrentThread.ManagedThreadId != _mainThread)
         {
-            return __exception;
+            return;
         }
         if (__exception != null || PileVersion != __state.From + 2 || __instance.Cards.Count != __state.Count - 1)
         {
             _moves.Clear();
-            return __exception;
+            return;
         }
         Record(new Move(__state.From, __instance, card, Add: false, AtEnd: false, -1));
-        return __exception;
     }
 
     private static void Record(Move move)
@@ -1657,12 +1753,12 @@ public static class FastListeners
         MarkMoved(card);
     }
 
-    private static Exception? AfterReorder(Exception? __exception, CardModel card, bool __state)
+    private static void AfterReorder(Exception? __exception, CardModel card, bool __state)
     {
         if (!__state)
         {
             BumpPileVersion(); // Prefix skipped: see AfterAdd.
-            return __exception;
+            return;
         }
         PileVersion++;
         MarkMoved(card);
@@ -1670,27 +1766,36 @@ public static class FastListeners
         {
             UnscopedVersion++;
         }
-        return __exception;
     }
 
-    /// <summary>An enchantment/affliction change only matters for cards in a pile (<see cref="PileIndex"/> knows; unsure: bump).</summary>
-    private static void BumpIfPiled(CardModel __instance, out bool __state)
+    /// <summary>
+    /// An enchantment change only matters for cards in a pile (<see cref="PileIndex"/> knows; unsure: bump). 1: in a pile,
+    /// 2: in none. 0: this prefix never ran (an earlier prefix threw: Harmony then runs the finalizers with the state's
+    /// default, and Limitless's prefix, before ours, may already have set the field itself): the finalizer counts it as
+    /// any other change.
+    /// </summary>
+    private static void BumpIfPiled(CardModel __instance, out byte __state)
     {
-        __state = !PileIndex.InNoPile(__instance);
-        if (__state)
+        if (PileIndex.InNoPile(__instance))
         {
-            BumpPileVersion();
+            __state = 2;
+            return;
         }
+        __state = 1;
+        BumpPileVersion();
     }
 
-    private static Exception? BumpIfPiledFinally(Exception? __exception, bool __state)
+    private static void BumpIfPiledFinally(Exception? __exception, byte __state)
     {
-        if (__state)
+        if (__state == 1)
         {
             PileVersion++;
             UnscopedVersion++;
         }
-        return __exception;
+        else if (__state == 0)
+        {
+            BumpPileVersion();
+        }
     }
 
     /// <summary>
@@ -1720,7 +1825,7 @@ public static class FastListeners
         }
     }
 
-    private static Exception? AfterAfflictionSet(Exception? __exception, byte __state)
+    private static void AfterAfflictionSet(Exception? __exception, byte __state)
     {
         if (__state == 1)
         {
@@ -1735,15 +1840,13 @@ public static class FastListeners
         {
             BumpPileVersion();
         }
-        return __exception;
     }
 
     private static void BumpSubscriptions() => SubscriptionVersion++;
 
-    private static Exception? BumpSubscriptionsFinally(Exception? __exception)
+    private static void BumpSubscriptionsFinally(Exception? __exception)
     {
         SubscriptionVersion++;
-        return __exception;
     }
 
     /// <summary>
@@ -1753,35 +1856,38 @@ public static class FastListeners
     /// </summary>
     private static int _shuffling;
 
-    /// <summary>The depth before this shuffle (-1 off the main thread), restored on exit rather than decremented.</summary>
+    /// <summary>
+    /// The depth before this shuffle plus one, restored on exit rather than decremented; -1 off the main thread. 0 (the
+    /// state's default) means this prefix never ran: an earlier prefix threw, and Harmony still runs the finalizers.
+    /// </summary>
     private static void EnterShuffle(out int __state)
     {
         __state = -1;
         if (Thread.CurrentThread.ManagedThreadId == _mainThread)
         {
-            __state = _shuffling;
+            __state = _shuffling + 1;
             _shuffling++;
         }
     }
 
     /// <summary>
     /// Restores the depth: Harmony runs a method's finalizers a second time when one of them throws, and a second decrement
-    /// would leave the next shuffle at 0, caching while its listeners reorder the pile unseen.
+    /// would leave the next shuffle at 0, caching while its listeners reorder the pile unseen. A prefix that never ran
+    /// changed no depth: an outer shuffle's (this one nested in its listeners) is left as it is. The pile's version is
+    /// bumped by this method's own finalizer (<see cref="BumpPileVersionFinally"/>) either way.
     /// </summary>
-    private static Exception? ExitShuffle(Exception? __exception, int __state)
+    private static void ExitShuffle(Exception? __exception, int __state)
     {
-        if (__state >= 0 && Thread.CurrentThread.ManagedThreadId == _mainThread)
+        if (__state > 0 && Thread.CurrentThread.ManagedThreadId == _mainThread)
         {
-            _shuffling = __state;
+            _shuffling = __state - 1;
         }
-        return __exception;
     }
 
-    private static Exception? BumpPileVersionFinally(Exception? __exception)
+    private static void BumpPileVersionFinally(Exception? __exception)
     {
         PileVersion++;
         UnscopedVersion++;
-        return __exception;
     }
 
     /// <summary>v0.107.1 <c>ModHelper.IterateAllCombatStateSubscribers</c> (state machine), mirrored by <see cref="Subscribers"/>.</summary>
@@ -1792,7 +1898,7 @@ public static class FastListeners
     private static MethodBase? _subscribeMethod;
 
     /// <summary>
-    /// BaseLib 3.4.7's "BaseLibCardModifiers" subscriber: for every card in every combat pile, the card's CardModifier
+    /// BaseLib 3.4.7's and 3.4.8's "BaseLibCardModifiers" subscriber (same code): for every card in every combat pile, the card's CardModifier
     /// list (a table lookup per card, ~8% of an action at 8,400 cards). Only instances of a concrete CardModifier
     /// subclass can be in those lists, so with no such type loaded it can only return an empty list.
     /// </summary>
@@ -1869,7 +1975,14 @@ public static class FastListeners
             {
                 _scopedMoves = false;
                 _shiftMoves = false;
-                Log.Info($"[{ModEntry.Id}] {Name}: CardPile.{method} changed (fingerprint {actual}, expected {fingerprint}): any card move now rebuilds the cached entries");
+                // Appends to a pile's end rely on AddInternal only: another method's change leaves them followed.
+                bool adds = method == nameof(CardPile.AddInternal);
+                if (adds)
+                {
+                    _appendMoves = false;
+                }
+                Log.Info($"[{ModEntry.Id}] {Name}: CardPile.{method} changed (fingerprint {actual}, expected {fingerprint}): card moves "
+                    + (adds ? "now rebuild the cached entries" : "other than appends to a pile's end now rebuild the cached entries"));
             }
             if (method == nameof(CardPile.AddInternal))
             {
@@ -2277,10 +2390,9 @@ public static class FastListeners
     }
 
     /// <summary>The call only creates the iterator: nothing else may take the filter once it returned.</summary>
-    private static Exception? DropRunFilter(Exception? __exception)
+    private static void DropRunFilter(Exception? __exception)
     {
         _takenRunFilter = null;
-        return __exception;
     }
 
     private static bool RunPrefix(RunState __instance, ICombatState? childCombatState, ref IEnumerable<AbstractModel> __result, bool __runOriginal)
@@ -2316,10 +2428,25 @@ public static class FastListeners
     /// </summary>
     private static IEnumerable<AbstractModel> KeptOnly(IEnumerable<AbstractModel> walk, PileFilter filter)
     {
+        bool failed = false;
         foreach (AbstractModel model in walk)
         {
-            // A MultiEnchantment is an EnchantmentModel: Keeps notes its inner enchantments first (no snapshot on this path).
-            if (model is not (CardModel or EnchantmentModel or AfflictionModel) || filter.Keeps(model))
+            bool kept = true;
+            if (!failed && model is (CardModel or EnchantmentModel or AfflictionModel))
+            {
+                try
+                {
+                    // A MultiEnchantment is an EnchantmentModel: Keeps notes its inner enchantments first (no snapshot on this path).
+                    kept = filter.Keeps(model);
+                }
+                catch (Exception e)
+                {
+                    // As GuardedPiles: this mod's verdict failed, so this entry and the rest of the walk are kept, as vanilla.
+                    failed = true;
+                    Disable(e);
+                }
+            }
+            if (kept)
             {
                 yield return model;
             }
@@ -2349,88 +2476,7 @@ public static class FastListeners
         List<AbstractModel> list = Rent();
         try
         {
-            List<Creature> allies = _allies!(state);
-            List<Creature> enemies = _enemies!(state);
-            for (int i = 0; i < allies.Count + enemies.Count; i++)
-            {
-                Creature creature = i < allies.Count ? allies[i] : enemies[i - allies.Count];
-                AddReacting(list, creature.Powers, filter);
-                Player? player = creature.Player;
-                if (player == null)
-                {
-                    if (filter == null || !KindSkipEnabled || filter.Keeps(creature.Monster!))
-                    {
-                        list.Add(creature.Monster!);
-                    }
-                    continue;
-                }
-                if (!player.IsActiveForHooks)
-                {
-                    continue;
-                }
-                if (filter != null && KindSkipEnabled)
-                {
-                    if (!filter.Skips(ListenerKinds.Relics))
-                    {
-                        filter.AddRelics(list, player);
-                    }
-                }
-                else
-                {
-                    IReadOnlyList<RelicModel> relics = player.Relics;
-                    for (int j = 0; j < relics.Count; j++)
-                    {
-                        if (!relics[j].IsMelted)
-                        {
-                            list.Add(relics[j]);
-                        }
-                    }
-                }
-                if (filter == null || !filter.Skips(ListenerKinds.Potions))
-                {
-                    IReadOnlyList<PotionModel?> potionSlots = player.PotionSlots;
-                    for (int k = 0; k < potionSlots.Count; k++)
-                    {
-                        if (potionSlots[k] != null && (filter == null || !KindSkipEnabled || filter.Keeps(potionSlots[k]!)))
-                        {
-                            list.Add(potionSlots[k]!);
-                        }
-                    }
-                }
-                if (player.PlayerCombatState == null)
-                {
-                    continue;
-                }
-                if (filter == null || !filter.Skips(ListenerKinds.Orbs))
-                {
-                    AddReacting(list, player.PlayerCombatState.OrbQueue.Orbs, filter);
-                }
-                IReadOnlyList<CardPile> allPiles = player.PlayerCombatState.AllPiles;
-                if (filter != null && GuardedPiles(list, filter, player.PlayerCombatState, allPiles))
-                {
-                    continue;
-                }
-                for (int l = 0; l < allPiles.Count; l++)
-                {
-                    IReadOnlyList<CardModel> cards = allPiles[l].Cards;
-                    for (int m = 0; m < cards.Count; m++)
-                    {
-                        CardModel card = cards[m];
-                        list.Add(card);
-                        if (card.Affliction != null)
-                        {
-                            list.Add(card.Affliction);
-                        }
-                        if (card.Enchantment != null)
-                        {
-                            list.Add(card.Enchantment);
-                        }
-                    }
-                }
-            }
-            AddReacting(list, state.Modifiers, filter);
-            AddReacting(list, state.BadgeModels, filter);
-            _combatTail!(list, state, filter);
+            AddCombatGuarded(list, state, filter);
             for (int i = 0; i < list.Count; i++)
             {
                 if (CombatContains(list[i]))
@@ -2456,7 +2502,8 @@ public static class FastListeners
     private static IEnumerable<AbstractModel> Subscribers(CombatState state)
     {
         // A patch on the subscribe method could remove or replace subscribers (same count): the game's own walk then.
-        var snapshot = _combatSubscribers == null || PatchSafety.IsPatchedByOthers(_subscribersMethod) || PatchSafety.IsPatchedByOthers(_subscribersBody)
+        System.Collections.IList? live = _combatSubscribers;
+        var snapshot = live == null || PatchSafety.IsPatchedByOthers(_subscribersMethod) || PatchSafety.IsPatchedByOthers(_subscribersBody)
             || PatchSafety.IsPatchedByOthers(_subscribeMethod) ? null : SubscriberSnapshot();
         if (snapshot == null)
         {
@@ -2471,19 +2518,22 @@ public static class FastListeners
             if (CardModifiersEmpty(id, del))
             {
                 SkippedModifierWalks++;
-                continue;
             }
-            IEnumerable<AbstractModel>? models = del(state);
-            if (models == null)
+            else if (del(state) is { } models)
             {
-                continue;
-            }
-            foreach (AbstractModel item in models)
-            {
-                if (item != null)
+                foreach (AbstractModel item in models)
                 {
-                    yield return item;
+                    if (item != null)
+                    {
+                        yield return item;
+                    }
                 }
+            }
+            // The game's foreach over the live list throws at its next step once a subscription was added meanwhile (the
+            // subscribe method only adds, then sorts): so does this walk, at the same point, rather than go on.
+            if (live!.Count != snapshot.Length)
+            {
+                throw new InvalidOperationException("Collection was modified; enumeration operation may not execute.");
             }
         }
     }
@@ -2551,68 +2601,7 @@ public static class FastListeners
         List<AbstractModel> list = Rent();
         try
         {
-            foreach (Player player in run.Players)
-            {
-                if (!player.IsActiveForHooks)
-                {
-                    continue;
-                }
-                if (filter != null && GuardedDeck(list, filter, player.Deck))
-                {
-                    continue;
-                }
-                foreach (CardModel card in player.Deck.Cards)
-                {
-                    list.Add(card);
-                    if (card.Enchantment != null)
-                    {
-                        list.Add(card.Enchantment);
-                    }
-                }
-            }
-            if (childCombatState == null)
-            {
-                foreach (Player player in run.Players)
-                {
-                    if (player.IsActiveForHooks)
-                    {
-                        if (filter != null && KindSkipEnabled)
-                        {
-                            if (!filter.Skips(ListenerKinds.Relics))
-                            {
-                                filter.AddRelics(list, player);
-                            }
-                        }
-                        else
-                        {
-                            foreach (RelicModel relic in player.Relics)
-                            {
-                                if (!relic.IsMelted)
-                                {
-                                    list.Add(relic);
-                                }
-                            }
-                        }
-                        if (filter == null)
-                        {
-                            list.AddRange(player.Potions);
-                        }
-                        else if (!filter.Skips(ListenerKinds.Potions))
-                        {
-                            foreach (PotionModel potion in player.Potions)
-                            {
-                                if (!KindSkipEnabled || filter.Keeps(potion))
-                                {
-                                    list.Add(potion);
-                                }
-                            }
-                        }
-                    }
-                }
-                AddReacting(list, run.Modifiers, filter);
-                AddReacting(list, run.BadgeModels, filter);
-                _runTail!(list, run, filter);
-            }
+            AddRunGuarded(list, run, childCombatState, filter);
             for (int i = 0; i < list.Count; i++)
             {
                 if (RunContains(list[i]))
@@ -2643,9 +2632,226 @@ public static class FastListeners
         }
     }
 
+    /// <summary><c>CombatState.IterateHookListeners</c>'s list: every listener it walks (filtered: those the filter keeps).</summary>
+    private static void AddCombat(List<AbstractModel> list, CombatState state, PileFilter? filter)
+    {
+        List<Creature> allies = _allies!(state);
+        List<Creature> enemies = _enemies!(state);
+        for (int i = 0; i < allies.Count + enemies.Count; i++)
+        {
+            Creature creature = i < allies.Count ? allies[i] : enemies[i - allies.Count];
+            AddReacting(list, creature.Powers, filter);
+            Player? player = creature.Player;
+            if (player == null)
+            {
+                if (filter == null || !KindSkipEnabled || filter.Keeps(creature.Monster!))
+                {
+                    list.Add(creature.Monster!);
+                }
+                continue;
+            }
+            if (!player.IsActiveForHooks)
+            {
+                continue;
+            }
+            if (filter != null && KindSkipEnabled)
+            {
+                if (!filter.Skips(ListenerKinds.Relics))
+                {
+                    filter.AddRelics(list, player);
+                }
+            }
+            else
+            {
+                IReadOnlyList<RelicModel> relics = player.Relics;
+                for (int j = 0; j < relics.Count; j++)
+                {
+                    if (!relics[j].IsMelted)
+                    {
+                        list.Add(relics[j]);
+                    }
+                }
+            }
+            if (filter == null || !filter.Skips(ListenerKinds.Potions))
+            {
+                IReadOnlyList<PotionModel?> potionSlots = player.PotionSlots;
+                for (int k = 0; k < potionSlots.Count; k++)
+                {
+                    if (potionSlots[k] != null && (filter == null || !KindSkipEnabled || filter.Keeps(potionSlots[k]!)))
+                    {
+                        list.Add(potionSlots[k]!);
+                    }
+                }
+            }
+            if (player.PlayerCombatState == null)
+            {
+                continue;
+            }
+            if (filter == null || !filter.Skips(ListenerKinds.Orbs))
+            {
+                AddReacting(list, player.PlayerCombatState.OrbQueue.Orbs, filter);
+            }
+            IReadOnlyList<CardPile> allPiles = player.PlayerCombatState.AllPiles;
+            if (filter != null && GuardedPiles(list, filter, player.PlayerCombatState, allPiles))
+            {
+                continue;
+            }
+            for (int l = 0; l < allPiles.Count; l++)
+            {
+                IReadOnlyList<CardModel> cards = allPiles[l].Cards;
+                for (int m = 0; m < cards.Count; m++)
+                {
+                    CardModel card = cards[m];
+                    list.Add(card);
+                    if (card.Affliction != null)
+                    {
+                        list.Add(card.Affliction);
+                    }
+                    if (card.Enchantment != null)
+                    {
+                        list.Add(card.Enchantment);
+                    }
+                }
+            }
+        }
+        AddReacting(list, state.Modifiers, filter);
+        AddReacting(list, state.BadgeModels, filter);
+        _combatTail!(list, state, filter);
+    }
+
+    /// <summary><c>RunState.IterateHookListeners</c>'s list, before its mod subscribers and child combat.</summary>
+    private static void AddRun(List<AbstractModel> list, RunState run, ICombatState? childCombatState, PileFilter? filter)
+    {
+        foreach (Player player in run.Players)
+        {
+            if (!player.IsActiveForHooks)
+            {
+                continue;
+            }
+            if (filter != null && GuardedDeck(list, filter, player.Deck))
+            {
+                continue;
+            }
+            foreach (CardModel card in player.Deck.Cards)
+            {
+                list.Add(card);
+                if (card.Enchantment != null)
+                {
+                    list.Add(card.Enchantment);
+                }
+            }
+        }
+        if (childCombatState == null)
+        {
+            foreach (Player player in run.Players)
+            {
+                if (player.IsActiveForHooks)
+                {
+                    if (filter != null && KindSkipEnabled)
+                    {
+                        if (!filter.Skips(ListenerKinds.Relics))
+                        {
+                            filter.AddRelics(list, player);
+                        }
+                    }
+                    else
+                    {
+                        foreach (RelicModel relic in player.Relics)
+                        {
+                            if (!relic.IsMelted)
+                            {
+                                list.Add(relic);
+                            }
+                        }
+                    }
+                    if (filter == null)
+                    {
+                        list.AddRange(player.Potions);
+                    }
+                    else if (!filter.Skips(ListenerKinds.Potions))
+                    {
+                        foreach (PotionModel potion in player.Potions)
+                        {
+                            if (!KindSkipEnabled || filter.Keeps(potion))
+                            {
+                                list.Add(potion);
+                            }
+                        }
+                    }
+                }
+            }
+            AddReacting(list, run.Modifiers, filter);
+            AddReacting(list, run.BadgeModels, filter);
+            _runTail!(list, run, filter);
+        }
+    }
+
+    /// <summary>
+    /// <see cref="AddCombat"/>, filtered: this mod's verdicts (kinds left out, relics, listeners judged one by one), not
+    /// only the pile entry cache (<see cref="GuardedPiles"/>), run inside walks that async hooks consume, where an
+    /// exception would only fault the hook's task. On one, FastListeners turns off and this walk adds every listener,
+    /// unfiltered, as vanilla (the superset). The unfiltered walk is the mirror alone: its exceptions are the game's.
+    /// </summary>
+    private static void AddCombatGuarded(List<AbstractModel> list, CombatState state, PileFilter? filter)
+    {
+        if (filter == null)
+        {
+            AddCombat(list, state, null);
+            return;
+        }
+        try
+        {
+            AddCombat(list, state, filter);
+#if BENCH
+            ThrowIfFailNextFilteredWalk();
+#endif
+        }
+        catch (Exception e)
+        {
+            list.Clear();
+            Disable(e);
+            AddCombat(list, state, null);
+        }
+    }
+
+    /// <summary>As <see cref="AddCombatGuarded"/>, for <see cref="AddRun"/>.</summary>
+    private static void AddRunGuarded(List<AbstractModel> list, RunState run, ICombatState? childCombatState, PileFilter? filter)
+    {
+        if (filter == null)
+        {
+            AddRun(list, run, childCombatState, null);
+            return;
+        }
+        try
+        {
+            AddRun(list, run, childCombatState, filter);
+#if BENCH
+            ThrowIfFailNextFilteredWalk();
+#endif
+        }
+        catch (Exception e)
+        {
+            list.Clear();
+            Disable(e);
+            AddRun(list, run, childCombatState, null);
+        }
+    }
+
 #if BENCH
     /// <summary>Test: the next guarded add throws after adding its entries (bdperf fault piles).</summary>
     internal static bool FailNextPileWalk;
+
+    /// <summary>Test: the next filtered mirror walk throws after adding its entries (outside the pile entry cache).</summary>
+    internal static bool FailNextFilteredWalk;
+
+    private static void ThrowIfFailNextFilteredWalk()
+    {
+        if (FailNextFilteredWalk)
+        {
+            FailNextFilteredWalk = false;
+            throw new InvalidOperationException("simulated error in a filtered walk's verdicts (bdperf fault walk)");
+        }
+    }
 #endif
 
     /// <summary>

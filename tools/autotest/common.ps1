@@ -76,6 +76,14 @@ function Find-TestGame([string]$script, [datetime]$after) {
     if ($found) { Get-Process -Id $found.ProcessId -ErrorAction SilentlyContinue }
 }
 
+# A Debug build of this mod (with the test runner, Bench/ AutoTest): its assembly names the BigDeckOptimization.Bench namespace (UTF-8
+# in the metadata's strings), which a Release build, without Bench/, never has.
+function Test-DebugBuild([string]$dll) {
+    $bytes = [IO.File]::ReadAllBytes($dll)
+    $text = [Text.Encoding]::GetEncoding(28591).GetString($bytes)
+    $text.Contains("BigDeckOptimization.Bench")
+}
+
 function Assert-GameNotRunning {
     if (Get-Process -Name SlayTheSpire2 -ErrorAction SilentlyContinue) { throw "Slay the Spire 2 is already running" }
 }

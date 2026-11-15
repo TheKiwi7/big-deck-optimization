@@ -163,9 +163,9 @@ public static class ExtraScopes
     private const int NoScope = int.MinValue;
 
     /// <summary>
-    /// Opens a scope: the state <see cref="Exit"/> takes (the depth found for a display scope, -1 "one level less" for a
-    /// game-state one), or <see cref="NoScope"/> (this scope faulted) when its bookkeeping throws: the pass then runs
-    /// without one. Both count the scope last: an exception leaves no exit owed.
+    /// Opens a scope: the state <see cref="Exit"/> takes (the depth found plus one for a display scope, never 0; -1 "one
+    /// level less" for a game-state one), or <see cref="NoScope"/> (this scope faulted) when its bookkeeping throws: the
+    /// pass then runs without one. Both count the scope last: an exception leaves no exit owed.
     /// </summary>
     private static int Enter(bool display, string name)
     {
@@ -259,10 +259,14 @@ public static class ExtraScopes
         __state = Enter(display: true, BetterSpireName);
     }
 
-    /// <summary>Closes the scope the prefix opened. Void: Harmony rethrows BetterSpire2's own exception unchanged.</summary>
+    /// <summary>
+    /// Closes the scope the prefix opened. 0: the prefix never ran (another mod's prefix threw first; Harmony's default
+    /// state), no scope to close: closing one would end the scopes this call runs nested in (a refresh dispatch).
+    /// Void: Harmony rethrows BetterSpire2's own exception unchanged.
+    /// </summary>
     private static void BetterSpireFinalizer(int __state)
     {
-        if (__state != NoScope)
+        if (__state != NoScope && __state != 0)
         {
             Exit(BetterSpireName, __state);
         }

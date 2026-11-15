@@ -22,6 +22,9 @@ namespace BigDeckOptimization.Bench;
 ///                                 the previous replacement must be back
 ///   rebuildcheck forceraw X.M     the same straight through Harmony (control)
 ///   rebuildcheck owners X.M       who patches X.M (fails when nobody does: a mod expected in the session isn't loaded)
+///   rebuildcheck stateful X.M     X.M given <see cref="StatefulTranspiler"/> (a stand-in for BaseLib's ModInterop), then a
+///                                 rebuild through HarmonyRebuild: it must be refused, the replacement kept. The transpiler
+///                                 stays for the session (it changes nothing), so later rebuilds of X.M are refused too
 /// </summary>
 internal static class RebuildCheck
 {
@@ -38,13 +41,18 @@ internal static class RebuildCheck
         }
         if (words.Length < 2)
         {
-            throw new ArgumentException("rebuildcheck again|againraw|force|forceraw <Type.Method>");
+            throw new ArgumentException("rebuildcheck again|againraw|force|forceraw|owners|stateful <Type.Method>");
         }
         MethodBase method = Harmony.GetAllPatchedMethods().FirstOrDefault(m => HarmonyRebuild.Describe(m) == words[1])
             ?? throw new ArgumentException($"no patched method {words[1]}");
         if (verb == "owners")
         {
             say($"  {words[1]} patched by {string.Join(", ", (IEnumerable<string>?)Harmony.GetPatchInfo(method)?.Owners ?? Array.Empty<string>())}, detoured {HarmonyRebuild.Replacement(method) != null}");
+            return;
+        }
+        if (verb == "stateful")
+        {
+            Stateful(method, words[1], say);
             return;
         }
         MethodBase? before = HarmonyRebuild.Replacement(method);
@@ -89,6 +97,44 @@ internal static class RebuildCheck
         {
             say($"  ok: {words[1]} keeps its patches");
         }
+    }
+
+    /// <summary>
+    /// A transpiler HarmonyRebuild lists as stateful (its <c>StatefulTranspilers</c>): it changes nothing, but a rebuild of a
+    /// method carrying it must be refused, as for BaseLib's ModInterop stubs.
+    /// </summary>
+    internal static class StatefulTranspiler
+    {
+        internal static IEnumerable<CodeInstruction> Transpile(IEnumerable<CodeInstruction> i) => i;
+    }
+
+    /// <summary><c>rebuildcheck stateful X.M</c>: the stand-in transpiler goes on, then a rebuild must be refused, the replacement kept.</summary>
+    private static void Stateful(MethodBase method, string name, Action<string> say)
+    {
+        // Through HarmonyRebuild as any of this mod's patches: refused when X.M already has a patch that can't be built again.
+        HarmonyRebuild.Run(method, "rebuildcheck stateful", () => _harmony.Patch(method,
+            transpiler: new HarmonyMethod(typeof(StatefulTranspiler), nameof(StatefulTranspiler.Transpile))));
+        MethodBase? before = HarmonyRebuild.Replacement(method);
+        string? blocker = HarmonyRebuild.Blocker(method);
+        int refused = HarmonyRebuild.Refused;
+        say($"  {name}: stateful transpiler on, detoured {before != null}, blocker {blocker ?? "none"}");
+        string outcome;
+        try
+        {
+            HarmonyRebuild.Run(method, "rebuildcheck stateful", () => new PatchProcessor(_harmony, method).Patch());
+            outcome = "built again";
+        }
+        catch (NotSupportedException e)
+        {
+            outcome = $"refused: {e.Message}";
+        }
+        MethodBase? after = HarmonyRebuild.Replacement(method);
+        say($"  {name} stateful: {outcome}; detoured {after != null}, {(after == before ? "same replacement" : "new replacement")} (refused {HarmonyRebuild.Refused})");
+        if (blocker == null || HarmonyRebuild.Refused != refused + 1 || after == null || after != before)
+        {
+            throw new InvalidOperationException($"{name}: a rebuild with a stateful transpiler on it wasn't refused, or the method lost its replacement");
+        }
+        say($"  ok: {name} not built again, its replacement kept");
     }
 
     /// <summary>Pops from an empty stack first: the JIT rejects the replacement ("invalid program").</summary>

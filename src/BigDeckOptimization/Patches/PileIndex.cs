@@ -193,7 +193,9 @@ public static class PileIndex
 
         // Tracking first, so the getter never answers from an index that missed changes.
         // Updated before the original runs: it fires CardAdded/ContentsChanged (whose listeners read card.Pile) right
-        // after changing the list. Last prefix, so the original runs unless a prefix after it skips it; undone if it throws.
+        // after changing the list. Last prefix, so the original runs unless a prefix after it skips it. After a throw or a skipped
+        // original the finalizer judges from the pile's list (Judge): kept when the card really entered (left), undone when it
+        // didn't, a fault when the card was moved again meanwhile.
         // Harmony doesn't call a prefix taking the card once an earlier prefix returned false, so the pile's count is also
         // taken by a first prefix that always runs (only __instance and __state): an add or remove another mod's earlier
         // prefix skipped is judged from it (same __state, shared by this class's patches on a method).
@@ -245,6 +247,11 @@ public static class PileIndex
     internal static bool InNoPile(CardModel card)
     {
         if (!Enabled || !Applied || ListenerCache.IsSuspended)
+        {
+            return false;
+        }
+        // Mid-move while another mod patches it: the index already says no pile, the list may still hold it (as PilePrefix).
+        if (_inFlight is { Count: > 0 } flying && flying.Contains(card))
         {
             return false;
         }
@@ -339,14 +346,28 @@ public static class PileIndex
 
     public static long SlowDuplicateChecks { get; private set; }
 
+    /// <summary>
+    /// The <c>RunState.ContainsCard</c> shortcut doesn't read the index, so a stale index (<see cref="Fail"/>) needn't stop it:
+    /// set with the pile_lookup switch (master switch and setting, not faults) by <c>Settings</c>. False until then, so the
+    /// shortcut follows <see cref="Enabled"/> alone.
+    /// </summary>
+    public static bool ContainsCardEnabled { get; set; }
+#if BENCH
+    /// <summary>ContainsCard calls answered here (the effects check).</summary>
+    public static long FastContainsCards { get; private set; }
+#endif
+
     /// <summary><c>_allCards.Contains(card)</c> from the end: the same answer, found at once for cards just created.</summary>
     private static bool ContainsCardPrefix(RunState __instance, CardModel card, ref bool __result)
     {
-        if (!Enabled || ListenerCache.IsSuspended || PatchSafety.IsPatchedByOthers(_containsCard))
+        if (!(Enabled || ContainsCardEnabled) || ListenerCache.IsSuspended || PatchSafety.IsPatchedByOthers(_containsCard))
         {
             return true;
         }
         __result = _allCards!(__instance).LastIndexOf(card) >= 0;
+#if BENCH
+        FastContainsCards++;
+#endif
         return false;
     }
 
@@ -440,7 +461,7 @@ public static class PileIndex
     /// AddInternal throws on duplicates or canonical cards (before the list changes), or from an event handler after the
     /// list changed; another mod's prefix may skip it (and add the card itself, or not): judged by the pile (<see cref="Judge"/>).
     /// </summary>
-    private static Exception? AfterAdd(Exception? __exception, CardPile __instance, CardModel card, Saved __state, bool __runOriginal)
+    private static void AfterAdd(Exception? __exception, CardPile __instance, CardModel card, Saved __state, bool __runOriginal)
     {
         try
         {
@@ -461,11 +482,10 @@ public static class PileIndex
         {
             Fail("add check failed: " + e);
         }
-        return __exception;
     }
 
     /// <summary>RemoveInternal throws on a card not in the pile (before the list changes): see <see cref="AfterAdd"/>.</summary>
-    private static Exception? AfterRemove(Exception? __exception, CardPile __instance, CardModel card, Saved __state, bool __runOriginal)
+    private static void AfterRemove(Exception? __exception, CardPile __instance, CardModel card, Saved __state, bool __runOriginal)
     {
         try
         {
@@ -486,7 +506,6 @@ public static class PileIndex
         {
             Fail("remove check failed: " + e);
         }
-        return __exception;
     }
 
     /// <summary>
@@ -567,13 +586,12 @@ public static class PileIndex
     private static void BeforeReorder(CardPile __instance, out int __state) => __state = __instance.Cards.Count;
 
     /// <summary>Checked even while switched off: the index keeps being updated then and is trusted again when switched on.</summary>
-    private static Exception? AfterReorder(Exception? __exception, CardPile __instance, int __state)
+    private static void AfterReorder(Exception? __exception, CardPile __instance, int __state)
     {
         if (__exception == null && !_failed && __instance.Cards.Count != __state)
         {
             Fail($"a move inside the {__instance.Type} pile changed its card count");
         }
-        return __exception;
     }
 
     /// <summary>Only called while the original is still to run, as <see cref="BeforeAdd"/>.</summary>
@@ -630,6 +648,8 @@ public static class PileIndex
     {
         public readonly CardPile Pile = pile;
         public List<CardModel>? Added;
+        /// <summary>The finalizer already judged this clear: Harmony reruns finalizers in its catch block when a later one throws.</summary>
+        public bool Finalized;
         /// <summary>Removes from this pile during this clear (a handler's removes from other piles aren't its own).</summary>
         public int Removes;
     }
@@ -680,17 +700,29 @@ public static class PileIndex
     /// A clear that throws stops before <c>_cards.Clear()</c> (each remove already judged on its own), but is still taken as
     /// a reason to stop trusting the index. A card added to the pile during the clear and dropped by <c>_cards.Clear()</c>
     /// leaves the index as a remove would. Checked even while switched off.
+    ///
+    /// Harmony runs every finalizer again, in its catch block, when one of them throws after a normal return: that second
+    /// run gets the other finalizer's exception, not the clear's, and the clear was already judged by the first one. Skipped
+    /// (<see cref="ClearFrame.Finalized"/>). A throwing finalizer running before this one still faults it (conservative).
     /// </summary>
-    private static Exception? ClearFinalizer(Exception? __exception, CardPile __instance, ClearState __state, bool __runOriginal)
+    private static void ClearFinalizer(Exception? __exception, CardPile __instance, ClearState __state, bool __runOriginal)
     {
         try
         {
-            if (__state.Frame is { } frame && _clears is { } clears)
+            if (__state.Frame is { } frame)
             {
-                int at = clears.LastIndexOf(frame);
-                if (at >= 0)
+                if (frame.Finalized)
                 {
-                    clears.RemoveAt(at);
+                    return;
+                }
+                frame.Finalized = true;
+                if (_clears is { } clears)
+                {
+                    int at = clears.LastIndexOf(frame);
+                    if (at >= 0)
+                    {
+                        clears.RemoveAt(at);
+                    }
                 }
                 if (frame.Added != null)
                 {
@@ -699,11 +731,11 @@ public static class PileIndex
             }
             if (_failed)
             {
-                return __exception;
+                return;
             }
             if (__exception != null)
             {
-                Fail("CardPile.Clear threw, the index may be stale: " + __exception.Message);
+                Fail("CardPile.Clear or a patch on it threw, the index may be stale: " + __exception.Message);
             }
             // Removes of cards added during the clear make the count differ: those were judged one by one above. The game's
             // clear takes every card through a remove; one another mod's prefix skipped must leave the cards no remove took.
@@ -717,7 +749,6 @@ public static class PileIndex
         {
             Fail("clear check failed: " + e);
         }
-        return __exception;
     }
 
     /// <summary>Cards added during a clear: one no longer in the pile but still in it for the index was dropped unseen.</summary>
@@ -754,25 +785,25 @@ public static class PileIndex
     }
 
     /// <summary>A finalizer, so a hook that changed the list then threw is seen too. Checked even while switched off.</summary>
-    private static Exception? AfterRandomize(Exception? __exception, CardPile __instance, int __state)
+    private static void AfterRandomize(Exception? __exception, CardPile __instance, int __state)
     {
         if (_failed)
         {
-            return __exception;
+            return;
         }
         try
         {
             if (__instance.Cards.Count != __state)
             {
                 Fail("a shuffle hook changed the pile's card count");
-                return __exception;
+                return;
             }
             foreach (CardModel card in __instance.Cards)
             {
                 if (!_entries.TryGetValue(card, out Entry? entry) || (entry.Pile != __instance && !entry.Unknown && entry.Count < 2))
                 {
                     Fail($"a shuffle hook put {card} in the {__instance.Type} pile");
-                    return __exception;
+                    return;
                 }
             }
         }
@@ -780,7 +811,6 @@ public static class PileIndex
         {
             Fail("shuffle check failed: " + e);
         }
-        return __exception;
     }
 
     private static int _getterCheckCalls;

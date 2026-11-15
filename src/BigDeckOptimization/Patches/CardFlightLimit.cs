@@ -61,6 +61,8 @@ public static class CardFlightLimit
     /// <summary>Souls not spawned per target pile since the last flush (one frame), and the flush's extra count.</summary>
     private static readonly List<(CardPile Pile, int Count)> _pending = new();
     private static int _extra;
+    /// <summary>The frame the last flush was queued in: one lost (Godot drops deferred calls when its queue is full) is queued again.</summary>
+    private static ulong _flushFrame;
 
     public static void Apply(Harmony harmony)
     {
@@ -111,7 +113,9 @@ public static class CardFlightLimit
             }
             Skipped++;
             Count(targetPile);
-            __result = null; // The game adds it through AddChildSafely, which ignores null, as when its test mode creates none.
+            // The game's callers add it through AddChildSafely (or ?.), which ignores null: Create is declared nullable and
+            // returns null itself in the game's test mode, so a caller that dereferenced it would break that mode too.
+            __result = null;
             return false;
         }
         catch (Exception e)
@@ -155,8 +159,12 @@ public static class CardFlightLimit
 
     private static void Count(CardPile pile)
     {
-        if (_pending.Count == 0)
+        // A flush queued in a frame runs at its end (or the next one's, queued late); cards still pending two frames later mean
+        // it never ran. Two flushes at worst: the second finds nothing (each takes what is pending and clears it).
+        ulong frame = Engine.GetProcessFrames();
+        if (_pending.Count == 0 || frame > _flushFrame + 1)
         {
+            _flushFrame = frame;
             Callable.From(Flush).CallDeferred();
         }
         for (int i = 0; i < _pending.Count; i++)

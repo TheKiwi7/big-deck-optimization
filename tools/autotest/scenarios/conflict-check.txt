@@ -3,6 +3,9 @@
 # mirrors; after a few plays, bdopt shows "partly vanilla: also patched by bdtest.fakeconflict" on hook_filter and
 # its menu tooltip starts with the translated "Partly inactive" sentence. The combat checksum stays the same.
 timeout 300
+expect HookFilter: CardCostHelper\.TryModifyEnergyCostWithHooks is also patched by bdtest\.fakeconflict
+expect \[hook_filter\]: on \(partly vanilla: also patched by bdtest\.fakeconflict\)
+expect MENUTEXT HOOK_FILTER: .*Partly inactive: bdtest\.fakeconflict
 newrun NECROBINDER
 waitfor run 120
 wait 2

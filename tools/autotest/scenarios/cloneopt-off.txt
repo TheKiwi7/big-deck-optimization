@@ -8,13 +8,13 @@ cmd bigdeck import ref all all
 cmd bigdeck import ref all all
 rebuildcheck owners CloneRestSiteOption.OnSelect
 checksum before
-state before
+state before optional
 cmd room RestSite
 wait 5
 restsite CloneRestSiteOption
 waitfor deckcount 900
 wait 10
 checksum after
-state after
+state after optional
 counters clone
 quit

@@ -1,6 +1,19 @@
 # Audit: every back-off at once: another mod on what the walks, the pile lookup, the pile counters and the card ids mirror. Each falls back to the game's
 # code (KeptOnly for filtered walks): the lines must match ab-2k-off, and bdopt says which options are partly vanilla.
 timeout 2400
+# Each back-off names itself in the log (PatchSafety, by the patch's file and the method) and in bdopt: a refactor that
+# breaks one still matches ab-2k-off line for line, so these positive controls and the effect checks below must see it.
+expect PileIndex: CardModel\.get_Pile is also patched by bdtest\.fakeconflict
+expect CardDbScan: NetCombatCardDb\.OnPileContentsChanged is also patched by bdtest\.fakeconflict
+expect PileCounterBatch: NCombatCardPile\.RemoveCard is also patched by bdtest\.fakeconflict
+expect FastListeners: CombatState\.IterateHookListeners is also patched by bdtest\.fakeconflict
+expect FastListeners: RunState\.IterateHookListeners is also patched by bdtest\.fakeconflict
+expect ListenerCache: CombatState\.IterateHookListeners is also patched by bdtest\.fakeconflict
+expect \[hook_skip\]: on \(partly vanilla: also patched by bdtest\.fakeconflict\)
+expect \[pile_lookup\]: on \(partly vanilla: also patched by bdtest\.fakeconflict\)
+expect \[card_ids\]: on \(partly vanilla: also patched by bdtest\.fakeconflict\)
+expect \[pile_counters\]: on \(partly vanilla: also patched by bdtest\.fakeconflict\)
+expect \[listeners\]: on \(partly vanilla: also patched by bdtest\.fakeconflict\)
 newrun NECROBINDER
 waitfor run 120
 wait 2
@@ -90,6 +103,12 @@ wait 3
 checksum after combat
 state after combat
 effects end
+# Cumulative counters: 0 at the end means the part never ran (HookSkip's filtered walks included: no FastListeners walk).
+effectcheck CardDbScan zero
+effectcheck PileCounterBatch zero
+effectcheck FastListeners.Cache zero
+effectcheck FastListeners.CombatWalk zero
+effectcheck FastListeners.RunWalk zero
 cmd bdopt
 counters end
 quit

@@ -8,6 +8,8 @@ using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.DevConsole;
 using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Extensions;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Random;
@@ -20,6 +22,10 @@ namespace BigDeckOptimization.Bench;
 /// sorts them, with the game's code (the whole mod off) and with <see cref="CardSortKeys"/>, from the piles' order and two
 /// shuffled ones; then <c>StableShuffle</c> itself both ways with the same seed. Same order element by element, and the times.
 /// <c>wrong</c>: answers reversed from then on (positive control: the comparison and the part's own check must see it).
+/// Then, where the game has it (v0.113+), the same sort with a Veilpiercer on the local player (its cost hook reads
+/// <c>card.Keywords</c>, which runs the keyword hook): the part must still answer (not refuse) and give the game's order. The
+/// power goes on and comes off with the game's own internal calls, silently, before the bench returns: the combat's state is as
+/// it was (its icon shows and goes, and the game's "power removed" effect plays once).
 /// </summary>
 public static class SortKeysBench
 {
@@ -64,12 +70,16 @@ public static class SortKeysBench
             foreach (List<CardModel> start in starts)
             {
                 List<CardModel> game = start.ToList();
-                long t0 = Stopwatch.GetTimestamp();
-                PerfConsoleCmd.Vanilla(() => { game.Sort(); return 0; });
-                gameMs += Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+                // Timed inside: Vanilla's two switch passes aren't the game's sort.
+                gameMs += PerfConsoleCmd.Vanilla(() =>
+                {
+                    long inside = Stopwatch.GetTimestamp();
+                    game.Sort();
+                    return Stopwatch.GetElapsedTime(inside).TotalMilliseconds;
+                });
                 List<CardModel> mine = start.ToList();
                 long answeredBefore = CardSortKeys.Answered;
-                t0 = Stopwatch.GetTimestamp();
+                long t0 = Stopwatch.GetTimestamp();
                 bool opened = CardSortKeys.SortInScope(mine);
                 keysMs += Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
                 different += Different(game, mine) ? 1 : 0;
@@ -91,10 +101,11 @@ public static class SortKeysBench
                 CardSortKeys.StableShuffleInScope(mineShuffled, NewRng(77));
                 shuffleDifferent = Different(gameShuffled, mineShuffled);
             }
+            (bool veilOk, string veilText) = CardSortKeys.Enabled ? Veilpiercer(me, starts[1]) : (true, "");
             long mismatches = CardSortKeys.Mismatches - mismatchesBefore;
-            bool ok = different == 0 && !shuffleDifferent && mismatches == 0 && CardSortKeys.Enabled;
-            string verdict = ok ? "OK: identical orders"
-                : $"MISMATCH: {different} of {starts.Count} sorts{(shuffleDifferent ? " and the shuffle" : "")} differ, own check mismatches {mismatches}{(CardSortKeys.Enabled ? "" : " (part turned off)")}";
+            bool ok = different == 0 && !shuffleDifferent && mismatches == 0 && CardSortKeys.Enabled && veilOk;
+            string verdict = ok ? "OK: identical orders" + veilText
+                : $"MISMATCH: {different} of {starts.Count} sorts{(shuffleDifferent ? " and the shuffle" : "")} differ, own check mismatches {mismatches}{(CardSortKeys.Enabled ? "" : " (part turned off)")}{veilText}";
             // One line: scenarios match the verdict on it (expect SORTKEYS .*MISMATCH).
             return new CmdResult(ok, $"SORTKEYS {cards.Count} cards, {cards.Select(c => c.Id).Distinct().Count()} kinds: game {gameMs / starts.Count:F1} ms, "
                 + $"keys {keysMs / starts.Count:F1} ms per sort; answered {CardSortKeys.Answered - answered}, checks {CardSortKeys.Checks}: {verdict}");
@@ -103,6 +114,54 @@ public static class SortKeysBench
         {
             // The effect counters count the game's sorts only.
             CardSortKeys.RestoreCounters(sorts, answered);
+        }
+    }
+
+    private const string VeilpiercerType = "MegaCrit.Sts2.Core.Models.Powers.VeilpiercerPower";
+
+    /// <summary>
+    /// The sort of <paramref name="start"/> with a Veilpiercer on the local player, the game's and this part's: whether the part
+    /// answered without refusing and gave the game's order, and the text appended to the verdict. The power is taken off again
+    /// in any case (one the player already had stays).
+    /// </summary>
+    private static (bool Ok, string Text) Veilpiercer(Player me, List<CardModel> start)
+    {
+        PowerModel? canonical = ModelDb.AllPowers.FirstOrDefault(p => p.GetType().FullName == VeilpiercerType);
+        if (canonical == null)
+        {
+            return (true, "; Veilpiercer: not in this game version");
+        }
+        Creature creature = me.Creature;
+        PowerModel? added = null;
+        if (!creature.Powers.Any(p => p.GetType() == canonical.GetType()))
+        {
+            added = canonical.ToMutable();
+            added.ApplyInternal(creature, 1, silent: true);
+        }
+        try
+        {
+            List<CardModel> game = start.ToList();
+            PerfConsoleCmd.Vanilla(() => { game.Sort(); return 0; });
+            List<CardModel> mine = start.ToList();
+            long answered = CardSortKeys.Answered, refused = CardSortKeys.Refused;
+            bool opened = CardSortKeys.SortInScope(mine);
+            if (CardSortKeys.Refused != refused || !opened)
+            {
+                string why = CardSortKeys.LastRefusal ?? "nothing answered";
+                // An unknown keyword listener in this combat (a mod's, a card's) refuses by design: nothing to compare here.
+                return why.EndsWith("(keywords)", StringComparison.Ordinal)
+                    ? (true, $"; Veilpiercer: left to the game ({why}), not compared")
+                    : (false, $"; Veilpiercer: REFUSED ({why})");
+            }
+            bool answeredSome = mine.Count <= 1 || CardSortKeys.Answered > answered;
+            bool same = !Different(game, mine);
+            return (answeredSome && same && CardSortKeys.Enabled,
+                $"; Veilpiercer{(added == null ? " (already there)" : "")}: answered {CardSortKeys.Answered - answered}, "
+                + (same ? "same order" : "ORDER DIFFERS") + (answeredSome ? "" : ", NOTHING ANSWERED"));
+        }
+        finally
+        {
+            added?.RemoveInternal();
         }
     }
 

@@ -7,9 +7,12 @@ using BigDeckOptimization.Patches;
 // args: dll typeFullName methodName [describe]
 string game = @"C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2\data_sts2_windows_x86_64";
 string workshop = @"C:\Program Files (x86)\Steam\steamapps\workshop\content\2868840";
+// Dependencies first from the folder of the DLL given (refs/<version> holds that version's sts2, GodotSharp and 0Harmony),
+// then the Steam install (whatever branch it has) and the Workshop mods.
+string own = Path.GetDirectoryName(Path.GetFullPath(args[0]))!;
 AssemblyLoadContext.Default.Resolving += (ctx, name) =>
 {
-    foreach (string dir in new[] { game }.Concat(Directory.GetDirectories(workshop, "*", SearchOption.AllDirectories)).Append(workshop))
+    foreach (string dir in new[] { own, game }.Concat(Directory.Exists(workshop) ? Directory.GetDirectories(workshop, "*", SearchOption.AllDirectories) : Array.Empty<string>()).Append(workshop))
     {
         string p = Path.Combine(dir, name.Name + ".dll");
         if (File.Exists(p)) return ctx.LoadFromAssemblyPath(p);
@@ -22,6 +25,7 @@ foreach (MethodBase m in type.GetMethods(BindingFlags.Public | BindingFlags.NonP
     .Concat(type.GetConstructors(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)))
 {
     if (args[2] != "*" && m.Name != args[2]) continue;
+    if (m.GetMethodBody() == null) continue; // Abstract or extern: no code to fingerprint ('*' stopped at the first one).
     if (args.Length > 3 && args[3] == "body")
     {
         Type? machine = m.GetCustomAttribute<System.Runtime.CompilerServices.StateMachineAttribute>()?.StateMachineType;

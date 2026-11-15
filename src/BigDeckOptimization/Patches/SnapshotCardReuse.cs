@@ -141,7 +141,7 @@ public static class SnapshotCardReuse
     private static MethodInfo? _pileSerialize;
     private static readonly ConditionalWeakTable<List<NetFullCombatState.CardState>, PileLast> _byList = new();
 
-    /// <summary>v0.107.1 (and v0.111) code mirrored by <see cref="PilePrefix"/> and <see cref="CardFrom"/>.</summary>
+    /// <summary>v0.107.1 to v0.113.1 code mirrored by <see cref="PilePrefix"/> and <see cref="CardFrom"/> (same fingerprints on all four).</summary>
     private const string CardFromFingerprint = "96C28FA2E2A751FA";
     private const string PileFromFingerprint = "9112142DF335981C";
     private const string WriteListFingerprint = "7E6764DE8659A79F";
@@ -150,8 +150,10 @@ public static class SnapshotCardReuse
     private static MethodInfo? _cardFrom, _pileFrom;
     private static bool _replaced;
     private static CardKeyword[] _keywordValues = Array.Empty<CardKeyword>();
+    /// <summary>No two names of <see cref="_keywordValues"/> share a value (true on v0.107.1 to v0.113.1): a kept list as long as the set is the game's.</summary>
+    private static bool _keywordValuesDistinct;
 
-    /// <summary>v0.107.1 (and v0.111) code read without allocating by <see cref="CardFrom"/>.</summary>
+    /// <summary>v0.107.1 to v0.113.1 code read without allocating by <see cref="CardFrom"/> (same fingerprints on all four).</summary>
     private const string KeywordsFingerprint = "0F51A275B1583E96";
     private const string LocalKeywordsFingerprint = "0580A115BC4486E8";
     private const string WithModifiersFingerprint = "60FE75B459B24CFC";
@@ -351,6 +353,7 @@ public static class SnapshotCardReuse
             PatchSafety.RequireFingerprint(_pileFrom, PileFromFingerprint);
             _cardFrom = from;
             _keywordValues = Enum.GetValues<CardKeyword>();
+            _keywordValuesDistinct = _keywordValues.Distinct().Count() == _keywordValues.Length;
             _storedVersion = AccessTools.FieldRefAccess<List<SerializableCard>, int>("_version");
             ApplyFastReads();
             PatchGuard.Patch(harmony, _pileFrom, prefix: new HarmonyMethod(typeof(SnapshotCardReuse), nameof(PilePrefix)));
@@ -747,8 +750,20 @@ public static class SnapshotCardReuse
                 writeList.MakeGenericMethod(typeof(NetFullCombatState.CardState)),
                 writeList.MakeGenericMethod(typeof(NetFullCombatState.CombatPileState)),
             };
-            PatchGuard.Patch(harmony, AccessTools.Method(typeof(NetFullCombatState.PlayerState), nameof(NetFullCombatState.PlayerState.Serialize), new[] { typeof(PacketWriter) })
-                ?? throw new MissingMethodException("NetFullCombatState.PlayerState", "Serialize"), transpiler: new HarmonyMethod(typeof(SnapshotCardReuse), nameof(PlayerSerializeTranspiler)));
+            MethodInfo playerSerialize = AccessTools.Method(typeof(NetFullCombatState.PlayerState), nameof(NetFullCombatState.PlayerState.Serialize), new[] { typeof(PacketWriter) })
+                ?? throw new MissingMethodException("NetFullCombatState.PlayerState", "Serialize");
+            // One call writes the piles (v0.107.1 to v0.113.1): another layout would leave pile bits applied but never used.
+            int pileLists = PatchProcessor.GetOriginalInstructions(playerSerialize).Count(instruction => IsPilesWrite(instruction));
+            if (pileLists != 1)
+            {
+                throw new PatchSkippedException($"PlayerState.Serialize writes the piles {pileLists} times (expected once)");
+            }
+            PatchGuard.Patch(harmony, playerSerialize, transpiler: new HarmonyMethod(typeof(SnapshotCardReuse), nameof(PlayerSerializeTranspiler)));
+            // Another mod's transpiler that ran first may have changed that call.
+            if (_pilesReplaced != 1)
+            {
+                throw new PatchSkippedException($"PlayerState.Serialize: {_pilesReplaced} pile list writes replaced (expected one)");
+            }
         }
         catch (Exception e)
         {
@@ -808,7 +823,13 @@ public static class SnapshotCardReuse
         {
             throw new PatchSkippedException($"SavedProperties.WritePropertyName changed (fingerprint {nameFingerprint}): left vanilla");
         }
-        _cardSerializers = new MethodBase[] { _cardSerialize!, serializableCard, serializableEnchantment, savedProperties, propertyName };
+        // And the two writers whose layout PatchUpgradeBits writes into (the level's 8 bits right after the entry id): another mod's patch
+        // on them could move it. Not WriteBool, WriteEnum or Write<T>: used everywhere, their patches are better left to the sampled checks.
+        MethodInfo writeModelEntry = AccessTools.Method(typeof(PacketWriterExtensions), nameof(PacketWriterExtensions.WriteModelEntry))
+            ?? throw new MissingMethodException(nameof(PacketWriterExtensions), nameof(PacketWriterExtensions.WriteModelEntry));
+        MethodInfo writeInt = AccessTools.Method(typeof(PacketWriter), nameof(PacketWriter.WriteInt))
+            ?? throw new MissingMethodException(nameof(PacketWriter), nameof(PacketWriter.WriteInt));
+        _cardSerializers = new MethodBase[] { _cardSerialize!, serializableCard, serializableEnchantment, savedProperties, propertyName, writeModelEntry, writeInt };
 
         // What the kept bits were written with: ids are written on widths fixed when the caches are built (a mod adding a type to the
         // saved-property cache later, as BaseLib can, may widen the property ids: Limitless's Patch_SavedPropertyNetIdWidth).
@@ -1000,12 +1021,13 @@ public static class SnapshotCardReuse
         return true;
     }
 
-    /// <summary>What every card of a pile shares in one snapshot.</summary>
     /// <summary>
-    /// <see cref="Listeners"/>: the cost and keyword listeners of the combat, each with its amount and owner, when every one of them
-    /// answers from what a read covers (<see cref="PureHooks"/>); null when one doesn't, and then no pile is trusted.
+    /// What every card of a pile shares in one snapshot. <see cref="Listeners"/>: the cost and keyword listeners of the combat, each
+    /// with its amount and owner, when every one of them answers from what a read covers (<see cref="PureHooks"/>); null when one
+    /// doesn't, and then no pile is trusted. <see cref="KeywordReadsPatched"/>: <see cref="SnapshotCardReuse.KeywordsPatched"/> (or no
+    /// fast reads), read once per pile rather than per card.
     /// </summary>
-    private readonly record struct Reads(long Stamp, bool NoKeywordHook, bool NoCostHook, HookListener[]? Listeners);
+    private readonly record struct Reads(long Stamp, bool NoKeywordHook, bool NoCostHook, HookListener[]? Listeners, bool KeywordReadsPatched);
 
     private readonly record struct HookListener(AbstractModel Model, int Amount, object? Owner);
 
@@ -1014,9 +1036,9 @@ public static class SnapshotCardReuse
     /// <summary>
     /// Cost and keyword listeners whose answer for a card depends only on the card's owner, type, base cost and local modifiers,
     /// keywords, affliction or pile type (all of it written through the counted writers, or fixed for a pile's cards) and on the
-    /// listener's own amount and owner (v0.107.1 and v0.111). While the same listeners stand with the same amounts, a pile's
-    /// unwritten cards keep the costs and keywords they had. Not Void Form or Brilliant Scarf: they count the cards played this turn.
-    /// Same fingerprints on v0.113. Also <see cref="CardSortKeys"/>' judgment: a listener of these only reads, so a card's cost
+    /// listener's own amount and owner (v0.107.1 to v0.113.1, same fingerprints). While the same listeners stand with the same amounts,
+    /// a pile's unwritten cards keep the costs and keywords they had. Not Void Form or Brilliant Scarf: they count the cards played this
+    /// turn. Also <see cref="CardSortKeys"/>' judgment: a listener of these only reads, so a card's cost
     /// can't change while a sort runs.
     /// </summary>
     internal static readonly (string Type, string Method, string Fingerprint)[] PureHooks =
@@ -1054,7 +1076,16 @@ public static class SnapshotCardReuse
         List<MethodInfo> overrides = new();
         foreach (string name in HookMethods)
         {
-            MethodInfo? method = type.GetMethod(name, BindingFlags.Public | BindingFlags.Instance);
+            MethodInfo? method;
+            try
+            {
+                method = type.GetMethod(name, BindingFlags.Public | BindingFlags.Instance);
+            }
+            catch (AmbiguousMatchException)
+            {
+                // An overload of that name next to the override (a content mod's): not a known pure listener, piles read in full while it listens.
+                return _pureTypes[type] = null;
+            }
             if (method == null || method.DeclaringType == typeof(AbstractModel))
             {
                 continue;
@@ -1123,18 +1154,19 @@ public static class SnapshotCardReuse
     private static Reads ReadsFor(CardPile pile)
     {
         long stamp = LimitlessReserialize.MemoStamp();
+        bool keywordsPatched = !_fastReads || KeywordsPatched();
         // No listeners (null): no pile trusted or kept as moved.
-        if (!_fastReads || !HookFilter.Active || KeywordsPatched() || PatchSafety.IsPatchedByOthers(_withModifiers) || GettersPatched()
+        if (!_fastReads || !HookFilter.Active || keywordsPatched || PatchSafety.IsPatchedByOthers(_withModifiers) || GettersPatched()
             || pile.Cards.Count == 0 || pile.Cards[0].Owner?.Creature.CombatState is not CombatState combat)
         {
-            return new Reads(stamp, false, false, null);
+            return new Reads(stamp, false, false, null, keywordsPatched);
         }
         List<AbstractModel>? keywords = HookFilter.ForCombat(combat, HookFilter.Keywords);
         List<AbstractModel>? early = HookFilter.ForCombat(combat, HookFilter.EnergyCost);
         List<AbstractModel>? late = HookFilter.ForCombat(combat, HookFilter.EnergyCostLate);
         bool noKeywords = keywords is { Count: 0 };
         bool noCost = early is { Count: 0 } && late is { Count: 0 };
-        return new Reads(stamp, noKeywords, noCost, noKeywords && noCost ? NoListeners : PureListeners(keywords, early, late));
+        return new Reads(stamp, noKeywords, noCost, noKeywords && noCost ? NoListeners : PureListeners(keywords, early, late), false);
     }
 
     /// <summary><c>CombatPileState.From</c>: the pile's previous list while every card's state equals its entry.</summary>
@@ -1351,6 +1383,22 @@ public static class SnapshotCardReuse
             __result = new NetFullCombatState.CombatPileState { pileType = pile.Type, cards = list };
             return false;
         }
+        catch (GameCallException e)
+        {
+            // The game's From, run now, makes the same call and throws it from there. This pile's read stopped halfway (entries read,
+            // its written cards not cleared): its next read reads every card.
+            if (_piles.TryGetValue(pile, out PileLast? failed))
+            {
+                failed.WritesAt = -1;
+            }
+            GameExceptions++;
+            if (!_loggedGameException)
+            {
+                _loggedGameException = true;
+                Log.Warn($"[{ModEntry.Id}] {Name}: the game's own code threw while a pile's snapshot was read, the game's call made instead (stays on): {e.InnerException}");
+            }
+            return true;
+        }
         catch (Exception e)
         {
             Disable("exception", e.ToString());
@@ -1409,6 +1457,13 @@ public static class SnapshotCardReuse
     [PatchPart("piles")]
     private static NetFullCombatState.CardState CardFrom(CardModel card, ref Last? entry, in Reads reads)
     {
+#if BENCH
+        if (GameExceptionsForTest > 0)
+        {
+            GameExceptionsForTest--;
+            throw new GameCallException(new InvalidOperationException("bdperf: an error of the game's code while a pile is read"));
+        }
+#endif
         if (entry == null)
         {
             _last.TryGetValue(card, out entry);
@@ -1420,9 +1475,9 @@ public static class SnapshotCardReuse
             result.affliction = affliction.Id;
             result.afflictionCount = affliction.Amount;
         }
-        result.keywords = KeywordsOf(card, entry, reads.NoKeywordHook);
+        result.keywords = KeywordsOf(card, entry, reads);
         CardEnergyCost cost = card.EnergyCost;
-        int withModifiers = reads.NoCostHook ? LocalCost(card, cost) : cost.GetWithModifiers(CostModifiers.All);
+        int withModifiers = reads.NoCostHook ? LocalCost(card, cost) : WithModifiers(cost);
         if (withModifiers != cost.Canonical)
         {
             result.energyCost = withModifiers;
@@ -1620,31 +1675,47 @@ public static class SnapshotCardReuse
 
     /// <summary><c>card.Keywords</c> (<c>GetKeywordsWithSources(All)</c>) as the snapshot's enum-ordered list; null when empty.</summary>
     [PatchPart("piles")]
-    private static List<CardKeyword>? KeywordsOf(CardModel card, Last? last, bool noHook)
+    private static List<CardKeyword>? KeywordsOf(CardModel card, Last? last, in Reads reads)
     {
         IReadOnlySet<CardKeyword> keywords;
-        if (noHook)
+        if (reads.NoKeywordHook)
         {
             keywords = _localKeywords!(card); // No listener can add or remove any, in or out of combat.
         }
-        else if (_fastReads && card.CombatState is { } combat && !card.IsCanonical && !KeywordsPatched())
+        else if (_fastReads && card.CombatState is { } combat && !card.IsCanonical && !reads.KeywordReadsPatched)
         {
             HashSet<CardKeyword> scratch = _keywordScratch ??= new HashSet<CardKeyword>();
             scratch.Clear();
             scratch.UnionWith(_localKeywords!(card));
-            MegaCrit.Sts2.Core.Hooks.Hook.ModifyKeywordsInCombat(combat, card, scratch);
+            try
+            {
+                MegaCrit.Sts2.Core.Hooks.Hook.ModifyKeywordsInCombat(combat, card, scratch);
+            }
+            catch (Exception e)
+            {
+                throw new GameCallException(e);
+            }
             keywords = scratch;
         }
         else
         {
-            keywords = card.Keywords;
+            try
+            {
+                keywords = card.Keywords;
+            }
+            catch (Exception e)
+            {
+                throw new GameCallException(e);
+            }
         }
         if (keywords.Count == 0)
         {
             return null;
         }
         List<CardKeyword>? kept = last?.Keywords;
-        if (kept != null && kept.Count == keywords.Count && AllIn(kept, keywords))
+        // The list holds only defined values (as the game's, from Enum.GetValues): a set that also holds a generated one (BaseLib's
+        // custom keywords) has more, and is the same list when its defined values are the kept ones.
+        if (kept != null && AllIn(kept, keywords) && ((kept.Count == keywords.Count && _keywordValuesDistinct) || kept.Count == DefinedCount(keywords)))
         {
             return kept;
         }
@@ -1663,6 +1734,42 @@ public static class SnapshotCardReuse
         return kept;
     }
 
+    /// <summary><c>cost.GetWithModifiers(All)</c>: what its listeners throw is the game's (<see cref="GameCallException"/>).</summary>
+    [PatchPart("piles")]
+    private static int WithModifiers(CardEnergyCost cost)
+    {
+        try
+        {
+            return cost.GetWithModifiers(CostModifiers.All);
+        }
+        catch (Exception e)
+        {
+            throw new GameCallException(e);
+        }
+    }
+
+    /// <summary>
+    /// What a call the game's <c>CardState.From</c> also makes threw: a cost or keyword listener, the card's keywords. The game's error (a
+    /// content mod's listener), not this part's: <see cref="PilePrefix"/> leaves that pile to the game's <c>From</c>, which throws it again
+    /// from the same call (through no frame of this class, so <see cref="PatchGuard"/> doesn't take it for this part's), and stays on.
+    /// Not <c>card.ToSerializable()</c>: the game's <c>From</c> makes that one through <see cref="ToSerializable"/>, a frame of this class,
+    /// so this part goes off there anyway.
+    /// </summary>
+    private sealed class GameCallException : Exception
+    {
+        public GameCallException(Exception inner) : base(inner.Message, inner)
+        {
+        }
+    }
+
+    /// <summary>Piles left to the game's <c>From</c> because the game's own code threw while they were read (<see cref="GameCallException"/>).</summary>
+    public static long GameExceptions { get; private set; }
+    private static bool _loggedGameException;
+#if BENCH
+    /// <summary>The next reads of this many cards throw as a listener would (bdperf): the part must stay on, the piles as vanilla.</summary>
+    public static int GameExceptionsForTest { get; set; }
+#endif
+
     /// <summary><c>GetWithModifiers(All)</c> when no listener changes costs (the hook would return its input).</summary>
     [PatchPart("piles")]
     private static int LocalCost(CardModel card, CardEnergyCost cost)
@@ -1680,13 +1787,21 @@ public static class SnapshotCardReuse
         return Math.Max(0, num);
     }
 
+    private static bool IsPilesWrite(CodeInstruction instruction) =>
+        instruction.operand is MethodInfo { Name: nameof(PacketWriter.WriteList), IsGenericMethod: true } method
+        && method.GetGenericArguments()[0] == typeof(NetFullCombatState.CombatPileState) && method.GetParameters().Length == 2;
+
+    /// <summary>The <c>WriteList&lt;CombatPileState&gt;</c> calls the last run of <see cref="PlayerSerializeTranspiler"/> replaced.</summary>
+    private static int _pilesReplaced;
+
     private static IEnumerable<CodeInstruction> PlayerSerializeTranspiler(IEnumerable<CodeInstruction> instructions)
     {
+        int replaced = 0; // Harmony runs transpilers again each time the method is re-patched.
         foreach (CodeInstruction instruction in instructions)
         {
-            if (instruction.operand is MethodInfo { Name: nameof(PacketWriter.WriteList), IsGenericMethod: true } method
-                && method.GetGenericArguments()[0] == typeof(NetFullCombatState.CombatPileState) && method.GetParameters().Length == 2)
+            if (IsPilesWrite(instruction))
             {
+                replaced++;
                 // Same stack: (writer, list, lengthBits).
                 yield return new CodeInstruction(OpCodes.Call, AccessTools.Method(typeof(SnapshotCardReuse), nameof(WritePiles)))
                     .WithLabels(instruction.labels).WithBlocks(instruction.blocks);
@@ -1694,14 +1809,21 @@ public static class SnapshotCardReuse
             }
             yield return instruction;
         }
+        _pilesReplaced = replaced;
     }
 
-    /// <summary><c>writer.WriteList(piles, lengthBits)</c>, each pile through <see cref="PileSerializePrefix"/>.</summary>
+    /// <summary>
+    /// <c>writer.WriteList(piles, lengthBits)</c>, each pile through <see cref="PileSerializePrefix"/>. The count check and header below
+    /// mirror <c>PacketWriter.WriteList</c> (fingerprint <see cref="WriteListFingerprint"/>): re-read them before accepting another
+    /// fingerprint for it. The verifier's reference (inside <see cref="ListenerCache.RunVanilla"/>) goes through the game's call, so a
+    /// difference there shows.
+    /// </summary>
     [PatchPart("bits")]
     private static void WritePiles(PacketWriter writer, IReadOnlyList<NetFullCombatState.CombatPileState> piles, int lengthBits)
     {
-        // Another mod's patch on WriteList<CombatPileState> (or on what pile bits stand for) runs only through the game's call.
-        if (!Enabled || PileBitsBlocked())
+        // Another mod's patch on WriteList<CombatPileState> (or on what pile bits stand for) runs only through the game's call; so does
+        // the vanilla reference SnapshotVerifier serializes.
+        if (!Enabled || ListenerCache.IsSuspended || PileBitsBlocked())
         {
             writer.WriteList(piles, lengthBits);
             return;
@@ -2204,7 +2326,8 @@ public static class SnapshotCardReuse
     [PatchPart("bits")]
     private static bool CardSerializePrefix(ref NetFullCombatState.CardState __instance, PacketWriter writer)
     {
-        if (_capturing || !Enabled || __instance.card == null || !LimitlessReserialize.CanCompareHere || CardBitsBlocked())
+        // Inside RunVanilla the bits written are the reference (SnapshotVerifier): the game's own.
+        if (_capturing || !Enabled || ListenerCache.IsSuspended || __instance.card == null || !LimitlessReserialize.CanCompareHere || CardBitsBlocked())
         {
             return true;
         }
@@ -2367,6 +2490,20 @@ public static class SnapshotCardReuse
         }
     }
 
+    /// <summary>The length of the game's list for this set: how many of <see cref="_keywordValues"/> it holds.</summary>
+    private static int DefinedCount(IReadOnlySet<CardKeyword> keywords)
+    {
+        int count = 0;
+        foreach (CardKeyword keyword in _keywordValues)
+        {
+            if (keywords.Contains(keyword))
+            {
+                count++;
+            }
+        }
+        return count;
+    }
+
     private static bool AllIn(List<CardKeyword> kept, IReadOnlySet<CardKeyword> keywords)
     {
         for (int i = 0; i < kept.Count; i++)
@@ -2474,10 +2611,13 @@ public static class SnapshotCardReuse
         _freshWriter.Reset();
         last.Saved.Serialize(_reusedWriter);
         fresh.Serialize(_freshWriter);
-        if (!_reusedWriter.Buffer.AsSpan(0, _reusedWriter.BytePosition).SequenceEqual(_freshWriter.Buffer.AsSpan(0, _freshWriter.BytePosition)))
+        // Bit lengths too: a write ends with its byte's higher bits zeroed, so bytes alone don't see 1 to 7 more zero bits at the end,
+        // which shift every later bit of the checksum's stream.
+        if (_reusedWriter.BitPosition != _freshWriter.BitPosition
+            || !_reusedWriter.Buffer.AsSpan(0, _reusedWriter.BytePosition).SequenceEqual(_freshWriter.Buffer.AsSpan(0, _freshWriter.BytePosition)))
         {
             Mismatches++;
-            Disable("a reused card snapshot differs from a fresh one", $"{card.Id} ({_reusedWriter.BytePosition} vs {_freshWriter.BytePosition} bytes)");
+            Disable("a reused card snapshot differs from a fresh one", $"{card.Id} ({_reusedWriter.BitPosition} vs {_freshWriter.BitPosition} bits)");
             return fresh;
         }
         return last.Saved;

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using BigDeckOptimization.Patches;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.DevConsole;
@@ -14,8 +15,10 @@ namespace BigDeckOptimization.Bench;
 
 /// <summary>
 /// <c>bdperf shufflebench [n]</c>, in combat: what deck-wide reads cost over the local player's cards. The game's sort of
-/// <c>StableShuffle</c> against a sort on integer keys (same order required, ties included, from shuffled starts), and the
-/// counts Squeeze, Perfected Strike and Crescent Spear make for each calculation.
+/// <c>StableShuffle</c> against a sort on integer keys (same order required, ties included, from shuffled starts; game
+/// v0.107/v0.111 only, whose comparison is the id then the upgrade level: since v0.113 the orders aren't compared, and
+/// <c>bdperf sortkeys</c> checks that version's sort), and the counts Squeeze, Perfected Strike and Crescent Spear make for
+/// each calculation.
 /// </summary>
 public static class ShuffleBench
 {
@@ -41,10 +44,14 @@ public static class ShuffleBench
         double vanilla = Time(() => cards.ToList().Sort());
         double keyed = Time(() => KeyedSort(cards));
 
+        // The keys mirror the comparison of game v0.107/v0.111 (id, then upgrade level), the one CardSortKeys finds "not
+        // needed". Since v0.113 CardModel.CompareTo also compares enchantments, afflictions, costs and variables: different
+        // orders there are no bug (bdperf sortkeys compares that version's sort).
+        bool comparable = CardSortKeys.NotNeeded;
         int different = 0;
         var random = new Random(1234);
         List<CardModel> order = cards.ToList();
-        for (int i = 0; i < 40; i++)
+        for (int i = 0; comparable && i < 40; i++)
         {
             for (int j = order.Count - 1; j > 0; j--)
             {
@@ -71,7 +78,7 @@ public static class ShuffleBench
         double strike = Time(() => sink += combat.AllCards.Count(c => c.Tags.Contains(CardTag.Strike)));
         double stars = Time(() => sink += combat.AllCards.Count(c => c.CanonicalStarCost >= 0 || c.HasStarCostX));
         return new CmdResult(success: different == 0, $"SHUFFLEBENCH {cards.Count} cards, {cards.Select(c => c.Id).Distinct().Count()} kinds: sort {vanilla:F2} ms, keyed {keyed:F2} ms, "
-            + $"orders different {different} of 40; counts: Squeeze {squeeze:F3} ms, Perfected Strike {strike:F3} ms, Crescent Spear {stars:F3} ms ({sink & 1})");
+            + (comparable ? $"orders different {different} of 40" : "orders not compared (this game's CompareTo isn't the id-and-level one: bdperf sortkeys)") + $"; counts: Squeeze {squeeze:F3} ms, Perfected Strike {strike:F3} ms, Crescent Spear {stars:F3} ms ({sink & 1})");
     }
 
     private static CardModel[] KeyedSort(List<CardModel> list)

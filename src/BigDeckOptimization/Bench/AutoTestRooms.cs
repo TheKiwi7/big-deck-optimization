@@ -55,6 +55,9 @@ public static partial class AutoTest
             return;
         }
         // Their waits are short for a big deck or a co-op peer (a co-op treasure waits for every player's vote): autoslay's limits.
+        // Not this file's own waits (OwnWait): their limits stay, so a screen that never comes fails the line with its message, before
+        // a runner's stall kill (240-300 s of silent log) loses it. AutoSlay's 10 minutes used to stretch them too: 60 s and
+        // 120 s leave room for a mod-off session with a big deck.
         PatchAutoSlayLimits();
         // Same seed on every peer and every session: the same picks for the same state.
         ConstructorInfo rngCtor = typeof(Rng).GetConstructors().Single(c => c.GetParameters() is { Length: 2 } p && p[1].ParameterType == typeof(string));
@@ -216,7 +219,7 @@ public static partial class AutoTest
         if (type is RoomType.Monster or RoomType.Elite or RoomType.Boss)
         {
             await AutoCombat(tree, timeout);
-            await WaitHelper.Until(() => NOverlayStack.Instance?.Peek() is NRewardsScreen || (NMapScreen.Instance?.IsOpen ?? false), ct, TimeSpan.FromSeconds(30), "no rewards screen after the combat");
+            await OwnWait(() => NOverlayStack.Instance?.Peek() is NRewardsScreen || (NMapScreen.Instance?.IsOpen ?? false), ct, 120, "no rewards screen after the combat");
         }
         else if (type == RoomType.RestSite && restOption != null)
         {
@@ -275,7 +278,8 @@ public static partial class AutoTest
                 }
                 if (CombatManager.Instance.IsInProgress && IsIdle())
                 {
-                    // In co-op a player who ended the turn is idle at once: the next round tells the turn is over for both.
+                    // In co-op the end-turn request of a client runs only once the host's echo comes back, and the round ends when
+                    // every player ended the turn: the next round tells the turn is over for both.
                     EndTurn();
                     await Until(tree, () => !CombatManager.Instance.IsInProgress || CombatManager.Instance.DebugOnlyGetState()?.RoundNumber > round, timeout, "next round");
                 }
@@ -310,7 +314,7 @@ public static partial class AutoTest
     private static async Task EnchantScreen(SceneTree tree, NDeckEnchantSelectScreen screen, CancellationToken ct)
     {
         List<NGridCardHolder> cards = new();
-        await WaitHelper.Until(() => (cards = UiHelper.FindAll<NGridCardHolder>(screen)).Count > 0, ct, TimeSpan.FromSeconds(10), "no cards in the enchant screen");
+        await OwnWait(() => (cards = UiHelper.FindAll<NGridCardHolder>(screen)).Count > 0, ct, 60, "no cards in the enchant screen");
         await Seconds(tree, 0.3);
         NGridCardHolder card = _roomRng!.NextItem(cards)!;
         card.EmitSignal(NCardHolder.SignalName.Pressed, card);
@@ -321,10 +325,10 @@ public static partial class AutoTest
         {
             await UiHelper.Click(main);
         }
-        await WaitHelper.Until(() => single.Visible || multi.Visible, ct, TimeSpan.FromSeconds(10), "no enchant preview");
+        await OwnWait(() => single.Visible || multi.Visible, ct, 60, "no enchant preview");
         await Seconds(tree, 0.3);
         await UiHelper.Click((NClickableControl)Field(single.Visible ? "_singlePreviewConfirmButton" : "_multiPreviewConfirmButton"));
-        await WaitHelper.Until(() => !GodotObject.IsInstanceValid(screen) || !screen.IsVisibleInTree(), ct, TimeSpan.FromSeconds(30), "enchant screen still open after its confirm");
+        await OwnWait(() => !GodotObject.IsInstanceValid(screen) || !screen.IsVisibleInTree(), ct, 120, "enchant screen still open after its confirm");
     }
 
     private static IDisposable? _combatSelector;
@@ -364,7 +368,7 @@ public static partial class AutoTest
     {
         await Until(tree, () => NRestSiteRoom.Instance is { } site && site.IsInsideTree(), 60, "rest site room");
         NRestSiteRoom room = NRestSiteRoom.Instance!;
-        await WaitHelper.Until(() => UiHelper.FindAll<NRestSiteButton>(room).Count > 0, ct, TimeSpan.FromSeconds(10), "no rest site buttons");
+        await OwnWait(() => UiHelper.FindAll<NRestSiteButton>(room).Count > 0, ct, 60, "no rest site buttons");
         List<NRestSiteButton> buttons = UiHelper.FindAll<NRestSiteButton>(room);
         NRestSiteButton? button = buttons.FirstOrDefault(b => b.Option.IsEnabled && b.Option.GetType().Name == optionType);
         if (button == null)
@@ -373,7 +377,7 @@ public static partial class AutoTest
             return;
         }
         await UiHelper.Click(button);
-        await WaitHelper.Until(() => room.ProceedButton.IsEnabled || NOverlayStack.Instance is { ScreenCount: > 0 }, ct, TimeSpan.FromSeconds(30), "rest site option did not respond");
+        await OwnWait(() => room.ProceedButton.IsEnabled || NOverlayStack.Instance is { ScreenCount: > 0 }, ct, 120, "rest site option did not respond");
     }
 
     /// <summary>
@@ -439,10 +443,10 @@ public static partial class AutoTest
             List<NEventOptionButton> options = new();
             // A screen too: the game's handler can call the event done before its rewards open (co-op, THE_LEGENDS_WERE_TRUE's potion
             // on v0.113.1: the host's rewards screen came after "Event room completed", and nothing here answered it).
-            await WaitHelper.Until(() => (NMapScreen.Instance?.IsOpen ?? false) || CombatManager.Instance.IsInProgress
+            await OwnWait(() => (NMapScreen.Instance?.IsOpen ?? false) || CombatManager.Instance.IsInProgress
                 || NOverlayStack.Instance is { ScreenCount: > 0 }
                 || (options = UiHelper.FindAll<NEventOptionButton>(eventRoom).Where(o => !o.Option.IsLocked).ToList()).Count > 0,
-                ct, TimeSpan.FromSeconds(10), "no event option, no fight, no screen and no map");
+                ct, 60, "no event option, no fight, no screen and no map");
             if (!CombatManager.Instance.IsInProgress && NOverlayStack.Instance is { ScreenCount: > 0 } && options.Count == 0)
             {
                 await DrainScreens(null, ct);
@@ -451,8 +455,8 @@ public static partial class AutoTest
             if (CombatManager.Instance.IsInProgress)
             {
                 await AutoCombat(tree, timeout);
-                await WaitHelper.Until(() => NOverlayStack.Instance is { ScreenCount: > 0 } || (NMapScreen.Instance?.IsOpen ?? false)
-                    || UiHelper.FindAll<NEventOptionButton>(eventRoom).Any(o => !o.Option.IsLocked), ct, TimeSpan.FromSeconds(30), "nothing after the event's fight");
+                await OwnWait(() => NOverlayStack.Instance is { ScreenCount: > 0 } || (NMapScreen.Instance?.IsOpen ?? false)
+                    || UiHelper.FindAll<NEventOptionButton>(eventRoom).Any(o => !o.Option.IsLocked), ct, 120, "nothing after the event's fight");
                 await DrainScreens(null, ct);
                 continue;
             }

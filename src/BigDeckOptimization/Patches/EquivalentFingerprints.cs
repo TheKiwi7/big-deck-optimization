@@ -17,7 +17,8 @@ public static partial class PatchSafety
         // SavedProperties.FromInternal, game v0.111 (beta): its saved-property lookup moved from
         // SavedPropertiesTypeCache.GetJsonPropertiesForType to ModelIdSerializationCache.GetJsonPropertiesForType (the
         // caches merged; same lookup, which also throws if used before the game initialized it); nothing else changed.
-        // LimitlessReserialize calls whichever exists (JsonPropertiesLookup).
+        // LimitlessReserialize calls whichever exists (JsonPropertiesLookup). RelicStateReuse requires this FromInternal
+        // fingerprint too.
         ["F73EEC2208D6E517"] = new[] { "B8EF45DA081344A5" },
 
         // CombatManager.SetupPlayerTurn (state machine), game v0.111 (beta): takes a CombatTurnState and reads the combat

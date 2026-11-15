@@ -71,6 +71,8 @@
     <ItemGroup>
       <ModFiles Include="$(OutDir)BigDeckOptimization.dll;$(OutDir)BigDeckOptimization.json;$(OutDir)mod_image.jpg;$(OutDir)BigDeckOptimization.Menu.dll" />
     </ItemGroup>
+    <!-- A local copy in the Steam install overrides the player's Workshop version: only on purpose (the hands-on demo script). -->
+    <Error Condition="$(ModDeployDir.ToLowerInvariant().Contains('steamapps')) And '$(AllowSteamDeploy)' != 'true'" Text="Refusing to deploy into the Steam install ($(ModDeployDir)): a local copy there overrides the Workshop version. Use -p:ModDeployDir=&lt;game copy&gt;\mods\BigDeckOptimization, -p:DeployToGame=false, or -p:AllowSteamDeploy=true." />
     <!-- The game locks the DLL while running: warn instead of failing the build. -->
     <Copy SourceFiles="@(ModFiles)" DestinationFolder="$(ModDeployDir)" SkipUnchangedFiles="true" Retries="0" ContinueOnError="WarnAndContinue" />
     <Message Importance="high" Condition="'$(MSBuildLastTaskResult)' == 'true'" Text="BigDeckOptimization deployed to $(ModDeployDir)" />

@@ -7,8 +7,9 @@ errors logged on one side only; this mod's problems; what each optimization did 
 ran; the items allocating the most with the mod on, and where it saves the least. Allocations are measured per session,
 so they hold under load; frame times don't, they aren't reported here. Writes report-<kind>.md and merged logs
 sweep-<kind>-2k-off/on.log next to the parts. Exit code 1 when anything differs, when an item stopped a session on one side
-only, or when a session has a problem (judge.py: an error or a difference this mod found itself, a failed line, a session
-neither ended nor stopped on an item). An item stopping a session on both sides (the game's own error in a situation it
+only, when a game error is logged mod on only or far more often (but the engine's timing noise, judge.GAME_NOISE), or when
+a session has a problem (judge.py: an error or a difference this mod found itself, a failed line, a session neither ended nor
+stopped on an item). An item stopping a session on both sides (the game's own error in a situation it
 never meets, mod off too) is listed, not counted: the next session goes on from the next item. Every item of the game must
 be in a chunk on both sides (the parts' scripts, against the item count): a chunk without any log, or a sweep cut short
 (parsweep.ps1 -Chunks over another run), is "not compared".
@@ -23,7 +24,8 @@ import compare  # noqa: E402
 import judge  # noqa: E402
 
 PART = re.compile(r'(\w+)-(off|on)-c(\d+)-p(\d+)\.log$')
-STEP = re.compile(r'SWEEP (\S+) (\S+) (\S+) wall (\d+) worst (\d+) over50 (\d+) gc (\d+) mb ([\d.]+)')
+# Lazy item: an encounter's turn steps are 'X t1 play1' (the item's id and its turn).
+STEP = re.compile(r'SWEEP (\S+) (.+?) (\S+) wall (\d+) worst (\d+) over50 (\d+) gc (\d+) mb ([\d.]+)')
 FAILED = re.compile(r'SWEEP FAILED \S+ (\S+): (.{0,110})')
 EFFECT = re.compile(r'EFFECT (\S+) (\d+)')
 CLOCK = re.compile(r'AutoTest\s+([\d.]+)s')
@@ -166,6 +168,11 @@ def report(folder, kind):
     for side, other in (('on', 'off'), ('off', 'on')):
         for text, count in list(compare.errors_only_in(errors[side], errors[other]).items())[:10]:
             out.append(f'game errors only mod {side}: {count}x {text}')
+    # Mod on alone, or far more often, but the engine's timing noise: a problem (an exception in game code from this mod's data has
+    # no frame of this mod). Mod off only stays information.
+    grown = compare.errors_grown(errors['off'], errors['on'])
+    for text, count in list(grown.items())[:10]:
+        out.append(f'game error mod on only or far more often ({count} vs {errors["off"].get(text, 0)}): {text}')
     for line in sorted(set(problems))[:10]:
         out.append(f'mod problem: {line}')
     for line in list(dict.fromkeys(session_problems))[:20]:
@@ -181,7 +188,7 @@ def report(folder, kind):
     if heavy:
         out.append('most allocated with the mod on (MB, mod off in parentheses):')
         out += [f'  {steps["on"][k]:8.1f} ({steps["off"][k]:8.1f})  {k[0]} {k[1]}' for k in heavy]
-    return out, bool(different or cut or missing or one_side or session_problems)
+    return out, bool(different or cut or missing or one_side or session_problems or grown)
 
 
 def overall_effects(folder, kinds):
@@ -217,4 +224,6 @@ def main():
 
 
 if __name__ == '__main__':
+    # Under python -I stdout is the ANSI code page (PYTHONIOENCODING ignored): a log's character it lacks must not crash the report.
+    sys.stdout.reconfigure(errors='backslashreplace')
     sys.exit(main())

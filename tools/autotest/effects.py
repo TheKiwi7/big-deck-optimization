@@ -43,4 +43,6 @@ def main(args):
 
 
 if __name__ == '__main__':
+    # Under python -I stdout is the ANSI code page (PYTHONIOENCODING ignored): a log's character it lacks must not crash the report.
+    sys.stdout.reconfigure(errors='backslashreplace')
     sys.exit(main(sys.argv[1:]))

@@ -21,7 +21,10 @@ namespace BigDeckOptimization.Patches;
 /// <c>NGlobalUi._Ready</c>, Limitless's relic bar never got its scroll container, and in co-op the back button of a
 /// player's profile threw (Limitless's AnimShow/AnimHide postfixes): no way back to the map.</item>
 /// </list>
-/// So this mod never rebuilds a method one of whose patches can't be found again (<see cref="Blocker"/>), and a rebuild that
+/// A rebuild also runs every transpiler again: one that depends on state its mod set before the first build gives another
+/// body, with no error to see (BaseLib's ModInterop, <see cref="StatefulTranspilers"/>).
+/// So this mod never rebuilds a method one of whose patches can't be found again or is such a transpiler
+/// (<see cref="Blocker"/>), and a rebuild that
 /// fails anyway gets the previous replacement back (<see cref="Run{T}"/>). The Harmony internals read here are checked at
 /// load (<see cref="Available"/>); restoring checks its own result.
 /// </summary>
@@ -73,8 +76,23 @@ public static class HarmonyRebuild
     }
 
     /// <summary>
+    /// Transpilers (declaring type's full name) whose output depends on state their mod sets just before its own Patch call,
+    /// so run again by a rebuild they give another body, without any error. BaseLib 3.4.8's ModInterop: one transpiler for
+    /// every [ModInterop] stub, inserting the static <c>QuickTranspiler.Insert</c> list, reassigned before each stub is
+    /// patched; rebuilt later, a stub would get the call the last generated stub makes.
+    /// </summary>
+    private static readonly string[] StatefulTranspilers =
+    {
+        "BaseLib.Patches.Features.ModInterop+QuickTranspiler",
+#if BENCH
+        "BigDeckOptimization.Bench.RebuildCheck+StatefulTranspiler", // rebuildcheck's stand-in (no mod uses ModInterop today)
+#endif
+    };
+
+    /// <summary>
     /// Why Harmony can't build this method's replacement again, or null. Only the first build of a patch method declared in a
-    /// generic type works (see the class summary); one Harmony can't find at all (its assembly gone) fails too.
+    /// generic type works (see the class summary); one Harmony can't find at all (its assembly gone) fails too; and a
+    /// <see cref="StatefulTranspilers"/> one would silently give a wrong body.
     /// </summary>
     public static string? Blocker(MethodBase original)
     {
@@ -102,6 +120,10 @@ public static class HarmonyRebuild
             if (method.ContainsGenericParameters || method.DeclaringType?.ContainsGenericParameters == true)
             {
                 return $"{patch.owner}'s {MethodFingerprint.TypeName(method.DeclaringType)}.{method.Name} is declared in a generic type";
+            }
+            if (method.DeclaringType?.FullName is { } type && StatefulTranspilers.Contains(type))
+            {
+                return $"{patch.owner}'s transpiler {type}.{method.Name} gives another body when run again";
             }
         }
         return null;

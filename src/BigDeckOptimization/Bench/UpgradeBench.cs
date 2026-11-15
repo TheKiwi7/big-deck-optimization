@@ -16,8 +16,8 @@ namespace BigDeckOptimization.Bench;
 
 /// <summary>
 /// <c>bdperf upgradebench [n]</c>, in combat: what an upgrade costs over the local player's combat cards (what an Apotheosis
-/// walks): the walk of their variables, Limitless's <c>PreviousLevel</c> table read and its setter prefix (writing the levels
-/// already stored, its first pass adding the entries), then each step of an upgrade on fresh copies of the same cards.
+/// walks): the walk of their variables, Limitless's <c>PreviousLevel</c> table read, then on fresh copies of the same cards
+/// (the combat's cards are only read) its setter prefix (its first pass adding the entries) and each step of an upgrade.
 /// </summary>
 public static class UpgradeBench
 {
@@ -53,20 +53,24 @@ public static class UpgradeBench
         foreach (DynamicVar v in vars) plain[v] = 0;
         double dict = Time(() => { foreach (DynamicVar v in vars) sink += plain.TryGetValue(v, out int x) ? x : 0; });
         int entries = table == null ? 0 : table.Count();
+        // Fresh copies of the same cards (canonical ToMutable: in no pile, no combat, no node): the steps below run on them,
+        // never on the combat's cards.
+        List<CardModel> canonical = cards.Select(c => ModelDb.GetById<CardModel>(c.Id)).ToList();
         System.Reflection.MethodInfo? limitlessPrefix = HarmonyLib.AccessTools.Method("Limitless.LimitlessCode.UncappedUpgrades.DynamicVarPatches.CardModelSetPreviousLevel:Prefix");
         double original = -1, originalFirst = -1;
         if (limitlessPrefix != null)
         {
+            // On copies: the prefix writes PreviousLevel for every variable of the card it gets, which the combat's cards
+            // must keep as the game left it (Limitless reads it to size an upgrade's increments).
+            List<CardModel> prefixCopies = canonical.Select(c => c.ToMutable()).ToList();
             Action<CardModel> runOriginal = HarmonyLib.AccessTools.MethodDelegate<Action<CardModel>>(limitlessPrefix);
             long first = Stopwatch.GetTimestamp();
-            foreach (CardModel c in cards) runOriginal(c);
+            foreach (CardModel c in prefixCopies) runOriginal(c);
             originalFirst = Stopwatch.GetElapsedTime(first).TotalMilliseconds;
-            original = Time(() => { foreach (CardModel c in cards) runOriginal(c); });
+            original = Time(() => { foreach (CardModel c in prefixCopies) runOriginal(c); });
         }
 
-        // An upgrade's steps on fresh copies of the same cards (canonical ToMutable: in no pile, no combat, no node): each
-        // pass copies them again, timed apart.
-        List<CardModel> canonical = cards.Select(c => ModelDb.GetById<CardModel>(c.Id)).ToList();
+        // An upgrade's steps on fresh copies: each pass copies them again, timed apart.
         double copy = 0, upgradable = 0, upgrade = 0, finalize = 0;
         int upgraded = 0;
         for (int i = 0; i <= iterations; i++)

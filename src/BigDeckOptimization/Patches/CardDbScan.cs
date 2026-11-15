@@ -32,8 +32,10 @@ public static class CardDbScan
     public const string Name = "CardDbScan";
 
     /// <summary>v0.107.1 code this relies on: the pile walk, the ID assignment and the combat start that IDs every card
-    /// already in a pile (same code in v0.111). <c>AddInternal</c> only has to be the only way into a pile (its writers
-    /// are checked); recording a card whose add then fails costs one more ID check.</summary>
+    /// already in a pile (same code in v0.111, v0.113.0 and v0.113.1). <c>AddInternal</c> is deliberately not fingerprinted
+    /// (its body changed on v0.113): it only has to be the only way into a pile (the list's writers are checked) and to put
+    /// the very card it is given in the list, which the sampled whole-pile check (<see cref="VerifyEvery"/>) would catch
+    /// otherwise. Recording a card whose add then fails costs one more ID check.</summary>
     private const string WalkFingerprint = "207017C48274E22C";
     private const string StartCombatFingerprint = "01491A6EA42EBCE2";
     private const string IdFingerprint = "DEC87C0A856497A5";
@@ -146,7 +148,7 @@ public static class CardDbScan
     private static void WatchAdd(CardPile __instance, out int __state) => __state = __instance.Cards.Count;
 
     /// <summary>An add whose original didn't run but whose pile changed anyway: what entered isn't known, that pile walks in full.</summary>
-    private static Exception? AfterAdd(Exception? __exception, CardPile __instance, int __state, bool __runOriginal)
+    private static void AfterAdd(Exception? __exception, CardPile __instance, int __state, bool __runOriginal)
     {
         if (!__runOriginal)
         {
@@ -163,7 +165,6 @@ public static class CardDbScan
                 Fail(e.ToString());
             }
         }
-        return __exception;
     }
 
     /// <summary>StartCombat IDs every card already in a pile (vanilla refuses ownerless ones: keep those pending).</summary>

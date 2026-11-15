@@ -87,7 +87,7 @@ public static partial class PatchSafety
         }
     }
 
-    /// <summary>The code that changes <c>CardPile._cards</c> (game v0.107.1 and v0.111): the constructor and its fingerprinted list methods.</summary>
+    /// <summary>The code that changes <c>CardPile._cards</c> (game v0.107.1 to v0.113.1): the constructor and its fingerprinted list methods.</summary>
     public static readonly string[] CardListWriters =
         { ".ctor", "AddInternal", "Clear", "MoveToBottomInternal", "MoveToTopInternal", "RandomizeOrderInternal", "RemoveInternal" };
 
@@ -292,7 +292,7 @@ public static partial class PatchSafety
         HarmonyLib.Patches? info = Harmony.GetPatchInfo(method);
         string[] mods = ModNames(info == null ? Enumerable.Empty<Patch>()
             : AllPatches(info)
-                .Where(p => !PatchGuard.IsOurs(p.owner) && !allowedPatches.Any(a => a.MethodHandle == p.PatchMethod.MethodHandle)));
+                .Where(p => !PatchGuard.IsOurs(p.owner) && !(PatchMethodOf(p) is { } patchMethod && allowedPatches.Any(a => a.MethodHandle == patchMethod.MethodHandle))));
         RecordOnce(caller, method, mods);
         _patchedBeyondAllowed[(method, allowedKey)] = (mods.Length > 0, now, mods);
         return mods.Length > 0;
@@ -383,18 +383,61 @@ public static partial class PatchSafety
     /// <summary>The loaded mod whose assembly holds the patch method (its display name), else the Harmony id.</summary>
     private static string ModName(Patch patch)
     {
-        Assembly? assembly = patch.PatchMethod?.DeclaringType?.Assembly;
+        Assembly? assembly = PatchMethodOf(patch)?.DeclaringType?.Assembly;
         if (assembly != null && assembly != typeof(PatchSafety).Assembly)
         {
+            if (_modNames.TryGetValue(assembly, out string? known))
+            {
+                return known;
+            }
             foreach (MegaCrit.Sts2.Core.Modding.Mod mod in MegaCrit.Sts2.Core.Modding.ModManager.Mods)
             {
                 if (ModAssemblies(mod).Contains(assembly))
                 {
-                    return mod.manifest?.name ?? mod.manifest?.id ?? patch.owner;
+                    if ((mod.manifest?.name ?? mod.manifest?.id) is { } name)
+                    {
+                        // A mod's assemblies and manifest don't change once loaded. Not kept: an assembly no mod holds yet.
+                        _modNames[assembly] = name;
+                        return name;
+                    }
+                    return patch.owner;
                 }
             }
         }
         return patch.owner;
+    }
+
+    /// <summary>Mod display name per assembly holding a patch method (<see cref="ModName"/>).</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Assembly, string> _modNames = new();
+
+    // Harmony 2.4's Patch keeps its method as module GUID and token, and Harmony.GetPatchInfo gives new Patch objects at each
+    // call: reading PatchMethod there searches every loaded assembly's modules again (AccessTools.GetMethodByModuleAndToken,
+    // a Parallel.ForEach over all of them), at each recheck of each method another mod patches. Read by reflection: without
+    // these fields (another Harmony), PatchMethod as before.
+    private static readonly FieldInfo? _patchToken = AccessTools.Field(typeof(Patch), "methodToken");
+    private static readonly FieldInfo? _patchModule = AccessTools.Field(typeof(Patch), "moduleGUID");
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Module, int Token), MethodInfo> _patchMethods = new();
+
+    /// <summary>
+    /// A patch's method, resolved once per module and token (a module's methods don't change while it is loaded); the same
+    /// as <c>patch.PatchMethod</c>, which is also what is done when Harmony gave none (not kept: its assembly may load later).
+    /// </summary>
+    private static MethodInfo? PatchMethodOf(Patch patch)
+    {
+        if (_patchToken?.GetValue(patch) is not int token || _patchModule?.GetValue(patch) is not string module)
+        {
+            return patch.PatchMethod;
+        }
+        if (_patchMethods.TryGetValue((module, token), out MethodInfo? known))
+        {
+            return known;
+        }
+        MethodInfo? method = patch.PatchMethod;
+        if (method != null)
+        {
+            _patchMethods[(module, token)] = method;
+        }
+        return method;
     }
 
     // Game v0.107: Mod.assembly; v0.111 (beta): Mod.assemblies. Read by reflection so both work.

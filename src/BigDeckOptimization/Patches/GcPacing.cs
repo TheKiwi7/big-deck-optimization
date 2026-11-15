@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime;
 using Godot;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Context;
+using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Runs;
@@ -13,12 +15,14 @@ namespace BigDeckOptimization.Patches;
 /// With huge decks every ephemeral collection pauses the game for 50-100 ms, and the game's budget (~47 MB here) runs out
 /// every few actions: a visible hitch in the middle of an animation, whatever the optimizations elsewhere. In a combat with
 /// many cards, memory for <see cref="Budget"/> MB is set aside at a moment when nothing is animating (.NET's no-GC
-/// region: no collection, it takes ~1 ms), so actions don't collect at all; when more than <see cref="Refill"/> of it was
+/// region: starting one runs a short collection first, whose length follows the live young objects, <see cref="RegionMs"/>),
+/// so actions don't collect at all; when more than <see cref="Refill"/> of it was
 /// used, more is set aside at the next such moment. Garbage then piles up: after <see cref="CollectEvery"/> MB allocated, a
 /// quick collection of the recent objects runs at such a moment instead, when no card or hit is on its way; older ones
 /// wait for the end of the combat, collected in the background. If an action ever uses the whole budget, .NET collects
-/// as it would have anyway. No game code or state involved, memory use only (at most about <see cref="CollectEvery"/> MB
-/// more, during combats).
+/// as it would have anyway. No game code or state involved, memory use only: older objects are only collected once the heap
+/// grew <see cref="FullAfterGrowth"/> MB in the combat, so up to about that plus the budget more, ~1.4 GB, during those
+/// combats (1.2 GB against ~570 MB after a collection measured in a long one).
 /// </summary>
 public static class GcPacing
 {
@@ -38,6 +42,7 @@ public static class GcPacing
 
     public static bool Enabled { get; set; } = true;
     public static bool Applied { get; private set; }
+    /// <summary>Regions that started (the effect counter); those .NET refused are <see cref="RegionsRefused"/>.</summary>
     public static long Regions { get; private set; }
     public static long RegionsRefused { get; private set; }
     public static long Exhausted { get; private set; }
@@ -55,6 +60,8 @@ public static class GcPacing
     private static int _idleFrames;
     private static int _checkCards;
     private static bool _bigCombat;
+    /// <summary>Whether the last tick paced a big combat: stopping then collects what piled up.</summary>
+    private static bool _pacing;
 
     public static void Apply(HarmonyLib.Harmony harmony)
     {
@@ -74,21 +81,21 @@ public static class GcPacing
     {
         try
         {
-            if (!Enabled || !CombatManager.Instance.IsInProgress || !BigCombat())
+            if (!Enabled || !CombatManager.Instance.IsInProgress)
             {
-                bool wasBig = _bigCombat;
+                // The next combat is counted on its first frame (its piles are filled before it is in progress).
                 _bigCombat = false;
                 _checkCards = 0;
-                End();
-                if (wasBig)
-                {
-                    // What piled up and older objects: in the background, without stopping the game for a full collection.
-                    GC.Collect(2, GCCollectionMode.Forced, blocking: false);
-                    _heapAfterFull = 0;
-                    _allocatedAtCollect = GC.GetTotalAllocatedBytes(false);
-                }
+                StopPacing();
                 return;
             }
+            if (!BigCombat())
+            {
+                // A small combat keeps its count for the next ticks (a recount at every frame was garbage for nothing).
+                StopPacing();
+                return;
+            }
+            _pacing = true;
             if (_inRegion && GCSettings.LatencyMode != GCLatencyMode.NoGCRegion)
             {
                 // The budget ran out in the middle of something: .NET collected and left the region.
@@ -121,7 +128,23 @@ public static class GcPacing
         }
     }
 
-    /// <summary>Recounted about once a second: combat piles barely change size.</summary>
+    private static void StopPacing()
+    {
+        End();
+        if (_pacing)
+        {
+            _pacing = false;
+            // What piled up and older objects: in the background, without stopping the game for a full collection.
+            GC.Collect(2, GCCollectionMode.Forced, blocking: false);
+            _heapAfterFull = 0;
+            _allocatedAtCollect = GC.GetTotalAllocatedBytes(false);
+        }
+    }
+
+    /// <summary>
+    /// Recounted every 240 frames (a few seconds at 60 fps), small combats too: combat piles barely change size. Indexed, as
+    /// a foreach over these read-only lists would allocate an enumerator each.
+    /// </summary>
     private static bool BigCombat()
     {
         if (--_checkCards > 0)
@@ -133,13 +156,15 @@ public static class GcPacing
         RunState? state = RunManager.Instance.DebugOnlyGetState();
         if (state != null)
         {
-            foreach (Player player in state.Players)
+            IReadOnlyList<Player> players = state.Players;
+            for (int i = 0; i < players.Count; i++)
             {
-                if (player.PlayerCombatState is { } combat)
+                if (players[i].PlayerCombatState is { } combat)
                 {
-                    foreach (var pile in combat.AllPiles)
+                    IReadOnlyList<CardPile> piles = combat.AllPiles;
+                    for (int j = 0; j < piles.Count; j++)
                     {
-                        cards += pile.Cards.Count;
+                        cards += piles[j].Cards.Count;
                     }
                 }
             }
@@ -186,7 +211,11 @@ public static class GcPacing
     {
         long start = System.Diagnostics.Stopwatch.GetTimestamp();
         _inRegion = GC.TryStartNoGCRegion(Budget, LohBudget, disallowFullBlockingGC: true);
-        if (!_inRegion)
+        if (_inRegion)
+        {
+            Regions++;
+        }
+        else
         {
             // Not enough room right now, and each try can itself collect: not at every quiet moment.
             _retryAt = System.Environment.TickCount64 + RetryAfterMs;
@@ -194,7 +223,6 @@ public static class GcPacing
         }
         RegionMs += System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
         _allocatedAtStart = GC.GetTotalAllocatedBytes(false);
-        Regions++;
     }
 
     private static void End()

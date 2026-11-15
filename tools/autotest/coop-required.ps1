@@ -14,6 +14,10 @@ if ((Test-Path $marker) -and (Test-Path $backup)) {
 }
 # The client, without this mod, has no test runner to quit, nor to hide its window: headless, closed as soon as the refusal is logged.
 & (Join-Path $PSScriptRoot "coop.ps1") -Name coopreq -WithMods -TimeoutSec 150 -ClientHeadless -ClientWithout BigDeckOptimization -StopWhen "Mismatch in gameplay-relevant mods"
+$coopProblems = $LASTEXITCODE
 $clientLog = Join-Path $Results "coopreq-client.log"
-if ((Test-Path $clientLog) -and (Select-String -Path $clientLog -Pattern "Mismatch in gameplay-relevant mods|Reason: ModMismatch" -Quiet)) { Write-Output "ok      coop-required: the client without this mod was refused (ModMismatch)" }
+$refused = (Test-Path $clientLog) -and (Select-String -Path $clientLog -Pattern "Mismatch in gameplay-relevant mods|Reason: ModMismatch" -Quiet)
+if ($refused) { Write-Output "ok      coop-required: the client without this mod was refused (ModMismatch)" }
 else { Write-Output "PROBLEM coop-required: the client without this mod was not refused" }
+# Exit code 1 when the client wasn't refused, or coop.ps1 found a problem in either log.
+exit $(if (-not $refused -or $coopProblems) { 1 } else { 0 })

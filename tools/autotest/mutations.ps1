@@ -1,19 +1,23 @@
 # How the mod reacts when the game or a mod changes: for each mutation of tools/mutate (renumbered generated code, a new
 # hook, a changed mirrored method, a changed AbstractModel default or helper, a renamed method or field, a member made
 # internal, a changed signature, changed Limitless / BaseLib code), writes the modified assembly into a game COPY, runs
-# a scenario there (default release-checks: combat + vanilla-vs-optimized comparisons) and checks that
-#   - the session ran to its end with no error from this mod outside what the mutation explains,
+# a scenario there (default effects-check: every optimization's effect counter, its bdperf comparisons, a fixed seed) and checks that
+#   - the session ran to its end with no error from this mod outside what the mutation explains (a part left vanilla at load;
+#     a part faulting at run time, "disabled after exception", "turned off and removed", is never explained by the mutation),
 #   - exactly the parts relying on the changed code were left vanilla (every "left vanilla" line matches the
 #     mutation's pattern; none for mutations that change nothing the mod relies on),
 #   - every bdperf comparison still says identical,
 #   - the optimizations not relying on the changed code still work: against a session on the unmodified game, only the
 #     effects (AutoTest's "effects" counters) the mutation may take away dropped to zero,
 #   - the game did the same: CHECKSUM, STATE and CARDPLAY lines identical to that session, whatever is left vanilla.
-#   powershell -ExecutionPolicy Bypass -File tools/autotest/mutations.ps1 [-GameDir C:\Games\StS2-public-0.107.1] [-Only renumber-hooks,energy-hook] [-Scenario effects-check]
+#   powershell -ExecutionPolicy Bypass -File tools/autotest/mutations.ps1 [-GameDir C:\Games\StS2-public-0.107.1] [-Only renumber-hooks,energy-hook] [-Scenario effects-check] [-AllowUndefined]
+# tools/mutate is built first: a build that fails stops the run (an old mutate.dll would run old mutations). A mutation of the
+# table that tools/mutate doesn't define is a failure, unless -AllowUndefined (a name in -Only that isn't in the table stops the run).
+# One run at a time on this PC (its thin copies, its results/mutation-*.log).
 # Each mutation runs in parallel in its own folder of hard links to the copy (no disk used) holding only its modified file,
 # headless and without Steam, so the copy itself is never modified and stopping this script leaves nothing behind.
 # Debug build deployed in the copy first.
-param([string]$GameDir = "C:\Games\StS2-public-0.107.1", [string[]]$Only = @(), [string]$Scenario = "effects-check", [int]$TimeoutSec = 600, [int]$Jobs = [Environment]::ProcessorCount)
+param([string]$GameDir = "C:\Games\StS2-public-0.107.1", [string[]]$Only = @(), [string]$Scenario = "effects-check", [int]$TimeoutSec = 600, [int]$Jobs = [Environment]::ProcessorCount, [switch]$AllowUndefined)
 $copy = $GameDir
 . (Join-Path $PSScriptRoot "parlib.ps1")
 if ($copy -like "*steamapps*") { throw "Use a game copy, not the Steam install" }
@@ -72,11 +76,21 @@ $Expected = [ordered]@{
     # LimitlessHookSkip relies on what the getter hands out (the inner list only known code changes).
     "limitless-getter" = @("Limitless", "LimitlessHookSkip|LimitlessRecalcSkip|EnchantmentsOnCards", "LimitlessHookSkip(\.Saved)?|LimitlessRecalcSkip(\.Memos|\.Passes)?")
 }
-dotnet build (Join-Path $Root "tools\mutate") -c Release -v q | Out-Null
+$unknown = @($Only | Where-Object { -not $Expected.Contains($_) })
+if ($unknown.Count) { throw "-Only: no such mutation in the table: $($unknown -join ', ')" }
+# One run at a time: two would delete each other's thin copies and write the same results/mutation-<name>.log.
+$runLock = [Threading.Mutex]::new($false, "Local\BigDeckOptimization-mutations")
+try { if (-not $runLock.WaitOne(0)) { throw "another mutations.ps1 is running on this PC: wait for it to end" } }
+catch [Threading.AbandonedMutexException] { }
+$buildOutput = @(dotnet build (Join-Path $Root "tools\mutate") -c Release -v q 2>&1)
+if ($LASTEXITCODE -ne 0) { $buildOutput | Select-Object -Last 20 | ForEach-Object { Write-Output "  $_" }; throw "tools/mutate did not build: its old mutate.dll would run old mutations" }
 $mutate = Join-Path $Root "tools\mutate\bin\Release\net9.0\mutate.dll"
-# A mutation tools/mutate doesn't define (yet) is said, not run: mutate would fail on it and stop every other.
-$defined = @(dotnet $mutate list | ForEach-Object { ($_ -split '\s+')[0] })
-foreach ($name in @($Expected.Keys)) { if ($defined -notcontains $name) { Write-Output "NOT DEFINED in tools/mutate: $name (not run)"; $Expected.Remove($name) } }
+# A mutation tools/mutate doesn't define (yet) is said, not run: mutate would fail on it and stop every other. It counts as a failure,
+# unless -AllowUndefined.
+$defined = @(dotnet $mutate list | ForEach-Object { ($_ -split '\s+')[0] } | Where-Object { $_ })
+if ($LASTEXITCODE -ne 0 -or $defined.Count -eq 0) { throw "tools/mutate lists no mutation (exit code $LASTEXITCODE)" }
+$undefined = @()
+foreach ($name in @($Expected.Keys)) { if ($defined -notcontains $name -and ($Only.Count -eq 0 -or $Only -contains $name)) { Write-Output "NOT DEFINED in tools/mutate: $name (not run)"; $undefined += $name; $Expected.Remove($name) } }
 $started = Get-Date
 Add-TestMods $GameDir
 $thinRoot = Join-Path (Split-Path $GameDir) "bdmut-copies"
@@ -126,29 +140,36 @@ try {
     # bdperf comparisons only (ExtraScopes' first-turn line is the scope's own check, gone when ExtraScopes is the part a mutation leaves vanilla).
     $IdenticalLine = { param($l) $l -match "OK: identical" -and $l -notmatch "first-turn filter" }
     $referenceIdentical = @(Get-Content $Reference | Where-Object { & $IdenticalLine $_ }).Count
-    $referenceProblems = @(Invoke-Judge @($Reference)) + @(($runs | Where-Object { $_.Name -eq "reference" }).Failed | Where-Object { $_ -match '^(ended early|test mod not loaded)' })
+    $referenceProblems = @(Invoke-Judge @($Reference)) + @(($runs | Where-Object { $_.Name -eq "reference" }).Failed | Where-Object { $_ -match '^(ended early|froze|test mod )' })
     if (-not $referenceOk) { Write-Output "REFERENCE: an effect never ran (or stayed open) on the unmodified game: what a mutation loses there can't be seen" }
     if ($referenceIdentical -eq 0) { Write-Output "REFERENCE: no bdperf comparison said 'OK: identical' on the unmodified game" }
     $referenceProblems | ForEach-Object { Write-Output "REFERENCE: $_" }
+    $RuntimeFault = "disabled after exception|turned off and removed|faulted|error inside the game's code"
     $summary = @()
     foreach ($name in $names) {
         $target, $pattern, $mayLose = $Expected[$name]
         $log = Join-Path $Results "mutation-$name.log"
         $text = Get-Content $log
-        $vanilla = (python -I (Join-Path $Root "tools\check_versions.py") --local --log $log) | Where-Object { $_ -match "^\s+\[" -and $_ -notmatch "hooks filtered, \d+ left vanilla" }
+        $listed = @(python -I (Join-Path $Root "tools\check_versions.py") --local --log $log)
+        # Exit code 2: it crashed (1 only says versions differ): a list cut short could make "nothing left vanilla" pass.
+        $listCrashed = $LASTEXITCODE -ge 2
+        $vanilla = $listed | Where-Object { $_ -match "^\s+\[" -and $_ -notmatch "hooks filtered, \d+ left vanilla" }
         $vanilla = @($vanilla | ForEach-Object { $_.Trim() })
         $problems = @()
+        if ($listCrashed) { $problems += "check_versions.py --log failed: $(@($listed | Select-Object -Last 1))" }
         $state = ($runs | Where-Object { $_.Name -eq $name }).State
         if ($state -ne "done") { $problems += "session: $state" }
-        # An earlier session of it that ended early (not the known renderer crash), a test mod the game didn't find.
-        $problems += @(($runs | Where-Object { $_.Name -eq $name }).Failed | Where-Object { $_ -match '^(ended early|test mod not loaded)' })
+        # An earlier session of it that ended early or froze in this mod's code (not the known renderer crash), a test mod not loaded.
+        $problems += @(($runs | Where-Object { $_.Name -eq $name }).Failed | Where-Object { $_ -match '^(ended early|froze|test mod )' })
         if (-not ($text -match "AutoTest .*> quit")) { $problems += "the scenario did not reach its end" + $(if ($text -match "Patch AutoTest (skipped|could not)") { " (the test runner itself could not load: test tooling must stay compatible)" } else { "" }) }
         if ($pattern -eq "") { if ($vanilla.Count -gt 0) { $problems += "$($vanilla.Count) part(s) left vanilla, expected none" } }
         else {
             if ($vanilla.Count -eq 0) { $problems += "nothing left vanilla, expected $pattern" }
             $problems += $vanilla | Where-Object { $_ -notmatch $pattern } | ForEach-Object { "unexpected: $_" }
         }
-        $errors = $text | Where-Object { $_ -match "\[ERROR\].*\[BigDeckOptimization\]|BigDeckOptimization.*(disabled after exception|faulted)" -and ($pattern -eq "" -or $_ -notmatch $pattern) }
+        # The mutation's pattern explains what is left vanilla at load, never a part faulting at run time: that is the regression this
+        # test is for, even when its line names a part the pattern lists.
+        $errors = $text | Where-Object { $_ -match "\[ERROR\].*\[BigDeckOptimization\]|BigDeckOptimization.*(disabled after exception|faulted)" -and ($pattern -eq "" -or $_ -match $RuntimeFault -or $_ -notmatch $pattern) }
         $problems += $errors | Select-Object -First 5 | ForEach-Object { "error: $($_.Substring(0, [Math]::Min(200, $_.Length)))" }
         $mismatch = $text | Where-Object { $_ -cmatch "MISMATCH|mismatches [1-9]|differ" }
         $problems += $mismatch | Select-Object -First 3 | ForEach-Object { "comparison: $($_.Substring(0, [Math]::Min(200, $_.Length)))" }
@@ -171,10 +192,12 @@ try {
     $summary | Format-Table Mutation, Verdict, Vanilla, Lost, Identical -AutoSize | Out-String -Width 200 | Write-Output
     Write-Output ("{0}/{1} as expected in {2:F1} min" -f @($summary | Where-Object { $_.Verdict -eq "PASS" }).Count, $summary.Count, ((Get-Date) - $started).TotalMinutes)
     $failed = @($summary | Where-Object { $_.Verdict -ne "PASS" }).Count + $(if (-not $referenceOk -or $referenceIdentical -eq 0 -or $referenceProblems.Count) { 1 } else { 0 })
-    if ($failed) { Write-Output "NOT AS EXPECTED: $failed (the reference counts as one when it is wrong)" }
+    if ($undefined.Count -and -not $AllowUndefined) { $failed += $undefined.Count; Write-Output "NOT RUN: $($undefined -join ', ') (not defined in tools/mutate; -AllowUndefined to accept)" }
+    if ($failed) { Write-Output "NOT AS EXPECTED: $failed (the reference counts as one when it is wrong, each mutation not run as one)" }
 }
 finally {
     Remove-Item $thinRoot -Recurse -Force -ErrorAction SilentlyContinue
+    $runLock.ReleaseMutex(); $runLock.Dispose()
     Remove-TestMods $GameDir
     $after = Get-ChildItem $GameDir -Recurse -File -Force | Where-Object { $_.FullName -notmatch '\\mods_STEAMTEST\\' } | ForEach-Object { "$($_.FullName)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" }
     $changed = @(Compare-Object $before $after)

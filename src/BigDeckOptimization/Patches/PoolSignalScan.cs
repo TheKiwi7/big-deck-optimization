@@ -23,7 +23,8 @@ namespace BigDeckOptimization.Patches;
 /// same bookkeeping. Signal names are cached per node type (class, script) and a signal's connection list is only read
 /// when <c>HasConnections</c> says it has any. Names are re-checked against the vanilla list for the first nodes of
 /// each type then 1 in 64; any difference (e.g. a user signal added at runtime) turns the patch off for the session.
-/// Only active while the mirrored methods' fingerprints match. UI only.
+/// Only active while the mirrored methods' fingerprints match, and only for the game's own <c>NodePool&lt;T&gt;</c>: another
+/// pool class in <c>NodePool._pools</c> (BaseLib's <c>GeneratedNodePool&lt;T&gt;</c>, a mod's own) goes vanilla. UI only.
 /// </summary>
 public static class PoolSignalScan
 {
@@ -50,7 +51,8 @@ public static class PoolSignalScan
 
     private static readonly Dictionary<(Type, string, ulong), (StringName[] Names, int Seen)> _signalNames = new();
     private static readonly ConditionalWeakTable<object, Action<Callable, Signal>> _disconnect = new();
-    private static readonly Dictionary<Type, PoolAccess> _access = new();
+    /// <summary>Per pool class: its members, or null for a class that isn't the game's NodePool&lt;T&gt; (never mirrored).</summary>
+    private static readonly Dictionary<Type, PoolAccess?> _access = new();
     private static readonly Variant _nameKey = Variant.CreateFrom("name");
     private static readonly Variant _callableKey = Variant.CreateFrom("callable");
     private static readonly Variant _signalKey = Variant.CreateFrom("signal");
@@ -121,13 +123,13 @@ public static class PoolSignalScan
                 return true; // Vanilla throws.
             }
             pool = found;
-            if (!_access.TryGetValue(pool.GetType(), out access))
+            access = Access(pool.GetType());
+            if (access == null || AnyPoolPatched())
             {
-                access = new PoolAccess(pool.GetType());
-                _access[pool.GetType()] = access;
+                return true;
             }
             used = access.Used.GetValue(pool)!;
-            if (access.Mirrored.Any(method => PatchSafety.IsPatchedByOthers(method)) || !(bool)access.UsedContains.Invoke(used, new object[] { poolable })!)
+            if (!(bool)access.UsedContains.Invoke(used, new object[] { poolable })!)
             {
                 return true; // Vanilla logs the double free / foreign object.
             }
@@ -146,6 +148,40 @@ public static class PoolSignalScan
         access.UsedRemove.Invoke(used, new object[] { poolable });
         access.FreeAdd.Invoke(access.Free.GetValue(pool), new object[] { poolable });
         poolable.OnFreedToPool();
+        return false;
+    }
+
+    private static PoolAccess? Access(Type poolType)
+    {
+        if (!_access.TryGetValue(poolType, out PoolAccess? access))
+        {
+            // Checked before reading any member: a pool class with other members never faults the patch.
+            access = poolType.IsGenericType && poolType.GetGenericTypeDefinition() == typeof(NodePool<>) ? new PoolAccess(poolType) : null;
+            _access[poolType] = access;
+        }
+        return access;
+    }
+
+    /// <summary>
+    /// Another mod patches what a mirrored free skips, on any pool: reference-type NodePool&lt;T&gt; share one compiled body, so
+    /// a patch on one instantiation's Free could run for every pool's frees (DESIGN saw it not reach that code; this holds
+    /// either way). A few cached lookups per pool type.
+    /// </summary>
+    private static bool AnyPoolPatched()
+    {
+        foreach (INodePool other in _pools!().Values)
+        {
+            if (other != null && Access(other.GetType()) is { } access)
+            {
+                foreach (MethodInfo method in access.Mirrored)
+                {
+                    if (PatchSafety.IsPatchedByOthers(method))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
         return false;
     }
 

@@ -28,7 +28,8 @@ def read(folder, kind, imports):
 
 
 def step_name(step):
-    """Encounter steps carry their turn in the item: t1 play1 and t2 play1 are the same path."""
+    """The step's path, whatever the turn: an encounter's turn is in the item ('AEONGLASS_BOSS t1', STEP's lazy item), so its
+    step ('play1') is already the same for every turn. Nothing to strip."""
     return step
 
 
@@ -88,4 +89,6 @@ def main():
 
 
 if __name__ == '__main__':
+    # Under python -I stdout is the ANSI code page (PYTHONIOENCODING ignored): a log's character it lacks must not crash the report.
+    sys.stdout.reconfigure(errors='backslashreplace')
     main()

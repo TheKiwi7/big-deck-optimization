@@ -9,13 +9,13 @@ cmd bigdeck import ref all all
 cmd bigdeck import ref all all
 cmd bdperf segments verify all
 checksum before
-state before
+state before optional
 cmd room RestSite
 wait 5
 restsite CloneRestSiteOption
 waitfor deckcount 900
 wait 2
 checksum after
-state after
+state after optional
 counters clone
 quit

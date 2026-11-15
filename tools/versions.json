@@ -12,6 +12,11 @@
   "Limitless_updated": "1794546498",
   "BetterSpire2_updated": "1794676515",
   "SpeedX_updated": "1790050991",
-  "sts2unlimited_updated": "1794759769",
+  "sts2unlimited_updated": "1793891458",
+  "betas": {
+    "v0.111.0": 222455745,
+    "v0.113.0": 2138858832,
+    "v0.113.1": 358281912
+  },
   "verified": "2026-11-15"
 }

@@ -7,6 +7,7 @@ using System.Runtime.CompilerServices;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Entities.Orbs;
 using MegaCrit.Sts2.Core.Entities.Players;
@@ -27,10 +28,12 @@ namespace BigDeckOptimization.Patches;
 ///   - Refresh scope: UI refreshes after every action (hand cards, end turn button, enemy intents, creature state,
 ///     energy, orbs) and enchantment value recalculation.
 ///
-/// Inside a scope nothing changes the listener set, so we materialize it once and replay it. As defense in depth, the
+/// Inside a scope nothing changes the listener set, so we materialize it once and replay it (game logic that resumes inline
+/// inside the dispatch scope, a hand selection ended by a state change, runs vanilla: <see cref="SuspendPrefix"/>). As defense in depth, the
 /// cache is dropped on every change that can alter the listener set: combat state changes reported by the game, any
 /// card pile mutation (deck included), enchantment/affliction changes, relic (incl. melting), potion and orb changes,
-/// players becoming active/inactive for hooks.
+/// players becoming active/inactive for hooks, creatures added, removed or reordered and their powers added or removed.
+/// Lists are reused across display scopes only while BaseLib card modifiers (changed with nothing watched) can't exist.
 /// </summary>
 public static class ListenerCache
 {
@@ -136,6 +139,34 @@ public static class ListenerCache
                 PatchGuard.Patch(harmony, setDominion, finalizer: Method(nameof(Invalidate)));
             }
         }
+        // The combat's creatures (the walks start from its ally and enemy lists, in that order) and their powers. Every change
+        // of them comes today with a watched one (CombatManager.CreaturesChanged, the tracker's power events,
+        // History.MonsterPerformedMove right before a monster killed during its move leaves), but a killed creature is
+        // unsubscribed from the tracker while its powers are still listed until it leaves: watched here so the cache doesn't
+        // rest on that order. Optional: one missing or not patched only loses that watch (the order above still holds).
+        foreach ((Type owner, string name) in new[]
+        {
+            (typeof(CombatState), nameof(CombatState.AddCreature)), (typeof(CombatState), nameof(CombatState.RemoveCreature)),
+            (typeof(CombatState), nameof(CombatState.SortEnemiesBySlotName)), (typeof(CombatState), nameof(CombatState.SetEnemyIndex)),
+            (typeof(Creature), nameof(Creature.ApplyPowerInternal)), (typeof(Creature), nameof(Creature.RemovePowerInternal)),
+        })
+        {
+            try
+            {
+                if (AccessTools.Method(owner, name) is { } creatures)
+                {
+                    PatchGuard.Patch(harmony, creatures, finalizer: Method(nameof(InvalidateCreatures)));
+                }
+                else
+                {
+                    Log.Info($"[{ModEntry.Id}] {Name}: {owner.Name}.{name} not found: not watched");
+                }
+            }
+            catch (Exception e)
+            {
+                Log.Warn($"[{ModEntry.Id}] {Name}: {owner.Name}.{name} not watched: {e.Message}");
+            }
+        }
         // A card's enchantment/affliction is only listed through a pile, and only owned cards sit in piles. Ownerless
         // cards are detached models, e.g. Limitless' enchantment storage cards rebuilt while rendering every card.
         PatchSafety.RequireFieldWriters(typeof(CardModel), "<Enchantment>k__BackingField", "set_Enchantment");
@@ -164,6 +195,52 @@ public static class ListenerCache
         TryDispatchScope(harmony);
         TryScope(harmony, AccessTools.Method(typeof(NHandCardHolder), nameof(NHandCardHolder.UpdateCard)), nameof(EnterDisplayRefresh), nameof(ExitRefresh));
         TryScope(harmony, AccessTools.Method(typeof(NCard), nameof(NCard.UpdateVisuals)), nameof(EnterDisplayRefresh), nameof(ExitRefresh));
+
+        // 4. Game logic resuming inside the dispatch scope: run vanilla there (see SuspendPrefix). Required: without it a
+        // hand selection ended by a state change would run the card's play on the scope's lists.
+        PatchGuard.Patch(harmony, Require(AccessTools.Method(typeof(NPlayerHand), "RevalidateSelectionAfterStateChange")),
+            prefix: Method(nameof(SuspendPrefix)), finalizer: Method(nameof(ResumeFinalizer)));
+
+        // BaseLib loading later (it is optional): whether card modifiers may exist is looked at again (CardModifiersMayChange).
+        if (System.Threading.Interlocked.Exchange(ref _watchingBaseLib, 1) == 0)
+        {
+            AppDomain.CurrentDomain.AssemblyLoad += OnAssemblyLoad;
+        }
+        // Answered once at load rather than at the first kept-list hit in a combat (with BaseLib, BaseLibTypes scans the
+        // assemblies referencing it); it never throws.
+        CardModifiersMayChange();
+        // Last: a throw above leaves the scopes vanilla. ModEntry then removes the invalidators, but the scopes ExtraScopes
+        // and HookFilter open through this class would still cache (on a version nothing bumps any more) without this.
+        _applied = true;
+    }
+
+    /// <summary>Set once <see cref="Apply"/> got through: until then (or when it threw) no scope caches.</summary>
+    private static bool _applied;
+
+    /// <summary>
+    /// <c>NPlayerHand.RevalidateSelectionAfterStateChange</c> runs inside the CombatStateChanged dispatch scope (while the
+    /// player chooses cards in hand) and ends the selection when no hand card is valid any more: <c>TrySetResult</c> on a
+    /// task made without <c>RunContinuationsAsynchronously</c>, awaited on the same context, so the card's play goes on
+    /// inline, inside the scope (on host or solo, the action queue with it). The game's walks there must be its lazy
+    /// ones (<c>Contains</c> at each yield: a listener leaving the state during an async hook's walk is skipped), not a
+    /// list built for the scope: everything this mod does with listeners runs vanilla until the method returns.
+    /// </summary>
+    private static void SuspendPrefix(out int __state)
+    {
+        __state = _suspended ? 2 : 1;
+        _suspended = true;
+#if BENCH
+        SuspendedRevalidations++;
+#endif
+    }
+
+    /// <summary>Restores what the prefix found; 0: the prefix never ran (another mod's prefix returned false first).</summary>
+    private static void ResumeFinalizer(int __state)
+    {
+        if (__state != 0)
+        {
+            _suspended = __state == 2;
+        }
     }
 
     /// <summary>A method the cache must watch to stay up to date: missing, the whole patch is skipped (named in the log).</summary>
@@ -330,28 +407,51 @@ public static class ListenerCache
         return list.AsReadOnly();
     }
 
-    /// <summary>Harmony finalizer of every watched method: runs whether it returned or threw (a second run only bumps again).</summary>
-    private static Exception? Invalidate(Exception? __exception)
+    /// <summary>
+    /// Harmony finalizer of every watched method: runs whether it returned or threw (a second run only bumps again). Void:
+    /// with every finalizer of a method void, Harmony rethrows the game's exception with its own stack trace.
+    /// </summary>
+    private static void Invalidate()
     {
-        _version++;
-        return __exception;
+        Bump();
     }
 
-    private static Exception? InvalidateIfOwned(Exception? __exception, CardModel __instance)
+    /// <summary><see cref="Invalidate"/> for the creature lists and powers (counted apart in test builds).</summary>
+    private static void InvalidateCreatures()
+    {
+        Bump();
+#if BENCH
+        CreatureInvalidations++;
+#endif
+    }
+
+    private static void InvalidateIfOwned(CardModel __instance)
     {
         // Never throws into the setter: unsure, invalidate.
         try
         {
             if (_cardOwner == null || _cardOwner(__instance) != null)
             {
-                _version++;
+                Bump();
             }
         }
         catch
         {
-            _version++;
+            Bump();
         }
-        return __exception;
+    }
+
+    /// <summary>
+    /// A new version: the kept lists can never be used again (<see cref="Kept"/> needs the same version) and go now, so they
+    /// don't hold a finished combat (its piles cleared at its end) until the next display scope.
+    /// </summary>
+    private static void Bump()
+    {
+        _version++;
+        if (_kept is { Count: > 0 })
+        {
+            _kept.Clear();
+        }
     }
 
     private static void EnterAny()
@@ -362,7 +462,7 @@ public static class ListenerCache
             {
                 // Checked per outermost scope: another mod may patch after we load. A replayed list stands for the whole
                 // walk: the iterators' state machines, Contains and the mod subscriber walks too (FastListeners knows them).
-                _safe = !PatchSafety.IsPatchedByOthers(_combatIterate) && !PatchSafety.IsPatchedByOthers(_runIterate)
+                _safe = _applied && !PatchSafety.IsPatchedByOthers(_combatIterate) && !PatchSafety.IsPatchedByOthers(_runIterate)
                     && !FastListeners.WalkCodePatchedByOthers();
             }
             catch (Exception e)
@@ -472,7 +572,7 @@ public static class ListenerCache
     private static ReadOnlyCollection<AbstractModel>? Kept((object, object?) key)
     {
         if (!ReuseEnabled || _reuseBlocked || _kept == null
-            || !_kept.TryGetValue(key, out var entry) || entry.Version != _version)
+            || !_kept.TryGetValue(key, out var entry) || entry.Version != _version || CardModifiersMayChange())
         {
             return null;
         }
@@ -482,6 +582,56 @@ public static class ListenerCache
     }
 
     private static bool VerifyThisReuse() => Reused % ReuseVerifyEvery == 0;
+
+    /// <summary>BaseLib's card modifier base type.</summary>
+    private const string CardModifierType = "BaseLib.Abstracts.CardModifier";
+    private const string BaseLibAssembly = "BaseLib";
+    /// <summary>0: not looked up yet (or BaseLib loaded since), 1: no such type (no BaseLib), 2: BaseLib has it.</summary>
+    private static int _cardModifierBase;
+    private static int _watchingBaseLib;
+
+    /// <summary>
+    /// Whether a mod may apply BaseLib card modifiers. BaseLib's "BaseLibCardModifiers" subscriber lists each pile card's
+    /// modifiers, which BaseLib changes with no method this cache watches: a kept list may then miss one applied or removed
+    /// since, so lists aren't reused across display scopes (each scope still builds its own once). No BaseLib, or no mod
+    /// defining a concrete CardModifier (every supported setup today): reused as before. Never throws: can't tell, no reuse.
+    /// </summary>
+    private static bool CardModifiersMayChange()
+    {
+        try
+        {
+            int known = System.Threading.Volatile.Read(ref _cardModifierBase);
+            if (known == 0)
+            {
+                // Looked up in BaseLib's assembly only: AccessTools.TypeByName on a missing type (no BaseLib, the common
+                // setup) falls back to GetTypes() on every loaded assembly, a hitch in the middle of a combat.
+                known = AppDomain.CurrentDomain.GetAssemblies()
+                    .Any(a => a.GetName().Name == BaseLibAssembly && a.GetType(CardModifierType, false) != null) ? 2 : 1;
+                System.Threading.Interlocked.CompareExchange(ref _cardModifierBase, known, 0);
+            }
+            return known == 2 && !BaseLibTypes.NoneDefined(CardModifierType);
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
+    /// <summary>Runs inside another assembly's load: never throws.</summary>
+    private static void OnAssemblyLoad(object? sender, AssemblyLoadEventArgs args)
+    {
+        try
+        {
+            if (args.LoadedAssembly.GetName().Name == BaseLibAssembly)
+            {
+                System.Threading.Volatile.Write(ref _cardModifierBase, 0);
+            }
+        }
+        catch
+        {
+            System.Threading.Volatile.Write(ref _cardModifierBase, 0);
+        }
+    }
 
     /// <summary>Fresh list built while a kept one was available: they must match, else reuse is unsafe.</summary>
     private static ReadOnlyCollection<AbstractModel> CheckedAgainstKept(ReadOnlyCollection<AbstractModel>? kept, ReadOnlyCollection<AbstractModel> fresh)
@@ -501,23 +651,28 @@ public static class ListenerCache
         return fresh;
     }
 
-    // Scope prefixes keep the depth they found in __state and their finalizers restore it instead of decrementing:
+    // Scope prefixes keep the depth they found plus one in __state and their finalizers restore it instead of decrementing:
     // Harmony 2.4 runs every finalizer of a method a second time when one of them throws (another mod's included), and a
     // second decrement would leave this thread's depth negative (no scope ever caching again, or one never closing).
+    // A state of 0 is the default Harmony gives a finalizer whose prefix never ran (an earlier prefix threw): no scope was
+    // opened, nothing to restore (restoring 0 would close the scopes this call runs nested in).
 
     private static void EnterSnapshot(out int __state)
     {
-        __state = _snapshotDepth;
+        __state = _snapshotDepth + 1;
         EnterAny();
         BlockReuse();
         _snapshotDepth++;
     }
 
-    private static Exception? ExitSnapshot(Exception? __exception, int __state)
+    private static void ExitSnapshot(Exception? __exception, int __state)
     {
-        _snapshotDepth = __state;
+        if (__state <= 0)
+        {
+            return;
+        }
+        _snapshotDepth = __state - 1;
         ExitAny();
-        return __exception;
     }
 
     /// <summary>
@@ -535,14 +690,17 @@ public static class ListenerCache
     /// <summary><see cref="EnterRefresh"/> as a Harmony prefix (finalizer <see cref="ExitRefresh"/>).</summary>
     private static void EnterRefreshPatch(out int __state)
     {
-        __state = _refreshDepth;
+        __state = _refreshDepth + 1;
         EnterRefresh();
     }
 
-    /// <summary>Refresh scope around a display-only pass (card visuals, other mods' previews): may reuse kept lists. Harmony prefix (finalizer <see cref="ExitRefresh"/>).</summary>
+    /// <summary>
+    /// Refresh scope around a display-only pass (card visuals, other mods' previews): may reuse kept lists. Harmony prefix
+    /// (finalizer <see cref="ExitRefresh"/>); its state (the depth found plus one, never 0) is what <see cref="ExitRefresh"/> takes.
+    /// </summary>
     internal static void EnterDisplayRefresh(out int __state)
     {
-        __state = _refreshDepth;
+        __state = _refreshDepth + 1;
         EnterAny();
         _refreshDepth++;
     }
@@ -563,18 +721,26 @@ public static class ListenerCache
 
     /// <summary>
     /// Harmony finalizer of <see cref="EnterRefreshPatch"/> and <see cref="EnterDisplayRefresh"/> (restores the depth they
-    /// found), or called directly after <see cref="EnterRefresh"/> in a finally (no state: one level less).
+    /// found: state - 1; 0, their prefix never ran: nothing to close), or called directly after <see cref="EnterRefresh"/>
+    /// in a finally (no state, -1: one level less).
     /// </summary>
-    internal static Exception? ExitRefresh(Exception? __exception, int __state = -1)
+    internal static void ExitRefresh(Exception? __exception, int __state = -1)
     {
-        _refreshDepth = __state >= 0 ? __state : Math.Max(0, _refreshDepth - 1);
+        if (__state == 0)
+        {
+            return;
+        }
+        _refreshDepth = __state > 0 ? __state - 1 : Math.Max(0, _refreshDepth - 1);
         ExitAny();
-        return __exception;
     }
 
 #if BENCH
     /// <summary>Walks answered from a materialized list (the effects check).</summary>
     public static long Served { get; private set; }
+    /// <summary>Invalidations by the creature lists and powers watched in <see cref="Apply"/> (the effects check: they run).</summary>
+    public static long CreatureInvalidations { get; private set; }
+    /// <summary>Hand selections revalidated with the listener optimizations suspended (<see cref="SuspendPrefix"/>).</summary>
+    public static long SuspendedRevalidations { get; private set; }
     /// <summary>Scopes open on this thread: 0 when nothing runs (the effects check; a lost finalizer leaves them open).</summary>
     public static int OpenScopes => _snapshotDepth + _refreshDepth;
 #endif

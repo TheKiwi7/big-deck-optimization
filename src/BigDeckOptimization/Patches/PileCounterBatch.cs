@@ -56,20 +56,27 @@ public static class PileCounterBatch
         Applied = true;
     }
 
-    /// <summary>Paired with the finalizer through __state: a prefix of another mod throwing before this one ran leaves the depth as it was.</summary>
-    private static void ClearPrefix(out bool __state)
+    /// <summary>
+    /// Paired with the finalizer through __state, the depth after this clear opened (0: this prefix didn't run, Harmony's
+    /// default when another mod's prefix threw first). The finalizer restores the depth from it rather than decrementing:
+    /// Harmony runs every finalizer a second time, in its catch block, when one of them throws after a normal return, and a
+    /// decrement would then leave the depth below zero (every later removal batched, never flushed).
+    /// </summary>
+    private static void ClearPrefix(out int __state)
     {
         _clearDepth++;
-        __state = true;
+        __state = _clearDepth;
     }
 
-    private static Exception? ClearFinalizer(Exception? __exception, bool __state)
+    private static void ClearFinalizer(Exception? __exception, int __state)
     {
-        if (!__state)
+        if (__state <= 0)
         {
-            return __exception;
+            return;
         }
-        if (--_clearDepth == 0 && _dirty is { Count: > 0 })
+        // A rerun restores the same depth; the flush below empties _dirty before fitting, so it doesn't run twice.
+        _clearDepth = __state - 1;
+        if (_clearDepth == 0 && _dirty is { Count: > 0 })
         {
             List<NCombatCardPile> dirty = _dirty;
             _dirty = null;
@@ -88,7 +95,6 @@ public static class PileCounterBatch
                 }
             }
         }
-        return __exception;
     }
 
     /// <summary>Vanilla: <c>_currentCount = Math.Max(_currentCount - 1, _pile.Cards.Count)</c>, then fits the label.</summary>

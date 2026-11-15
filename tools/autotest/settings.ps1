@@ -8,16 +8,21 @@ $copy = $GameDir
 $GameDir = Resolve-GameCopy $copy
 Assert-GameNotRunning
 # The kept slot, held until the end (other series skip it; run.ps1 -KeepSlot below holds it too).
+$runProblems = 0
 [void](Lock-Slot $KeptSlot)
 try {
     $slot = Sync-Slot $KeptSlot
     $config = Join-Path $slot "SlayTheSpire2\mod_configs\BigDeckOptimization.cfg"
     & (Join-Path $PSScriptRoot "run.ps1") -Name settings-menu -TimeoutSec 240 -GameDir $GameDir -KeepSlot
+    if ($LASTEXITCODE) { $runProblems++ }
     if (Test-Path $config) { Write-Output "--- saved after settings-menu:"; Get-Content $config }
     & (Join-Path $PSScriptRoot "run.ps1") -Name settings-menu-2 -TimeoutSec 240 -GameDir $GameDir -KeepSlot
+    if ($LASTEXITCODE) { $runProblems++ }
     if (Test-Path $config) { Write-Output "--- saved after settings-menu-2:"; Get-Content $config }
     Test-SessionLog "settings-menu" "screenshot .*shot-settings" $true "the menu was captured"
     Test-SessionLog "settings-menu-2" "Fast combat start \[fast_combat_start\]: OFF" $true "the option turned off stayed off after a restart"
     Test-SessionLog "settings-menu-2" "screenshot .*shot-mods" $true "the mods screen was captured"
 }
 finally { Unlock-Slot $KeptSlot }
+# Exit code 1 on any PROBLEM line above or a session run.ps1 judged with a problem.
+exit $(if ($script:SessionLogProblems -or $runProblems) { 1 } else { 0 })

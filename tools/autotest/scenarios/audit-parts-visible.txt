@@ -1,5 +1,6 @@
 # Audit: what bdopt says of a part off. fakeconflict on a part's method and a fault of one part: the option stays on and says which part isn't running.
 expect DeckCountMemo disabled, the game counts its cards
+expect \[combat_refresh\]: on \(partly off: DeckCountMemo \(error\)\)
 timeout 300
 newrun NECROBINDER 1234
 waitfor run 120

@@ -4,7 +4,7 @@ onfail continue
 timeout 2400
 mplobby IRONCLAD 2
 waitfor run 240
-cmd bdopt off
+cmd bdopt off yes
 cmd bdperf checks off
 wait 14
 cmd bigdeck import ref all cards {hash:ref}

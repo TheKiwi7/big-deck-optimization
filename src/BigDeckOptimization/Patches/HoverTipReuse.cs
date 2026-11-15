@@ -156,8 +156,11 @@ public static class HoverTipReuse
         }
         try
         {
-            // Cases where the game shows nothing new: let it run as is.
-            if (__instance.Entity.CombatState == null || NCombatRoom.Instance is not { } room || room.Ui.Hand.InCardPlay)
+            // Cases where the game shows nothing new: let it run as is. Tips blocked (a potion popup open, targeting) or hidden
+            // (the debug toggle): the game removes the panel and builds none or a hidden one, which a reuse would keep on screen.
+            // The entry left in _shown is never matched again: the panel it names is no longer the one registered.
+            if (__instance.Entity.CombatState == null || NCombatRoom.Instance is not { } room || room.Ui.Hand.InCardPlay
+                || NHoverTipSet.shouldBlockHoverTips || NGame.IsDebugHidingHoverTips)
             {
                 return true;
             }

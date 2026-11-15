@@ -132,8 +132,10 @@ public static class PerfProbe
             new[] { typeof(PlayerChoiceContext), typeof(decimal), typeof(Player), typeof(bool) }), "CardPileCmd.Draw");
         Probe(harmony, AccessTools.Method(typeof(CardPileCmd), nameof(CardPileCmd.RemoveFromCombat),
             new[] { typeof(IEnumerable<CardModel>), typeof(bool) }), "CardPileCmd.RemoveFromCombat");
-        Probe(harmony, AccessTools.Method(typeof(CardPileCmd), nameof(CardPileCmd.Add),
-            new[] { typeof(IEnumerable<CardModel>), typeof(CardPile), typeof(CardPilePosition), typeof(AbstractModel), typeof(bool) }), "CardPileCmd.Add(many)");
+        // By its first two parameters: game v0.113 added a parameter (isChangingOwners) after the others.
+        Probe(harmony, typeof(CardPileCmd).GetMethods(BindingFlags.Public | BindingFlags.Static).FirstOrDefault(m => m.Name == nameof(CardPileCmd.Add)
+            && m.GetParameters() is { Length: >= 2 } p && p[0].ParameterType == typeof(IEnumerable<CardModel>) && p[1].ParameterType == typeof(CardPile)),
+            "CardPileCmd.Add(many)");
         Probe(harmony, AccessTools.Method(typeof(PlayCardAction), "ExecuteAction"), "PlayCardAction.ExecuteAction");
         Probe(harmony, AccessTools.Method(typeof(SaveManager), nameof(SaveManager.SaveRun)), "SaveManager.SaveRun");
         Probe(harmony, AccessTools.Method(typeof(RewardsSet), nameof(RewardsSet.GenerateWithoutOffering)), "RewardsSet.GenerateWithoutOffering");
@@ -223,36 +225,10 @@ public static class PerfProbe
         __state = Enabled ? Stopwatch.GetTimestamp() : 0;
     }
 
-    /// <summary>Probes whose callers are sampled (one call in <see cref="CallerSampleEvery"/>), to find who calls them.</summary>
-    private static readonly HashSet<string> _sampledCallers = new() { "CardModel.Pile" };
-    private const int CallerSampleEvery = 500;
-    private static readonly Dictionary<string, int> _callers = new();
-    private static long _sampleCounter;
-
-    private static void SampleCaller(string label)
-    {
-        if (++_sampleCounter % CallerSampleEvery != 0)
-        {
-            return;
-        }
-        // Skip the probe and Harmony's wrapper: the probed method then up to 4 game frames above it.
-        StackTrace trace = new(2, false);
-        string key = label + " <- " + string.Join(" <- ", trace.GetFrames().Take(5)
-            .Select(f => f.GetMethod() is { } m ? $"{m.DeclaringType?.Name}.{m.Name}" : "?"));
-        lock (_lock)
-        {
-            _callers[key] = _callers.GetValueOrDefault(key) + 1;
-        }
-    }
-
     private static void SyncPostfix(MethodBase __originalMethod, long __state)
     {
         if (__state != 0)
         {
-            if (_labels.TryGetValue(__originalMethod, out string? sampled) && _sampledCallers.Contains(sampled))
-            {
-                SampleCaller(sampled);
-            }
             Record(__originalMethod, (Stopwatch.GetTimestamp() - __state) * _msPerTick);
         }
     }
@@ -376,7 +352,6 @@ public static class PerfProbe
         lock (_lock)
         {
             _stats.Clear();
-            _callers.Clear();
             _hitches.Clear();
             _frameMs.Clear();
         }
@@ -393,10 +368,6 @@ public static class PerfProbe
             {
                 string wall = s.Completed > 0 ? $" [{s.Completed}, {s.WallTotalMs / s.Completed:F0}/{s.WallMaxMs:F0}]" : "";
                 sb.Append($"  {s.TotalMs,8:F0} | {s.Calls,7} | {s.MaxMs,6:F1} | {s.TotalMs / s.Calls,6:F3}{wall} | {label}\n");
-            }
-            foreach ((string key, int count) in _callers.OrderByDescending(p => p.Value).Take(12))
-            {
-                sb.Append($"  caller ~x{count * CallerSampleEvery}: {key}\n");
             }
             sb.Append($"  last {Math.Min(hitches, _hitches.Count)} of {_hitches.Count} hitches:\n");
             foreach (string hitch in _hitches.Skip(Math.Max(0, _hitches.Count - hitches)))

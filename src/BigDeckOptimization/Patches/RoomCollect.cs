@@ -41,6 +41,8 @@ public static class RoomCollect
 
     private static readonly MethodInfo _collect = AccessTools.Method(typeof(GC), nameof(GC.Collect), Type.EmptyTypes);
     private static bool _bigMemory;
+    /// <summary>Calls replaced by <see cref="Transpiler"/> (it runs again on each rebuild of a method: only read right after a patch).</summary>
+    private static int _replaced;
 
     public static void Apply(Harmony harmony)
     {
@@ -48,19 +50,26 @@ public static class RoomCollect
         int patched = 0;
         foreach (string name in new[] { "LoadRoomAssets", "LoadActAssets", "LoadRunAssets" })
         {
-            if (AccessTools.Method(typeof(PreloadManager), name) is { } method)
+            MethodInfo? method = AccessTools.Method(typeof(PreloadManager), name);
+            MethodInfo? body = method == null ? null : AccessTools.AsyncMoveNext(method);
+            if (body == null)
             {
-                PatchGuard.Patch(harmony, AccessTools.AsyncMoveNext(method), transpiler: transpiler);
-                patched++;
+                Log.Info($"[{ModEntry.Id}] {Name}: PreloadManager.{name} not found or not async any more, it collects as the game does");
+                continue;
             }
-            else
+            _replaced = 0;
+            PatchGuard.Patch(harmony, body, transpiler: transpiler);
+            if (_replaced == 0)
             {
-                Log.Info($"[{ModEntry.Id}] {Name}: PreloadManager.{name} not found, it collects as the game does");
+                // Its code is unchanged then: whatever collects there now is the game's.
+                Log.Info($"[{ModEntry.Id}] {Name}: no GC.Collect() left in PreloadManager.{name}, it collects as the game does");
+                continue;
             }
+            patched++;
         }
         if (patched == 0)
         {
-            throw new PatchSkippedException("none of its methods exists any more");
+            throw new PatchSkippedException("no GC.Collect() left in room, act or run loading");
         }
         _bigMemory = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes >= MinMemory;
         Applied = true;
@@ -94,6 +103,7 @@ public static class RoomCollect
         {
             if (instruction.Calls(_collect))
             {
+                _replaced++;
                 yield return new CodeInstruction(OpCodes.Call, AccessTools.Method(typeof(RoomCollect), nameof(Collect)))
                     .WithLabels(instruction.labels).WithBlocks(instruction.blocks);
                 continue;

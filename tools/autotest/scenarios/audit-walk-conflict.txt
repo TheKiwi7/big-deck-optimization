@@ -1,6 +1,9 @@
 # Audit: another mod patching CombatState/RunState.IterateHookListeners. FastListeners' own prefix backs off from it; do HookSkip's filtered walks?
-# FastListeners.Cache going up after the conflict means those walks still run this mod's mirror, without that mod's patch.
+# They go through the game's own walk (KeptOnly): FastListeners.CombatWalk stays at 0. FastListeners.Cache still grows from the
+# run walk, which has no conflict here (DESIGN "Other mods on the walks").
 timeout 600
+expect FastListeners: CombatState\.IterateHookListeners is also patched by bdtest\.fakeconflict
+expect \[hook_skip\]: on \(partly vanilla: also patched by bdtest\.fakeconflict\)
 newrun NECROBINDER 1234
 waitfor run 120
 wait 2
@@ -18,5 +21,8 @@ waitfor idle 120
 play 3
 waitfor idle 120
 effects end
+# The combat walk backs off whole (FastListeners' own and HookSkip's filtered walks): it never ran. The run walk, not
+# conflicted here, keeps using the cache (FastListeners.Cache grows by design).
+effectcheck FastListeners.CombatWalk zero
 cmd bdopt
 quit

@@ -10,6 +10,7 @@ using HarmonyLib;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Multiplayer.Serialization;
 using MegaCrit.Sts2.Core.Saves.Runs;
 
 namespace BigDeckOptimization.Patches;
@@ -45,14 +46,14 @@ public static class RelicStateReuse
     public static bool ScalarBlindForTest { get; set; }
 #endif
 
-    /// <summary>v0.107.1 (and v0.111): <c>new SerializableRelic { Id, Props = SavedProperties.From(this), FloorAddedToDeck }</c> after AssertMutable.</summary>
+    /// <summary>v0.107.1, v0.111, v0.113.x: <c>new SerializableRelic { Id, Props = SavedProperties.From(this), FloorAddedToDeck }</c> after AssertMutable.</summary>
     private const string ToSerializableFingerprint = "91A31F3A5C8BCB32";
-    /// <summary>Writes the id, the properties and the floor, nothing else.</summary>
+    /// <summary>Writes the id, the properties and the floor, nothing else (v0.107.1 to v0.113.x).</summary>
     private const string SerializeFingerprint = "FEE0E78D320AB4F9";
 
     private const string BaseLibAssembly = "BaseLib";
     private const string HandlersType = "BaseLib.Patches.Saves.ExtendedSaveHandlers`2";
-    /// <summary>BaseLib 3.4.7: stores <c>new ExtendedSaveData(relic)</c> for the new object, nothing else.</summary>
+    /// <summary>BaseLib 3.4.7 to 3.4.8: stores <c>new ExtendedSaveData(relic)</c> for the new object, nothing else.</summary>
     private const string BaseLibPostfix = "BaseLib.Patches.Saves.ExtendedSavePatches+PrepExtendedRelicData:ExtendedDataForRelic";
     private const string BaseLibPostfixFingerprint = "A0902464D285F2CB";
     /// <summary>BaseLib's postfix on <c>SerializableRelic.Serialize</c> and what it calls: one write per registered save, none without.</summary>
@@ -60,8 +61,8 @@ public static class RelicStateReuse
     private const string BaseLibWriteFingerprint = "2932D9B1B34FDBBC";
     private const string HandlersWriteFingerprint = "D1DE163AF605BE38";
     /// <summary>
-    /// "Unlimited: No Player Limit" transpiles every <c>Serialize</c>: a list's count written on more bits (none in this one). The
-    /// bits stay a function of the object's fields alone.
+    /// "Unlimited: No Player Limit" transpiles every <c>Serialize</c> (the relic's, its properties', its combat state's): a list's
+    /// count written on more bits (none in the relic's). The bits stay a function of the object's fields alone.
     /// </summary>
     private const string UnlimitedAssembly = "sts2unlimited";
     private const string UnlimitedTranspiler = "Sts2Unlimited.PacketSizePatch:Transpile_SerializeDeserialize";
@@ -69,10 +70,16 @@ public static class RelicStateReuse
     private const string UnlimitedConstantFingerprint = "CB9DCCF74112728F";
 
     private static MethodInfo? _toSerializable, _serialize;
+    /// <summary>
+    /// What writes a reused object again: its properties' and its combat state's <c>Serialize</c>. A patch there keyed on the object
+    /// (data attached when it was made, as BaseLib's extended data is) would write a reused object's old data: the game's call.
+    /// </summary>
+    private static MethodInfo? _propertiesSerialize, _relicStateSerialize;
     private static readonly MethodInfo _savedPropertiesFrom = AccessTools.Method(typeof(SavedProperties), nameof(SavedProperties.From));
     private static MethodInfo[] _allowedOnToSerializable = Array.Empty<MethodInfo>();
     private static MethodInfo[] _allowedOnSerialize = Array.Empty<MethodInfo>();
-    private static MethodInfo? _baseLibWrite, _unlimitedTranspiler;
+    private static MethodInfo[] _allowedUnlimitedOnly = Array.Empty<MethodInfo>();
+    private static MethodInfo? _baseLibWrite;
     private static Action<RelicModel, SerializableRelic>? _baseLibPostfix;
     private static Func<IList>? _registeredSaves;
     private static int _mainThread;
@@ -90,19 +97,26 @@ public static class RelicStateReuse
         PatchSafety.RequireFingerprint(_serialize, SerializeFingerprint);
         MethodInfo fromRun = AccessTools.Method(typeof(NetFullCombatState), nameof(NetFullCombatState.FromRun))
             ?? throw new MissingMethodException(nameof(NetFullCombatState), nameof(NetFullCombatState.FromRun));
+        _propertiesSerialize = AccessTools.Method(typeof(SavedProperties), nameof(SavedProperties.Serialize), new[] { typeof(PacketWriter) })
+            ?? throw new MissingMethodException(nameof(SavedProperties), nameof(SavedProperties.Serialize));
+        _relicStateSerialize = AccessTools.Method(typeof(NetFullCombatState.RelicState), nameof(NetFullCombatState.RelicState.Serialize), new[] { typeof(PacketWriter) })
+            ?? throw new MissingMethodException(nameof(NetFullCombatState.RelicState), nameof(NetFullCombatState.RelicState.Serialize));
         _mainThread = Environment.CurrentManagedThreadId;
         string[] loaded = AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetName().Name ?? "").ToArray();
         if (loaded.Contains(BaseLibAssembly))
         {
             ResolveBaseLib();
         }
-        if (loaded.Contains(UnlimitedAssembly))
+        if (UnlimitedCompat.Error is { } unlimitedError)
         {
-            ResolveUnlimited();
+            // Unlimited is there and its transpiler isn't the known one: it patches SerializableRelic.Serialize, this would back off at every relic.
+            throw new PatchSkippedException("Unlimited's transpiler not understood: " + unlimitedError.Message);
         }
-        if (!loaded.Contains(BaseLibAssembly) || !loaded.Contains(UnlimitedAssembly))
+        AllowOnSerialize();
+        if (!loaded.Contains(BaseLibAssembly))
         {
-            // Mod load order isn't guaranteed. Until then their patches, if any, count as another mod's: the game's call.
+            // Mod load order isn't guaranteed. Until then its patches, if any, count as another mod's: the game's call.
+            // (Unlimited, loaded later, is resolved by UnlimitedCompat.)
             AppDomain.CurrentDomain.AssemblyLoad += OnAssemblyLoad;
         }
         _replaced = 0;
@@ -118,7 +132,7 @@ public static class RelicStateReuse
         }
         catch (Exception e) when (e is PatchSkippedException or MissingMemberException)
         {
-            Log.Info($"[{ModEntry.Id}] {Name}: relics' saved properties read by the game each time ({e.Message})");
+            Log.Info($"[{ModEntry.Id}] {ScalarName} left vanilla, relics' saved properties read by the game each time: {e.Message}");
         }
     }
 
@@ -127,6 +141,11 @@ public static class RelicStateReuse
     public const string ScalarName = "RelicStateReuse.Scalar";
     public static bool ScalarEnabled { get; set; } = true;
     public static bool ScalarApplied { get; private set; }
+    /// <summary>
+    /// The main patch applied but its scalar part was skipped (a fingerprint or a member it relies on changed): bdopt and the menu
+    /// list it as not applied, as <c>ModEntry.NotApplied</c> does for a skipped patch.
+    /// </summary>
+    internal static bool ScalarNotApplied => Applied && !ScalarApplied;
     /// <summary>Relics given again without the game's <c>SavedProperties.From</c>, and how many of those were checked against it.</summary>
     public static long ScalarReused { get; private set; }
     public static long ScalarVerified { get; private set; }
@@ -136,9 +155,9 @@ public static class RelicStateReuse
     private const int ScalarVerifyEvery = 256;
 #endif
 
-    /// <summary>v0.107.1 <c>FromInternal</c> (v0.111's in EquivalentFingerprints: only its property lookup moved).</summary>
+    /// <summary>v0.107.1 <c>FromInternal</c> (v0.111's and v0.113.x's in EquivalentFingerprints: only its property lookup moved).</summary>
     private const string FromInternalFingerprint = "F73EEC2208D6E517";
-    /// <summary><c>SerializationConditionExtensions.ShouldSerialize</c> and <c>GetTypeDefaultValue</c>, v0.107.1 and v0.111.</summary>
+    /// <summary><c>SerializationConditionExtensions.ShouldSerialize</c> and <c>GetTypeDefaultValue</c>, v0.107.1 to v0.113.x.</summary>
     private const string ShouldSerializeFingerprint = "DA2DAEE9D953EEDD";
     private const string TypeDefaultFingerprint = "9E99D152BAEC2E1E";
 
@@ -183,9 +202,51 @@ public static class RelicStateReuse
         {
             return plan;
         }
-        plan = BuildScalarPlan(type, properties);
+        try
+        {
+            plan = BuildScalarPlan(type, properties);
+        }
+        catch (Exception e)
+        {
+            // A property this can't compile a getter for (a mod's relic): that type's game call, not a wrong reuse.
+            plan = null;
+            Log.Info($"[{ModEntry.Id}] {ScalarName}: {type.Name} left vanilla, its saved properties read by the game: {e.Message}");
+        }
         _scalarPlans[type] = plan;
         return plan;
+    }
+
+    /// <summary>
+    /// Compiled getters by the getter they call, compiled against its declaring type: <c>IsWax</c> and <c>IsMelted</c>, declared on
+    /// <c>RelicModel</c>, are one getter for every relic type. Keyed by handle (a <c>PropertyInfo</c> differs by its reflected type)
+    /// and declaring type (a generic type's instantiations may share a handle).
+    /// </summary>
+    private static readonly Dictionary<(Type, RuntimeMethodHandle), Func<object, int>> _getters = new();
+#if BENCH
+    /// <summary>Getters compiled so far (bdperf relicreuse): a few dozen for all relic types, not two or more per type.</summary>
+    internal static int GettersCompiled;
+    /// <summary>Relic types with a scalar plan built so far, for comparison with <see cref="GettersCompiled"/>.</summary>
+    internal static int PlansBuilt => _scalarPlans.Count;
+#endif
+
+    private static Func<object, int> GetterOf(PropertyInfo property, MethodInfo getter)
+    {
+        Type declaring = property.DeclaringType!;
+        (Type, RuntimeMethodHandle) key = (declaring, getter.MethodHandle);
+        if (!_getters.TryGetValue(key, out Func<object, int>? compiled))
+        {
+            Type valueType = property.PropertyType;
+            ParameterExpression model = Expression.Parameter(typeof(object));
+            Expression read = Expression.Property(Expression.Convert(model, declaring), property);
+            Expression asInt = valueType == typeof(bool) ? Expression.Condition(read, Expression.Constant(1), Expression.Constant(0))
+                : valueType == typeof(int) ? read : Expression.Convert(read, typeof(int));
+            compiled = Expression.Lambda<Func<object, int>>(asInt, model).Compile();
+            _getters[key] = compiled;
+#if BENCH
+            GettersCompiled++;
+#endif
+        }
+        return compiled;
     }
 
     private static ScalarPlan? BuildScalarPlan(Type type, List<PropertyInfo>? properties)
@@ -200,23 +261,20 @@ public static class RelicStateReuse
         plan.Getters = new Func<object, int>[count];
         plan.IsBool = new bool[count];
         plan.Always = new bool[count];
-        ParameterExpression model = Expression.Parameter(typeof(object));
         for (int i = 0; i < count; i++)
         {
             PropertyInfo property = properties[i];
             SavedPropertyAttribute? attribute = property.GetCustomAttribute<SavedPropertyAttribute>();
             Type valueType = property.PropertyType;
             if (attribute == null || attribute.defaultBehaviour is not (SerializationCondition.AlwaysSave or SerializationCondition.SaveIfNotTypeDefault)
-                || property.GetMethod is not { IsStatic: false } || property.GetIndexParameters().Length != 0
+                || property.GetMethod is not { IsStatic: false } getter || property.GetIndexParameters().Length != 0
+                || property.DeclaringType is not { } declaring || !declaring.IsAssignableFrom(type)
                 || !(valueType == typeof(bool) || valueType == typeof(int) || (valueType.IsEnum && Enum.GetUnderlyingType(valueType) == typeof(int))))
             {
                 return null;
             }
-            Expression read = Expression.Property(Expression.Convert(model, type), property);
-            Expression asInt = valueType == typeof(bool) ? Expression.Condition(read, Expression.Constant(1), Expression.Constant(0))
-                : valueType == typeof(int) ? read : Expression.Convert(read, typeof(int));
             plan.Names[i] = property.Name;
-            plan.Getters[i] = Expression.Lambda<Func<object, int>>(asInt, model).Compile();
+            plan.Getters[i] = GetterOf(property, getter);
             plan.IsBool[i] = valueType == typeof(bool);
             // SaveIfNotTypeDefault: !Equals(value, default of the property's type): false, 0, the enum's 0.
             plan.Always[i] = attribute.defaultBehaviour == SerializationCondition.AlwaysSave;
@@ -311,43 +369,94 @@ public static class RelicStateReuse
 
     private static void OnAssemblyLoad(object? sender, AssemblyLoadEventArgs args)
     {
-        string? name = args.LoadedAssembly.GetName().Name;
-        if (name != BaseLibAssembly && name != UnlimitedAssembly)
+        if (args.LoadedAssembly.GetName().Name != BaseLibAssembly)
         {
             return;
         }
         try
         {
-            if (name == BaseLibAssembly)
-            {
-                ResolveBaseLib();
-            }
-            else
-            {
-                ResolveUnlimited();
-            }
+            ResolveBaseLib();
         }
         catch (Exception e)
         {
-            Log.Info($"[{ModEntry.Id}] {Name}: {name}'s relic patches not understood, relics serialized by the game: {e.Message}");
+            // Its postfix on ToSerializable then counts as another mod's patch: every relic backs off to the game's call.
+            Log.Info($"[{ModEntry.Id}] {Name}: BaseLib's relic patches not understood, left vanilla (relics serialized by the game): {e.Message}");
         }
     }
 
-    private static void ResolveUnlimited()
+    /// <summary>
+    /// Unlimited's list-width transpiler, resolved on its own whatever <see cref="Apply"/> does (a fingerprint of this patch changed,
+    /// BaseLib's relic patches not understood): SnapshotCardReuse allows it on the card and pile serializers too, and loses nothing
+    /// that doesn't depend on relic serialization. Read at first use when Unlimited is already loaded, or when it loads later.
+    /// </summary>
+    private static class UnlimitedCompat
     {
-        MethodInfo transpiler = AccessTools.Method(UnlimitedTranspiler) ?? throw new PatchSkippedException("Unlimited has no " + UnlimitedTranspiler);
-        PatchSafety.RequireFingerprint(transpiler, UnlimitedTranspilerFingerprint);
-        PatchSafety.RequireFingerprint(AccessTools.Method(transpiler.DeclaringType, "IsVanillaListBitsConstant")
-            ?? throw new MissingMethodException("PacketSizePatch", "IsVanillaListBitsConstant"), UnlimitedConstantFingerprint);
-        _unlimitedTranspiler = transpiler;
-        AllowOnSerialize();
+        internal static MethodInfo? Transpiler;
+        /// <summary>Unlimited loaded and its transpiler not the known one: why.</summary>
+        internal static Exception? Error;
+        private static int _resolved;
+
+        static UnlimitedCompat()
+        {
+            try
+            {
+                AppDomain.CurrentDomain.AssemblyLoad += OnLoad;
+                if (AppDomain.CurrentDomain.GetAssemblies().Any(a => a.GetName().Name == UnlimitedAssembly))
+                {
+                    Resolve(late: false);
+                }
+            }
+            catch (Exception e)
+            {
+                Error ??= e;
+            }
+        }
+
+        private static void OnLoad(object? sender, AssemblyLoadEventArgs args)
+        {
+            if (args.LoadedAssembly.GetName().Name == UnlimitedAssembly)
+            {
+                Resolve(late: true);
+            }
+        }
+
+        private static void Resolve(bool late)
+        {
+            if (System.Threading.Interlocked.Exchange(ref _resolved, 1) != 0)
+            {
+                return;
+            }
+            try
+            {
+                AppDomain.CurrentDomain.AssemblyLoad -= OnLoad;
+                MethodInfo transpiler = AccessTools.Method(UnlimitedTranspiler) ?? throw new PatchSkippedException("Unlimited has no " + UnlimitedTranspiler);
+                PatchSafety.RequireFingerprint(transpiler, UnlimitedTranspilerFingerprint);
+                PatchSafety.RequireFingerprint(AccessTools.Method(transpiler.DeclaringType, "IsVanillaListBitsConstant")
+                    ?? throw new MissingMethodException("PacketSizePatch", "IsVanillaListBitsConstant"), UnlimitedConstantFingerprint);
+                Transpiler = transpiler;
+                AllowOnSerialize();
+            }
+            catch (Exception e)
+            {
+                Error = e;
+                if (late)
+                {
+                    // Loaded after this mod's patches: its transpiler counts as another mod's patch where it runs (relics, cards, piles).
+                    Log.Info($"[{ModEntry.Id}] {Name}: Unlimited's transpiler not understood, left vanilla where it patches: {e.Message}");
+                }
+            }
+        }
     }
 
     /// <summary>Unlimited's list-width transpiler once its code is the known one (SnapshotCardReuse's upgrade bits allow it too).</summary>
-    internal static MethodInfo? UnlimitedTranspilerMethod => _unlimitedTranspiler;
+    internal static MethodInfo? UnlimitedTranspilerMethod => UnlimitedCompat.Transpiler;
 
-    private static void AllowOnSerialize() =>
-        _allowedOnSerialize = new[] { _baseLibWrite, _unlimitedTranspiler }.Where(m => m != null).ToArray()!;
+    private static void AllowOnSerialize()
+    {
+        MethodInfo? unlimited = UnlimitedCompat.Transpiler;
+        _allowedOnSerialize = new[] { _baseLibWrite, unlimited }.Where(m => m != null).ToArray()!;
+        _allowedUnlimitedOnly = unlimited != null ? new[] { unlimited } : Array.Empty<MethodInfo>();
+    }
 
     /// <summary>BaseLib's relic postfixes, accepted only with their known code; its relic saves, read at each use.</summary>
     private static void ResolveBaseLib()
@@ -371,12 +480,13 @@ public static class RelicStateReuse
         }
         catch (Exception e) when (e is PatchSkippedException or MissingMemberException)
         {
-            Log.Info($"[{ModEntry.Id}] {ScalarName}: BaseLib's saved fields not understood, relics' saved properties read by the game: {e.Message}");
+            // Its postfix on FromInternal then counts as another mod's patch: the scalar part backs off (recorded as a back-off).
+            Log.Info($"[{ModEntry.Id}] {ScalarName}: BaseLib's saved fields not understood, left vanilla (relics' saved properties read by the game): {e.Message}");
         }
     }
 
     /// <summary>
-    /// BaseLib 3.4.7 postfixes <c>FromInternal</c>: each of its registered "SavedSpireFields" whose target type the model has exports
+    /// BaseLib 3.4.7 to 3.4.8 postfixes <c>FromInternal</c>: each of its registered "SavedSpireFields" whose target type the model has exports
     /// into the result, nothing else (a new object is only kept when one did). None registered: the game's result unchanged.
     /// </summary>
     internal const string BaseLibFieldsPostfix = "BaseLib.Patches.Utils.SavedSpireFieldPatch:PostfixFromInternal";
@@ -387,7 +497,8 @@ public static class RelicStateReuse
     /// <summary>Relic types some registered field targets (its <c>TargetType.IsInstanceOfType</c>), for the fields counted then.</summary>
     private static readonly Dictionary<Type, bool> _fieldTargeted = new();
     private static int _fieldsCounted = -1;
-    private static List<Type> _fieldTargets = new();
+    /// <summary>Null: a target couldn't be read, every relic type counts as targeted.</summary>
+    private static List<Type>? _fieldTargets = new();
 
     private static void ResolveBaseLibFields()
     {
@@ -411,9 +522,22 @@ public static class RelicStateReuse
         if (fields.Count != _fieldsCounted)
         {
             // Fields are only ever added (Register): their targets are read again when the count changes.
-            _fieldTargets = fields.Cast<object>().Select(f => (Type)f.GetType().GetProperty("TargetType")!.GetValue(f)!).ToList();
+            try
+            {
+                _fieldTargets = fields.Cast<object>().Select(TargetOf).ToList();
+            }
+            catch (Exception e)
+            {
+                // A target this can't read: any relic may be one, every relic gets the game's call (not a wrong reuse).
+                _fieldTargets = null;
+                Log.Info($"[{ModEntry.Id}] {ScalarName}: a BaseLib saved field's target not understood, left vanilla: {e.Message}");
+            }
             _fieldsCounted = fields.Count;
             _fieldTargeted.Clear();
+        }
+        if (_fieldTargets == null)
+        {
+            return true;
         }
         if (!_fieldTargeted.TryGetValue(type, out bool targeted))
         {
@@ -421,6 +545,17 @@ public static class RelicStateReuse
             _fieldTargeted[type] = targeted;
         }
         return targeted;
+    }
+
+    private const string BaseLibFieldInterface = "BaseLib.Utils.ISavedSpireField";
+
+    /// <summary>A registered field's target type, read through BaseLib's interface (a subclass hiding <c>TargetType</c> can't make it ambiguous).</summary>
+    private static Type TargetOf(object field)
+    {
+        Type type = field.GetType();
+        PropertyInfo target = type.GetInterface(BaseLibFieldInterface)?.GetProperty("TargetType") ?? type.GetProperty("TargetType")
+            ?? throw new MissingMemberException(type.Name, "TargetType");
+        return (Type)target.GetValue(field)!;
     }
 
     /// <summary>
@@ -531,7 +666,8 @@ public static class RelicStateReuse
         {
             _guardsPass = !(_registeredSaves != null && _registeredSaves().Count != 0)
                 && !PatchSafety.IsPatchedByOthers(_toSerializable, _allowedOnToSerializable) && !PatchSafety.IsPatchedByOthers(_serialize, _allowedOnSerialize)
-                && !PatchSafety.IsPatchedByOthers(_savedPropertiesFrom);
+                && !PatchSafety.IsPatchedByOthers(_savedPropertiesFrom)
+                && !PatchSafety.IsPatchedByOthers(_propertiesSerialize, _allowedUnlimitedOnly) && !PatchSafety.IsPatchedByOthers(_relicStateSerialize, _allowedUnlimitedOnly);
             _scalarGuardsPass = ScalarApplied && !PatchSafety.IsPatchedByOthers(_fromInternal!, _allowedOnFromInternal) && !PatchSafety.IsPatchedByOthers(_shouldSerialize!);
             _guardsAt = now;
         }

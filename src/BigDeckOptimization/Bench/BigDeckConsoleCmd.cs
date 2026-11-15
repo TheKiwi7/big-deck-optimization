@@ -14,6 +14,7 @@ using MegaCrit.Sts2.Core.DevConsole.ConsoleCommands;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.RelicPools;
 using MegaCrit.Sts2.Core.Nodes;
@@ -29,7 +30,9 @@ namespace BigDeckOptimization.Bench;
 ///   bigdeck relics &lt;count&gt; [relic-id] [seed] — add count relics, one kind or random from character + shared pools.
 ///   bigdeck import &lt;file.run|shared-name&gt; [all|i|i,j] [cards|relics|all] [hash] — add exact decks (upgrades,
 ///   enchantments) and relics from a run history file. In co-op only from the shared folder (user://bigdeck) with the
-///   file hash, so every peer provably reads the same data.
+///   file hash: the peers that import provably read the same bytes. Each peer reads its own copy, so a peer whose file is
+///   missing, unreadable or different refuses (an error in its log) while the others import: the run then diverges. Run
+///   <c>bigdeck hash</c> on every machine first.
 ///   bigdeck hash &lt;shared-name&gt; — print the hash of a shared file (each peer prints its own).
 ///
 /// Networked: in co-op the game runs the command through the action queue on every peer, so it must be deterministic
@@ -75,6 +78,15 @@ public class BigDeckConsoleCmd : AbstractConsoleCmd
                 // A barrier for co-op test scenarios: every peer records that this player got there (AutoTest's barrier waits for all).
                 lock (Marks)
                 {
+                    // Marks of an earlier run (a second run in the same game process) would pass a barrier reusing a label at
+                    // once: the first mark of another run clears them. A barrier waits for its own player's mark too, so it
+                    // only passes on marks of this run. (A label reused within one run still passes at once: scenarios don't.)
+                    RunState? markRun = RunManager.Instance.DebugOnlyGetState();
+                    if (markRun != null && !(_marksRun != null && _marksRun.TryGetTarget(out RunState? previous) && ReferenceEquals(previous, markRun)))
+                    {
+                        Marks.Clear();
+                        _marksRun = new WeakReference<RunState>(markRun);
+                    }
                     Marks.Add((issuingPlayer.NetId, string.Join(' ', args.Skip(1))));
                 }
                 return new CmdResult(success: true, "marked");
@@ -86,7 +98,11 @@ public class BigDeckConsoleCmd : AbstractConsoleCmd
     /// <summary><c>bigdeck mark &lt;label&gt;</c>: which player reached which label, as every peer saw the command.</summary>
     public static readonly HashSet<(ulong Player, string Label)> Marks = new();
 
-    // Any peer can issue a networked command: cap it so nobody can freeze everyone's game with a huge count.
+    /// <summary>The run <see cref="Marks"/> were made in (weak: a left run isn't kept alive by a test command).</summary>
+    private static WeakReference<RunState>? _marksRun;
+
+    // Any peer can issue a networked command: cap it so nobody can freeze everyone's game with a huge count. Import has no
+    // count cap: it's bounded by the shared file every peer must already hold, with a matching hash (64 MB at most).
     private const int MaxDeckSize = 5000;
     private const int MaxRelicsPerCommand = 1000;
 
@@ -239,6 +255,11 @@ public class BigDeckConsoleCmd : AbstractConsoleCmd
         }
         if (bytes == null)
         {
+            if (multiplayer)
+            {
+                // Each peer reads its own file: the peers that have it import, this one doesn't, and the run diverges.
+                Log.Error($"[{ModEntry.Id}] bigdeck import refused on this peer (player {player.NetId}): {error} The peers whose file is there import: the run diverges.");
+            }
             return new CmdResult(success: false, error);
         }
         if (multiplayer)
@@ -246,7 +267,13 @@ public class BigDeckConsoleCmd : AbstractConsoleCmd
             string localHash = ShortHash(bytes);
             if (args.Length < 4 || !args[3].Equals(localHash, StringComparison.OrdinalIgnoreCase))
             {
-                return new CmdResult(success: false, $"Hash required in co-op and must match on every machine (here: {localHash}). Run 'bigdeck hash {args[0]}' first.");
+                string refused = $"Hash required in co-op and must match on every machine (here: {localHash}). Run 'bigdeck hash {args[0]}' first.";
+                if (args.Length >= 4)
+                {
+                    // Given, and another peer's file may match it: that peer imports, this one doesn't.
+                    Log.Error($"[{ModEntry.Id}] bigdeck import refused on this peer (player {player.NetId}): hash {args[3]} asked, {localHash} here. The peers whose file matches import: the run diverges.");
+                }
+                return new CmdResult(success: false, refused);
             }
         }
         RunHistory? history = ParseHistory(bytes, out error);
@@ -407,7 +434,16 @@ public class BigDeckConsoleCmd : AbstractConsoleCmd
             error = "File too large for a run history: " + path;
             return null;
         }
-        return File.ReadAllBytes(path);
+        try
+        {
+            return File.ReadAllBytes(path);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // A locked file on one peer: a refusal there, not an exception thrown into the action queue.
+            error = $"Could not read {path}: {e.Message}";
+            return null;
+        }
     }
 
     private static string ShortHash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes))[..8].ToLowerInvariant();

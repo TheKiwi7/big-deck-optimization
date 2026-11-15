@@ -19,7 +19,8 @@ if (-not $SteamInstall) { throw "try.ps1 deploys the Debug build into the Steam 
 Assert-GameNotRunning
 $project = Join-Path $PSScriptRoot "..\..\src\BigDeckOptimization\BigDeckOptimization.csproj"
 $env:PATH = "C:\Program Files\dotnet;$env:PATH"
-dotnet build $project -c Debug -nologo -v q "-p:ModDeployDir=$local"
+# AllowSteamDeploy: the csproj refuses a deploy into the Steam install otherwise.
+dotnet build $project -c Debug -nologo -v q "-p:ModDeployDir=$local" "-p:AllowSteamDeploy=true"
 if ($LASTEXITCODE -ne 0) { throw "build failed" }
 $script = Join-Path $Scenarios "$Scenario.txt"
 Start-Process -FilePath $SteamExe -ArgumentList "-applaunch", $AppId, "--bdtest", "`"$script`""

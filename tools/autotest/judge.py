@@ -17,6 +17,8 @@ A problem:
 - anything this mod logs as an error ([ERROR] lines: its patches log errors only when they turn themselves off, when
   their result differs from the game's, or when a patch can't apply), and the lines saying a check found a difference
   (MISMATCH, `mismatches N`, `differs from`, `changed unseen`...) or that the mod was off from the start (saved settings);
+- any warning this mod logs ([WARN] lines: an exception caught in its own code, part of its work not done), but the few
+  intended ones of MOD_WARN_OK;
 - an error the game logs whose stack goes through this mod's code (not the test tooling's): an exception from a patch the
   game caught itself (an async hook's task, an action) is logged without this mod's tag; so is one Godot caught in an engine
   callback (a frame tick, a deferred call, a timer): Godot's own `ERROR: System.X...` head, the exception's frames below it
@@ -26,7 +28,8 @@ A problem:
   failed at room 3 looked finished. With Limitless the last event never hands back the game over screen or the main menu,
   so a failure with those reasons after the final act's boss is the run's end;
 - a leak check: `LEAKCHECK current` finding no path (the walk is blind), any other of the mod's or the tooling's finding one,
-  or one that reached its limit (inconclusive).
+  or one that reached its limit (inconclusive), or a `leakcheck game` path through an object of this mod
+  (`[through this mod: Type]`: a closure or handler the game holds, a static of the Menu DLL, holding a left run).
 
 A scenario expecting some of these (positive controls) says `expect <regex>`: the problem lines that regex matches, anywhere
 in the log, are listed as expected instead, and it must match at least one line of the session (not the script's own lines),
@@ -49,13 +52,34 @@ MOD_ERROR = re.compile(r'^\[ERROR\].*\[BigDeckOptimization\]')
 MOD_PROBLEM = re.compile(r'\[BigDeckOptimization\].*(MISMATCH|mismatches [1-9]|\bdisabled( after|[,:]| \()|differs? from'
                          r'|changed unseen|found wrong|turned off and removed|turned off in the settings|turned off when the game started'
                          r'|NEVER gave the frame back|PATCHES LOST)')
+# Every warning this mod logs is a problem too: they say an exception was caught in its own code and part of its work was not
+# done (the left run's caches not released, a switch not set, a check not run, a rebuild failed...). Except these, intended or
+# already reported elsewhere: the settings menu missing (started-off-nomenu sets it aside; release-incopy checks it registers), the
+# menu's co-op refusal of the master switch, a fault's retried removal (the fault is a problem line already), a mirrored hook
+# rethrowing the game's own exception as the game would, a pile snapshot read hitting the game's own exception (the game's call
+# then made, as mod off), and the test tooling's own timers and probes. A new warning is a problem
+# until it is listed here: never missed silently. A scenario expecting one says `expect <regex>`.
+MOD_WARN = re.compile(r'^\[WARN\].*\[BigDeckOptimization\]')
+MOD_WARN_OK = re.compile(r'\[BigDeckOptimization\] (SettingsMenu: (settings menu unavailable|the saved "off" can\'t be changed)'
+                         r'|menu texts for \S+ unreadable|BaseLibSettings: the mod stays on during a co-op run'
+                         r'|PatchGuard: faulted patches not removed yet|HookFilter: a mirrored hook threw \(passed on'
+                         r'|SnapshotCardReuse: the game.s own code threw while a pile.s snapshot was read'
+                         r'|PerfProbe: |CombatStartTimer: )')
 LEAK = re.compile(CLOCK + r'LEAKCHECK (.+?): (REACHED|INCONCLUSIVE|no static|nothing to look for)')
+# A path of a `leakcheck game...` walk (they come right after its LEAKCHECK line) that goes through an object of this mod outside
+# the test tooling: a closure or handler the game holds, or a static of the Menu DLL, holding a left run. AutoTestLeak marks it
+# (a type's full name may hold brackets: a generic's arguments).
+LEAK_THROUGH_MOD = re.compile(CLOCK + r'(.+ \[through this mod: .+\])$')
 # The game's own errors: its first line has no mod tag, the stack trace follows on lines that don't start with '['.
 GAME_ERROR = re.compile(r'^\[ERROR\]')
 # Godot's own error lines (an exception in an engine callback: `ERROR: System.X: ...`, then `   at ...` frames).
 GODOT_ERROR = re.compile(r'^(ERROR|SCRIPT ERROR|USER ERROR): ')
 MOD_FRAME = re.compile(r'^\s*at BigDeckOptimization\.(?!Bench\.)')
 DIVERGENCE = re.compile(r'^\[ERROR\].*\b[Ss]tate divergence')
+# The game's errors that come and go with timing, not with this mod (compare.py and sweepreport.py count a game error logged mod on
+# only as a problem, but these): the engine's leaked RIDs, task ids and input actions, and an animation asked for a creature whose
+# node is already gone (sweeps: an item starts while the last one's animation is still due).
+GAME_NOISE = re.compile(r'Invalid Task ID|\bRID\b|leaked|input action|Attempted to play animation on creature')
 # AutoSlay (the game's auto player): how a run ends.
 AUTOSLAY_START = re.compile(r'\[AutoSlay\] Starting run with seed=')
 AUTOSLAY_DONE = re.compile(r'\[AutoSlay\] (Run completed successfully|Action: Victory!)')
@@ -70,6 +94,7 @@ def problem_lines(path, sweep=False):
     """[(line number, text)] of every problem line of a log, before expectations."""
     found = []
     error_head = None  # (number, text) of the game's [ERROR] whose stack trace is being read
+    leak_label = None  # label of the last LEAKCHECK line, whose paths follow it
     with open(path, encoding='utf-8', errors='replace') as f:
         for number, line in enumerate(f, 1):
             line = line.rstrip('\n').rstrip('\r')
@@ -87,12 +112,17 @@ def problem_lines(path, sweep=False):
             if m := FAILED.search(line):
                 if not (sweep and SWEEP_STOP.match(m.group(1))):
                     found.append((number, m.group(1)))
-            elif MOD_ERROR.search(line) or MOD_PROBLEM.search(line):
+            elif MOD_ERROR.search(line) or MOD_PROBLEM.search(line) or (MOD_WARN.search(line) and not MOD_WARN_OK.search(line)):
                 found.append((number, line))
             elif DIVERGENCE.search(line):
                 found.append((number, line))
+            elif (m := LEAK_THROUGH_MOD.search(line)) and leak_label and leak_label.startswith('game'):
+                # The mod holding a left run where its own statics can't show it. A game walk always looks for a left run:
+                # AutoTestLeak takes only the bare label `current` for the current run.
+                found.append((number, m.group(1).strip()[-300:]))
             elif m := LEAK.search(line):
                 label, verdict = m.group(1), m.group(2)
+                leak_label = label
                 if label.startswith('game'):
                     continue  # Who in the game holds a run: information, the game keeps its last runs.
                 current = label == 'current'
@@ -197,4 +227,6 @@ def main(args):
 
 
 if __name__ == '__main__':
+    # Under python -I stdout is the ANSI code page (PYTHONIOENCODING ignored): a log's character it lacks must not crash the report.
+    sys.stdout.reconfigure(errors='backslashreplace')
     sys.exit(main(sys.argv[1:]))

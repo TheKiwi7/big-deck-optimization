@@ -48,7 +48,12 @@ function Add-TestMods([string]$gameDir) {
     $key = Get-CopyKey $gameDir
     $testMods = Join-Path $gameDir "mods_STEAMTEST"
     $own = Join-Path $testMods ".bdtest-created"
+    $wanted = @(Get-TestModIds)
     $items = @(Get-TestModItems)
+    # Every wanted mod must be there: a series would otherwise run without it and still say it tested with it.
+    $onDisk = @(foreach ($item in $items) { Get-WorkshopModIds $item })
+    $absent = @($wanted | Where-Object { $onDisk -notcontains $_ })
+    if ($absent.Count) { throw "Test mods not in the Workshop folder ${Workshop}: $($absent -join ', ') (subscribe to them, or leave them out with BDTEST_MODS)" }
     # What the folder must hold: the mods wanted and the state of their Workshop folders. A folder left by an interrupted series
     # (other BDTEST_EXTRA_MODS, older Workshop versions) is made again, never reused as it is.
     $stamp = "created by tools/autotest/parlib.ps1`n" + ((@("extra=$env:BDTEST_EXTRA_MODS") + @($items | ForEach-Object {
@@ -78,6 +83,8 @@ function Add-TestMods([string]$gameDir) {
         $path = Join-Path (Get-ModHolderDir $gameDir) "$PID-$([guid]::NewGuid().ToString('N')).hold"
         $global:BdModHolds[$key] = [pscustomobject]@{ Path = $path; Stream = [IO.File]::Open($path, 'CreateNew', 'ReadWrite', 'None') }
         $global:BdTestModManifests[$key] = $manifests
+        $global:BdTestModIds[$key] = $wanted
+        Write-Host "test mods: $(if ($wanted.Count) { $wanted -join ', ' } else { 'none (BDTEST_MODS)' })"
     }
     finally { Exit-ModLock $lock }
 }
@@ -87,6 +94,7 @@ function Add-TestMods([string]$gameDir) {
 $ModHolderRoot = Join-Path $env:LOCALAPPDATA "BigDeckOptimization\test-mods"
 if (-not (Test-Path variable:global:BdModHolds)) { $global:BdModHolds = @{} }
 if (-not (Test-Path variable:global:BdTestModManifests)) { $global:BdTestModManifests = @{} }
+if (-not (Test-Path variable:global:BdTestModIds)) { $global:BdTestModIds = @{} }
 
 function Get-CopyKey([string]$gameDir) { [IO.Path]::GetFullPath($gameDir).TrimEnd('\').ToLowerInvariant() }
 
@@ -123,30 +131,73 @@ function Exit-ModLock($mutex) {
 }
 
 # The test mods a session's game did not find (no "Found mod manifest file" line for one of their .json files): a mods_STEAMTEST
-# emptied under a running series would make both sides of an A/B run without those mods, and agree.
+# emptied under a running series would make both sides of an A/B run without those mods, and agree. Then each one's loading:
+# found is not loaded (the game logs every .json before reading it). A test mod must finish its initialization, without an exception
+# in its initializer (the game logs "Finished" all the same) or a degraded start. A mod the session's profile disables is a script's
+# own choice (Sync-Slot enables every test mod in the slot's profiles: only a script's later edit, baselib-absent, disables one), and
+# so are the mods depending on it. Known failures: LobbyBanlist's initializer throws on v0.113 (a note, not a problem).
+$KnownModInitFailures = @{ "LobbyBanlist" = '^v0\.113\.' }
+$DegradedMarkers = @{ "sts2unlimited" = "Sts2Unlimited loaded DEGRADED" }
+if (-not (Test-Path variable:global:BdNotedModFailures)) { $global:BdNotedModFailures = [Collections.Generic.HashSet[string]]::new() }
 function Get-MissingTestMods([string]$log, [string]$gameDir) {
-    $manifests = @($global:BdTestModManifests[(Get-CopyKey $gameDir)] | Where-Object { $_ })
+    $key = Get-CopyKey $gameDir
+    $manifests = @($global:BdTestModManifests[$key] | Where-Object { $_ })
     if ($manifests.Count -eq 0 -or -not (Test-Path $log)) { return }
     $found = @(Select-String -Path $log -SimpleMatch "Found mod manifest file" | ForEach-Object { $_.Line.Replace('/', '\') })
     foreach ($manifest in $manifests) {
         if (-not ($found | Where-Object { $_.EndsWith("mods_STEAMTEST\$manifest", [StringComparison]::OrdinalIgnoreCase) })) { "test mod not loaded: the game did not find mods_STEAMTEST\$manifest" }
     }
-}
-
-# The Workshop folders of the mods a test session loads besides this one: the account's enabled Workshop mods, and
-# BDTEST_EXTRA_MODS=SpeedX,ModConfig,...: Workshop mods on disk that the account doesn't enable (what players combine with this mod).
-function Get-TestModItems {
-    $wanted = @(Get-TestModIds)
-    foreach ($item in Get-ChildItem $Workshop -Directory | Sort-Object Name) {
-        $ids = Get-ChildItem $item.FullName -Recurse -Filter *.json | ForEach-Object { try { (Get-Content $_.FullName -Raw | ConvertFrom-Json).id } catch { } }
-        if (@($ids | Where-Object { $wanted -contains $_ }).Count -gt 0) { $item }
+    $loading = @(Select-String -Path $log -Pattern "^\[\w+\] (Finished mod initialization for '.*' \((\S+)\)\.|Skipping loading mod (\S+), it is set to disabled|Tried to load mod (\S+), but it depends on mods which have not been loaded: (.+)!|Exception thrown when calling mod initializer of type ([\w.]+))")
+    $finished = @($loading | Where-Object { $_.Matches[0].Groups[2].Success } | ForEach-Object { $_.Matches[0].Groups[2].Value })
+    $excused = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $loading | Where-Object { $_.Matches[0].Groups[3].Success } | ForEach-Object { [void]$excused.Add($_.Matches[0].Groups[3].Value) }
+    # A mod depending only on mods left out on purpose (or on mods left out because of them) is left out on purpose too.
+    $dependents = @($loading | Where-Object { $_.Matches[0].Groups[4].Success } | ForEach-Object { [pscustomobject]@{ Id = $_.Matches[0].Groups[4].Value; On = @($_.Matches[0].Groups[5].Value -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) } })
+    do {
+        $grew = $false
+        foreach ($d in $dependents) { if (-not $excused.Contains($d.Id) -and @($d.On | Where-Object { -not $excused.Contains($_) }).Count -eq 0) { [void]$excused.Add($d.Id); $grew = $true } }
+    } while ($grew)
+    $initFailed = @($loading | Where-Object { $_.Matches[0].Groups[6].Success } | ForEach-Object { $_.Matches[0].Groups[6].Value })
+    $tag = Get-GameTag $gameDir
+    foreach ($id in @($global:BdTestModIds[$key] | Where-Object { $_ })) {
+        if ($excused.Contains($id)) { continue }
+        if ($finished -notcontains $id) { "test mod not loaded: $id (no 'Finished mod initialization' line: it failed to load, or a profile disabled it)"; continue }
+        # The initializer's type: its namespace's first part is the mod's id (LobbyBanlist.MainFile, Sts2Unlimited.*).
+        $types = @($initFailed | Where-Object { ($_ -split '\.')[0] -eq $id })
+        if ($types.Count) {
+            if ($KnownModInitFailures.ContainsKey($id) -and $tag -match $KnownModInitFailures[$id]) {
+                # Once per series, not per session.
+                if ($global:BdNotedModFailures.Add("$id|$tag")) { Write-Host "note: test mod $id's initializer threw ($($types[0])), known on $tag" }
+            }
+            else { "test mod $id's initializer threw ($($types[0])): it runs degraded or not at all" }
+        }
+        if ($DegradedMarkers.ContainsKey($id) -and (Select-String -Path $log -SimpleMatch $DegradedMarkers[$id] -Quiet)) { "test mod $id loaded degraded ('$($DegradedMarkers[$id])')" }
     }
 }
 
+# The Workshop folders of the mods a test session loads besides this one (Get-TestModIds).
+function Get-TestModItems {
+    $wanted = @(Get-TestModIds)
+    foreach ($item in Get-ChildItem $Workshop -Directory | Sort-Object Name) {
+        if (@(Get-WorkshopModIds $item | Where-Object { $wanted -contains $_ }).Count -gt 0) { $item }
+    }
+}
+
+function Get-WorkshopModIds($item) {
+    Get-ChildItem $item.FullName -Recurse -Filter *.json | ForEach-Object { try { (Get-Content $_.FullName -Raw | ConvertFrom-Json).id } catch { } } | Where-Object { $_ }
+}
+
+# The mods a test session loads besides this one. Not the account's list alone: a player who turns their mods off to play vanilla
+# would make every series run without them, and every A/B agree. Always the supported mods this tooling verifies (BaseLib, Limitless,
+# BetterSpire2: tools/versions.json), then the account's enabled Workshop mods, then BDTEST_EXTRA_MODS=SpeedX,ModConfig,...
+# (Workshop mods on disk the account doesn't enable: what players combine with this mod). BDTEST_MODS=a,b replaces the whole list
+# ("none": only this mod). Add-TestMods fails when one of them isn't in the Workshop folder.
+$SupportedTestMods = @("BaseLib", "Limitless", "BetterSpire2")
 function Get-TestModIds {
+    if ($env:BDTEST_MODS) { return @($env:BDTEST_MODS -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $_ -ne "none" -and $_ -ne "BigDeckOptimization" } | Sort-Object -Unique) }
     $settings = Get-Content (Join-Path (Get-SteamAccountDir) "settings.save") -Raw | ConvertFrom-Json
-    $extra = @($env:BDTEST_EXTRA_MODS -split "," | Where-Object { $_ })
-    @($extra) + @($settings.mod_settings.mod_list | Where-Object { $_.is_enabled -and $_.source -eq "steam_workshop" -and $_.id -ne "BigDeckOptimization" } | ForEach-Object { $_.id }) | Sort-Object -Unique
+    $extra = @($env:BDTEST_EXTRA_MODS -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    @(@($SupportedTestMods) + @($extra) + @($settings.mod_settings.mod_list | Where-Object { $_.is_enabled -and $_.source -eq "steam_workshop" -and $_.id -ne "BigDeckOptimization" } | ForEach-Object { $_.id }) | Sort-Object -Unique)
 }
 
 # Releases this process's hold on a copy's test mods, and removes the folder when no other live series holds it.
@@ -187,6 +238,7 @@ function Copy-DisplaySettings([string]$data, [bool]$solo) {
     $accounts = @(Get-ChildItem (Join-Path $data "steam") -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d+$' })
     if ($accounts.Count -ne 1) { return }
     $source = Get-Content (Join-Path $accounts[0].FullName "settings.save") -Raw | ConvertFrom-Json
+    $itemIds = $null
     foreach ($id in "1", "1001") {
         $file = Join-Path $data "default\$id\settings.save"
         if (-not (Test-Path $file)) { continue }
@@ -194,6 +246,13 @@ function Copy-DisplaySettings([string]$data, [bool]$solo) {
         foreach ($property in $source.PSObject.Properties) {
             if ($property.Name -in "mod_settings", "language", "schema_version") { continue }
             $settings | Add-Member -NotePropertyName $property.Name -NotePropertyValue $property.Value -Force
+        }
+        # Every mod of the test mods' Workshop folders enabled, not only the test ids: an old profile may disable one (BaseLib's
+        # BaseLibCompatibilityHelper, which BaseLib depends on, from the same item), and Get-MissingTestMods excuses a disabled mod
+        # and its dependents: the series would run without them. A script disabling one on purpose does it after (Set-SlotModEnabled).
+        if ($settings.mod_settings -and $settings.mod_settings.mod_list) {
+            if ($null -eq $itemIds) { $itemIds = @(Get-TestModIds) + @(Get-TestModItems | ForEach-Object { Get-WorkshopModIds $_ }) }
+            $settings.mod_settings.mod_list | Where-Object { $_.source -eq "steam_workshop" -and $itemIds -contains $_.id } | ForEach-Object { $_.is_enabled = $true }
         }
         [IO.File]::WriteAllText($file, ($settings | ConvertTo-Json -Depth 30))
     }
@@ -230,13 +289,19 @@ function Unlock-Slot([int]$slot) {
     if ($entry.Depth -le 0) { $entry.Stream.Dispose(); $global:BdSlotLocks.Remove($slot) }
 }
 
+# A co-op test's local port (--bdport): one per test slot, so two series side by side (each on its own locked slots) never share
+# one. 34000 + slot: apart from the game's fixed 33771 (coop.ps1, a single pair on slot 70, keeps it).
+function Get-SlotPort([int]$slot) { 34000 + $slot }
+
 # Mirrors the user data into a slot: the caller holds the slot's lock (Lock-Slot) until its session ends.
 function Sync-Slot([int]$slot, [switch]$Coop) {
     if (-not $global:BdSlotLocks.ContainsKey($slot)) { throw "Sync-Slot ${slot}: take its lock first (Lock-Slot)" }
     $dir = Join-Path $SlotRoot "slot$slot"
     # The profiles' progress stays (what's unlocked changes what a run offers). Runs in progress don't: a save left by the last
     # session here, maybe from another game version, is called corrupt by the game.
-    robocopy $UserData (Join-Path $dir "SlayTheSpire2") /MIR /XD logs history replays sentry shader_cache vulkan /XF *.log *.tmp current_run* *.corrupt /NFL /NDL /NJH /NJS /NP | Out-Null
+    # Few retries: a file held open (the game you play meanwhile, Steam) would make robocopy retry for days by default.
+    robocopy $UserData (Join-Path $dir "SlayTheSpire2") /MIR /R:2 /W:1 /XD logs history replays sentry shader_cache vulkan /XF *.log *.tmp current_run* *.corrupt /NFL /NDL /NJH /NJS /NP | Out-Null
+    if ($LASTEXITCODE -ge 8) { throw "Sync-Slot ${slot}: robocopy failed (exit code $LASTEXITCODE): the slot's user data would be incomplete" }
     Get-ChildItem (Join-Path $dir "SlayTheSpire2") -Recurse -File -Include current_run*, *.corrupt -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
     # This mod's settings start at their defaults (every optimization on), whatever yours are: a saved "Enabled": "False" (a
     # bdopt off saved by BaseLib) would leave every patch unapplied, and every A/B would compare the game with itself; an option
@@ -266,36 +331,47 @@ function Set-SlotModEnabled([string]$slot, [string]$id, [bool]$enabled) {
     }
 }
 
-# Whether a session's log shows what the test is about: a setup that did nothing would otherwise pass unseen.
+# Whether a session's log shows what the test is about: a setup that did nothing would otherwise pass unseen. A line missing proves
+# something only in a session that ran to its end (judge.py's end lines): a missing or cut-short log is a PROBLEM for a negative
+# check too. Each PROBLEM counts in $script:SessionLogProblems (the calling script's exit code).
+$SessionEnd = 'AutoTest\s+[\d.]+s\s+(script finished|> quit\b|handed over to the player)'
 function Test-SessionLog([string]$name, [string]$pattern, [bool]$expected, [string]$meaning) {
-    $found = Select-String -Path (Join-Path $Results "$name.log") -Pattern $pattern -Quiet
-    Write-Output ("{0} {1}: {2}" -f $(if ([bool]$found -eq $expected) { "ok     " } else { "PROBLEM" }), $name, $meaning)
+    $log = Join-Path $Results "$name.log"
+    if (-not (Test-Path $log)) { $ok = $false; $meaning += " (no session log)" }
+    else {
+        $ok = [bool](Select-String -Path $log -Pattern $pattern -Quiet) -eq $expected
+        if ($ok -and -not $expected -and -not (Select-String -Path $log -Pattern $SessionEnd -Quiet)) { $ok = $false; $meaning += " (the session did not reach its end: a missing line proves nothing)" }
+    }
+    if (-not $ok) { $script:SessionLogProblems = 1 + [int]$script:SessionLogProblems }
+    Write-Output ("{0} {1}: {2}" -f $(if ($ok) { "ok     " } else { "PROBLEM" }), $name, $meaning)
 }
 
-# Everything a mod-off log depends on but this mod's own patches: a baseline stays valid until the game, a Workshop mod, which
-# mods are loaded (the account's list, BDTEST_EXTRA_MODS), the shared run files the scenarios import, the test profile's progress
+# Everything a mod-off log depends on but this mod's own patches: a baseline stays valid until the game, a test mod's files, which
+# mods are loaded (Get-TestModIds), the shared run files the scenarios import, the test profile's progress
 # (what a run offers), the other mods' settings and data the slots copy (mod_configs; mod_data, e.g. LobbyBanlist's ban
 # profiles), the test tooling or the scenario changes.
 $script:BaselineSalt = $null
 # The test tooling a script runs: the scenario engine and its helpers always, each optional part only when one of its commands is
 # in the script (AutoTest.cs reaches them only through those commands; a few CPU-time helpers feed timings, which no comparison
-# reads). A change elsewhere in Bench/ leaves this scenario's baseline valid.
+# reads). A change elsewhere in Bench/ leaves this scenario's baseline valid. A console command counts through 'cmd' and through
+# 'autoslayfirst' (the same Command() at the auto player's first room).
 $BaselineBenchParts = [ordered]@{
     'AutoTestRooms.cs'      = '^\s*(autoroom|automap|barrier|continuerun|runstate|restsite|selector|eventoption)\b'
     'AutoTestMouse.cs'      = '^\s*(hover|checktips|mouseplay|mousesweep|movehovered|buttoninput|controllermap|forcefocus|tipsrebuilt)\b'
     'AutoTestSweep.cs'      = '^\s*(sweep|sweeptimeout)\b'
     'AutoTestLeak.cs'       = '^\s*leakcheck\b'
     'AutoTestTrace.cs'      = '^\s*eventtrace\b'
-    'BigDeckConsoleCmd.cs'  = '^\s*cmd\s+bigdeck\b'
+    # Also through 'autoslayfirst', 'barrier' (a networked 'bigdeck mark') and '{hash:NAME}' (BigDeckConsoleCmd.SharedHash, any line).
+    'BigDeckConsoleCmd.cs'  = '^\s*((cmd|autoslayfirst)\s+bigdeck\b|barrier\b)|\{hash:'
     'RebuildCheck.cs'       = '^\s*rebuildcheck\b'
     'FaultProbe.cs'         = '^\s*faultprobe\b'
-    'PerfConsoleCmd.cs'     = '^\s*cmd\s+bdperf\b'
-    'GridBench.cs'          = '^\s*cmd\s+bdperf\s+grid\b'
-    'PerfProbe.cs'          = '^\s*cmd\s+bdperf\s+(probe|nodes|hitch)\b'
-    'RelicBench.cs'         = '^\s*cmd\s+bdperf\s+relics\b'
-    'ShuffleBench.cs'       = '^\s*cmd\s+bdperf\s+shufflebench\b'
-    'UpgradeBench.cs'       = '^\s*cmd\s+bdperf\s+upgradebench\b'
-    'SortKeysBench.cs'      = '^\s*cmd\s+bdperf\s+sortkeys\b'
+    'PerfConsoleCmd.cs'     = '^\s*(cmd|autoslayfirst)\s+bdperf\b'
+    'GridBench.cs'          = '^\s*(cmd|autoslayfirst)\s+bdperf\s+grid\b'
+    'PerfProbe.cs'          = '^\s*(cmd|autoslayfirst)\s+bdperf\s+(probe|nodes|hitch)\b'
+    'RelicBench.cs'         = '^\s*(cmd|autoslayfirst)\s+bdperf\s+relics\b'
+    'ShuffleBench.cs'       = '^\s*(cmd|autoslayfirst)\s+bdperf\s+shufflebench\b'
+    'UpgradeBench.cs'       = '^\s*(cmd|autoslayfirst)\s+bdperf\s+upgradebench\b'
+    'SortKeysBench.cs'      = '^\s*(cmd|autoslayfirst)\s+bdperf\s+sortkeys\b'
 }
 function Get-BaselineBenchFiles([string]$scriptText) {
     $bench = Join-Path $PSScriptRoot "..\..\src\BigDeckOptimization\Bench"
@@ -310,7 +386,9 @@ function Get-BaselineBenchFiles([string]$scriptText) {
 function Get-BaselineKey([string]$gameDir, [string]$scriptPath) {
     if (-not $script:BaselineSalt) {
         $profileSaves = Join-Path (Get-SteamAccountDir) "modded\profile3\saves"
-        $files = @(Get-ChildItem (Join-Path $gameDir "data_sts2_windows_x86_64\sts2.dll")) + @(Get-ChildItem $Workshop -Recurse -Filter *.dll) +
+        # Every file of the test mods' Workshop folders, not only DLLs: a mod's own data and settings change the game too (Unlimited
+        # 2.0.0's sts2unlimited.settings.json: its difficulty scaling).
+        $files = @(Get-ChildItem (Join-Path $gameDir "data_sts2_windows_x86_64\sts2.dll")) + @(Get-TestModItems | ForEach-Object { Get-ChildItem $_.FullName -Recurse -File }) +
             @(Get-ChildItem (Join-Path $UserData "bigdeck") -Filter *.run -ErrorAction SilentlyContinue) +
             @(Get-ChildItem (Join-Path $profileSaves "*") -File -Include progress.save, prefs.save -ErrorAction SilentlyContinue) +
             @(Get-ChildItem (Join-Path $UserData "mod_configs") -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne "BigDeckOptimization.cfg" }) +
@@ -391,19 +469,26 @@ function New-ThinCopy([string]$source, [string]$target) {
     foreach ($item in Get-ChildItem $root -Recurse -Force) {
         $path = Join-Path $target $item.FullName.Substring($root.Length + 1)
         if ($item.PSIsContainer) { New-Item -ItemType Directory -Force $path | Out-Null }
-        else { [void][BdHardLink]::CreateHardLink($path, $item.FullName, [IntPtr]::Zero) }
+        elseif (-not [BdHardLink]::CreateHardLink($path, $item.FullName, [IntPtr]::Zero)) {
+            # A file left out would go unseen until its session misbehaves.
+            throw "New-ThinCopy: no hard link $path to $($item.FullName) (Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))"
+        }
     }
 }
 if (-not ("BdHardLink" -as [type])) {
     Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class BdHardLink { [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool CreateHardLink(string link, string existing, IntPtr security); }'
 }
 
+# judge.py's positive control that saw nothing: not a problem of a session cut short (crashed or frozen) before the line it waits
+# for. The job's new session is held to it.
+$CutShortExpect = '^expected ".*" never seen \(a positive control that saw nothing\)$'
+
 # Why a session that ended before its script's end is a problem, or nothing when it is the known benign end: the game gone right
 # after a texture load outside the cache (Godot's dummy renderer, "[WARN] Asset not cached" as the log's last line), or before
 # the script's first line. Either way with no problem in what it logged (judge.py, no end expected).
 function Get-EarlyExitProblem([string]$log, $exitCode) {
     if (-not (Test-Path $log)) { return }
-    $problems = @(Invoke-Judge @($log) -NoEnd | ForEach-Object { $_ -replace '^PROBLEM [^:]+: ', '' })
+    $problems = @(Invoke-Judge @($log) -NoEnd | ForEach-Object { $_ -replace '^PROBLEM [^:]+: ', '' } | Where-Object { $_ -notmatch $CutShortExpect })
     $last = @(Get-Content $log -Tail 6 | Where-Object { $_.Trim() }) | Select-Object -Last 1
     $started = [bool](Select-String -Path $log -Pattern "AutoTest\s+[\d.]+s > " -Quiet)
     if ($problems.Count) { return "ended early (exit code $exitCode, log $(Split-Path $log -Leaf)) with a problem: $($problems[0])" }
@@ -413,9 +498,25 @@ function Get-EarlyExitProblem([string]$log, $exitCode) {
     "ended early (exit code $exitCode), not the known renderer crash: last line '$("$last".Substring(0, [Math]::Min(120, "$last".Length)))' ($(Split-Path $log -Leaf))"
 }
 
+# Why a session that froze is a problem of its job, or nothing. The game's own: its known freeze (Parameter "t" is null, which
+# Set-CopyOverrides removes), or one before or after this mod's load work. This mod's: a freeze inside that work (the mod initialized,
+# its patches not applied yet: ModEntry's applying over frames, InlineGuard, HarmonyRebuild), or a problem judge.py finds in what
+# the session logged. A new session that gets past it would otherwise hide a freeze that comes one time in three.
+function Get-FrozenProblem([string]$log) {
+    if (-not (Test-Path $log)) { return }
+    $leaf = Split-Path $log -Leaf
+    # Cut short: its positive controls ('expect' lines still to come) can't be held against it, the other problems can.
+    $problems = @(Invoke-Judge @($log) -NoEnd | ForEach-Object { $_ -replace '^PROBLEM [^:]+: ', '' } | Where-Object { $_ -notmatch $CutShortExpect })
+    if ($problems.Count) { return "froze (log $leaf) with a problem: $($problems[0])" }
+    if (Get-Content $log -Tail 4 -ErrorAction SilentlyContinue | Select-String -SimpleMatch 'Parameter "t" is null') { return }
+    $initialized = @(Select-String -Path $log -Pattern "\[BigDeckOptimization\] Initialized v" | Where-Object { $_.Line -notmatch "turned off" }).Count -gt 0
+    if ($initialized -and -not (Select-String -Path $log -SimpleMatch "[BigDeckOptimization] Patches applied" -Quiet)) { return "froze while this mod applied its patches (no 'Patches applied' line, log $leaf)" }
+}
+
 # Jobs: objects with Name, Script (scenario path), Log. Runs at most $MaxJobs at once. A session is closed when it passes
 # $TimeoutSec, or when its log stays silent for $StallSec. Returns one result per job: Name, State (done, cached, TIMEOUT,
-# STALLED, FROZEN, CRASHED), Seconds, Failed, Restarts.
+# STALLED, FROZEN, CRASHED), Seconds, Failed (its problems: judge.py's, a test mod not loaded, an earlier session that ended early
+# or froze in this mod's code), Restarts.
 function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$TimeoutSec = 900, [int]$StallSec = 240, [switch]$Rendered, [switch]$UseBaselines, [string]$Label = "sessions") {
     $launchMode = if ($Rendered) { @("--bdhidden", "--windowed", "--resolution", "1920x1080") } else { @("--headless") }
     Add-TestMods $GameDir
@@ -493,9 +594,15 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                     $retries[$name] = 1 + [int]$retries[$name]
                     Stop-Process -Id $run.Process.Id -Force -ErrorAction SilentlyContinue
                     Start-Sleep 1
+                    # Kept beside the job's log (the next session deletes that one) and judged: a freeze in this mod's code is a
+                    # problem of the job, whatever the session that starts over does.
+                    $frozenLog = "$($run.Job.Log).frozen$(if ($retries[$name] -gt 1) { $retries[$name] })"
+                    Copy-Item $run.Job.Log $frozenLog -Force -ErrorAction SilentlyContinue
+                    $why = Get-FrozenProblem $frozenLog
+                    if ($why) { $earlyProblems[$name] = @($earlyProblems[$name]) + @($why) }
                     $running.Remove($slot)
                     if ($retries[$name] -le 2) { $pending.Enqueue($run.Job) }
-                    else { $done.Add([pscustomobject]@{ Name = $name; State = "FROZEN"; Seconds = [int]$age; Failed = @("froze 3 times"); Restarts = $retries[$name] }) }
+                    else { $done.Add([pscustomobject]@{ Name = $name; State = "FROZEN"; Seconds = [int]$age; Failed = @("froze 3 times") + @($earlyProblems[$name] | Where-Object { $_ }); Restarts = $retries[$name] }) }
                     continue
                 }
                 if ($run.Process.HasExited) {

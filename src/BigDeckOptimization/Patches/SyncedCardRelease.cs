@@ -10,19 +10,22 @@ using MegaCrit.Sts2.Core.Runs;
 namespace BigDeckOptimization.Patches;
 
 /// <summary>
-/// At every co-op combat start the game rebuilds each other player's deck from the message they sent
-/// (<c>Player.SyncWithSerializedPlayer</c>: <c>Deck.Clear</c>, then a new model per card through <c>RunState.LoadCard</c>). The cards
-/// replaced are never taken out of <c>RunState._allCards</c>, the only thing still holding them, so the run keeps every other player's
-/// whole deck once per combat: +24 MB per combat at 1,900 cards, for the rest of the run, and every collection walks it.
+/// At every co-op room entry (each map point not already finished, whatever its room: fights, events, shops, rest sites, treasure;
+/// and a room entered without leaving the current one, an event's fight) the game rebuilds each other player's deck from the message
+/// they sent (<c>CombatStateSynchronizer.WaitForSync</c>, before the room is made: <c>Player.SyncWithSerializedPlayer</c>,
+/// <c>Deck.Clear</c>, then a new model per card through <c>RunState.LoadCard</c>). The cards replaced are never taken out of
+/// <c>RunState._allCards</c>, the only thing still holding them, so the run keeps every other player's whole deck once per room:
+/// +24 MB per sync at 1,900 cards (measured alternating fights), for the rest of the run, and every collection walks it.
 ///
 /// Cards that left the deck during that call are removed from the list. The list is only read by <c>RunState.ContainsCard</c>, asked
-/// about cards being added to a deck or just made: a replaced card is unreachable, nothing can ask. Memory only: cards are not touched.
+/// about cards being added to a deck or just made: a replaced card is unreachable (the previous room is exited before the sync; an
+/// event resumed after its fight reads the current deck), nothing can ask. Memory only: cards are not touched.
 /// </summary>
 public static class SyncedCardRelease
 {
     public const string Name = "SyncedCardRelease";
 
-    /// <summary>v0.107.1 <c>Player.SyncWithSerializedPlayer</c> (same on v0.111).</summary>
+    /// <summary>v0.107.1 <c>Player.SyncWithSerializedPlayer</c> (same on v0.111 and v0.113.x).</summary>
     private const string SyncFingerprint = "AE35544973BCD76F";
 
     /// <summary>Everything in <c>RunState</c> using <c>_allCards</c>: a new reader could see what was removed.</summary>

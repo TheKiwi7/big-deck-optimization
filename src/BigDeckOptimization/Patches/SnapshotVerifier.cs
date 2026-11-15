@@ -136,21 +136,23 @@ public static class SnapshotVerifier
         {
             return;
         }
-        if (Mode == VerifyMode.Sample && (_gaveUp || CombatCards(runState) > MaxCombatCards))
-        {
-            SkippedTooLarge++;
-            if (!_loggedSkip)
-            {
-                _loggedSkip = true;
-                Log.Info($"[{ModEntry.Id}] {Name}: state too large for a vanilla re-check without freezing the game "
-                    + $"(over {MaxCombatCards} combat cards or a re-check over {GiveUpMs / 1000:F0} s): verification skipped.");
-            }
-            return;
-        }
 
         _verifying = true;
         try
         {
+            // Inside the try: an exception counting the piles (a content mod's pile) would otherwise leave through this postfix into the
+            // game's FromRun caller, and PatchGuard would fault the verifier.
+            if (Mode == VerifyMode.Sample && (_gaveUp || CombatCards(runState) > MaxCombatCards))
+            {
+                SkippedTooLarge++;
+                if (!_loggedSkip)
+                {
+                    _loggedSkip = true;
+                    Log.Info($"[{ModEntry.Id}] {Name}: state too large for a vanilla re-check without freezing the game "
+                        + $"(over {MaxCombatCards} combat cards or a re-check over {GiveUpMs / 1000:F0} s): verification skipped.");
+                }
+                return;
+            }
             NetFullCombatState vanilla = ListenerCache.RunVanilla(() => NetFullCombatState.FromRun(runState, justFinishedAction));
             Verified++;
             _lastVerifyMs = Stopwatch.GetElapsedTime(now).TotalMilliseconds;
@@ -288,24 +290,35 @@ public static class SnapshotVerifier
         return cards;
     }
 
-    /// <summary>Index of the first differing byte between both serializations, or -1 when identical.</summary>
+    /// <summary>
+    /// Index of the first differing byte between both serializations, or -1 when identical (bit lengths too: the last byte's unused
+    /// bits are zeros on both sides). The optimized state is serialized as a checksum would (kept card and pile bits); the vanilla one
+    /// inside <see cref="ListenerCache.RunVanilla"/>, where <see cref="SnapshotCardReuse"/>'s serialization shortcuts give way to the
+    /// game's own writers (its pile list header mirror included), so a mistake there shows as a difference.
+    /// </summary>
     private static int FirstDifference(NetFullCombatState optimized, NetFullCombatState vanilla, out int optimizedLength, out int vanillaLength)
     {
-        _optimizedWriter ??= new PacketWriter { WarnOnGrow = false };
-        _vanillaWriter ??= new PacketWriter { WarnOnGrow = false };
-        ReadOnlySpan<byte> a = Serialize(_optimizedWriter, optimized);
-        ReadOnlySpan<byte> b = Serialize(_vanillaWriter, vanilla);
+        PacketWriter optimizedWriter = _optimizedWriter ??= new PacketWriter { WarnOnGrow = false };
+        PacketWriter vanillaWriter = _vanillaWriter ??= new PacketWriter { WarnOnGrow = false };
+        Serialize(optimizedWriter, optimized);
+        ListenerCache.RunVanilla(() => Serialize(vanillaWriter, vanilla));
+        ReadOnlySpan<byte> a = optimizedWriter.Buffer.AsSpan(0, optimizedWriter.BytePosition);
+        ReadOnlySpan<byte> b = vanillaWriter.Buffer.AsSpan(0, vanillaWriter.BytePosition);
         optimizedLength = a.Length;
         vanillaLength = b.Length;
         int common = a.CommonPrefixLength(b);
-        return common == a.Length && common == b.Length ? -1 : common;
+        if (common == a.Length && common == b.Length)
+        {
+            return optimizedWriter.BitPosition == vanillaWriter.BitPosition ? -1 : common;
+        }
+        return common;
     }
 
-    private static ReadOnlySpan<byte> Serialize(PacketWriter writer, NetFullCombatState state)
+    private static bool Serialize(PacketWriter writer, NetFullCombatState state)
     {
         writer.Reset();
         writer.Write(state);
         writer.ZeroByteRemainder();
-        return writer.Buffer.AsSpan(0, writer.BytePosition);
+        return true;
     }
 }

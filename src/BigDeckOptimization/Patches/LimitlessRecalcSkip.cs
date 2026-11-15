@@ -43,11 +43,11 @@ public static class LimitlessRecalcSkip
 {
     public const string Name = "LimitlessRecalcSkip";
 
-    /// <summary>Limitless v1.1.7 <c>MultiEnchantment.RecalculateValues</c>: the inner recalculations, then SetSerializableCards.</summary>
+    /// <summary>Limitless 1.1.7 to 1.2.1 <c>MultiEnchantment.RecalculateValues</c>: the inner recalculations, then SetSerializableCards.</summary>
     private const string RecalculateValuesFingerprint = "1180845F3EE40FDB";
     /// <summary>Its <c>EnchantmentsOnCards</c> getter: the field once built (read directly here, never built).</summary>
     private const string EnchantmentsOnCardsFingerprint = "0AA01E688AC72C3C";
-    /// <summary>v0.107.1 and v0.111 <c>EnchantmentModel.RecalculateValues</c>: empty.</summary>
+    /// <summary>v0.107.1 to v0.113.1 <c>EnchantmentModel.RecalculateValues</c>: empty.</summary>
     private const string DefaultRecalculateFingerprint = "23869126C936D164";
 
     /// <summary>One skip in this many is checked with the full comparison.</summary>
@@ -65,13 +65,18 @@ public static class LimitlessRecalcSkip
 
     /// <summary>One skipped pass in this many runs for real.</summary>
     public const int PassVerifyEvery = 64;
-    /// <summary>v0.107.1 and v0.111: every card of every combat pile, its enchantment's RecalculateValues.</summary>
+    /// <summary>v0.107.1 to v0.113.1: every card of every combat pile, its enchantment's RecalculateValues.</summary>
     private const string RecalculateCardValuesFingerprint = "5F467DE7E5B99951";
     private const string AllCardsFingerprint = "7893F6315D894A5A";
-    /// <summary>Limitless 1.1.7: resets the inner list of a clone (read back from its saved list).</summary>
+    /// <summary>Limitless 1.1.7 to 1.2.1: resets the inner list of a clone (read back from its saved list).</summary>
     private const string DeepCloneFieldsFingerprint = "B0598AD4D39BD71C";
 
+    /// <summary>
+    /// Bumps: the low 32 bits count those from the game's main thread, the high ones those from any other thread (see
+    /// <see cref="Bump"/>). One word, so one atomic read gives both and any change moves it.
+    /// </summary>
     private static long _quiet;
+    private const long OffMainBumpUnit = 1L << 32;
     private static long _quietAt = -1;
     private static long _quietData = -1;
     // Weak: a strong one would keep the whole last run alive once the player has left it.
@@ -79,7 +84,11 @@ public static class LimitlessRecalcSkip
     private static int _sincePassCheck;
     private static bool _passSkip;
     private static MethodInfo? _pass;
-    /// <summary>What the game's pass walks; quiet passes are judged on AllPiles and pile adds, the same cards while unpatched.</summary>
+    /// <summary>
+    /// What the game's pass walks (AllPiles.SelectMany). Quiet passes are judged on the same AllPiles getter, piles a mod adds
+    /// through it included (BaseLib's SpecialPileInCombat transpiles it), and on cards entering any pile through AddInternal:
+    /// a patch on AllPiles needs no back-off (one would turn passes off for every BaseLib user), a patch on AllCards does.
+    /// </summary>
     private static MethodInfo? _allCards;
     private static Type? _multi, _storageCard;
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, bool> _defaultRecalculates = new();
@@ -145,7 +154,8 @@ public static class LimitlessRecalcSkip
         PatchSafety.RequireFingerprint(deepClone, DeepCloneFieldsFingerprint);
         _storageCard = AccessTools.TypeByName("Limitless.LimitlessCode.UncappedEnchantments.EnchantmentStorageCard")
             ?? AccessTools.AllTypes().FirstOrDefault(t => t.Name == "EnchantmentStorageCard") ?? throw new TypeLoadException("EnchantmentStorageCard");
-        // What the memos read changes through these only.
+        // What the memos read changes through these only; the saved list through its setter only (bumped below).
+        LimitlessReserialize.RequireKnownSavedListUsers(multi);
         PatchSafety.RequireFieldWriters(typeof(EnchantmentModel), "_amount", "set_Amount");
         PatchSafety.RequireFieldWriters(typeof(CardModel), "_currentUpgradeLevel", "set_CurrentUpgradeLevel");
         PatchSafety.RequireFieldWriters(typeof(CardModel), "_floorAddedToDeck", "set_FloorAddedToDeck");
@@ -173,13 +183,25 @@ public static class LimitlessRecalcSkip
         _passSkip = true;
     }
 
-    private static void BumpQuiet() => _quiet++;
+    /// <summary>
+    /// Something a pass reads changed: the next pass runs. Atomic, the setters being global; a bump from a thread other
+    /// than the game's main one (none today) during a watched pass makes it not quiet without calling it a mismatch when
+    /// it is all that moved (the change was seen, not one the pass's calls made unseen). Both counts share one word: a
+    /// separate flag could be cleared by the pass's start between its write and the increment, and a later increment
+    /// then read as a mismatch.
+    /// </summary>
+    private static void Bump()
+    {
+        System.Threading.Interlocked.Add(ref _quiet, LimitlessReserialize.OnMainThread ? 1 : OffMainBumpUnit);
+    }
+
+    private static void BumpQuiet() => Bump();
 
     private static void BumpQuietIfStorage(CardModel __instance)
     {
         if (ReferenceEquals(__instance.GetType(), _storageCard))
         {
-            _quiet++;
+            Bump();
         }
     }
 
@@ -189,7 +211,7 @@ public static class LimitlessRecalcSkip
     /// v1.0.2 only stacked ones counted: a bare enchantment (Limitless's uncapped enchantments off) entering after a quiet
     /// pass wasn't recalculated until a check pass.
     /// </summary>
-    private static Exception? CardEntered(Exception? __exception, CardModel card)
+    private static void CardEntered(Exception? __exception, CardModel card)
     {
         try
         {
@@ -198,14 +220,13 @@ public static class LimitlessRecalcSkip
             if (_passSkip && card.Enchantment is { } enchantment && !KeepsDefault(enchantment.GetType())
                 && !(ReferenceEquals(enchantment.GetType(), _multi) && _memos.TryGetValue(enchantment, out Memo? memo) && memo.Holds(enchantment)))
             {
-                System.Threading.Interlocked.Increment(ref _quiet);
+                Bump();
             }
         }
         catch
         {
-            System.Threading.Interlocked.Increment(ref _quiet); // Can't tell: the next pass runs.
+            Bump(); // Can't tell: the next pass runs.
         }
-        return __exception;
     }
 
     /// <summary>
@@ -237,7 +258,7 @@ public static class LimitlessRecalcSkip
             }
             // Also what BaseLib's data depends on (a save registered, a type loaded): a skipped pass would miss it.
             long dataStamp = LimitlessReserialize.DataVersion();
-            bool wasQuiet = _quietAt == _quiet && dataStamp >= 0 && dataStamp == _quietData
+            bool wasQuiet = _quietAt == System.Threading.Interlocked.Read(ref _quiet) && dataStamp >= 0 && dataStamp == _quietData
                 && _quietState.TryGetTarget(out PlayerCombatState? quietState) && ReferenceEquals(quietState, __instance);
             if (wasQuiet && ++_sincePassCheck < PassVerifyEvery)
             {
@@ -246,7 +267,7 @@ public static class LimitlessRecalcSkip
             }
             _sincePassCheck = 0;
             PassesRun++;
-            _passVersion = _quiet;
+            _passVersion = System.Threading.Interlocked.Read(ref _quiet);
             _passData = dataStamp;
             _passWasQuiet = wasQuiet;
             _passQuiet = true;
@@ -264,11 +285,11 @@ public static class LimitlessRecalcSkip
     /// After a watched pass: quiet when every call did nothing (memos held, the rest keep the empty default) and nothing
     /// moved meanwhile. An exception from the pass is the game's, passed on unchanged: nothing is concluded from that pass.
     /// </summary>
-    private static Exception? PassFinalizer(Exception? __exception, PlayerCombatState __instance, bool __state)
+    private static void PassFinalizer(Exception? __exception, PlayerCombatState __instance, bool __state)
     {
         if (!__state)
         {
-            return __exception;
+            return;
         }
         _passTracked = false;
         try
@@ -276,10 +297,14 @@ public static class LimitlessRecalcSkip
             if (__exception != null)
             {
                 _quietAt = -1;
-                return __exception;
+                return;
             }
-            bool quiet = _passQuiet && _quiet == _passVersion && OnlyDefaultsBesidesStacked(__instance);
-            if (_passWasQuiet && !quiet)
+            long now = System.Threading.Interlocked.Read(ref _quiet);
+            bool quiet = _passQuiet && now == _passVersion && OnlyDefaultsBesidesStacked(__instance);
+            // A bump from another thread during the pass (a hover tip's new enchantment, say): not quiet, but no mismatch when
+            // such bumps are all that moved (no main-thread bump, every call did nothing). Read from the same word as the version.
+            bool onlyOffMainMoved = now != _passVersion && (now & (OffMainBumpUnit - 1)) == (_passVersion & (OffMainBumpUnit - 1));
+            if (_passWasQuiet && !quiet && !(onlyOffMainMoved && _passQuiet && OnlyDefaultsBesidesStacked(__instance)))
             {
                 PassMismatches++;
                 _passSkip = false;
@@ -293,7 +318,6 @@ public static class LimitlessRecalcSkip
         {
             StopPasses(e);
         }
-        return __exception;
     }
 
     /// <summary>Whether every card's enchantment in the piles is a stacked one (judged by its calls) or keeps the empty default.</summary>
@@ -431,7 +455,8 @@ public static class LimitlessRecalcSkip
             int count = cards.Count;
             if (memo.Inner.Length < count)
             {
-                int size = Math.Max(count, 4);
+                // Doubled: a stack grows one enchantment type at a time.
+                int size = Math.Max(Math.Max(count, memo.Inner.Length * 2), 4);
                 memo.Inner = new CardModel?[size];
                 memo.Upgrades = new int[size];
                 memo.Floors = new int?[size];

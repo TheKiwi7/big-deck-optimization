@@ -35,7 +35,7 @@ waitfor turn 300
 cmd bdopt pile_lookup on
 cmd bdopt listeners on
 state t4
-cmd bdopt off
+cmd bdopt off yes
 play 3
 endturn
 waitfor turn 300
@@ -69,7 +69,7 @@ waitfor turn 300
 cmd bdopt coop_checksum on
 cmd bdopt listeners on
 state f2t3
-cmd bdopt off
+cmd bdopt off yes
 play 3
 endturn
 waitfor turn 300

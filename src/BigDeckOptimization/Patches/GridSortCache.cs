@@ -19,6 +19,8 @@ namespace BigDeckOptimization.Patches;
 /// Inside <c>SetCards</c>, those lambdas are answered from per-card values computed once: index map (same first-match
 /// equality as <c>IndexOf</c>), resolved cost, and culture sort keys (same order as <c>CompareInfo.Compare</c>). Each
 /// comparer is only replaced when its fingerprint matches the vanilla code mirrored here. Display order only.
+/// The index map is built at the first index comparison of a <c>SetCards</c> call and kept for the rest of it: exact while
+/// <c>SetCards</c> only replaces <c>_cards</c> after its sort, which its fingerprint pins (else only the index orders stay vanilla).
 /// </summary>
 public static class GridSortCache
 {
@@ -44,6 +46,9 @@ public static class GridSortCache
         [SortingOrders.AlphabetDescending] = new(Kind.Title, true, "CC335A28B09AE1DA"),
     };
 
+    /// <summary>v0.107.1 to v0.113.1: <c>SetCards</c> sorts <c>_cardsCache</c> and refills <c>_cards</c> only after the sort.</summary>
+    private const string SetCardsFingerprint = "224B19A92FC91776";
+
     private static readonly ConditionalWeakTable<Dictionary<SortingOrders, Func<CardModel, CardModel, int>>, object> _wrapped = new();
     private static readonly Dictionary<(SortingOrders, System.Reflection.MethodInfo), bool> _fingerprintOk = new();
     private static AccessTools.FieldRef<NCardGrid, List<CardModel>>? _cards;
@@ -56,6 +61,8 @@ public static class GridSortCache
         public readonly Dictionary<CardModel, int> Cost = new(ReferenceEqualityComparer.Instance);
         public readonly Dictionary<CardModel, SortKey?> Title = new(ReferenceEqualityComparer.Instance);
         public CompareInfo? Culture;
+        /// <summary>The comparers dictionary already checked in this call: the sort reads the getter at every comparison.</summary>
+        public Dictionary<SortingOrders, Func<CardModel, CardModel, int>>? Wrapped;
     }
 
     [ThreadStatic] private static Scope? _scope;
@@ -63,14 +70,25 @@ public static class GridSortCache
     /// <summary>Per kind, whether its value code loads on this game (its own class: a changed member only loses those orders).</summary>
     private static bool _costLoads, _titleLoads;
 
+    /// <summary>Whether SetCards is the code the index map relies on (<see cref="SetCardsFingerprint"/>).</summary>
+    private static bool _indexOk;
+
     public static void Apply(Harmony harmony)
     {
         _costLoads = Loads(typeof(GridSortCost));
         _titleLoads = Loads(typeof(GridSortTitle));
         _cards = AccessTools.FieldRefAccess<NCardGrid, List<CardModel>>("_cards");
+        System.Reflection.MethodInfo setCards = AccessTools.Method(typeof(NCardGrid), nameof(NCardGrid.SetCards))
+            ?? throw new MissingMethodException(nameof(NCardGrid), nameof(NCardGrid.SetCards));
+        string setCardsActual = MethodFingerprint.Of(setCards);
+        _indexOk = PatchSafety.FingerprintMatches(setCardsActual, SetCardsFingerprint);
+        if (!_indexOk)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: NCardGrid.SetCards changed (fingerprint {setCardsActual}, expected {SetCardsFingerprint}): index orders left vanilla");
+        }
         PatchGuard.Patch(harmony, AccessTools.PropertyGetter(typeof(NCardGrid), "SortingAlgorithms"),
             postfix: new HarmonyMethod(typeof(GridSortCache), nameof(SortingAlgorithmsPostfix)));
-        PatchGuard.Patch(harmony, AccessTools.Method(typeof(NCardGrid), nameof(NCardGrid.SetCards)),
+        PatchGuard.Patch(harmony, setCards,
             prefix: new HarmonyMethod(typeof(GridSortCache), nameof(SetCardsPrefix)),
             finalizer: new HarmonyMethod(typeof(GridSortCache), nameof(SetCardsFinalizer)));
     }
@@ -112,7 +130,16 @@ public static class GridSortCache
     {
         try
         {
-            if (__result == null || _wrapped.TryGetValue(__result, out _))
+            Scope? scope = _scope;
+            if (__result == null || (scope != null && ReferenceEquals(scope.Wrapped, __result)))
+            {
+                return;
+            }
+            if (scope != null)
+            {
+                scope.Wrapped = __result;
+            }
+            if (_wrapped.TryGetValue(__result, out _))
             {
                 return;
             }
@@ -152,10 +179,10 @@ public static class GridSortCache
         if (!_fingerprintOk.TryGetValue((order, original.Method), out bool ok))
         {
             string actual = MethodFingerprint.Of(original.Method);
-            ok = mirrored.Kind switch { Kind.Cost => _costLoads, Kind.Title => _titleLoads, _ => true }
-                && PatchSafety.FingerprintMatches(actual, mirrored.Fingerprint);
+            bool same = PatchSafety.FingerprintMatches(actual, mirrored.Fingerprint);
+            ok = mirrored.Kind switch { Kind.Cost => _costLoads, Kind.Title => _titleLoads, _ => _indexOk } && same;
             _fingerprintOk[(order, original.Method)] = ok;
-            if (!ok)
+            if (!same)
             {
                 Log.Info($"[{ModEntry.Id}] {Name}: {order} comparer changed (fingerprint {actual}, expected {mirrored.Fingerprint}): left vanilla");
             }

@@ -29,8 +29,11 @@ namespace BigDeckOptimization.Patches;
 /// Per hook: a changed hook (fingerprint), or a hook or base method another mod patches, stays vanilla; other hooks
 /// keep the optimization. Per listener type: a type that overrides a hook's method is always walked for that hook, so
 /// a card or enchantment that starts reacting to something (game or mod update) is handled with no change here.
-/// Inside <see cref="ListenerCache"/> scopes too (same state, no full materialization). BaseLib's hand size and heal hooks call listeners
-/// by interface: their walk keeps only the implementers. Verified by full combat checksums (sessions on/off match).
+/// Inside <see cref="ListenerCache"/> scopes too (same state, no full materialization). For hooks keeping no subscriber, the
+/// non-pile listeners of every kind whose type overrides none of the hook's methods are skipped too
+/// (<see cref="FastListeners.KindSkipEnabled"/>, under the same hook_skip option). BaseLib's hand size, heal and
+/// downgrade hooks (<c>IAfterCardDowngraded.DowngradeHook</c>) call listeners by interface: their walk keeps only the
+/// implementers. Verified by full combat checksums (sessions on/off match).
 /// </summary>
 public static partial class HookSkip
 {
@@ -45,12 +48,21 @@ public static partial class HookSkip
 #if BENCH
     /// <summary>Hook walks that ran filtered (the effects check).</summary>
     public static long FilteredWalks { get; private set; }
+    /// <summary>BaseLib walk filters a combat walk dropped before a RunState walk took them (BaseLib walking NullRunState): 0 in runs.</summary>
+    public static long PendingFiltersDropped { get; private set; }
 #endif
 
     private sealed class Entry
     {
         public readonly string Hook;
         public readonly string Fingerprint;
+        /// <summary>
+        /// The hook signals listeners' ExecutionFinished: pile entries with subscribers are kept. Judged when the walk's list
+        /// is built (first MoveNext), where vanilla signals each listener at its turn: an entry keeping the defaults that
+        /// gets its first subscriber while the walk runs, before its turn, isn't signalled by this walk. Accepted: the only
+        /// subscriber (NPlayerHand's card selection) moves hand nodes back, UI only, and is consumed by the source's own
+        /// later walks first in the flows read.
+        /// </summary>
         public readonly bool Subscribed;
         /// <summary>Index in <see cref="HelperProfiles"/> of the version this entry was classified on, -1 when it uses no helper.</summary>
         public readonly int Profile;
@@ -75,11 +87,13 @@ public static partial class HookSkip
 
     /// <summary>
     /// Why an entry doesn't hold in this game, or null when it does: the hook's code, a default it calls, or a helper of the
-    /// version it was classified on changed.
+    /// version it was classified on changed. Exact comparisons only, never PatchSafety's EquivalentFingerprints: those are
+    /// reviewed for other patches (HookFilter, CardSortKeys pin some of the same hooks), while a changed hook is only safe
+    /// once classify.py has classified its new code and given it a row of its own.
     /// </summary>
     private static string? Mismatch(Entry entry, string actual)
     {
-        if (!PatchSafety.FingerprintMatches(actual, entry.Fingerprint))
+        if (actual != entry.Fingerprint)
         {
             return $"code changed (fingerprint {actual})";
         }
@@ -157,8 +171,11 @@ public static partial class HookSkip
     private static bool AnyHelperPatched(int profile)
     {
         _helperMethods ??= new MethodBase[]?[HelperProfiles.Length];
+        // An async helper (AssignTaskAndWaitForPauseOrCompletion, WhenAny...) runs its code in its state machine's MoveNext,
+        // where a MethodType.Async patch goes: both are checked, like a hook's Method and Body.
         MethodBase[] helpers = _helperMethods[profile] ??= HelperProfiles[profile].Keys
-            .Select(key => MethodFingerprint.Resolve(typeof(AbstractModel).Assembly, key)).Where(m => m != null).ToArray()!;
+            .Select(key => MethodFingerprint.Resolve(typeof(AbstractModel).Assembly, key)).Where(m => m != null)
+            .SelectMany(m => StateMachineBody(m!) is { } body ? new[] { m!, body } : new[] { m! }).ToArray();
         foreach (MethodBase helper in helpers)
         {
             if (PatchSafety.IsPatchedByOthers(helper))
@@ -168,6 +185,11 @@ public static partial class HookSkip
         }
         return false;
     }
+
+    /// <summary>The MoveNext of an async or iterator method's state machine, else null.</summary>
+    private static MethodBase? StateMachineBody(MethodBase method) =>
+        method.GetCustomAttribute<System.Runtime.CompilerServices.StateMachineAttribute>()?.StateMachineType
+            ?.GetMethod("MoveNext", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
 
     private static MethodInfo? _runWalk, _combatWalk, _combatHookWalk;
     private static Func<ICombatState, IEnumerable<AbstractModel>>? _vanillaCombatHookWalk;
@@ -245,6 +267,7 @@ public static partial class HookSkip
                 Log.Info($"[{ModEntry.Id}] {Name}: {hookName} left vanilla: {e.Message}");
             }
         }
+        CountUnclassified();
         if (_toPatch.Count == 0)
         {
             throw new PatchSkippedException("no hook matched");
@@ -254,6 +277,46 @@ public static partial class HookSkip
         BaseLibHooks.Init(harmony);
         PatchOverFrames(harmony);
     }
+
+    /// <summary>
+    /// The game's Hook methods that walk listeners but have no table row (a hook new in this game version, or one
+    /// classify.py found unsafe in every classified version): they run vanilla like any hook left out, and are counted and
+    /// logged as left vanilla so the status line, release checks and check_versions see a hook walking every listener
+    /// unfiltered. Only the methods outside the table are read (none walks on the supported versions besides
+    /// IterateCombatHookListeners itself), so this costs nothing at load today.
+    /// </summary>
+    private static void CountUnclassified()
+    {
+        var classified = new HashSet<string>(Hooks.Select(e => e.Hook), StringComparer.Ordinal);
+        foreach (MethodInfo method in typeof(Hook).GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
+        {
+            // A generated method (local function, '<' in its name) is part of the code of the hook that declares it.
+            if (classified.Contains(method.Name) || method.Name.Contains('<') || IsWalk(method) || method.GetMethodBody() == null)
+            {
+                continue;
+            }
+            try
+            {
+                // Its own code and its generated code (state machine, lambdas), like its fingerprint.
+                if (new MethodBase[] { method }.Concat(MethodFingerprint.GeneratedCode(method))
+                    .Any(code => MethodFingerprint.UsedMembers(code).Any(member => member is MethodInfo called && IsWalk(called))))
+                {
+                    LeftVanilla++;
+                    Log.Info($"[{ModEntry.Id}] {Name}: {method.Name} walks the listeners but isn't classified for this game version: left vanilla");
+                }
+            }
+            catch (Exception e)
+            {
+                Log.Info($"[{ModEntry.Id}] {Name}: {method.Name} not checked for listener walks ({e.Message})");
+            }
+        }
+    }
+
+    /// <summary>One of the walk calls <see cref="Transpiler"/> redirects.</summary>
+    private static bool IsWalk(MethodInfo method) => Same(method, _runWalk) || Same(method, _combatWalk) || Same(method, _combatHookWalk);
+
+    private static bool Same(MethodInfo method, MethodInfo? other) =>
+        other != null && method.MetadataToken == other.MetadataToken && method.Module == other.Module;
 
     /// <summary>Hooks checked at load, patched by <see cref="PatchOverFrames"/>.</summary>
     private static readonly Queue<(string Hook, MethodBase Body)> _toPatch = new();
@@ -314,6 +377,20 @@ public static partial class HookSkip
         {
             Log.Warn($"[{ModEntry.Id}] {nameof(HarmonyRebuild)}: {e}");
         }
+        // BaseLib's patches FilterFor allows are fingerprinted here, at the menu, rather than in the first hook of a run.
+        // Only once BaseLib is loaded (it is by now unless this ran synchronously at load): otherwise the first walk
+        // does it, as before.
+        try
+        {
+            if (AppDomain.CurrentDomain.GetAssemblies().Any(a => a.GetName().Name == "BaseLib"))
+            {
+                AllowedBodyPatches();
+            }
+        }
+        catch (Exception e)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: BaseLib's hook patches checked at the first walk instead ({e.Message})");
+        }
     }
 
     private static void PatchBatch(Harmony harmony, int count)
@@ -332,6 +409,10 @@ public static partial class HookSkip
                 // Last of the transpilers: Harmony runs them by priority (highest first), each on the previous one's output,
                 // so another mod's transpiler on the hook still sees the game's walk calls it may look for (this one
                 // replaces them, and the redirect stays in place even when this patch backs off or is switched off).
+                // Equal priorities run in registration order: a transpiler registered at load (every mod loads before
+                // these batches) sees the game's calls; one at priority 0 or less registered after these batches sees
+                // the redirect calls instead (FilterFor then backs off from that hook, but its matcher may miss). Keeping
+                // the game's call and wrapping its result would change the walk's laziness: accepted, none does that.
                 PatchGuard.Patch(harmony, body, transpiler: new HarmonyMethod(typeof(HookSkip), nameof(Transpiler)) { priority = Priority.Last });
                 Active++;
             }
@@ -407,9 +488,6 @@ public static partial class HookSkip
                     return null;
                 }
             }
-#if BENCH
-            FilteredWalks++;
-#endif
             return entry.Filter;
         }
         catch (Exception e)
@@ -495,18 +573,24 @@ public static partial class HookSkip
     public static IEnumerable<AbstractModel> RunWalk(IRunState runState, ICombatState? combatState, int index)
     {
         PileFilter? filter = FilterFor(index);
-        return filter != null && runState is RunState run && (combatState == null || combatState is CombatState)
-            ? Filtered(run, combatState, filter)
-            : runState.IterateHookListeners(combatState);
+        if (filter != null && runState is RunState run && (combatState == null || combatState is CombatState))
+        {
+            CountFiltered();
+            return Filtered(run, combatState, filter);
+        }
+        return runState.IterateHookListeners(combatState);
     }
 
     /// <summary>Replaces <c>combatState.IterateHookListeners()</c> in a hook.</summary>
     public static IEnumerable<AbstractModel> CombatWalk(ICombatState combatState, int index)
     {
         PileFilter? filter = FilterFor(index);
-        return filter != null && combatState is CombatState combat
-            ? Filtered(combat, filter)
-            : combatState.IterateHookListeners();
+        if (filter != null && combatState is CombatState combat)
+        {
+            CountFiltered();
+            return Filtered(combat, filter);
+        }
+        return combatState.IterateHookListeners();
     }
 
     /// <summary>Replaces <c>Hook.IterateCombatHookListeners(combatState)</c> in a hook.</summary>
@@ -515,18 +599,21 @@ public static partial class HookSkip
         // The filtered walk mirrors this method (nothing while combat is ending): its code changed (fingerprint, checked
         // there), or another mod's patch on it or on what it reads, keeps the game's (never throws).
         PileFilter? filter = FilterFor(index);
-        if (filter != null && HookFilter.CombatHookWalkPatched())
-        {
-            filter = null;
-#if BENCH
-            FilteredWalks--; // Counted by FilterFor, run vanilla after all.
-#endif
-        }
-        if (filter == null || combatState is not CombatState combat)
+        if (filter == null || HookFilter.CombatHookWalkPatched() || combatState is not CombatState combat)
         {
             return _vanillaCombatHookWalk!(combatState);
         }
+        CountFiltered();
         return CombatHookFiltered(combat, filter);
+    }
+
+    /// <summary>A walk is about to run filtered (counted only where the filtered walk is really returned).</summary>
+    [System.Diagnostics.Conditional("BENCH")]
+    private static void CountFiltered()
+    {
+#if BENCH
+        FilteredWalks++;
+#endif
     }
 
     private static IEnumerable<AbstractModel> CombatHookFiltered(CombatState combat, PileFilter filter)
@@ -548,7 +635,10 @@ public static partial class HookSkip
     /// </summary>
     private static class BaseLibHooks
     {
-        /// <summary>BaseLib 3.4.7 methods, 3.4.8 equivalents in EquivalentFingerprints (GetMaxHandSize: the (Player, int) overload, which holds the loop).</summary>
+        /// <summary>
+        /// BaseLib 3.4.7 fingerprints: GetMaxHandSize (the (Player, int) overload, which holds the loop) and DowngradeHook are the
+        /// same in 3.4.8, the two heal methods changed there (equivalents in EquivalentFingerprints).
+        /// </summary>
         private static readonly (string Type, string Method, Type[]? Args, string Fingerprint, string Interface)[] Targets =
         {
             ("BaseLib.Patches.Hooks.MaxHandSizePatch", "GetMaxHandSize", new[] { typeof(MegaCrit.Sts2.Core.Entities.Players.Player), typeof(int) },
@@ -604,6 +694,35 @@ public static partial class HookSkip
                     Log.Info($"[{ModEntry.Id}] {Name}: BaseLib {name} left vanilla: {e.Message}");
                 }
             }
+            if (_filters.Count == 0)
+            {
+                return;
+            }
+            try
+            {
+                // A filter set for a BaseLib walk of NullRunState (no RunState walk takes it: NullRunState walks the
+                // combat directly) would stay pending through BaseLib's whole loop, where a listener's code could start
+                // another hook's RunState walk. Any combat walk drops it: BaseLib's own RunState walk takes it in its first
+                // prefix, before it walks the combat. A prefix Harmony always runs (no bool return), first.
+                PatchGuard.Patch(_harmony!, AccessTools.Method(typeof(CombatState), nameof(CombatState.IterateHookListeners)),
+                    prefix: new HarmonyMethod(typeof(BaseLibHooks), nameof(DropPendingFilter)) { priority = Priority.First });
+            }
+            catch (Exception e)
+            {
+                // Each BaseLib method's finalizer still drops its filter when it returns.
+                Log.Info($"[{ModEntry.Id}] {Name}: BaseLib pending filter guard on combat walks not applied: {e.Message}");
+            }
+        }
+
+        private static void DropPendingFilter()
+        {
+            if (FastListeners.PendingRunFilter != null)
+            {
+                FastListeners.PendingRunFilter = null;
+#if BENCH
+                PendingFiltersDropped++;
+#endif
+            }
         }
 
         /// <summary>The next RunState.IterateHookListeners call (this method's own walk) keeps only implementers.</summary>
@@ -616,10 +735,9 @@ public static partial class HookSkip
         }
 
         /// <summary>Never leaks to a later walk (e.g. when the run state wasn't the game's RunState).</summary>
-        private static Exception? Finalizer(Exception? __exception)
+        private static void Finalizer(Exception? __exception)
         {
             FastListeners.PendingRunFilter = null;
-            return __exception;
         }
     }
 }

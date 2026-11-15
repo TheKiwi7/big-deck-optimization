@@ -31,13 +31,16 @@ namespace BigDeckOptimization.Patches;
 /// code of that build changed (<see cref="LimitlessCloneMemo.GameChainKnown"/>, the getter's own code too). One forwarded
 /// hook call in <see cref="SampleEvery"/> checks a dropped one against what its forwarder would have done.
 /// Known limit: an enchantment of a type no card has yet, reacting to a hook, added to a stacked enchantment during that
-/// very hook's walk, isn't called by that walk.
+/// very hook's walk, isn't called by that walk. Only another mod can do that: the game enchants with a reacting type
+/// (Goopy, Glam, Swift, Sown, Slither, PerfectFit...) only outside combat, at events, relics' AfterObtained and card
+/// rewards (checked on v0.113.1); its one in-combat enchant (BladeOfInk's Inky) reacts to none of the five hooks.
+/// Writes to the inner list by reflection can't be scanned either (<see cref="ScanAssembly"/>).
 /// </summary>
 public static class LimitlessHookSkip
 {
     public const string Name = "LimitlessHookSkip";
 
-    /// <summary>Limitless 1.1.7 code: each forwarding hook (state machine, or the method for the sync one) and the only code adding inner enchantments.</summary>
+    /// <summary>Limitless 1.1.7 to 1.2.1 code (same): each forwarding hook (state machine, or the method for the sync one) and the only code adding inner enchantments.</summary>
     private static readonly (string Method, string Fingerprint, bool Async)[] Forwarders =
     {
         ("AfterCardPlayed", "02C27949CA8A21E5", true),
@@ -150,7 +153,7 @@ public static class LimitlessHookSkip
     private static MethodBase? _addEnchantment;
 
     /// <summary>
-    /// Limitless 1.1.7's getter builds the inner cards from the saved list on first use (<c>CardModel.FromSerializable</c> each), and
+    /// Limitless's getter (1.1.7 to 1.2.1, same code) builds the inner cards from the saved list on first use (<c>CardModel.FromSerializable</c> each), and
     /// every clone starts without them: noting a combat's clones built them all (~170 ms at a 20,000-card combat start). What a saved
     /// entry gives is fixed by its card and enchantment ids (the game's deserializers, fingerprinted): once a (card, enchantment) pair
     /// was seen built, its type is known, and a list holding only such pairs adds nothing.
@@ -248,7 +251,7 @@ public static class LimitlessHookSkip
 
     private static void BeforeAdd() => FastListeners.MultiChanging();
 
-    private static Exception? AfterAdd(Exception? __exception, EnchantmentModel __instance)
+    private static void AfterAdd(Exception? __exception, EnchantmentModel __instance)
     {
         FastListeners.MultiChanged();
         try
@@ -259,7 +262,6 @@ public static class LimitlessHookSkip
         {
             Disable(e);
         }
-        return __exception;
     }
 
     /// <summary>
@@ -427,7 +429,41 @@ public static class LimitlessHookSkip
         ["Limitless.LimitlessCode.UncappedEnchantments.MultiEnchantment+<OnPlay>d__#::MoveNext"] = "2C52914BFD559352",
     };
 
-    /// <summary>Calls changing a list of cards, as <see cref="MethodFingerprint.FieldUsers"/> counts them.</summary>
+    /// <summary>
+    /// The inner list's other ways in, with no call to its getter: the saved list a clone's getter builds the inner cards
+    /// from (its accessors, SetSerializableCards) and the fields of both lists. Limitless 1.2.1's code using any of them
+    /// besides <see cref="KnownInnerListWriters"/> (which hand the getter's list to SetSerializableCards), with its
+    /// fingerprint: the getter, the saved list's accessors and setter, the clone and the constructor. Any other use (a
+    /// saved list replaced on a clone not built yet, a publicized mod's field write) counts as a writer.
+    /// </summary>
+    private static readonly Dictionary<string, string> KnownSavedListUsers = new()
+    {
+        ["Limitless.LimitlessCode.UncappedEnchantments.MultiEnchantment::get_EnchantmentsOnCards"] = "0AA01E688AC72C3C",
+        ["Limitless.LimitlessCode.UncappedEnchantments.MultiEnchantment::get_SerializableEnchantmentsOnCards"] = "C13992F090F53A53",
+        ["Limitless.LimitlessCode.UncappedEnchantments.MultiEnchantment::set_SerializableEnchantmentsOnCards"] = "C70F0868040EF2A5",
+        ["Limitless.LimitlessCode.UncappedEnchantments.MultiEnchantment::SetSerializableCards"] = "916B119C60C89D96",
+        ["Limitless.LimitlessCode.UncappedEnchantments.MultiEnchantment::DeepCloneFields"] = "B0598AD4D39BD71C",
+        ["Limitless.LimitlessCode.UncappedEnchantments.MultiEnchantment::.ctor"] = "4E1BC01ABB0A5309",
+    };
+
+    private static readonly string[] SavedListMethods = { "SetSerializableCards", "get_SerializableEnchantmentsOnCards", "set_SerializableEnchantmentsOnCards" };
+    private static readonly string[] InnerListFields = { "_enchantmentsOnCards", "<SerializableEnchantmentsOnCards>k__BackingField" };
+
+    /// <summary>Whether a member a method uses is one of these (by handle: the same member resolved from any module).</summary>
+    private static bool IsOneOf(MemberInfo used, MemberInfo[] members)
+    {
+        foreach (MemberInfo member in members)
+        {
+            if ((used is MethodBase a && member is MethodBase b && a.MethodHandle == b.MethodHandle)
+                || (used is FieldInfo f && member is FieldInfo g && f.FieldHandle == g.FieldHandle))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Calls changing a list of cards: the <c>List&lt;T&gt;</c> ones of <see cref="MethodFingerprint.FieldUsers"/>' mutators.</summary>
     private static readonly HashSet<string> ListMutators = new()
     {
         "Add", "AddRange", "Insert", "InsertRange", "Remove", "RemoveAt", "RemoveAll", "RemoveRange", "Clear", "set_Item",
@@ -544,15 +580,24 @@ public static class LimitlessHookSkip
         return unknown.Count == 0 ? "" : "stacked enchantments' inner list may also be changed by " + string.Join(", ", unknown) + " (Limitless update?)";
     }
 
-    /// <summary>Adds to <paramref name="unknown"/> the assembly's methods that may change the inner list, other than the known ones.</summary>
+    /// <summary>
+    /// Adds to <paramref name="unknown"/> the assembly's methods that may change the inner list, other than the known ones:
+    /// a mutating call on (or a pass of) the getter's list, or any use of the saved list or of either list's field
+    /// (<see cref="KnownSavedListUsers"/>). Code reaching them by reflection (a name in a string) isn't seen.
+    /// </summary>
     private static void ScanAssembly(Assembly assembly, Type multi, List<string> unknown)
     {
         MethodInfo getter = AccessTools.PropertyGetter(multi, "EnchantmentsOnCards")
             ?? throw new MissingMethodException(LimitlessReserialize.MultiEnchantmentType, "get_EnchantmentsOnCards");
         var mutable = new HashSet<Type> { getter.ReturnType, typeof(IList<CardModel>), typeof(ICollection<CardModel>) };
-        byte[] token = BitConverter.GetBytes(getter.MetadataToken);
-        string limitless = multi.Assembly.GetName().Name!;
         const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
+        // Every overload; one missing (a Limitless update) is simply not looked for, as before this check.
+        MemberInfo[] listMembers = multi.GetMethods(all).Where(m => SavedListMethods.Contains(m.Name)).Cast<MemberInfo>()
+            .Concat(multi.GetFields(all).Where(f => InnerListFields.Contains(f.Name)))
+            .ToArray();
+        // In Limitless's own module a use carries the member's definition token: code holding none of them uses none.
+        byte[][] tokens = listMembers.Append(getter).Select(m => BitConverter.GetBytes(m.MetadataToken)).ToArray();
+        string limitless = multi.Assembly.GetName().Name!;
         bool own = assembly == multi.Assembly;
         if (assembly.IsDynamic || (!own && !assembly.GetReferencedAssemblies().Any(r => r.Name == limitless)))
         {
@@ -583,20 +628,22 @@ public static class LimitlessHookSkip
                 try
                 {
                     byte[]? il = method.GetMethodBody()?.GetILAsByteArray();
-                    // A call to the getter from its own module carries its token: code without it can't call it.
-                    if (il == null || (own && new ReadOnlySpan<byte>(il).IndexOf(new ReadOnlySpan<byte>(token)) < 0))
+                    // A use from its own module carries one of the tokens: code without any can't use them.
+                    if (il == null || (own && !tokens.Any(token => new ReadOnlySpan<byte>(il).IndexOf(new ReadOnlySpan<byte>(token)) >= 0)))
                     {
                         continue;
                     }
                     MemberInfo[] used = MethodFingerprint.UsedMembers(method).ToArray();
-                    if (!used.Any(u => u is MethodInfo m && m.MethodHandle == getter.MethodHandle))
+                    // The saved list or a list's field, used without the getter, changes what the next build gives.
+                    bool listMember = used.Any(u => IsOneOf(u, listMembers));
+                    if (!listMember && !used.Any(u => u is MethodInfo m && m.MethodHandle == getter.MethodHandle))
                     {
                         continue;
                     }
-                    bool writer = used.Any(u => u is MethodInfo call
+                    bool writer = listMember || used.Any(u => u is MethodInfo call
                         && ((call.DeclaringType != null && mutable.Contains(call.DeclaringType) && ListMutators.Contains(call.Name))
                             || call.GetParameters().Any(p => mutable.Contains(p.ParameterType))));
-                    if (writer && !(KnownInnerListWriters.TryGetValue(name, out string? fingerprint)
+                    if (writer && !((KnownInnerListWriters.TryGetValue(name, out string? fingerprint) || KnownSavedListUsers.TryGetValue(name, out fingerprint))
                         && PatchSafety.FingerprintMatches(MethodFingerprint.Of(method), fingerprint)))
                     {
                         unknown.Add(name);

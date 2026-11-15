@@ -12,6 +12,8 @@ namespace BigDeckOptimization.Patches;
 /// The mods screen shows <c>res://&lt;mod id&gt;/mod_image.png</c>, which only exists inside a Godot resource pack. This
 /// mod has none: when the screen shows this mod without an image, the image is loaded from <c>mod_image.jpg</c> next to
 /// the DLL instead (JPEG quality 97, full-resolution color: 242 KB instead of a 433 KB PNG, PSNR 42.5 dB). UI only.
+/// Follows the master switch like the other patches: with <c>bdopt off</c> (or after a fault) the next Fill leaves the
+/// game's empty image, as when the game started with the mod off (nothing applied).
 /// </summary>
 public static class ModImage
 {
@@ -31,7 +33,7 @@ public static class ModImage
 
     private static void FillPostfix(NModInfoContainer __instance, Mod mod)
     {
-        if (_failed || mod.manifest?.id != ModEntry.Id)
+        if (_failed || mod.manifest?.id != ModEntry.Id || !Config.Settings.Master || PatchSafety.IsFaulted(Name))
         {
             return;
         }
@@ -49,7 +51,16 @@ public static class ModImage
                 {
                     return;
                 }
-                _texture = ImageTexture.CreateFromImage(Image.LoadFromFile(path));
+                // A file Godot can't decode gives a null image (and CreateFromImage a null texture) with an engine error,
+                // no exception: don't read it again at every Fill.
+                Image? loaded = Image.LoadFromFile(path);
+                _texture = loaded == null ? null : ImageTexture.CreateFromImage(loaded);
+                if (_texture == null)
+                {
+                    _failed = true;
+                    Log.Warn($"[{ModEntry.Id}] {Name}: could not decode {FileName}, the mod image stays empty");
+                    return;
+                }
             }
             image.Texture = _texture;
         }

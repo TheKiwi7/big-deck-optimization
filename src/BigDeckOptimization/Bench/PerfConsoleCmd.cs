@@ -24,10 +24,22 @@ using MegaCrit.Sts2.Core.Runs;
 namespace BigDeckOptimization.Bench;
 
 /// <summary>
-/// bdperf console cmd. Measures game costs that only appear in multiplayer, from a singleplayer run.
-///   bdperf checksum [iterations] — times the post-action checksum (full state snapshot + serialize + hash),
-///   vanilla vs optimized, and checks both produce the same checksum.
-/// Read-only: builds snapshots but never sends, tracks or compares them with peers.
+/// bdperf console cmd (test builds only): the optimizations against the game's code, and test switches. Local only
+/// (<see cref="IsNetworked"/> false): nothing is sent to peers.
+///   Comparisons, vanilla (the whole mod off, <see cref="Vanilla{T}"/>) vs optimized, same result required, and the times:
+///   checksum [n] (the post-action co-op checksum: snapshot + serialize + hash), refresh [n] (the combat refresh), listeners [n],
+///   scan, pile, text, plaque [n], grid [n], sortkeys, relics [n], upgradebench [n], shufflebench [n]. Each puts back the switches
+///   it forces (a part that faulted meanwhile stays off; one that faulted earlier isn't forced back on: nothing to compare) and
+///   the effect counters (<see cref="EffectCounters"/>). checksum and refresh freeze the game for seconds and refresh writes the
+///   hand's values (then puts them back): singleplayer only.
+///   Reports: verify, combatstart, probe, piletimes, costhooks, deckcount, clonememo, reserialize, gcprobe, waitspin.
+///   Switches for tests (they change this mod's behaviour, never the game's state): opt (the master switch for this session
+///   only, never saved: <see cref="Config.Settings.MasterChoice"/>),
+///   checks, blocks, upgradebits, envrelease, gcmin, release, purehooks, dirtyreads, snapmoved, segments, relicreuse, fault,
+///   sortkeys wrong, deckcount wrong, snapgameerror.
+///   Changes the game's state: costwrites (the first hand card free this turn, on this peer only): singleplayer only, since
+///   in co-op it would only make this peer's checksum differ and the host drop it. <c>bdperf opt off</c> in co-op warns and
+///   asks for <c>bdperf opt off yes</c>, as <c>bdopt off</c> does.
 /// </summary>
 public class PerfConsoleCmd : AbstractConsoleCmd
 {
@@ -45,7 +57,7 @@ public class PerfConsoleCmd : AbstractConsoleCmd
 
     public override string CmdName => "bdperf";
 
-    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | verify [off|sample|all] | combatstart | grid [cards:int] | probe [reset|log|on|off|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | sortkeys [wrong] | checks on|off | opt on|off | listeners [iterations:int]";
+    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | verify [off|sample|all] | combatstart | grid [cards:int] | probe [reset|log|on|off|nodes|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | sortkeys [wrong] | checks on|off | opt on|off [yes] | listeners [iterations:int] | costwrites | fault piles|walk | snapgameerror <n> | reserialize [verify <n>] | clonememo [verify <n>]";
 
     public override string Description => "[BigDeckOptimization] Measures the multiplayer post-action checksum cost, vanilla vs optimized, or shows/sets live snapshot verification.";
 
@@ -56,10 +68,13 @@ public class PerfConsoleCmd : AbstractConsoleCmd
     /// <summary>DeckCountMemo's own answers (kept + updated) and the game's counts (unsure) at <c>bdperf deckcount mark</c>.</summary>
     private static (long Answers, long Unsure) _deckCountMark;
 
-    /// <summary>Whether a scenario set <c>verify</c> for DeckCountMemo / LimitlessCloneMemo: its later reports then need checks.</summary>
-    private static bool _deckCountVerifySet, _cloneVerifySet;
+    /// <summary>Whether a scenario set <c>verify</c> for DeckCountMemo / LimitlessCloneMemo / LimitlessReserialize: its later reports then need checks.</summary>
+    private static bool _deckCountVerifySet, _cloneVerifySet, _reserializeVerifySet;
 
-    /// <summary>A loop pacing itself on Cmd.Wait, as the transform preview: with waits skipped it must still give the frame back.</summary>
+    /// <summary>
+    /// A loop pacing itself on Cmd.Wait, as the transform preview and PunchOff do on v0.107.1 and v0.111: with waits skipped it
+    /// must still give the frame back. On v0.113 they call Cmd.TryWait, which ends their loop on a skipped wait.
+    /// </summary>
     private static CmdResult WaitSpin((int Min, int Max)? expected)
     {
         _spins = 0;
@@ -82,7 +97,26 @@ public class PerfConsoleCmd : AbstractConsoleCmd
     }
 
     /// <summary>
-    /// The game's own result, the reference of every comparison here and of the script's <c>checksum vanilla</c>: the whole
+    /// A switch a bench forced, as it should be put back: as it was, unless one of the part's fault names was recorded
+    /// meanwhile (a fault keeps its part off for the session, as <see cref="Config.Settings.ApplyAll"/> does). Not ApplyAll
+    /// itself: it would also reset the switches the test tooling sets directly (see <see cref="Vanilla{T}"/>).
+    /// </summary>
+    internal static bool Restored(bool was, params string[] faults) => was && !faults.Any(PatchSafety.IsFaulted);
+
+    /// <summary>
+    /// A part that faulted earlier in the session (one of its fault names recorded) stays off: a bench doesn't force it back
+    /// on, or its faulted code would run for the whole bench. The first fault name recorded, null when none.
+    /// </summary>
+    internal static string? FaultedBefore(params string[] faults) => faults.FirstOrDefault(PatchSafety.IsFaulted);
+
+    private static CmdResult? RefuseFaulted(string part, params string[] faults) =>
+        FaultedBefore(faults) is { } fault
+            ? new CmdResult(success: false, $"{part} faulted earlier in the session ({fault}, see the log): it stays off, nothing to compare.")
+            : null;
+
+    /// <summary>
+    /// The game's own result, the reference of most comparisons here (pile compares with <see cref="PileIndex.Vanilla"/>)
+    /// and of the script's <c>checksum vanilla</c>: the whole
     /// mod off as <c>bdopt off</c> turns it off (every option with its parts, nothing saved), inside
     /// <see cref="ListenerCache.RunVanilla"/> (what checks it stays out too), then the settings back as they were. Turning
     /// off only the optimization under test left the others (listener walks, pile lookup, saved property lookup) on both sides.
@@ -93,14 +127,14 @@ public class PerfConsoleCmd : AbstractConsoleCmd
         // Switches the test tooling sets directly (script gcpacing, bdperf release/envrelease): the settings' value would
         // otherwise come back with them.
         bool gcPacing = GcPacing.Enabled, syncedRelease = SyncedCardRelease.Enabled, envRelease = RichTextEnvRelease.Enabled;
-        Config.Settings.SetMaster(false, notify: false);
+        Config.Settings.SetMaster(false, notify: false, sessionOnly: true);
         try
         {
             return ListenerCache.RunVanilla(action);
         }
         finally
         {
-            Config.Settings.SetMaster(master, notify: false);
+            Config.Settings.SetMaster(master, notify: false, sessionOnly: true);
             GcPacing.Enabled = gcPacing;
             SyncedCardRelease.Enabled = syncedRelease;
             RichTextEnvRelease.Enabled = envRelease;
@@ -120,11 +154,23 @@ public class PerfConsoleCmd : AbstractConsoleCmd
         {
             return off;
         }
+        bool coop = RunManager.Instance.IsInProgress && !RunManager.Instance.IsSingleplayerOrFakeMultiplayer;
         // The benches freeze the game for seconds (vanilla runs) and replay game code: keep them out of real co-op.
-        if (sub is "checksum" or "refresh" && RunManager.Instance.IsInProgress && !RunManager.Instance.IsSingleplayerOrFakeMultiplayer)
+        if (sub is "checksum" or "refresh" && coop)
         {
             return new CmdResult(success: false, "bdperf " + sub + " is singleplayer only. In co-op use 'bdperf verify'.");
         }
+        // Changes this peer's game state only (bdperf isn't networked): in co-op the next checksum differs and the host drops this
+        // client. No co-op use, so no confirmation either (the warning-then-yes is bdperf opt off's, as bdopt off's).
+        if (sub == "costwrites" && coop)
+        {
+            return new CmdResult(success: false, "bdperf costwrites is singleplayer only: it changes a card's cost on your game only, "
+                + "the other players' games don't see it and the host would disconnect you.");
+        }
+        // Effect counters as the game's own calls left them (see EffectCounters); the benches read their own deltas inside.
+        using IDisposable? frozen = sub is "checksum" or "refresh" or "listeners" or "pile" or "text" or "scan" or "plaque" or "grid" or "sortkeys"
+            or "relics" or "upgradebench" or "shufflebench" or "costhooks"
+            ? EffectCounters.Freeze() : null;
         switch (sub)
         {
             case "checksum":
@@ -145,7 +191,7 @@ public class PerfConsoleCmd : AbstractConsoleCmd
                 return new CmdResult(success: true, $"{RichTextEnvRelease.Name}: text effects' dictionaries {(RichTextEnvRelease.Enabled ? "disposed after use" : "left to their finalizers")}; released {RichTextEnvRelease.Released}.");
             case "gcmin" when args.Length >= 2 && int.TryParse(args[1], out int minCards) && minCards >= 0:
                 GcPacing.MinCards = minCards;
-                return new CmdResult(success: true, $"{GcPacing.Name}: combats from {minCards} cards; regions {GcPacing.Regions}, collections {GcPacing.Collections}.");
+                return new CmdResult(success: true, $"{GcPacing.Name}: combats from {minCards} cards; regions {GcPacing.Regions}, refused {GcPacing.RegionsRefused}, collections {GcPacing.Collections}.");
             case "release" when args.Length >= 2:
                 // What a finished combat or a co-op sync leaves behind, kept as before: comparison sessions.
                 SyncedCardRelease.Enabled = args[1] != "off";
@@ -158,7 +204,7 @@ public class PerfConsoleCmd : AbstractConsoleCmd
                     LimitlessCloneMemo.VerifyEvery = int.Parse(args[2]);
                     _cloneVerifySet = true;
                 }
-                string cloneText = $"CLONEMEMO enabled {LimitlessCloneMemo.Enabled}, reused {LimitlessCloneMemo.Reused}, verified {LimitlessCloneMemo.Verified}";
+                string cloneText = $"CLONEMEMO enabled {LimitlessCloneMemo.Enabled}, reused {LimitlessCloneMemo.Reused}, verified {LimitlessCloneMemo.Verified}, options reused {LimitlessCloneMemo.OptionsReused}";
                 if (ModEntry.NotApplied(LimitlessCloneMemo.Name))
                 {
                     return new CmdResult(success: true, cloneText + $" ({LimitlessCloneMemo.Name} not applied: nothing to compare)");
@@ -167,6 +213,27 @@ public class PerfConsoleCmd : AbstractConsoleCmd
                 bool cloneVerifiedNone = !setCloneVerify && _cloneVerifySet && LimitlessCloneMemo.Verified == 0;
                 return new CmdResult(success: LimitlessCloneMemo.Enabled && !cloneVerifiedNone,
                     cloneText + (cloneVerifiedNone ? " (verify set but nothing verified: nothing compared)" : ""));
+            case "reserialize":
+                bool setReserializeVerify = args.Length >= 3 && args[1] == "verify" && int.TryParse(args[2], out int reserializeEvery) && reserializeEvery > 0;
+                if (setReserializeVerify)
+                {
+                    LimitlessReserialize.VerifyEvery = int.Parse(args[2]);
+                    _reserializeVerifySet = true;
+                }
+                string reserializeText = $"RESERIALIZE enabled {LimitlessReserialize.Enabled}, kept {LimitlessReserialize.Kept}, rebuilt {LimitlessReserialize.Rebuilt}, "
+                    + $"verified {LimitlessReserialize.Verified}, mismatches {LimitlessReserialize.VerifyMismatches}";
+                if (ModEntry.NotApplied(LimitlessReserialize.Name))
+                {
+                    return new CmdResult(success: true, reserializeText + $" ({LimitlessReserialize.Name} not applied: nothing to compare)");
+                }
+                // As clonememo: a report after 'verify' was set must have compared something.
+                bool reserializeVerifiedNone = !setReserializeVerify && _reserializeVerifySet && LimitlessReserialize.Verified == 0;
+                return new CmdResult(success: LimitlessReserialize.Enabled && LimitlessReserialize.VerifyMismatches == 0 && !reserializeVerifiedNone,
+                    reserializeText + (reserializeVerifiedNone ? " (verify set but nothing verified: nothing compared)" : ""));
+            case "snapgameerror" when args.Length >= 2 && int.TryParse(args[1], out int snapErrors) && snapErrors >= 0:
+                // The next n reads of a card's state throw as a game error would (test of SnapshotCardReuse's fallback to the game).
+                SnapshotCardReuse.GameExceptionsForTest = snapErrors;
+                return new CmdResult(success: true, $"{SnapshotCardReuse.Name}: the next {snapErrors} card reads throw as the game's would; game exceptions so far {SnapshotCardReuse.GameExceptions}, enabled {SnapshotCardReuse.Enabled}.");
             case "deckcount":
                 bool setCountVerify = args.Length >= 3 && args[1] == "verify" && int.TryParse(args[2], out int countEvery) && countEvery > 0;
                 if (setCountVerify)
@@ -251,8 +318,10 @@ public class PerfConsoleCmd : AbstractConsoleCmd
                 }
                 string Types(int hook)
                 {
-                    ListenerCache.InvokeStateChangedInScope(_ => _costList = HookFilter.ForCombat(costCombat, hook), costCombat);
-                    return _costList is { } list
+                    // A local: a static would keep the combat's models (and the run) alive after the run ends.
+                    List<AbstractModel>? costList = null;
+                    ListenerCache.InvokeStateChangedInScope(_ => costList = HookFilter.ForCombat(costCombat, hook), costCombat);
+                    return costList is { } list
                     ? $"{list.Count}: " + string.Join(", ", list.GroupBy(m => m.GetType().Name).Select(g => $"{g.Key} x{g.Count()}"))
                     : "not filtered";
                 }
@@ -313,11 +382,14 @@ public class PerfConsoleCmd : AbstractConsoleCmd
             case "fault" when args.Length >= 2 && args[1] == "piles":
                 FastListeners.FailNextPileWalk = true;
                 return new CmdResult(success: true, "The next filtered pile walk throws inside FastListeners' cache (test of its fallback).");
+            case "fault" when args.Length >= 2 && args[1] == "walk":
+                FastListeners.FailNextFilteredWalk = true;
+                return new CmdResult(success: true, "The next filtered mirror walk throws after its verdicts (test of FastListeners' walk fallback).");
             case "gcprobe":
                 // bdperf gcprobe [latency mode]: fails when GCSettings.LatencyMode isn't that one.
                 return GcProbe(args.Length >= 2 ? args[1] : null);
             case "opt":
-                return SetOptimizations(args.Length >= 2 ? args[1] : null);
+                return SetOptimizations(args.Length >= 2 ? args[1] : null, args.Length >= 3 && args[2].Equals("yes", StringComparison.OrdinalIgnoreCase));
             case "listeners":
                 int listenerIterations = args.Length >= 2 && int.TryParse(args[1], out int li) && li > 0 ? li : 50;
                 return CompareListeners(listenerIterations);
@@ -366,19 +438,10 @@ public class PerfConsoleCmd : AbstractConsoleCmd
     }
 
     /// <summary>
-    /// Turns every optimization off/on for an A/B comparison in the same session. Safe in co-op: optimized and vanilla
-    /// paths give identical results, so peers can't tell.
-    /// </summary>
-    /// <summary>
-    /// bdperf listeners [n]: the combat and run (with the combat as child) listener sequences, FastListeners off then
-    /// on: the same objects in the same order, and the time of n full walks each.
-    /// </summary>
-    /// <summary>
     /// <c>bdperf scan</c>: reading <c>Keywords</c> of every card of the draw pile, as Catastrophe, Uproar or Hidden Gem do outside any
-    /// scope: vanilla walk, filtered walk, filtered walk leaving out kinds of listener. Same keywords for every card, or it says so.
+    /// scope: vanilla walk, filtered walk, filtered walk leaving out kinds of listener. Same keywords for every card, or it says so;
+    /// a row whose optimized walk never ran (back-off) is "not compared", never "OK".
     /// </summary>
-    private static List<AbstractModel>? _costList;
-
     private static CmdResult CompareScan()
     {
         if (!CombatManager.Instance.IsInProgress || RunManager.Instance.DebugOnlyGetState() is not { } run || LocalContext.GetMe(run) is not { } me)
@@ -388,6 +451,10 @@ public class PerfConsoleCmd : AbstractConsoleCmd
         if (!FastListeners.Applied)
         {
             return new CmdResult(success: true, "FastListeners not applied (see the log): nothing to compare.");
+        }
+        if (RefuseFaulted("FastListeners' kind skip", HookSkip.Name, FastListeners.Name) is { } faultedScan)
+        {
+            return faultedScan;
         }
         List<CardModel> cards = PileType.Draw.GetPile(me).Cards.ToList();
         (double Ms, List<string> Sets) Scan()
@@ -401,21 +468,33 @@ public class PerfConsoleCmd : AbstractConsoleCmd
             return (ms, cards.Select(c => string.Join(",", c.Keywords.OrderBy(k => k))).ToList());
         }
         bool kinds = FastListeners.KindSkipEnabled;
+        // The walks this mod answers itself: FastListeners' mirrors and HookSkip's filtered walks.
+        static long Walks() => FastListeners.CombatWalks + FastListeners.RunWalks + HookSkip.FilteredWalks;
         try
         {
             (double Ms, List<string> Sets) vanilla = Vanilla(() => Scan());
             FastListeners.KindSkipEnabled = false;
             Scan();
+            long walksBefore = Walks();
             (double Ms, List<string> Sets) filtered = Scan();
+            long walks = Walks() - walksBefore;
             FastListeners.KindSkipEnabled = true;
             Scan();
+            long kindsBefore = FastListeners.KindsSkipped;
             (double Ms, List<string> Sets) skipped = Scan();
+            long kindsSkipped = FastListeners.KindsSkipped - kindsBefore;
             bool same = vanilla.Sets.SequenceEqual(filtered.Sets) && vanilla.Sets.SequenceEqual(skipped.Sets);
-            return new CmdResult(success: same, $"keyword scan of {cards.Count} cards: vanilla {vanilla.Ms:F1} ms, filtered {filtered.Ms:F1} ms, kinds left out {skipped.Ms:F1} ms; keywords {(same ? "OK: identical" : "MISMATCH: different")}");
+            string verdict = !same ? "MISMATCH: different"
+                : cards.Count > 0 && walks == 0 ? "not compared: no walk of this mod's ran (back-off), vanilla against vanilla"
+                : cards.Count > 0 && kindsSkipped == 0 ? "identical, but the kinds row skipped no kind (back-off or none here): that row not compared"
+                : "OK: identical";
+            return new CmdResult(success: same, $"keyword scan of {cards.Count} cards: vanilla {vanilla.Ms:F1} ms, filtered {filtered.Ms:F1} ms ({walks} walks of this mod), "
+                + $"kinds left out {skipped.Ms:F1} ms ({kindsSkipped} kinds skipped); keywords {verdict}");
         }
         finally
         {
-            FastListeners.KindSkipEnabled = kinds;
+            // Off when it faulted meanwhile (its option's fault names).
+            FastListeners.KindSkipEnabled = Restored(kinds, HookSkip.Name, FastListeners.Name);
         }
     }
 
@@ -431,6 +510,10 @@ public class PerfConsoleCmd : AbstractConsoleCmd
         {
             // Not applied (the game's code changed: a mutation, another version): a legitimate state, said as such, no "OK".
             return new CmdResult(success: true, "FastListeners not applied (see the log): nothing to compare.");
+        }
+        if (RefuseFaulted(FastListeners.Name, FastListeners.Name) is { } faultedListeners)
+        {
+            return faultedListeners;
         }
 
         (double CombatMs, double RunMs, List<AbstractModel> Combat, List<AbstractModel> Run) Walk()
@@ -491,22 +574,34 @@ public class PerfConsoleCmd : AbstractConsoleCmd
         }
         finally
         {
-            FastListeners.Enabled = wasEnabled;
+            // Off when it faulted meanwhile (FastListeners.Disable also ran ApplyAll, which this would undo).
+            FastListeners.Enabled = Restored(wasEnabled, FastListeners.Name);
         }
     }
 
-    private static CmdResult SetOptimizations(string? value)
+    /// <summary>
+    /// <c>bdperf opt on|off [yes]</c>: every optimization off/on for an A/B comparison in the same session, as <c>bdopt</c> does
+    /// but for this session only, never saved: BaseLib saves <see cref="Config.Settings.MasterChoice"/>, the player's choice, at any
+    /// settings save and on quit (every config, on NGame.Quit), so the next game start isn't "started off"; the menu box keeps
+    /// showing the saved choice. In a co-op run
+    /// the whole mod off also turns off the fast combat start the other players keep (<see cref="Config.Settings.CoopOffWarning"/>):
+    /// then it warns and needs <c>bdperf opt off yes</c>, as <c>bdopt off</c> needs <c>bdopt off yes</c>.
+    /// </summary>
+    private static CmdResult SetOptimizations(string? value, bool confirmed)
     {
         if (value is not ("on" or "off"))
         {
             return new CmdResult(success: false, "Usage: bdperf opt on|off");
         }
         bool on = value == "on";
-        Commands.OptimizationsCmd.SetAll(on);
-        return new CmdResult(success: true, $"BigDeckOptimization optimizations {(on ? "ON" : "OFF (vanilla)")}.");
+        if (!on && !confirmed && Config.Settings.Master && Config.Settings.InCoopRun)
+        {
+            return new CmdResult(success: false, Config.Settings.CoopOffWarning + "\nTo turn it off anyway, type: bdperf opt off yes");
+        }
+        Config.Settings.SetMaster(on, notify: false, sessionOnly: true);
+        return new CmdResult(success: true, $"BigDeckOptimization optimizations {(on ? "ON" : "OFF (vanilla)")} (this session only, never saved; the menu box keeps showing the saved choice).");
     }
 
-    /// <summary>CardModel.Pile for every card of every pile: indexed vs vanilla answers and timings.</summary>
     /// <summary>
     /// bdperf plaque [n]: BaseLib's card type line for the first n cards of the local player's piles, TypePlaqueSkip
     /// off (BaseLib's walk of every hook listener) then on: the same LocString object for every card, and the times.
@@ -522,23 +617,33 @@ public class PerfConsoleCmd : AbstractConsoleCmd
         {
             return new CmdResult(success: true, "TypePlaqueSkip not applied (BaseLib absent or changed, see the log): nothing to compare.");
         }
+        if (RefuseFaulted(TypePlaqueSkip.Name, TypePlaqueSkip.Name) is { } faultedPlaque)
+        {
+            return faultedPlaque;
+        }
         List<CardModel> cards = me.Piles.SelectMany(p => p.Cards).Take(count).ToList();
         var originals = cards.Select(c => c.Type.ToLocString()).ToList();
         bool wasEnabled = TypePlaqueSkip.Enabled;
         long skippedBefore = TypePlaqueSkip.Skipped;
         List<LocString> expected, actual;
-        Stopwatch vanilla = Stopwatch.StartNew();
+        // Timed inside Vanilla: its two switch passes (every option set off, then back) aren't BaseLib's cost.
+        Stopwatch vanilla = new();
         TypePlaqueSkip.Enabled = false;
         try
         {
             // BaseLib's walk of every hook listener, with the whole mod off (listener walks included), as the game runs it.
-            expected = Vanilla(() => cards.Select((c, i) => TypePlaqueSkip.Invoke(originals[i], c)).ToList());
+            expected = Vanilla(() =>
+            {
+                vanilla.Start();
+                List<LocString> lines = cards.Select((c, i) => TypePlaqueSkip.Invoke(originals[i], c)).ToList();
+                vanilla.Stop();
+                return lines;
+            });
         }
         finally
         {
-            TypePlaqueSkip.Enabled = wasEnabled;
+            TypePlaqueSkip.Enabled = Restored(wasEnabled, TypePlaqueSkip.Name);
         }
-        vanilla.Stop();
         Stopwatch fast = Stopwatch.StartNew();
         TypePlaqueSkip.Enabled = true;
         try
@@ -547,7 +652,7 @@ public class PerfConsoleCmd : AbstractConsoleCmd
         }
         finally
         {
-            TypePlaqueSkip.Enabled = wasEnabled;
+            TypePlaqueSkip.Enabled = Restored(wasEnabled, TypePlaqueSkip.Name);
         }
         fast.Stop();
         if (cards.Count > 0 && TypePlaqueSkip.Skipped == skippedBefore)
@@ -564,6 +669,10 @@ public class PerfConsoleCmd : AbstractConsoleCmd
             + $"  skip   : {fast.Elapsed.TotalMilliseconds:F1} ms ({fast.Elapsed.TotalMilliseconds / Math.Max(1, cards.Count):F3} ms/card)\n  {verdict}");
     }
 
+    /// <summary>
+    /// <c>bdperf pile</c>: CardModel.Pile for every card of every pile, indexed vs the game's scan
+    /// (<see cref="PileIndex.Vanilla"/>): same answers, and the times.
+    /// </summary>
     private static CmdResult ComparePile()
     {
         RunState? state = RunManager.Instance.DebugOnlyGetState();
@@ -625,6 +734,10 @@ public class PerfConsoleCmd : AbstractConsoleCmd
         {
             return new CmdResult(success: true, $"{TextPoolReuse.Name} not applied (see the log): nothing to compare.");
         }
+        if (RefuseFaulted(TextPoolReuse.Name, TextPoolReuse.Name) is { } faultedText)
+        {
+            return faultedText;
+        }
         System.Collections.Generic.List<MegaCrit.Sts2.Core.Models.CardModel> cards = state.Players
             .SelectMany(p => p.Piles).SelectMany(p => p.Cards).ToList();
         bool was = TextPoolReuse.Enabled;
@@ -654,11 +767,11 @@ public class PerfConsoleCmd : AbstractConsoleCmd
         }
         finally
         {
-            TextPoolReuse.Enabled = was;
+            TextPoolReuse.Enabled = Restored(was, TextPoolReuse.Name);
         }
     }
 
-    private static bool _probeApplied;
+    private static bool _probeApplied, _nodesProbed;
 
     private static CmdResult ProbeCmd(string[] args)
     {
@@ -682,13 +795,19 @@ public class PerfConsoleCmd : AbstractConsoleCmd
                 PerfProbe.Enabled = args[0].ToLowerInvariant() == "on";
                 return new CmdResult(success: true, $"Probe {(PerfProbe.Enabled ? "on" : "off")}.");
             case "nodes":
+                // Once: a second Harmony patch of the same callbacks would run every probe twice (rows counted twice).
+                if (_nodesProbed)
+                {
+                    return new CmdResult(success: true, "Node callbacks already probed.");
+                }
+                _nodesProbed = true;
                 ModEntry.TryApply(PerfProbe.Name + ".Nodes", PerfProbe.ApplyNodes);
                 return new CmdResult(success: true, "Node callbacks probed.");
             case "hitch" when args.Length > 1 && double.TryParse(args[1], out double ms) && ms > 0:
                 PerfProbe.HitchMs = ms;
                 return new CmdResult(success: true, $"Hitch threshold {ms:F0} ms.");
             default:
-                return new CmdResult(success: false, "Usage: bdperf probe [reset|log|on|off|hitch <ms>]");
+                return new CmdResult(success: false, "Usage: bdperf probe [reset|log|on|off|nodes|hitch <ms>]");
         }
     }
 
@@ -738,6 +857,11 @@ public class PerfConsoleCmd : AbstractConsoleCmd
         if (state == null || combat == null || hand == null || me?.PlayerCombatState == null || !CombatManager.Instance.IsInProgress)
         {
             return new CmdResult(success: false, "Start a combat first.");
+        }
+        if (ModEntry.NotApplied(ListenerCache.Name))
+        {
+            // Its switch stays on when it didn't apply: the cached side would be the game's code.
+            return new CmdResult(success: true, $"{ListenerCache.Name} not applied (see the log): nothing to compare.");
         }
         if (!ListenerCache.RefreshEnabled)
         {
@@ -819,13 +943,23 @@ public class PerfConsoleCmd : AbstractConsoleCmd
         VerifyMode verifyMode = SnapshotVerifier.Mode;
         double vanillaMs, cachedMs;
         (string Values, string Shown, uint Checksum) vanilla, cached;
+        // What this mod answered on the cached side (the checksum inside FromDirty runs with the mod off: it counts nothing).
+        // Nothing at all: every part backed off, the cached side was the game's code: "not compared", never "OK".
+        static (long Cache, long Filter, long Walks, long Others) Served() => (ListenerCache.Served, HookFilter.Served,
+            FastListeners.CombatWalks + FastListeners.RunWalks + HookSkip.FilteredWalks,
+            TextPoolReuse.Served + ThemeColorSkip.Skipped + DeckCountMemo.Kept + DeckCountMemo.Updated);
+        (long Cache, long Filter, long Walks, long Others) served = default;
         try
         {
             SnapshotVerifier.Mode = VerifyMode.Off;
             vanillaMs = Vanilla(() => Time());
             vanilla = FromDirty(true);
+            var servedBefore = Served();
             cachedMs = Time();
             cached = FromDirty(false);
+            var servedAfter = Served();
+            served = (servedAfter.Cache - servedBefore.Cache, servedAfter.Filter - servedBefore.Filter,
+                servedAfter.Walks - servedBefore.Walks, servedAfter.Others - servedBefore.Others);
         }
         finally
         {
@@ -844,20 +978,23 @@ public class PerfConsoleCmd : AbstractConsoleCmd
             {
                 holders[i].CardNode!.CardHighlight.Modulate = savedHighlights[i];
             }
-            ListenerCache.RefreshEnabled = wasEnabled;
+            ListenerCache.RefreshEnabled = Restored(wasEnabled, ListenerCache.Name);
             SnapshotVerifier.Mode = verifyMode;
             // The hand shows the values put back, as after any action.
             ListenerCache.InvokeStateChangedInScope(s => handRefresh.Invoke(hand, new object[] { s }), combat);
         }
 
         bool identical = vanilla.Checksum == cached.Checksum && vanilla.Values == cached.Values && vanilla.Shown == cached.Shown;
+        bool engaged = served.Cache + served.Filter + served.Walks + served.Others > 0;
         string msg = $"refresh x{iterations} — hand: {me.PlayerCombatState.Hand.Cards.Count} cards, combat cards: {me.PlayerCombatState.AllCards.Count()}, "
             + $"from a dirtied state: enchantment values dirtied {plain.Count} (of {all.Sum(e => e.DynamicVars.Count)}), recomputed by the game {enchantmentsRecomputed} "
             + $"(the others' RecalculateValues writes nothing: compared as left), hand cards {holders.Count} with {shown.Count} shown values, "
             + $"{previewsRecomputed} recomputed by the game, highlights dirtied\n"
             + $"  vanilla: {vanillaMs:F2} ms per refresh, state checksum {vanilla.Checksum}\n"
             + $"  cached : {cachedMs:F2} ms per refresh, state checksum {cached.Checksum}\n"
-            + (identical ? $"  OK: identical state, x{vanillaMs / Math.Max(0.001, cachedMs):F1} faster"
+            + $"  served on the cached side: listener cache {served.Cache}, filter {served.Filter}, walks {served.Walks}, texts/colors/counts {served.Others}\n"
+            + (identical && !engaged ? "  not compared: nothing of this mod served the cached side (every part backed off): identical, but the game's code against itself"
+                : identical ? $"  OK: identical state, x{vanillaMs / Math.Max(0.001, cachedMs):F1} faster"
                 : vanilla.Checksum != cached.Checksum ? "  MISMATCH: refresh left a different game state!"
                 : vanilla.Values != cached.Values ? "  MISMATCH: refresh left different enchantment values!"
                 : $"  MISMATCH: refresh left the hand showing something else!\n    vanilla: {vanilla.Shown}\n    cached : {cached.Shown}");
@@ -911,24 +1048,26 @@ public class PerfConsoleCmd : AbstractConsoleCmd
             HookFilter.Enabled = false;
             SnapshotCardReuse.Enabled = false;
             others = Measure(state, tracker, iterations);
-            ListenerCache.SnapshotEnabled = cacheWasEnabled;
+            ListenerCache.SnapshotEnabled = Restored(cacheWasEnabled, ListenerCache.Name, ListenerCache.SnapshotFault);
             long before = ListenerCache.Served;
             cacheOnly = Measure(state, tracker, iterations);
             cacheServed = ListenerCache.Served - before;
-            HookFilter.Enabled = filterWasEnabled;
+            HookFilter.Enabled = Restored(filterWasEnabled, HookFilter.Name);
             long? filterBefore = FilterCount();
             filtered = Measure(state, tracker, iterations);
             filterServed = FilterCount() - filterBefore;
-            SnapshotCardReuse.Enabled = reuseWasEnabled;
+            SnapshotCardReuse.Enabled = Restored(reuseWasEnabled, SnapshotCardReuse.Name, ListenerCache.SnapshotFault);
             before = ReuseCount();
             optimized = Measure(state, tracker, iterations);
             reuseServed = ReuseCount() - before;
         }
         finally
         {
-            ListenerCache.SnapshotEnabled = cacheWasEnabled;
-            HookFilter.Enabled = filterWasEnabled;
-            SnapshotCardReuse.Enabled = reuseWasEnabled;
+            // A part that faulted during the bench (its own check saw a difference) stays off, with the fault names that turn
+            // it off in the settings (coop_checksum's, hook_filter's, and the card reuse's own plus the state check's).
+            ListenerCache.SnapshotEnabled = Restored(cacheWasEnabled, ListenerCache.Name, ListenerCache.SnapshotFault);
+            HookFilter.Enabled = Restored(filterWasEnabled, HookFilter.Name);
+            SnapshotCardReuse.Enabled = Restored(reuseWasEnabled, SnapshotCardReuse.Name, ListenerCache.SnapshotFault);
             SnapshotVerifier.Mode = verifyMode;
         }
 

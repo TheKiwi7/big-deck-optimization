@@ -31,7 +31,9 @@ namespace BigDeckOptimization.Patches;
 ///
 /// Exact because nothing changes while the sort runs: a sort is opened only when every card's type keeps
 /// <c>CardModel.CompareTo</c>, and each combat the cards are in has only cost listeners known to just read
-/// (<see cref="SnapshotCardReuse.PureHooks"/>; a card in no combat pile runs no cost hook). Otherwise, and when another mod
+/// (<see cref="SnapshotCardReuse.PureHooks"/>; a card in no combat pile runs no cost hook). One of those, Veilpiercer, reads
+/// <c>card.Keywords</c>, which runs the keyword hook: while one stands, every keyword listener must be one known to only add
+/// to the set it is given (<see cref="KeywordAdders"/>). Otherwise, and when another mod
 /// patches what this reproduces or skips, the game's comparison runs. One answer in <see cref="VerifyEvery"/> is compared
 /// with the game's; a difference turns this off for the session.
 /// </summary>
@@ -55,6 +57,32 @@ public static class CardSortKeys
     private const string EnergyCostGetterFingerprint = "D6AF1AAE1A2FEE0D";
     private const string DynamicVarsGetterFingerprint = "19C079D25E68C079";
     private const string KeysGetterFingerprint = "E7FAD3B477754438";
+    /// <summary><c>CardModel.Pile</c>: <c>GetWithModifiers</c> reads it through <c>CombatState</c>, Free*Power and Veilpiercer directly.</summary>
+    private const string PileGetterFingerprint = "6A1FE5E50F9ECAC2";
+    /// <summary>What <c>card.Keywords</c> runs (<see cref="KeywordReaders"/>), the same on v0.107.1 to v0.113.1.</summary>
+    private const string KeywordsGetterFingerprint = "51B4751CE85A8DA1";
+    private const string KeywordsWithSourcesFingerprint = "0F51A275B1583E96";
+    private const string ModifyKeywordsFingerprint = "ABD6C412D3CBF743";
+    private const string KeywordHookDefaultFingerprint = "B9D92F458020A730";
+    private const string KeywordHook = "TryModifyKeywordsInCombat";
+
+    /// <summary>The accepted cost hooks (<see cref="SnapshotCardReuse.PureHooks"/>, fingerprinted there) that read <c>card.Keywords</c>.</summary>
+    private static readonly string[] KeywordReaders = { "MegaCrit.Sts2.Core.Models.Powers.VeilpiercerPower" };
+
+    /// <summary>
+    /// Keyword listeners that only add to the set they are given, from what they read of the card (owner, affliction, tags) and
+    /// their own owner: v0.107.1 to v0.113.1 (Phantom Blades: v0.113).
+    /// </summary>
+    private static readonly (string Type, string Fingerprint)[] KeywordAdders =
+    {
+        ("MegaCrit.Sts2.Core.Models.Powers.HexPower", "7CE6FD37170D4241"),
+        ("MegaCrit.Sts2.Core.Models.Powers.PhantomBladesPower", "71FF3A908FB1A139"),
+    };
+
+    /// <summary>The keyword read's code is the known one: false leaves sorts with a <see cref="KeywordReaders"/> listener to the game.</summary>
+    private static bool _keywordsKnown;
+    /// <summary>The keyword read's methods: another mod's patch on one leaves such sorts to the game.</summary>
+    private static MethodBase?[] _keywordWatched = Array.Empty<MethodBase?>();
 
     /// <summary>
     /// The types whose code shuffles a <c>List&lt;CardModel&gt;</c> with <c>StableShuffle</c> (the 15 methods of v0.113.1; PunchOfJoy and
@@ -154,13 +182,31 @@ public static class CardSortKeys
         MethodInfo energyCost = Require(AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.EnergyCost)), EnergyCostGetterFingerprint, "CardModel.EnergyCost");
         MethodInfo dynamicVars = Require(AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.DynamicVars)), DynamicVarsGetterFingerprint, "CardModel.DynamicVars");
         MethodInfo keys = Require(AccessTools.PropertyGetter(typeof(DynamicVarSet), nameof(DynamicVarSet.Keys)), KeysGetterFingerprint, "DynamicVarSet.Keys");
+        MethodInfo pile = Require(AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.Pile)), PileGetterFingerprint, "CardModel.Pile");
         _modelIdCompare = (Func<ModelId?, ModelId?, int>)Delegate.CreateDelegate(typeof(Func<ModelId?, ModelId?, int>), modelIdCompare);
         _inScope = AccessTools.Method(typeof(CardSortKeys), nameof(StableShuffleInScope));
         _watched = new MethodBase?[]
         {
             compareTo, baseCompareTo, modelIdCompare, shuffle, shuffle.MakeGenericMethod(typeof(CardModel)), getResolved, withModifiers,
-            localModify, costHook, costDefault, costLateDefault, energyCost, dynamicVars, keys,
+            localModify, costHook, costDefault, costLateDefault, energyCost, dynamicVars, keys, pile,
         };
+        try
+        {
+            // Only what a sort with a keyword-reading cost listener relies on: a change leaves those sorts alone to the game.
+            _keywordWatched = new MethodBase?[]
+            {
+                Require(AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.Keywords)), KeywordsGetterFingerprint, "CardModel.Keywords"),
+                Require(AccessTools.DeclaredMethod(typeof(CardModel), "GetKeywordsWithSources"), KeywordsWithSourcesFingerprint, "CardModel.GetKeywordsWithSources"),
+                Require(AccessTools.DeclaredMethod(typeof(Hook), nameof(Hook.ModifyKeywordsInCombat)), ModifyKeywordsFingerprint, "Hook.ModifyKeywordsInCombat"),
+                Require(AccessTools.DeclaredMethod(typeof(AbstractModel), KeywordHook), KeywordHookDefaultFingerprint, "AbstractModel." + KeywordHook),
+            };
+            _keywordsKnown = true;
+        }
+        catch (Exception e)
+        {
+            _keywordsKnown = false;
+            Log.Info($"[{ModEntry.Id}] {Name}: keyword reads changed ({e.Message}): sorts in a combat with Veilpiercer stay the game's");
+        }
 
         // Callers found before anything is patched: none found leaves the whole patch out.
         List<MethodBase> callers = new();
@@ -375,7 +421,11 @@ public static class CardSortKeys
 
     // --- What a sort may rely on ---
 
-    /// <summary>Per card type: it compares through <c>CardModel.CompareTo</c> (no override, no comparison interface of its own).</summary>
+    /// <summary>
+    /// Per card type: it compares through <c>CardModel.CompareTo</c> (no override, no comparison interface of its own). The
+    /// interface map too: <c>List&lt;CardModel&gt;.Sort</c> calls <c>IComparable&lt;AbstractModel&gt;.CompareTo</c>, which a type
+    /// re-implementing that interface explicitly answers with its own code though its public <c>CompareTo</c> is the game's.
+    /// </summary>
     private static readonly Dictionary<Type, bool> _plain = new();
 
     private static bool Plain(Type type)
@@ -386,25 +436,38 @@ public static class CardSortKeys
             {
                 MethodInfo? compareTo = type.GetMethod(nameof(CardModel.CompareTo), BindingFlags.Public | BindingFlags.Instance, null, new[] { typeof(AbstractModel) }, null);
                 plain = compareTo?.DeclaringType == typeof(CardModel)
-                    && !type.GetInterfaces().Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IComparable<>) && i != typeof(IComparable<AbstractModel>));
+                    && !type.GetInterfaces().Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IComparable<>) && i != typeof(IComparable<AbstractModel>))
+                    && type.GetInterfaceMap(typeof(IComparable<AbstractModel>)).TargetMethods is [var target] && target.DeclaringType == typeof(CardModel);
             }
-            catch (AmbiguousMatchException)
+            catch (Exception e) when (e is AmbiguousMatchException or ArgumentException or InvalidOperationException or NotSupportedException)
             {
-                plain = false; // A CompareTo hiding the game's.
+                plain = false; // A CompareTo hiding the game's, or an interface map not read.
             }
             _plain[type] = plain;
         }
         return plain;
     }
 
-    /// <summary>Per listener type: its cost hook overrides, all known to only read (<see cref="SnapshotCardReuse.PureHooks"/>); null otherwise.</summary>
-    private static readonly Dictionary<Type, MethodInfo[]?> _costOverrides = new();
+    /// <summary>
+    /// A listener type's hooks a sort may run: its cost hook overrides, all known to only read (<see cref="SnapshotCardReuse.PureHooks"/>),
+    /// whether one of them reads <c>card.Keywords</c>, and its keyword hook override (null: none) and whether that one is known to
+    /// only add (<see cref="KeywordAdders"/>).
+    /// </summary>
+    private sealed record ListenerReads(MethodInfo[] Cost, bool ReadsKeywords, MethodInfo? Keyword, bool KeywordKnown);
 
-    /// <summary>The first listener of this combat whose cost hooks may do more than read; null when there is none.</summary>
+    /// <summary>Per listener type: what <see cref="ListenerReads"/> says; null when a cost hook may do more than read.</summary>
+    private static readonly Dictionary<Type, ListenerReads?> _costOverrides = new();
+
+    /// <summary>
+    /// The first listener of this combat whose cost hooks may do more than read; null when there is none. While a cost hook
+    /// reads <c>card.Keywords</c> (<see cref="KeywordReaders"/>), the keyword hook it runs too: every keyword listener of the
+    /// combat (the same walk, <c>IterateHookListeners</c>) must only add to the set, and the keyword read must be the known code.
+    /// </summary>
     private static string? ImpureCostListener(ICombatState combat)
     {
         Type? lastType = null;
-        MethodInfo[]? overrides = null;
+        bool readsKeywords = false;
+        string? keywordListener = null;
         foreach (AbstractModel model in combat.IterateHookListeners())
         {
             if (model == null)
@@ -415,30 +478,53 @@ public static class CardSortKeys
             if (type != lastType)
             {
                 lastType = type;
-                overrides = CostOverrides(type);
-                if (overrides == null)
+                ListenerReads? reads = CostOverrides(type);
+                if (reads == null)
                 {
                     return type.Name;
                 }
-                foreach (MethodInfo method in overrides)
+                foreach (MethodInfo method in reads.Cost)
                 {
                     if (PatchSafety.IsPatchedByOthers(method))
                     {
                         return type.Name + " (patched)";
                     }
                 }
+                readsKeywords |= reads.ReadsKeywords;
+                // Only a real override is asked about: IsPatchedByOthers(null) answers true, and most types have none.
+                if (keywordListener == null
+                    && (!reads.KeywordKnown || (reads.Keyword != null && PatchSafety.IsPatchedByOthers(reads.Keyword))))
+                {
+                    keywordListener = type.Name + (reads.KeywordKnown ? " (keywords, patched)" : " (keywords)");
+                }
             }
         }
-        return null;
+        if (!readsKeywords)
+        {
+            return null;
+        }
+        if (!_keywordsKnown)
+        {
+            return "a cost hook reading keywords (keyword code changed)";
+        }
+        foreach (MethodBase? method in _keywordWatched)
+        {
+            if (PatchSafety.IsPatchedByOthers(method))
+            {
+                return $"a cost hook reading keywords ({method?.DeclaringType?.Name}.{method?.Name} patched)";
+            }
+        }
+        return keywordListener;
     }
 
-    private static MethodInfo[]? CostOverrides(Type type)
+    private static ListenerReads? CostOverrides(Type type)
     {
-        if (_costOverrides.TryGetValue(type, out MethodInfo[]? known))
+        if (_costOverrides.TryGetValue(type, out ListenerReads? known))
         {
             return known;
         }
         List<MethodInfo>? overrides = new();
+        bool readsKeywords = false;
         try
         {
             foreach (string name in CostHooks)
@@ -456,13 +542,42 @@ public static class CardSortKeys
                     break;
                 }
                 overrides.Add(method);
+                readsKeywords |= Array.IndexOf(KeywordReaders, type.FullName) >= 0;
             }
         }
         catch (Exception e) when (e is AmbiguousMatchException or MissingMemberException or TypeLoadException)
         {
             overrides = null;
         }
-        return _costOverrides[type] = overrides?.ToArray();
+        if (overrides == null)
+        {
+            return _costOverrides[type] = null;
+        }
+        // Judged apart: an unknown keyword listener only matters in a combat where a cost hook reads keywords.
+        MethodInfo? keyword = null;
+        bool keywordKnown;
+        try
+        {
+            keyword = type.GetMethod(KeywordHook, BindingFlags.Public | BindingFlags.Instance);
+            if (keyword == null || keyword.DeclaringType == typeof(AbstractModel))
+            {
+                keyword = null;
+                keywordKnown = true;
+            }
+            else
+            {
+                MethodInfo method = keyword;
+                int entry = Array.FindIndex(KeywordAdders, a => a.Type == method.DeclaringType?.FullName);
+                keywordKnown = entry >= 0 && method.DeclaringType == type
+                    && PatchSafety.FingerprintMatches(MethodFingerprint.Of(method), KeywordAdders[entry].Fingerprint);
+            }
+        }
+        catch (Exception e) when (e is AmbiguousMatchException or MissingMemberException or TypeLoadException)
+        {
+            keyword = null;
+            keywordKnown = false;
+        }
+        return _costOverrides[type] = new ListenerReads(overrides.ToArray(), readsKeywords, keyword, keywordKnown);
     }
 
     // --- The comparison ---
@@ -470,7 +585,8 @@ public static class CardSortKeys
     private static bool ComparePrefix(CardModel __instance, AbstractModel? __0, ref int __result)
     {
         Scope? scope = _scope;
-        if (scope == null || _verifying || !Enabled)
+        // The scope is the main thread's sort: a comparison on another thread meanwhile is the game's.
+        if (scope == null || _verifying || !Enabled || Environment.CurrentManagedThreadId != _mainThread)
         {
             return true;
         }

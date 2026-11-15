@@ -33,10 +33,13 @@ namespace BigDeckOptimization.Bench;
 /// player's profiles and last-profile setting are untouched. Runs the script's lines one by one, logs everything with
 /// the "AutoTest" prefix, and quits the game at the end, on error, or after <c>timeout</c>.
 ///
-/// Script lines (# comments):
-///   newrun &lt;CHARACTER&gt; [seed]   wait &lt;s&gt;   waitfor menu|run|combat|idle|nocombat [timeout s]
-///   cmd &lt;console command&gt;      play &lt;n&gt;   endturn   timeout &lt;s&gt;   log &lt;text&gt;   quit
-///   {hash:NAME} anywhere = hash of the shared run file NAME   speed normal|fast|instant (default fast)   enemyhp &lt;hp&gt; (enemies of the next combats)   marker &lt;text&gt; (phase marks for trace analysis)
+/// Script lines (# comments; the switch in <see cref="Run"/> lists every command, each documented on its own method), among them:
+///   newrun &lt;CHARACTER&gt; [seed]   mplobby &lt;CHARACTER&gt; [players] [seed]   wait &lt;s&gt;   timeout &lt;s&gt;   log &lt;text&gt;   quit   onfail continue
+///   waitfor menu|run|combat|nocombat|idle|turn|round &lt;n&gt;|room &lt;type&gt;|event|restsite|deckcount [timeout s]   barrier &lt;label&gt; [timeout s]
+///   cmd &lt;console command&gt;   play &lt;n&gt;   playcard &lt;ID&gt;   endturn   avoid ID,ID   enemyhp &lt;hp&gt;   immortal [off | until &lt;round&gt;]
+///   state [label]   checksum [label]   runstate [label]   effects [label]   effectcheck ...   counters [label]   gcfull [label]   leakcheck [label]
+///   autoroom ...   automap   autoslay &lt;seed&gt;   sweep ...   eventoption ...   restsite ...   fpsstat [label]   marker &lt;text&gt;   selector ui|auto|local
+///   {hash:NAME} anywhere = hash of the shared run file NAME   speed normal|fast|instant (default fast)
 /// </summary>
 public static partial class AutoTest
 {
@@ -68,9 +71,12 @@ public static partial class AutoTest
         // Fur Coat reads the current map point, which is null when the fight command runs before visiting the map.
         PatchGuard.Patch(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Models.Relics.FurCoat), nameof(MegaCrit.Sts2.Core.Models.Relics.FurCoat.BeforeCombatStart)),
             prefix: new HarmonyMethod(typeof(AutoTest), nameof(SkipFurCoatWithoutMapPoint)));
-        // The fight command seeds the encounter from the clock (seconds): peers running it in different seconds desync.
-        PatchGuard.Patch(harmony, AccessTools.Method(typeof(EncounterModel), nameof(EncounterModel.DebugRandomizeRng)),
-            prefix: new HarmonyMethod(typeof(AutoTest), nameof(FixedEncounterRng)));
+        // The fight command seeds the encounter from the clock in seconds (up to v0.111) or a random seed (v0.113,
+        // Rng.CreateChaoticSeed): peers running it at different moments desync, and two sessions fight different groups.
+        // v0.113 returns the seed it picked (the command logs it): the prefix answers the fixed one.
+        MethodInfo randomizeRng = AccessTools.Method(typeof(EncounterModel), nameof(EncounterModel.DebugRandomizeRng));
+        PatchGuard.Patch(harmony, randomizeRng,
+            prefix: new HarmonyMethod(typeof(AutoTest), randomizeRng?.ReturnType == typeof(ulong) ? nameof(FixedEncounterRngWithSeed) : nameof(FixedEncounterRng)));
         // In co-op a networked command is only enqueued (DevConsole.ProcessCommand answers "Enqueued"): its result reaches the
         // console's output only. Every peer runs it through ProcessNetCommand: a failure there fails the session.
         PatchGuard.Patch(harmony, AccessTools.Method(typeof(DevConsole), nameof(DevConsole.ProcessNetCommand)),
@@ -129,7 +135,29 @@ public static partial class AutoTest
                 NGame.Instance?.DebugAudio?.SetMasterAudioVolume(0f);
             }).CallDeferred();
         }
+        // The test tooling applies first (CombatStartTimer, then this): what InlineGuard protected so far was for its own patches.
+        _benchProtected = InlineGuard.Protected;
         Callable.From(Start).CallDeferred();
+    }
+
+    /// <summary>
+    /// InlineGuard protections made for the test tooling's own patches (at load and as script lines patch more): left out of the
+    /// "InlineGuard" effect, which must say whether the optimizations' patches got protected.
+    /// </summary>
+    private static long _benchProtected;
+
+    /// <summary>Patches of the test tooling made while a script runs: their InlineGuard protections are the tooling's.</summary>
+    private static void BenchPatches(Action patch)
+    {
+        long before = InlineGuard.Protected;
+        try
+        {
+            patch();
+        }
+        finally
+        {
+            _benchProtected += InlineGuard.Protected - before;
+        }
     }
 
     private static void MuteVolume(ref float __0) => __0 = 0f;
@@ -291,15 +319,15 @@ public static partial class AutoTest
     private static bool _loggingPlays;
 
     /// <summary>
-    /// Logs every card play, manual or auto-played by an effect (Havoc, Cascade...), from the combat history: a patch
-    /// on the play methods misses the calls the JIT inlined.
-    /// </summary>
-    /// <summary>
     /// Cards whose manual play the combat history saw start since <see cref="Play"/> last cleared it (it waits for its own). A set,
     /// not the last one: in co-op the other player's plays start in between.
     /// </summary>
     private static readonly HashSet<CardModel> _manualPlaysStarted = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>
+    /// Logs every card play, manual or auto-played by an effect (Havoc, Cascade...), from the combat history: a patch
+    /// on the play methods misses the calls the JIT inlined.
+    /// </summary>
     private static void LogCardPlays()
     {
         if (_loggingPlays)
@@ -328,6 +356,26 @@ public static partial class AutoTest
     /// <summary>Script <c>enemyhp</c>: enemies get this HP before any combat-start hook (relics) can hit them.</summary>
     private static int? _enemyHp;
 
+    /// <summary>From this peer's combat set-up to its end (or tomenu): see <see cref="RequireNoCombatYetInCoop"/>.</summary>
+    private static bool _combatOpen;
+
+    /// <summary>
+    /// <c>enemyhp</c> and <c>immortal</c> are local: each peer applies them to its own combats. In co-op, one coming after this peer's
+    /// combat was set up (the host's <c>cmd fight</c> ran first: only wall-clock waits ordered them) leaves the peers with different
+    /// enemies, a state divergence that would look like the mod's. Fails the line instead; a <c>barrier</c> before the host's fight
+    /// orders them.
+    /// </summary>
+    private static void RequireNoCombatYetInCoop(string line)
+    {
+        bool coop = RunManager.Instance.IsInProgress
+            && RunManager.Instance.NetService?.Type is MegaCrit.Sts2.Core.Multiplayer.Game.NetGameType.Host or MegaCrit.Sts2.Core.Multiplayer.Game.NetGameType.Client;
+        if (coop && (_combatOpen || CombatManager.Instance.IsInProgress))
+        {
+            throw new InvalidOperationException($"'{line}' in co-op after this peer's combat was set up: the peers' enemies would differ "
+                + "(put a 'barrier' on every peer after it, before the host's 'cmd fight')");
+        }
+    }
+
     /// <summary>Co-op lobby screen (game started with <c>--fastmp host_standard</c> or <c>--fastmp join</c>).</summary>
     private static NCharacterSelectScreen? _lobbyScreen;
 
@@ -347,11 +395,11 @@ public static partial class AutoTest
     /// <summary>A networked command that failed when the action queue ran it, until a script line or a wait reports it.</summary>
     private static string? _netCommandFailed;
 
-    private static Exception? NetCommandFinalizer(Player? player, string inputValue, CmdResult __result, Exception? __exception)
+    private static void NetCommandFinalizer(Player? player, string inputValue, CmdResult __result, Exception? __exception)
     {
         if (_directCommand)
         {
-            return __exception;
+            return;
         }
         if (__exception != null || !__result.success)
         {
@@ -364,7 +412,6 @@ public static partial class AutoTest
             task.ContinueWith(t => NetCommandFailed($"networked command '{inputValue}' (player {player?.NetId}) failed in its task: {t.Exception?.GetBaseException().Message}"),
                 System.Threading.CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
-        return __exception;
     }
 
     private static void NetCommandFailed(string failed)
@@ -384,9 +431,19 @@ public static partial class AutoTest
         }
     }
 
+    private const uint EncounterSeed = 12345u;
+
     private static bool FixedEncounterRng(EncounterModel __instance)
     {
-        AccessTools.Field(typeof(EncounterModel), "_rng").SetValue(__instance, SeededRng(12345u));
+        AccessTools.Field(typeof(EncounterModel), "_rng").SetValue(__instance, SeededRng(EncounterSeed));
+        return false;
+    }
+
+    /// <summary>Game v0.113: the method returns the seed it used, which the fight command logs ("rng seed"): this one, not 0.</summary>
+    private static bool FixedEncounterRngWithSeed(EncounterModel __instance, ref ulong __result)
+    {
+        FixedEncounterRng(__instance);
+        __result = EncounterSeed;
         return false;
     }
 
@@ -417,7 +474,8 @@ public static partial class AutoTest
     /// number since v0.113, so an on/off pair of co-op sessions played two different runs. Through
     /// <c>NGame.DebugSeedOverride</c>, which the lobby reads when everyone is ready (as the game's AutoSlayer does):
     /// <c>StartRunLobby.SetSeed</c> throws in standard mode (the character screen refuses seed changes). The lobby screen
-    /// resets it when it initializes, before this runs.
+    /// resets it when it initializes, before this runs (v0.113: through <c>NGame.InitDebugSeedFromBootstrap</c>, null without
+    /// bootstrap settings), so a later lobby doesn't reuse it.
     /// </summary>
     private static async Task MpLobby(SceneTree tree, string arg)
     {
@@ -446,10 +504,13 @@ public static partial class AutoTest
     private static IDisposable? _selector;
 
     /// <summary>Each optimization's effect counter (the <c>effects</c> line), by name.</summary>
+    /// Keep in step with Bench/EffectCounters.cs (the counters a bdperf bench puts back).
     private static (string Name, long Count)[] EffectCounts() => new (string, long)[]
     {
-        // CardSortKeys only where it applies (game v0.113+): on earlier versions there is nothing for it to do.
-        (ListenerCache.Name, ListenerCache.Served), (HookFilter.Name, HookFilter.ListenersDropped), (ExtraScopes.Name, ExtraScopes.FirstTurnPasses),
+        // CardSortKeys only where this game version needs it (v0.113+; before, CardModel.CompareTo is cheap): a needed one that
+        // didn't apply (a changed fingerprint, a fault) shows at 0, as every other optimization does. NotNeeded is only known
+        // once its Apply ran: with the mod off at game start (StartedOff) Apply never runs, so no line there.
+        (ListenerCache.Name, ListenerCache.Served), (ListenerCache.Name + ".Creatures", ListenerCache.CreatureInvalidations), (HookFilter.Name, HookFilter.ListenersDropped), (ExtraScopes.Name, ExtraScopes.FirstTurnPasses),
         (IdleButtonInput.Name, IdleButtonInput.Muted), (GridSortCache.Name, GridSortCache.Sorts), (EnchantmentTabReuse.Name, EnchantmentTabReuse.Reused),
         (PoolSignalScan.Name, PoolSignalScan.Nodes), (CardDbScan.Name, CardDbScan.Skipped), (PileIndex.Name, PileIndex.Fast), (PileIndex.Name + ".Duplicates", PileIndex.FastDuplicateChecks),
         (PileCounterBatch.Name, PileCounterBatch.Batched), (FastCombatStart.Name, FastCombatStart.SkippedWaits), (HoverTipReuse.Name, HoverTipReuse.Reused),
@@ -461,8 +522,8 @@ public static partial class AutoTest
         (SnapshotCardReuse.Name + ".CardBits", SnapshotCardReuse.BitsReused), (SnapshotCardReuse.Name + ".UpgradeBits", SnapshotCardReuse.UpgradeBitsPatched), (SnapshotCardReuse.Name + ".PileBits", SnapshotCardReuse.PileBitsReused + SnapshotCardReuse.PileBitsComposed),
         (DeckCountMemo.Name, DeckCountMemo.Kept + DeckCountMemo.Updated), (DeckCountMemo.Name + ".Checks", DeckCountMemo.Checks), (LimitlessHookSkip.Name, LimitlessHookSkip.Dropped), (LimitlessHookSkip.Name + ".Saved", LimitlessHookSkip.NotesFromSaved), (LimitlessCloneMemo.Name, LimitlessCloneMemo.Reused), (TextPoolReuse.Name, TextPoolReuse.Served), (ThemeColorSkip.Name, ThemeColorSkip.Skipped), (ReplayStateSkip.Name, ReplayStateSkip.Skipped),
         (GcPacing.Name, GcPacing.Regions), (RelicFlashMerge.Name, RelicFlashMerge.Merged), (CardFlightLimit.Name, CardFlightLimit.Skipped), (TypePlaqueSkip.Name, TypePlaqueSkip.Skipped),
-        (ControllerActionSkip.Name, ControllerActionSkip.Skipped), (RoomCollect.Name, RoomCollect.Background), (PooledCardRelease.Name, PooledCardRelease.Released), (SyncedCardRelease.Name, SyncedCardRelease.Released), (SavedPropertyLookup.Name, SavedPropertyLookup.Served), (RelicStateReuse.Name, RelicStateReuse.Reused), (RelicStateReuse.ScalarName, RelicStateReuse.ScalarReused), (RichTextEnvRelease.Name, RichTextEnvRelease.Released), (RichTextEnvRelease.Name + ".Untracked", RichTextEnvRelease.Untracked), ("InlineGuard", InlineGuard.Protected),
-    }.Concat(CardSortKeys.Applied ? new (string, long)[] { (CardSortKeys.Name, CardSortKeys.Sorts), (CardSortKeys.Name + ".Answers", CardSortKeys.Answered) } : Array.Empty<(string, long)>()).ToArray();
+        (ControllerActionSkip.Name, ControllerActionSkip.Skipped), (RoomCollect.Name, RoomCollect.Background), (PooledCardRelease.Name, PooledCardRelease.Released), (SyncedCardRelease.Name, SyncedCardRelease.Released), (SavedPropertyLookup.Name, SavedPropertyLookup.Served), (RelicStateReuse.Name, RelicStateReuse.Reused), (RelicStateReuse.ScalarName, RelicStateReuse.ScalarReused), (RichTextEnvRelease.Name, RichTextEnvRelease.Released), (RichTextEnvRelease.Name + ".Untracked", RichTextEnvRelease.Untracked), ("InlineGuard", InlineGuard.Protected - _benchProtected),
+    }.Concat(CardSortKeys.Applied || (!CardSortKeys.NotNeeded && !ModEntry.StartedOff) ? new (string, long)[] { (CardSortKeys.Name, CardSortKeys.Sorts), (CardSortKeys.Name + ".Answers", CardSortKeys.Answered) } : Array.Empty<(string, long)>()).ToArray();
 
     /// <summary>
     /// The game starts its "Common" preload at the main menu without awaiting it. A run started meanwhile (a script's newrun 0.4 s
@@ -558,7 +619,8 @@ public static partial class AutoTest
     /// CardSelectCmd.PushSelector through reflection: game v0.111 added an optional parameter (localOnly), which changes
     /// the method's signature; called with its default values on any version. Game v0.113 moved the selectors to
     /// per-player stacks of the run (<c>RunManager.CardSelectorStack</c>); its static test selector answers every player
-    /// like the old global stack: set there, a selector already set suspended until this one is disposed.
+    /// like the old global stack: set there, a selector already set suspended until this one is disposed. With
+    /// <c>selector local</c> on v0.113, the run's own local selector instead (<see cref="RunLocalSelector"/>).
     /// </summary>
     private static IDisposable PushSelector(MegaCrit.Sts2.Core.TestSupport.ICardSelector selector)
     {
@@ -570,9 +632,89 @@ public static partial class AutoTest
         }
         if (_localSelector)
         {
-            throw new NotSupportedException("this game version has no local-only card selector before the run starts");
+            return RunLocalSelector.Supported ? new RunLocalSelector(selector)
+                : throw new NotSupportedException("this game version has no local-only card selector");
         }
         return SelectorStack.Push(selector);
+    }
+
+    /// <summary>
+    /// Game v0.113's local-only selector (<c>CardSelectorStack.UseLocalSelector</c>: it answers this player's own choices, sent to
+    /// the others like a human's). Each run has its own stack: installed on the run in progress, or on the next run once it
+    /// exists (<c>mplobby</c> asks before the run starts). Disposing it (tomenu, another selector line) takes it off.
+    /// </summary>
+    private sealed class RunLocalSelector : IDisposable
+    {
+        private static readonly PropertyInfo? StackProperty = AccessTools.Property(typeof(RunManager), "CardSelectorStack");
+        private static readonly MethodInfo? UseLocal = StackProperty == null ? null : AccessTools.Method(StackProperty.PropertyType, "UseLocalSelector");
+
+        public static bool Supported => UseLocal != null;
+
+        private readonly MegaCrit.Sts2.Core.TestSupport.ICardSelector _selector;
+        /// <summary>The stack of a run that was there when asked but not in progress (left): not the one to install on.</summary>
+        private readonly object? _staleStack;
+        private IDisposable? _installed;
+        private bool _waiting, _disposed;
+
+        public RunLocalSelector(MegaCrit.Sts2.Core.TestSupport.ICardSelector selector)
+        {
+            _selector = selector;
+            if (CurrentStack() is { } stack && RunManager.Instance.IsInProgress && NRun.Instance != null)
+            {
+                Install(stack);
+                return;
+            }
+            _staleStack = StackProperty!.GetValue(RunManager.Instance);
+            _waiting = true;
+            ((SceneTree)Engine.GetMainLoop()).ProcessFrame += Poll;
+            Say("  local card selector: installed once the run starts");
+        }
+
+        private static object? CurrentStack() => RunManager.Instance.IsInProgress ? StackProperty!.GetValue(RunManager.Instance) : null;
+
+        private void Poll()
+        {
+            if (_disposed || CurrentStack() is not { } stack || ReferenceEquals(stack, _staleStack) || NRun.Instance == null)
+            {
+                return;
+            }
+            StopWaiting();
+            try
+            {
+                Install(stack);
+            }
+            catch (Exception e)
+            {
+                Say($"FAILED: local card selector not installed on the run: {(e as TargetInvocationException)?.InnerException?.Message ?? e.Message}");
+            }
+        }
+
+        private void Install(object stack)
+        {
+            _installed = (IDisposable)UseLocal!.Invoke(stack, new object[] { _selector })!;
+            Say("  local card selector installed on the run");
+        }
+
+        private void StopWaiting()
+        {
+            if (_waiting)
+            {
+                _waiting = false;
+                ((SceneTree)Engine.GetMainLoop()).ProcessFrame -= Poll;
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+            _disposed = true;
+            StopWaiting();
+            _installed?.Dispose();
+            _installed = null;
+        }
     }
 
     /// <summary>
@@ -707,6 +849,7 @@ public static partial class AutoTest
 
     private static void SetUpCombatPostfix(CombatState state)
     {
+        _combatOpen = true;
         LogCardPlays();
         if (_enemyHp is not { } hp)
         {
@@ -797,6 +940,11 @@ public static partial class AutoTest
             return;
         }
         _autoSlayLimitsPatched = true;
+        BenchPatches(PatchAutoSlayLimitsNow);
+    }
+
+    private static void PatchAutoSlayLimitsNow()
+    {
         foreach (MethodInfo until in AccessTools.GetDeclaredMethods(typeof(MegaCrit.Sts2.Core.AutoSlay.Helpers.WaitHelper)).Where(m => m.Name == "Until" && m.GetParameters().Any(p => p.Name == "timeout")))
         {
             bool lazyMessage = until.GetParameters().Last().ParameterType != typeof(string);
@@ -840,6 +988,7 @@ public static partial class AutoTest
             string frames = string.Join(",", _frameMs.Where(ms => ms > 8.33).Select(ms => ms.ToString("F0")));
             Say($"  PHASE {_phase} | wall {wall:F0} frames {_frameMs.Count} worst {_frameMs.Max():F0} gc {gc:F0} mb {mb:F1} cpu {cpu:F0} long {frames}");
         }
+        _recordFrames = true;
         _frameMs.Clear();
         _phase = activity;
         _phaseStart = Stopwatch.GetTimestamp();
@@ -853,8 +1002,33 @@ public static partial class AutoTest
     // and 30 s are enough.
     private static void LongerAutoSlayTask(ref TimeSpan? timeout) => timeout = TimeSpan.FromMinutes(10);
 
+    /// <summary>
+    /// Set while the tooling's own code (autoroom's screens) calls <c>WaitHelper.Until</c> with its own short limit: those are left
+    /// as they are, so a screen that never fills fails the line at once with its message instead of a silent wait until the runner's
+    /// stall kill. Read synchronously at the call (both overloads' prefixes run before its first await).
+    /// </summary>
+    [ThreadStatic] private static bool _ownWait;
+
+    /// <summary><c>WaitHelper.Until</c> with this limit kept (not AutoSlay's 10 minutes).</summary>
+    private static Task OwnWait(Func<bool> condition, System.Threading.CancellationToken ct, double seconds, string timeoutMessage)
+    {
+        _ownWait = true;
+        try
+        {
+            return MegaCrit.Sts2.Core.AutoSlay.Helpers.WaitHelper.Until(condition, ct, TimeSpan.FromSeconds(seconds), timeoutMessage);
+        }
+        finally
+        {
+            _ownWait = false;
+        }
+    }
+
     private static void LongerAutoSlayWait(ref Func<bool> condition, ref TimeSpan? timeout, string? timeoutMessage)
     {
+        if (_ownWait)
+        {
+            return;
+        }
         timeout = timeoutMessage != null && (timeoutMessage.StartsWith("Main menu") || timeoutMessage.StartsWith("Game over")) ? TimeSpan.FromSeconds(30) : TimeSpan.FromMinutes(10);
         if (timeoutMessage == "Play phase not started")
         {
@@ -865,7 +1039,13 @@ public static partial class AutoTest
         }
     }
 
-    private static void LongerAutoSlayWaitLazyMessage(ref Func<bool> condition, ref TimeSpan? timeout, Func<string>? timeoutMessage) => LongerAutoSlayWait(ref condition, ref timeout, timeoutMessage?.Invoke());
+    private static void LongerAutoSlayWaitLazyMessage(ref Func<bool> condition, ref TimeSpan? timeout, Func<string>? timeoutMessage)
+    {
+        if (!_ownWait)
+        {
+            LongerAutoSlayWait(ref condition, ref timeout, timeoutMessage?.Invoke());
+        }
+    }
 
     // Per room and for the whole run: the scenario's own timeout is the limit that counts.
     private static void LongerAutoSlayRoom(ref TimeSpan timeout) => timeout = TimeSpan.FromHours(3);
@@ -940,13 +1120,20 @@ public static partial class AutoTest
 
     private static async Task Run(SceneTree tree)
     {
-        // Logged when a combat's turn loop throws: the combat stays stuck, no wait on it can end.
-        Log.LogCallback += (_, text, _) =>
+        // The game's errors only (v0.111+): not its Debug line on a normal teardown ("turn loop died of cancellation"), and not this
+        // tooling's own FAILED line quoting a wait's message, which would set the flag again and fail every later wait at once.
+        Log.LogCallback += (level, text, _) =>
         {
-            _turnLoopDied |= text.Contains("turn loop died");
+            if (level != MegaCrit.Sts2.Core.Logging.LogLevel.Error || text.Contains($"[{ModEntry.Id}]"))
+            {
+                return;
+            }
+            // A combat's turn loop threw: the combat stays stuck, no wait on it can end.
+            _turnLoopDied |= text.Contains("turn loop died while its combat is in progress");
             // The client then leaves for the main menu and the host goes on alone: no wait on the other peer can end.
             _coopDiverged |= text.Contains("State divergence message received");
         };
+        CombatManager.Instance.CombatEnded += _ => _combatOpen = false;
         string[] lines = File.ReadAllLines(_script!);
         Say($"script {_script} ({lines.Length} lines)");
         await Until(tree, () => NGame.Instance?.MainMenu != null && ModEntry.Ready, 300, "menu");
@@ -1003,16 +1190,22 @@ public static partial class AutoTest
                     Say("  EXPECT " + arg.Trim());
                     break;
                 case "enemyhp":
+                    RequireNoCombatYetInCoop(line);
                     _enemyHp = int.Parse(arg);
                     break;
                 case "immortal":
+                    RequireNoCombatYetInCoop(line);
                     string[] immortalArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                     _immortal = immortalArgs.FirstOrDefault() != "off";
                     _immortalUntilRound = immortalArgs.Length > 1 && immortalArgs[0] == "until" ? int.Parse(immortalArgs[1]) : 0;
                     Say($"  enemies immortal: {_immortal}{(_immortalUntilRound > 0 ? $" until round {_immortalUntilRound}" : "")}");
                     break;
                 case "state":
-                    LogState(arg);
+                    // Outside a combat it compares nothing (both sides of an A/B log "no combat"): the line then fails unless "optional"
+                    // (StateOutsideCombatFails).
+                    List<string> stateArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
+                    bool optionalState = stateArgs.Remove("optional");
+                    LogState(string.Join(" ", stateArgs), optionalState);
                     break;
                 case "checksum":
                     LogChecksum(arg.Trim());
@@ -1062,7 +1255,9 @@ public static partial class AutoTest
                     break;
                 case "selector":
                     _localSelector = arg.Trim() == "local";
-                    bool supported = typeof(CardSelectCmd).GetMethods().Any(m => m.Name == "PushSelector" && m.GetParameters().Any(p => p.Name == "localOnly"));
+                    // v0.111: CardSelectCmd.PushSelector's localOnly; v0.113: the run's CardSelectorStack.UseLocalSelector.
+                    bool supported = typeof(CardSelectCmd).GetMethods().Any(m => m.Name == "PushSelector" && m.GetParameters().Any(p => p.Name == "localOnly"))
+                        || RunLocalSelector.Supported;
                     if (_localSelector && !supported)
                     {
                         throw new NotSupportedException("this game version has no local-only card selector");
@@ -1070,7 +1265,10 @@ public static partial class AutoTest
                     Say($"  card selector: {(_localSelector ? "local player only" : "global")}");
                     break;
                 case "faultprobe":
-                    string probe = await FaultProbe.Run(() => Frames(tree, 3));
+                    // Its patches go on before its first await: the tooling's, not the optimizations' (InlineGuard effect).
+                    Task<string>? probeRun = null;
+                    BenchPatches(() => probeRun = FaultProbe.Run(() => Frames(tree, 3)));
+                    string probe = await probeRun!;
                     Say("  FAULTPROBE " + probe);
                     if (probe.Contains("FAILED"))
                     {
@@ -1114,7 +1312,11 @@ public static partial class AutoTest
                     Say($"  display: max fps {Engine.MaxFps}, vsync {DisplayServer.WindowGetVsyncMode()}");
                     break;
                 case "sweep":
-                    await Sweep(tree, arg);
+                    if (!await Sweep(tree, arg))
+                    {
+                        // Aborted (SWEEP ABORT, quitting): the lines after it would log for a state nothing after the failure means.
+                        return;
+                    }
                     break;
                 case "sweeptimeout":
                     SweepItemTimeout = double.Parse(arg);
@@ -1158,6 +1360,7 @@ public static partial class AutoTest
                     _combatSelector?.Dispose();
                     _selector = null;
                     _combatSelector = null;
+                    _combatOpen = false; // A combat left without its end.
                     // Its cards hold the left run: leak checks and gcfull must see only what the game and the mod keep.
                     _manualPlaysStarted.Clear();
                     Say("  on the main menu");
@@ -1172,7 +1375,7 @@ public static partial class AutoTest
                     FrameDetailOn(tree);
                     break;
                 case "forcefocus":
-                    ForceFocus();
+                    BenchPatches(ForceFocus);
                     break;
                 case "controllermap" when arg.Trim() == "stale":
                     ControllerMapStale();
@@ -1193,7 +1396,7 @@ public static partial class AutoTest
                     Hover(int.Parse(arg));
                     break;
                 case "eventtrace":
-                    EventTrace();
+                    BenchPatches(EventTrace);
                     break;
                 case "checktips":
                     CheckTips(arg.Trim());
@@ -1212,10 +1415,10 @@ public static partial class AutoTest
                     break;
                 case "counters":
                     Say($"  COUNTERS {arg.Trim()}: {LimitlessReserialize.Name} kept {LimitlessReserialize.Kept}, rebuilt {LimitlessReserialize.Rebuilt}, skipped getters {LimitlessReserialize.SkippedGetters}, known data {LimitlessReserialize.KnownData}, "
-                        + $"verify mismatches {LimitlessReserialize.VerifyMismatches}; {LimitlessRecalcSkip.Name} passes skipped {LimitlessRecalcSkip.PassesSkipped}, run {LimitlessRecalcSkip.PassesRun}, mismatches {LimitlessRecalcSkip.PassMismatches}, skipped {LimitlessRecalcSkip.Skipped}, verified {LimitlessRecalcSkip.Verified}, mismatches {LimitlessRecalcSkip.Mismatches}; {LimitlessHookSkip.Name} samples {LimitlessHookSkip.Samples}, mismatches {LimitlessHookSkip.SampleMismatches}; {SnapshotCardReuse.Name} reused {SnapshotCardReuse.Reused}, built {SnapshotCardReuse.Built}, upgraded {SnapshotCardReuse.LightBuilt}, piles trusted {SnapshotCardReuse.PilesTrusted}, pile bits reused {SnapshotCardReuse.PileBitsReused}, composed {SnapshotCardReuse.PileBitsComposed}, pile mismatches {SnapshotCardReuse.PileMismatches}, verified {SnapshotCardReuse.Verified}, mismatches {SnapshotCardReuse.Mismatches}, piles reused {SnapshotCardReuse.PilesReused}, built {SnapshotCardReuse.PilesBuilt}, bits reused {SnapshotCardReuse.BitsReused}, captured {SnapshotCardReuse.BitsCaptured}, checked {SnapshotCardReuse.BitChecks}; {FastListeners.Name} cache mismatches {FastListeners.CacheMismatches}, "
+                        + $"verified {LimitlessReserialize.Verified}, verify mismatches {LimitlessReserialize.VerifyMismatches}; {LimitlessRecalcSkip.Name} passes skipped {LimitlessRecalcSkip.PassesSkipped}, run {LimitlessRecalcSkip.PassesRun}, mismatches {LimitlessRecalcSkip.PassMismatches}, skipped {LimitlessRecalcSkip.Skipped}, verified {LimitlessRecalcSkip.Verified}, mismatches {LimitlessRecalcSkip.Mismatches}; {LimitlessHookSkip.Name} samples {LimitlessHookSkip.Samples}, mismatches {LimitlessHookSkip.SampleMismatches}; {SnapshotCardReuse.Name} reused {SnapshotCardReuse.Reused}, built {SnapshotCardReuse.Built}, upgraded {SnapshotCardReuse.LightBuilt}, piles trusted {SnapshotCardReuse.PilesTrusted}, pile bits reused {SnapshotCardReuse.PileBitsReused}, composed {SnapshotCardReuse.PileBitsComposed}, pile mismatches {SnapshotCardReuse.PileMismatches}, verified {SnapshotCardReuse.Verified}, mismatches {SnapshotCardReuse.Mismatches}, piles reused {SnapshotCardReuse.PilesReused}, built {SnapshotCardReuse.PilesBuilt}, bits reused {SnapshotCardReuse.BitsReused}, captured {SnapshotCardReuse.BitsCaptured}, checked {SnapshotCardReuse.BitChecks}, game exceptions {SnapshotCardReuse.GameExceptions}; {LimitlessCloneMemo.Name} options reused {LimitlessCloneMemo.OptionsReused}; {ListenerCache.Name} suspended revalidations {ListenerCache.SuspendedRevalidations}; {FastListeners.Name} cache mismatches {FastListeners.CacheMismatches}, "
                         + $"segments rebuilt {FastListeners.SegmentRebuilds} (versions {FastListeners.RebuiltVersions}, pile version {FastListeners.PileVersion}), "
                         + $"extended {FastListeners.SegmentExtends}, kept across moves {FastListeners.SegmentMoveHits}, snapshot catch-ups {FastListeners.SnapshotCatchUps}, rebuilds {FastListeners.SnapshotRebuilds}, move checks {FastListeners.MoveChecks}, mismatches {FastListeners.MoveMismatches}, hits {FastListeners.SegmentHits}, uncached walks {FastListeners.UncachedWalks}; "
-                        + $"{HookFilter.Name} walk checks {HookFilter.WalkChecks}, mismatches {HookFilter.WalkMismatches}, cost color checks {HookFilter.CostColorChecks / 64}, mismatches {HookFilter.CostColorMismatches}; {RelicFlashMerge.Name} merged {RelicFlashMerge.Merged}; {CardFlightLimit.Name} skipped {CardFlightLimit.Skipped}; {ReplayStateSkip.Name} skipped {ReplayStateSkip.Skipped}; {ThemeColorSkip.Name} skipped {ThemeColorSkip.Skipped}, set {ThemeColorSkip.Set}; {GcPacing.Name} regions {GcPacing.Regions}, refused {GcPacing.RegionsRefused}, exhausted {GcPacing.Exhausted}, {GcPacing.RegionMs:F0} ms, collections {GcPacing.Collections} (full {GcPacing.Fulls}) in {GcPacing.CollectMs:F0} ms, worst {GcPacing.WorstCollectMs:F0} ms; {PileIndex.Name} duplicate checks fast {PileIndex.FastDuplicateChecks}, slow {PileIndex.SlowDuplicateChecks}; subscriber checks {FastListeners.SubscriberChecks} in {FastListeners.SubscriberCheckTicks * 1000.0 / Stopwatch.Frequency:F1} ms; "
+                        + $"{HookFilter.Name} walk checks {HookFilter.WalkChecks}, mismatches {HookFilter.WalkMismatches}, cost color checks {HookFilter.CostColorChecks / 64}, mismatches {HookFilter.CostColorMismatches}; {RelicFlashMerge.Name} merged {RelicFlashMerge.Merged}; {CardFlightLimit.Name} skipped {CardFlightLimit.Skipped}; {ReplayStateSkip.Name} skipped {ReplayStateSkip.Skipped}; {ThemeColorSkip.Name} skipped {ThemeColorSkip.Skipped}, set {ThemeColorSkip.Set}; {GcPacing.Name} regions {GcPacing.Regions}, refused {GcPacing.RegionsRefused}, exhausted {GcPacing.Exhausted}, {GcPacing.RegionMs:F0} ms, collections {GcPacing.Collections} (full {GcPacing.Fulls}) in {GcPacing.CollectMs:F0} ms, worst {GcPacing.WorstCollectMs:F0} ms; {PileIndex.Name} duplicate checks fast {PileIndex.FastDuplicateChecks}, slow {PileIndex.SlowDuplicateChecks}, fast ContainsCard {PileIndex.FastContainsCards}; {HookSkip.Name} pending filters dropped {HookSkip.PendingFiltersDropped}; subscriber checks {FastListeners.SubscriberChecks} in {FastListeners.SubscriberCheckTicks * 1000.0 / Stopwatch.Frequency:F1} ms; "
                         + $"{CardSortKeys.Name} sorts {CardSortKeys.Sorts}, answered {CardSortKeys.Answered}, refused {CardSortKeys.Refused} (last: {CardSortKeys.LastRefusal ?? "none"}), checks {CardSortKeys.Checks}, mismatches {CardSortKeys.Mismatches}");
                     break;
                 case "effects":
@@ -1314,7 +1517,7 @@ public static partial class AutoTest
                     await PlayCard(tree, playArgs[0].ToUpperInvariant(), playArgs.Count > 1 ? int.Parse(playArgs[1]) : 0, free, optionalCard);
                     break;
                 case "endturn":
-                    EndTurn();
+                    await EndTurnLine(tree);
                     break;
                 case "watch":
                     Watch(tree, double.Parse(arg.Trim()));
@@ -1398,15 +1601,28 @@ public static partial class AutoTest
         }
     }
 
+    /// <summary>
+    /// A wait still going after this long logs one line with the state: the runners kill a session whose log stays silent for their
+    /// StallSec (240-300 s), before a longer wait's own timeout could say what it waited on. Once only: a stuck session is still
+    /// killed, StallSec later.
+    /// </summary>
+    private const double WaitNoticeSeconds = 180;
+
     /// <summary>Waits until the condition holds for 10 frames in a row.</summary>
     private static async Task Until(SceneTree node, Func<bool> condition, double timeout, string what)
     {
         double start = _clock.Elapsed.TotalSeconds;
         int held = 0;
+        bool told = false;
         while (held < 10)
         {
             await Frames(node, 1);
             held = condition() ? held + 1 : 0;
+            if (!told && timeout > WaitNoticeSeconds && _clock.Elapsed.TotalSeconds - start > WaitNoticeSeconds)
+            {
+                told = true;
+                Say($"  still waiting for {what} after {WaitNoticeSeconds:F0} s (limit {timeout:F0} s; {StateText()})");
+            }
             ThrowIfNetCommandFailed();
             if (_turnLoopDied)
             {
@@ -1431,7 +1647,8 @@ public static partial class AutoTest
         if (parts[0] == "round")
         {
             // waitfor round <n> [timeout]: the combat's round n has begun and this player can act (both peers ended the turn before),
-            // or the combat is over. "turn" doesn't wait for the other peer: a player who ended the turn is idle at once.
+            // or the combat is over. "turn" after this player's endturn waits for the next round as well (ending the turn disables
+            // this player's actions until then, and the endturn line waits until the game took it); "round" names the round.
             int round = int.Parse(parts[1]);
             return Until(node, () => !CombatManager.Instance.IsInProgress
                 || (CombatManager.Instance.DebugOnlyGetState()?.RoundNumber >= round && IsIdle()), parts.Length > 2 ? double.Parse(parts[2]) : 120, "round " + round);
@@ -1504,14 +1721,32 @@ public static partial class AutoTest
             + $"enemyTurn {combat.IsEnemyTurnStarted}, executing {RunManager.Instance.ActionExecutor?.IsRunning}";
     }
 
-    /// <summary>Script <c>state [label]</c>: creatures' HP, block and powers, plus the local piles, for A/B comparisons.</summary>
-    private static void LogState(string label)
+    /// <summary>
+    /// A script <c>state</c> line outside a combat fails unless it says <c>optional</c> (both sides of an A/B would log "no combat"
+    /// and compare equal, a false pass). The scenarios that log it there on purpose say <c>optional</c>: clone-on/off and
+    /// cloneopt-on/off ('state before'/'state after'), audit-coopdeath-client (the dead player's 'state dead' and 'state t3' to 't6').
+    /// </summary>
+    private const bool StateOutsideCombatFails = true;
+
+    /// <summary>
+    /// Script <c>state [label] [optional]</c>: creatures' HP, block and powers, plus the local piles, for A/B comparisons. Without a
+    /// combat it compares nothing (<c>runstate</c> is the one outside combat): the script line then fails unless <c>optional</c>
+    /// (<see cref="StateOutsideCombatFails"/>); the turn-start and sweep states never do.
+    /// </summary>
+    private static void LogState(string label, bool optional = true)
     {
         CombatState? combat = CombatManager.Instance.DebugOnlyGetState();
         Player? me = Me();
         if (combat == null || me?.PlayerCombatState == null)
         {
-            Say($"  STATE {label}: no combat");
+            if (StateOutsideCombatFails && !optional)
+            {
+                MissingStep(optional: false, $"STATE {label}: no combat");
+            }
+            else
+            {
+                Say($"  STATE {label}: no combat");
+            }
             return;
         }
         static string Describe(Creature c) =>
@@ -1541,10 +1776,16 @@ public static partial class AutoTest
     private static readonly List<double> _frameMs = new();
     private static long _lastFrame;
 
+    /// <summary>
+    /// Frame times are kept once something measures them (an fpsstat, an AutoSlay phase, a sweep step, framedetail): a session
+    /// without (the leak series) would otherwise grow the list by a frame each, millions headless, counted in every gcfull's heap.
+    /// </summary>
+    private static bool _recordFrames;
+
     private static void RecordFrame()
     {
         long now = Stopwatch.GetTimestamp();
-        if (_lastFrame != 0)
+        if (_lastFrame != 0 && _recordFrames)
         {
             _frameMs.Add(Stopwatch.GetElapsedTime(_lastFrame, now).TotalMilliseconds);
         }
@@ -1597,6 +1838,7 @@ public static partial class AutoTest
             }
         };
         _frameDetail = true;
+        _recordFrames = true;
         FrameDetailReset();
     }
 
@@ -1645,6 +1887,7 @@ public static partial class AutoTest
     /// </summary>
     private static void FpsStat(string label)
     {
+        _recordFrames = true; // Every script's first fpsstat (bare) opens the window the next one reads.
         if (label.Length > 0 && _frameMs.Count > 0)
         {
             double[] sorted = _frameMs.OrderBy(ms => ms).ToArray();
@@ -1711,7 +1954,7 @@ public static partial class AutoTest
         }
         _hovered = MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom.Instance?.GetCreatureNode(enemy) ?? throw new InvalidOperationException("no node for " + enemy);
         // checktips compares each panel with what it was placed for: watched from the first panel on.
-        WatchTips();
+        BenchPatches(WatchTips);
         _hitboxAtLastChange = null;
         AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Combat.NCreature), "OnFocus").Invoke(_hovered, null);
         if (MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom.Instance?.Ui.Hand.InCardPlay == false)
@@ -2169,10 +2412,13 @@ public static partial class AutoTest
         Say($"  RESTSITE {name}: ok in {Stopwatch.GetElapsedTime(start).TotalMilliseconds:F0} ms, deck {before} -> {Me()!.Deck.Cards.Count}");
     }
 
-    /// <summary>Plays up to n cards from hand, like clicks: each one waits for the game to be idle again.</summary>
     /// <summary>Script <c>avoid ID,ID</c>: cards <c>play</c> leaves in hand (Apotheosis upgrades a whole huge deck at each play).</summary>
     private static readonly HashSet<string> _avoid = new();
 
+    /// <summary>
+    /// Script <c>play &lt;n&gt;</c>: plays up to n cards from hand, like clicks: each one waits for the game to be idle again. Up to:
+    /// it stops when the combat ends or nothing is playable, and "played 0" is a normal outcome (a combat already won, an empty hand).
+    /// </summary>
     private static async Task Play(SceneTree node, int count)
     {
         int played = 0;
@@ -2259,14 +2505,12 @@ public static partial class AutoTest
         Say($"  played {id} in {Stopwatch.GetElapsedTime(start).TotalMilliseconds:F0} ms (until idle or combat end)");
     }
 
-    private static MegaCrit.Sts2.Core.Nodes.Screens.NDeckViewScreen? _deckView;
-
     /// <summary>Script <c>deckview [s] [screenshot name]</c>: opens the deck view (timed), keeps it open, closes it (timed).</summary>
     private static async Task DeckView(SceneTree tree, double seconds, string? screenshot)
     {
         Player me = Me() ?? throw new InvalidOperationException("no local player");
         long start = Stopwatch.GetTimestamp();
-        _deckView = MegaCrit.Sts2.Core.Nodes.Screens.NDeckViewScreen.ShowScreen(me);
+        MegaCrit.Sts2.Core.Nodes.Screens.NDeckViewScreen.ShowScreen(me);
         double openMs = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
         await Frames(tree, 1);
         Say($"  deck view opened: {openMs:F0} ms call, {Stopwatch.GetElapsedTime(start).TotalMilliseconds:F0} ms to first frame ({me.Deck.Cards.Count} cards)");
@@ -2279,7 +2523,6 @@ public static partial class AutoTest
         MegaCrit.Sts2.Core.Nodes.Screens.Capstones.NCapstoneContainer.Instance?.Close();
         await Frames(tree, 1);
         Say($"  deck view closed in {Stopwatch.GetElapsedTime(start).TotalMilliseconds:F0} ms");
-        _deckView = null;
     }
 
     /// <summary>Script <c>decksort</c>: opens the deck view and sorts its grid by cost then title, as its sort buttons do.</summary>
@@ -2405,10 +2648,6 @@ public static partial class AutoTest
     }
 
     /// <summary>
-    /// Script <c>baselibmenu &lt;screenshot name&gt;</c>: BaseLib's mod configuration menu on this mod's settings. By
-    /// reflection: this DLL must not reference BaseLib (optional).
-    /// </summary>
-    /// <summary>
     /// Script <c>language &lt;code&gt;</c>: switches the game language for this session only (LocManager, not saved), then
     /// logs this mod's menu texts as the game's settings_ui table now has them.
     /// </summary>
@@ -2422,6 +2661,10 @@ public static partial class AutoTest
             + $"card_type_line \"{Text("-CARD_TYPE_LINE.title")}\" / \"{Text("-CARD_TYPE_LINE.hover.desc")}\"");
     }
 
+    /// <summary>
+    /// Script <c>baselibmenu &lt;screenshot name&gt; [row to hover]</c>: BaseLib's mod configuration menu on this mod's settings. By
+    /// reflection: this DLL must not reference BaseLib (optional).
+    /// </summary>
     private static async Task BaseLibMenu(SceneTree tree, string shot, string? hover = null)
     {
         var menu = NGame.Instance?.MainMenu ?? throw new InvalidOperationException("not on the main menu");
@@ -2519,10 +2762,29 @@ public static partial class AutoTest
         return null;
     }
 
+    /// <summary>Asks to end this player's turn (a click on the button): the action runs later, through the queue.</summary>
     private static void EndTurn()
     {
         Player me = Me() ?? throw new InvalidOperationException("no local player");
         RunManager.Instance.ActionQueueSynchronizer.RequestEnqueue(new EndPlayerTurnAction(me, me.PlayerCombatState!.TurnNumber));
+    }
+
+    /// <summary>
+    /// Script <c>endturn</c>: ends the turn and waits until the game took it (this player's actions disabled or marked ready, the turn
+    /// moved on, or the combat over). A co-op client's request only reaches its own queue when the host's echo comes back: without
+    /// the wait, the next <c>waitfor turn</c> passed at once, and its <c>state</c> and <c>play</c> lines landed in the turn just ended.
+    /// </summary>
+    private static async Task EndTurnLine(SceneTree tree)
+    {
+        Player me = Me() ?? throw new InvalidOperationException("no local player");
+        int turn = me.PlayerCombatState?.TurnNumber ?? throw new InvalidOperationException("not in combat");
+        EndTurn();
+        await Until(tree, () =>
+        {
+            CombatManager combat = CombatManager.Instance;
+            return !combat.IsInProgress || combat.PlayerActionsDisabled || combat.IsPlayerReadyToEndTurn(me)
+                || me.PlayerCombatState?.TurnNumber != turn;
+        }, 120, "turn ended");
     }
 
     private static void Quit()

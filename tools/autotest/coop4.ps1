@@ -18,7 +18,8 @@ $characters = "IRONCLAD", "SILENT", "DEFECT", "REGENT"
 $realAppData = $env:APPDATA
 $procs = [Collections.Generic.List[object]]::new()
 $logs = [Collections.Generic.List[string]]::new()
-$port = 33890
+# The slot's own port (parlib.ps1's Get-SlotPort): never one a parcoop series on another slot uses.
+$port = Get-SlotPort 49
 function Start-Peer([string]$log, [string]$script, [string[]]$mode) {
     Remove-Item $log -ErrorAction SilentlyContinue
     $logs.Add($log)
@@ -33,7 +34,13 @@ try {
     $slotLocked = Lock-Slot 49
     $slot = Sync-Slot 49 -Coop
     $profiles = Join-Path $slot "SlayTheSpire2\default"
-    foreach ($i in 2..($Peers - 1)) { robocopy (Join-Path $profiles "1001") (Join-Path $profiles (1000 + $i)) /MIR /NFL /NDL /NJH /NJS | Out-Null }
+    # The third peer and up: the first client's profile (2 peers: none; 2..1 would count down and mirror 1001 onto itself).
+    if ($Peers -gt 2) {
+        foreach ($i in 2..($Peers - 1)) {
+            robocopy (Join-Path $profiles "1001") (Join-Path $profiles (1000 + $i)) /MIR /R:2 /W:1 /NFL /NDL /NJH /NJS | Out-Null
+            if ($LASTEXITCODE -ge 8) { throw "robocopy of profile 1001 to $(1000 + $i) failed (exit code $LASTEXITCODE)" }
+        }
+    }
     $env:APPDATA = $slot
     Start-Peer (Join-Path $out "$Name-host.log") (Join-Path $Scenarios "$Name-host.txt") @("--fastmp", "host_standard")
     Start-Sleep 12

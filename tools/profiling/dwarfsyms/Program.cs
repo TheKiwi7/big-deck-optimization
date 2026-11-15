@@ -1,6 +1,8 @@
 // Function table of a PE file carrying DWARF (the game's engine: no .pdb, ~800 MB of .debug_* sections in the exe):
 // every subprogram with code, as "start rva, end rva, qualified name", sorted, for etwreport.py.
 //   dotnet run --project tools/profiling/dwarfsyms -c Release -- <SlayTheSpire2.exe> <funcs.tsv>
+// DWARF 2-4 only: a DWARF 5 unit's strx names, addrx addresses and .debug_rnglists ranges are not read (its functions come
+// out as '?' or missing), so the tool warns when it meets one instead of attributing samples wrongly.
 using System.Buffers.Binary;
 using System.Text;
 
@@ -42,6 +44,7 @@ string Str(int off)
 var funcs = new List<(ulong lo, ulong hi, string name)>();
 var abbrevCache = new Dictionary<long, Dictionary<ulong, Abbrev>>();
 var versions = new Dictionary<int, int>();
+int v5RangesSkipped = 0;
 int pos = info.off, end = info.off + info.size, units = 0;
 
 while (pos < end)
@@ -152,6 +155,8 @@ while (pos < end)
             var n = full ?? linkage ?? "?";
             if (hasLo && hasHi && lo != 0)
                 funcs.Add((lo, hiIsOffset ? lo + hi : hi, n));
+            else if (rangesOff != ulong.MaxValue && version >= 5)
+                v5RangesSkipped++; // .debug_rnglists, not the v4 pairs of .debug_ranges: decoding it as those would be garbage
             else if (rangesOff != ulong.MaxValue && rangesSec.size > 0)
             {
                 int r = rangesSec.off + (int)rangesOff;
@@ -178,6 +183,12 @@ using (var w = new StreamWriter(args[1]))
     foreach (var (lo, hi, n) in funcs)
         w.WriteLine($"{lo - imageBase:x}\t{hi - imageBase:x}\t{n}");
 Console.WriteLine($"image base {imageBase:x}, {units} units, versions {string.Join(",", versions.Select(k => $"v{k.Key}:{k.Value}"))}, {funcs.Count} functions");
+if (versions.Keys.Any(v => v >= 5))
+{
+    Console.Error.WriteLine($"WARNING: {versions.Where(k => k.Key >= 5).Sum(k => k.Value)} DWARF 5 unit(s): their strx names, addrx addresses and "
+        + $".debug_rnglists ranges ({v5RangesSkipped} skipped) are not read: their functions are '?' or missing from the table, "
+        + "so engine samples there are not attributed. Add DWARF 5 support before trusting a report on this build.");
+}
 
 Dictionary<ulong, Abbrev> Abbrevs(long off)
 {

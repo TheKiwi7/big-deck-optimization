@@ -75,7 +75,7 @@ public static class RelicBench
             .Select(g => $"{g.Key} {g.Count()}x{propertyCounts[g.First().GetType()]}").Take(40));
         string msg = $"relics x{iterations}: {relics.Count} relics of {propertyCounts.Count} types, {withoutProps} with no saved property (lookup {(lookup != null ? "found" : "missing")}); "
             + $"per pass: ToSerializable {vanilla:F3} ms, From {from:F3} ms, reuse path {reuse:F3} ms (built {builtPerPass}, reused {reusedPerPass}, of those without From {scalarPerPass}), reuse path through From {reuseFrom:F3} ms; "
-            + $"scalar part applied {RelicStateReuse.ScalarApplied}, verified {RelicStateReuse.ScalarVerified}, last miss: {why}; with properties: {rebuiltTypes}";
+            + $"scalar part applied {RelicStateReuse.ScalarApplied}, verified {RelicStateReuse.ScalarVerified}, last miss: {why}, getters compiled {RelicStateReuse.GettersCompiled} for {RelicStateReuse.PlansBuilt} relic types; with properties: {rebuiltTypes}";
         return new CmdResult(success: true, msg);
     }
 }
