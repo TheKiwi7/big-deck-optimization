@@ -34,8 +34,8 @@ listeners were all dropped keeps a null stack where vanilla leaves an empty one.
 tells them apart and nothing reads it (game, decompiled mods); a new reader would change no pinned fingerprint.
 
 Every game version the DLL has code paths for is classified on its own code (the table is rewritten from the versions
-given: one left out loses its rows; v0.111.0, the former beta, is no longer tested since 2026-11-16 but keeps its rows, so
-it stays in the command below): an entry is kept for a version only when that version's hook passes, and carries what it relies on in that version: the hook's code fingerprint, the fingerprint of each
+given: one left out loses its rows, and its hooks then run the game's code there; since 2026-11-16 only the public version
+and the latest beta are given, v0.111.0, the former beta, no longer): an entry is kept for a version only when that version's hook passes, and carries what it relies on in that version: the hook's code fingerprint, the fingerprint of each
 AbstractModel default it calls ("Name=FP"), and, for hooks using choice contexts / PushModel / ExecutionFinished, the
 helpers' fingerprints of that version (HelperProfiles, reviewed by hand: tools/fpdiff review flags them when they change).
 HookSkip turns a hook on only when all of these match the running game.
@@ -43,7 +43,7 @@ HookSkip turns a hook on only when all of these match the running game.
 Usage (repo root), per version: decompile the game (ilspycmd -p) and dump the fingerprints, then classify all at once
 (from Git Bash; in Windows PowerShell 5.1 `>` writes UTF-16, which load() also reads, or pipe to `Out-File -Encoding utf8`):
   dotnet run --project tools/fpdiff -c Release -- hookfps <game>/data_sts2_windows_x86_64 > fps-<version>.txt
-  python -I tools/hookskip/classify.py v0.107.1 decompiled/sts2 fps-v0.107.1.txt v0.111.0 decompiled/sts2-beta fps-v0.111.0.txt \
+  python -I tools/hookskip/classify.py v0.107.1 decompiled/sts2 fps-v0.107.1.txt \
       v0.113.1 decompiled/sts2-beta-0.113.1 fps-v0.113.1.txt
 """
 import glob
