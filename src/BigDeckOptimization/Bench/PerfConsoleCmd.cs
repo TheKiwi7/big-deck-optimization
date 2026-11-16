@@ -178,7 +178,8 @@ public class PerfConsoleCmd : AbstractConsoleCmd
                 Config.Settings.RefreshConflicts();
                 return new CmdResult(success: true, Config.Settings.WhyReport()
                     + $"\nPreflight: {PatchSafety.PreflightRuns} runs, {PatchSafety.PreflightChecks} checks, {PatchSafety.RecordedBackOffs} back-offs and notes recorded"
-                    + $"\nTolerated: {PatchSafety.ToleratedChecks} checks" + string.Concat(PatchSafety.ToleratedReport().Select(t => "\n  " + t)));
+                    + $"\nTolerated: {PatchSafety.ToleratedChecks} checks" + string.Concat(PatchSafety.ToleratedReport().Select(t => "\n  " + t))
+                    + "\nRuntime (other mods' patches, per call site):" + string.Concat(PatchSafety.RuntimeReport().Select(t => "\n  " + t)));
             case "foreign":
                 // ForeignPatches: synthetic patches of each shape under a foreign Harmony id (same arguments as the script's foreignpatch).
                 try

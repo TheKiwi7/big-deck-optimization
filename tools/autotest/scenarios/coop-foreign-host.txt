@@ -1,0 +1,50 @@
+# Co-op with foreign patches (host), coop-host otherwise: the shape rules (DESIGN "Foreign patches judged by their shape")
+# with peers of the same mods. Run with parcoop -OnOff: each peer against its mod-off twin, and the game's own checksums between
+# peers. Every machine needs the same bigdeck/ref.run.
+timeout 2400
+expect FOREIGN runtime HookFilter Hook\.ModifyKeywordsInCombat \(PrefixesOnly\) kept [1-9]
+expect FOREIGN runtime PileIndex CardPile\.AddInternal \(SurroundingOnly\) kept [1-9]
+expect FOREIGN runtime HookSkip AbstractModel\.AfterCardPlayed \(TypeGated\) kept [1-9]
+mplobby NECROBINDER 2
+waitfor run 240
+cmd bdperf checks off
+wait 8
+cmd bigdeck import ref all all {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+enemyhp 999999
+# The same synthetic patches of "another mod" on every peer (Bench/ForeignPatches.cs), tolerated ones with effects the checksums
+# and states see: a void prefix before HookFilter's mirror, Squeeze's Retain (void prefix) and +1 cost (postfix on the result),
+# cost reads around each card add, counted and type-gated patches, a near miss. The mod-off twins (parcoop -OnOff) keep them.
+foreignpatch noop-prefix MegaCrit.Sts2.Core.Hooks.Hook:ShouldPlay priority 800
+foreignpatch count-postfix MegaCrit.Sts2.Core.Hooks.Hook:AfterCardPlayed
+foreignpatch count-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal
+foreignpatch keyword-prefix MegaCrit.Sts2.Core.Hooks.Hook:ModifyKeywordsInCombat squeeze priority 800
+foreignpatch cost-postfix MegaCrit.Sts2.Core.Hooks.Hook:ModifyEnergyCostInCombat squeeze
+foreignpatch probe-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal
+foreignpatch probe-postfix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal
+foreignpatch gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardPlayed squeeze
+foreignpatch gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardPlayedLate relic
+foreignpatch gated-or-postfix MegaCrit.Sts2.Core.Models.AbstractModel:BeforeCardPlayed squeeze-relic
+foreignpatch nearmiss-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterSideTurnEnd squeeze
+wait 25
+cmd fight CULTISTS_NORMAL
+waitfor idle 900
+cmd bdperf combatstart
+state t1
+play 4
+endturn
+waitfor idle 900
+state t2
+play 4
+endturn
+waitfor idle 900
+state t3
+cmd bdperf verify
+foreignpatch report end
+foreignpatch require tolerated
+cmd kill all
+waitfor nocombat 600
+wait 20
+quit

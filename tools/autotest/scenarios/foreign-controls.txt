@@ -1,17 +1,40 @@
 # Foreign patches judged by their shape: the positive controls. Each of these synthetic patches of "another mod" (Harmony ids
-# bdtest.foreign.*, Bench/ForeignPatches.cs) can change what the patched method does or skip it, so the optimization relying on that
-# method must back off there ("normal game for that part"), as before the shape rules; the expect lines must all be seen.
+# bdtest.foreign.*, Bench/ForeignPatches.cs) can change what the patched method does, skip it, or run where the game wouldn't,
+# so the optimization relying on that method must back off there ("normal game for that part"); the expect lines must all be seen.
+# Each control sits on its own hook, so a base default's runtime check isn't cut short by a control on its hook (FilterFor checks
+# the hook first). FOREIGN runtime lines come from the runtime checks only (not the preflight, which bdopt why and bdperf
+# conflicts run): "kept 0 backed off N" is a back-off the runtime itself made.
 timeout 600
 expect HookSkip: Hook\.AfterCardPlayed is also patched by bdtest\.foreign\.bool-prefix \(postfixes and void prefixes not enough\): normal game for that part
-expect HookSkip: Hook\.AfterCardDrawn is also patched by bdtest\.foreign\.ref-prefix \(postfixes and void prefixes not enough\): normal game for that part
+expect FOREIGN runtime HookSkip Hook\.AfterCardPlayed \(SurroundingOnly\) kept 0 backed off [1-9]
+expect FOREIGN classify Hook\.AfterCardPlayed \(synthetic\): bdtest\.foreign\.inner-postfix InnerPostfix .*SurroundingOnly backs off \(inner postfix
+expect HookSkip: Hook\.AfterSideTurnStart is also patched by bdtest\.foreign\.ref-prefix \(postfixes and void prefixes not enough\): normal game for that part
 expect PileIndex: CardPile\.AddInternal is also patched by bdtest\.foreign\.identity-transpiler \(postfixes and void prefixes not enough\)
 expect FastListeners: CardPile\.AddInternal is also patched by bdtest\.foreign\.identity-transpiler \(postfixes and void prefixes not enough\)
 expect CardDbScan: CardPile\.AddInternal is also patched by bdtest\.foreign\.identity-transpiler \(postfixes and void prefixes not enough\)
-expect HookFilter: Hook\.ShouldPlay is also patched by bdtest\.foreign\.noop-prefix \(postfixes and void prefixes not enough\)
-expect FOREIGN classify Hook\.ShouldPlay: bdtest\.foreign\.noop-prefix Prefix .*SurroundingOnly backs off \(void prefix running after a prefix of this mod that may skip the original\)
-expect FOREIGN classify Hook\.AfterCardPlayed: bdtest\.foreign\.inner-postfix InnerPostfix \(synthetic\): SurroundingOnly backs off \(inner postfix
-expect HookSkip: AbstractModel\.AfterCardPlayed is also patched by bdtest\.foreign\.nearmiss-postfix-squeeze \(patches gated on the listener's type not enough\)
-expect FOREIGN classify AbstractModel\.AfterCardPlayed: bdtest\.foreign\.nearmiss-postfix-squeeze Postfix .*TypeGated backs off \(postfix not provably gated
+expect FOREIGN runtime CardDbScan CardPile\.AddInternal \(SurroundingOnly\) kept 0 backed off [1-9]
+expect FOREIGN classify CardPile\.RemoveInternal: bdtest\.foreign\.noop-prefix Prefix .*priority 0: SurroundingOnly backs off \(void prefix running after a prefix of this mod
+expect FOREIGN classify CardPile\.RemoveInternal: bdtest\.foreign\.byref-postfix Postfix .*SurroundingOnly backs off \(postfix taking card by reference\)
+expect FOREIGN runtime PileIndex CardPile\.RemoveInternal \(SurroundingOnly\) kept 0 backed off [1-9]
+expect HookFilter: Hook\.ShouldPlay is also patched by bdtest\.foreign\.noop-prefix \(void prefixes not enough\): normal game for that part
+expect FOREIGN classify Hook\.ShouldPlay: bdtest\.foreign\.noop-prefix Prefix .*PrefixesOnly backs off \(void prefix running after a prefix of this mod
+expect HookFilter: Hook\.ModifyKeywordsInCombat is also patched by bdtest\.foreign\.noop-postfix \(void prefixes not enough\): normal game for that part
+expect FOREIGN runtime HookFilter Hook\.ModifyKeywordsInCombat \(PrefixesOnly\) kept 0 backed off [1-9]
+expect FOREIGN runtime HookSkip Hook\.ModifyKeywordsInCombat \(SurroundingOnly\) kept [1-9]
+expect FOREIGN classify Hook\.ModifyEnergyCostInCombat: bdtest\.foreign\.runoriginal-postfix Postfix .*SurroundingOnly backs off \(postfix reading __runOriginal\)
+expect HookSkip: Hook\.ModifyEnergyCostInCombat is also patched by bdtest\.foreign\.runoriginal-postfix \(postfixes and void prefixes not enough\)
+expect FOREIGN classify Hook\.ShouldAllowHitting: bdtest\.foreign\.dup-prefix Prefix .*priority 800: .*PrefixesOnly backs off \(void prefix running after a prefix of this mod
+expect FOREIGN classify Hook\.AfterEnergySpent: bdtest\.foreign\.argsrename-prefix Prefix .*SurroundingOnly backs off \(patch renaming its parameters
+expect FOREIGN classify Hook\.BeforeHandDraw: bdtest\.foreign\.factory-postfix Postfix .*SurroundingOnly backs off \(factory patch method
+expect FOREIGN runtime HookSkip Hook\.BeforeHandDraw \(SurroundingOnly\) kept 0 backed off [1-9]
+expect FOREIGN classify AbstractModel\.BeforeCardPlayed: bdtest\.foreign\.nearmiss-postfix-squeeze Postfix .*TypeGated backs off \(postfix not provably gated
+expect FOREIGN runtime HookSkip AbstractModel\.BeforeCardPlayed \(TypeGated\) kept 0 backed off [1-9]
+expect FOREIGN classify AbstractModel\.AfterCardDrawn: bdtest\.foreign\.renamed-gated-postfix-squeeze Postfix .*TypeGated backs off \(patch renaming its parameters
+expect FOREIGN runtime HookSkip AbstractModel\.AfterCardDrawn \(TypeGated\) kept 0 backed off [1-9]
+expect FOREIGN classify AbstractModel\.AfterEnergyReset: bdtest\.foreign\.gated-patched-postfix-squeeze Postfix .*TypeGated backs off \(postfix whose own method is patched\)
+expect FOREIGN runtime HookSkip AbstractModel\.AfterEnergyReset \(TypeGated\) kept 0 backed off [1-9]
+expect FOREIGN classify AbstractModel\.AfterSideTurnEnd: bdtest\.foreign\.cctor-gated-postfix-squeeze Postfix .*TypeGated backs off \(postfix not provably gated
+expect FOREIGN runtime HookSkip AbstractModel\.AfterSideTurnEnd \(TypeGated\) kept 0 backed off [1-9]
 newrun NECROBINDER
 waitfor run 120
 wait 2
@@ -19,13 +42,30 @@ cmd bigdeck import ref all cards
 enemyhp 999999
 # (4) must back off: a bool prefix returning true, a prefix with ref __result, an identity transpiler, an inner postfix (classified only).
 foreignpatch bool-prefix MegaCrit.Sts2.Core.Hooks.Hook:AfterCardPlayed
-foreignpatch ref-prefix MegaCrit.Sts2.Core.Hooks.Hook:AfterCardDrawn
+foreignpatch ref-prefix MegaCrit.Sts2.Core.Hooks.Hook:AfterSideTurnStart
 foreignpatch identity-transpiler MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal
 foreignpatch inner-postfix MegaCrit.Sts2.Core.Hooks.Hook:AfterCardPlayed
+# A void prefix Harmony runs after this mod's tracking prefixes (Priority.Last, registered later), and a postfix taking the card by
+# reference (the finalizers read that slot after it).
+foreignpatch noop-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:RemoveInternal priority 0
+foreignpatch byref-postfix MegaCrit.Sts2.Core.Entities.Cards.CardPile:RemoveInternal
 # A void prefix Harmony runs after HookFilter's mirror (same priority, registered later): may never run, so not tolerated.
 foreignpatch noop-prefix MegaCrit.Sts2.Core.Hooks.Hook:ShouldPlay
-# (5) near miss: a static write before the type test, so it runs for every listener: not gated.
-foreignpatch nearmiss-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardPlayed squeeze
+# A postfix on a HookFilter mirror: the mirror skips the original (no postfix there), HookSkip's walk keeps it.
+foreignpatch noop-postfix MegaCrit.Sts2.Core.Hooks.Hook:ModifyKeywordsInCombat
+# A postfix reading __runOriginal (false behind a prefix of this mod that skipped the original): nowhere.
+foreignpatch runoriginal-postfix MegaCrit.Sts2.Core.Hooks.Hook:ModifyEnergyCostInCombat
+# One void prefix registered twice, before HookFilter's mirror and after it: the later copy decides.
+foreignpatch dup-prefix MegaCrit.Sts2.Core.Hooks.Hook:ShouldAllowHitting
+# A prefix renaming a parameter to __args (Harmony writes the array back), and a factory postfix (its code made by Harmony's call).
+foreignpatch argsrename-prefix MegaCrit.Sts2.Core.Hooks.Hook:AfterEnergySpent
+foreignpatch factory-postfix MegaCrit.Sts2.Core.Hooks.Hook:BeforeHandDraw
+# (5) near misses of a type gate: a static write before the test; the gate read from an argument renamed __instance; a gated
+# postfix whose own method is patched; a gated postfix in a class with a static constructor.
+foreignpatch nearmiss-postfix MegaCrit.Sts2.Core.Models.AbstractModel:BeforeCardPlayed squeeze
+foreignpatch renamed-gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardDrawn squeeze
+foreignpatch gated-patched-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterEnergyReset squeeze
+foreignpatch cctor-gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterSideTurnEnd squeeze
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 1
@@ -38,9 +78,9 @@ checksum t1 end
 play 3
 waitfor idle 120
 wait 3
+foreignpatch report end
 cmd bdopt why
 cmd bdperf conflicts
-foreignpatch report end
 cmd kill all
 waitfor nocombat 300
 wait 2

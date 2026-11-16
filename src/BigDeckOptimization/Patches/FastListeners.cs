@@ -2044,14 +2044,17 @@ public static class FastListeners
                 Log.Info($"[{ModEntry.Id}] {Name}: CardPile.{method} changed (fingerprint {actual}, expected {fingerprint}): card moves "
                     + (adds ? "now rebuild the cached entries" : "other than appends to a pile's end now rebuild the cached entries"));
             }
+            // The bump just before the original (Priority.Last + 1: before PileIndex's Priority.Last update, as at the default
+            // priority): another mod's void prefix let stand (SurroundingOnly) must run before it, or a walk it makes would cache
+            // the pile before the change at the version the change itself is read at.
             if (method == nameof(CardPile.AddInternal))
             {
-                PatchGuard.Patch(harmony, target, prefix: new HarmonyMethod(typeof(FastListeners), nameof(BeforeAdd)),
+                PatchGuard.Patch(harmony, target, prefix: new HarmonyMethod(typeof(FastListeners), nameof(BeforeAdd)) { priority = Priority.Last + 1 },
                     finalizer: new HarmonyMethod(typeof(FastListeners), nameof(AfterAdd)));
             }
             else if (method == nameof(CardPile.RemoveInternal))
             {
-                PatchGuard.Patch(harmony, target, prefix: new HarmonyMethod(typeof(FastListeners), nameof(BeforeRemove)),
+                PatchGuard.Patch(harmony, target, prefix: new HarmonyMethod(typeof(FastListeners), nameof(BeforeRemove)) { priority = Priority.Last + 1 },
                     finalizer: new HarmonyMethod(typeof(FastListeners), nameof(AfterRemove)));
             }
             else if (method is nameof(CardPile.MoveToBottomInternal) or nameof(CardPile.MoveToTopInternal))
@@ -2478,8 +2481,11 @@ public static class FastListeners
     /// <c>AddInternal</c> and <c>RemoveInternal</c> let postfixes and void
     /// prefixes stand: they can't make Harmony skip this class's tracking prefix (only a skipped original or a bool prefix
     /// returning false does), and a card they move goes through these methods again, bumping <see cref="PileVersion"/> (an add
-    /// whose version moved by more than its own two bumps records no move: the entries are rebuilt). The getters (answered from
-    /// the cached entries) and the other writers keep no tolerance.
+    /// whose version moved by more than its own two bumps records no move: the entries are rebuilt). A void prefix only when
+    /// Harmony runs it before this class's tracking prefix (and every other prefix of this mod there): after the bump and
+    /// before the list changes, a walk it made would be cached at the version the change is read at. A postfix only with its
+    /// arguments by value (the finalizer reads the card, pile and index from those slots). The getters (answered from the
+    /// cached entries) and the other writers keep no tolerance.
     /// </summary>
     private static PatchTolerance TrackedTolerance(MethodBase method) =>
         method.DeclaringType == typeof(CardPile) && method.Name is nameof(CardPile.AddInternal) or nameof(CardPile.RemoveInternal)

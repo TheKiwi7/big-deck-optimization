@@ -23,7 +23,8 @@ namespace BigDeckOptimization.Patches;
 /// overrides the hook, in the same order, so results are identical.
 ///
 /// Each mirrored hook backs off (vanilla) whenever another mod has Harmony-patched that hook or its base method, since
-/// our mirror of the hook body would then no longer match what vanilla peers run. BaseLib patches
+/// our mirror of the hook body would then no longer match what vanilla peers run; on the hook itself, only void prefixes Harmony
+/// runs before the mirror are let stand (<see cref="PatchTolerance.PrefixesOnly"/>). BaseLib patches
 /// <c>Hook.ModifyDamage</c> but not <c>Hook.ModifyDamageInternal</c>, which holds the listener loops.
 ///
 /// Exceptions: one thrown by this mod's code turns HookFilter off and the call runs the game's hook. One thrown by a
@@ -73,11 +74,16 @@ public static class HookFilter
             }
         }
 
-        // The hook: postfixes and void prefixes Harmony runs before the mirror's prefix are let stand (the mirror computes the
-        // original's result; postfixes run after its skip on that same result, void prefixes before it as without this mod).
-        // The default: no tolerance, a skipped listener skips its call to it.
-        public bool IsSafe() => _defaultHolds && !PatchSafety.IsPatchedByOthers(BaseMethod) && !PatchSafety.IsPatchedByOthers(_hookMethod, PatchTolerance.SurroundingOnly)
+        // The hook: only void prefixes Harmony runs before every prefix of this mod are let stand (PrefixesOnly: they run before
+        // the mirror as before the original without this mod). No postfix: the mirror skips the original, and Harmony then runs
+        // postfixes even when a listener threw (PassOn: the game runs none then) and hands them __runOriginal false.
+        // The default: no tolerance, a skipped listener skips its call to it. Callers that skip the hook call altogether
+        // (SnapshotCardReuse's fast reads) check the hook strictly themselves (HookMethodOf).
+        public bool IsSafe() => _defaultHolds && !PatchSafety.IsPatchedByOthers(BaseMethod) && !PatchSafety.IsPatchedByOthers(_hookMethod, PatchTolerance.PrefixesOnly)
             && (!_combatWalk || !CombatHookWalkPatched());
+
+        /// <summary>The hook (or helper) method whose call this list stands for.</summary>
+        public MethodInfo? HookMethod => _hookMethod;
 
         /// <summary>Registers what <see cref="IsSafe"/> asks about, when it gets that far (display only, never throws).</summary>
         public void Watch()
@@ -87,7 +93,7 @@ public static class HookFilter
                 return;
             }
             PatchSafety.Watch(Name, BaseMethod);
-            PatchSafety.Watch(Name, _hookMethod, PatchTolerance.SurroundingOnly);
+            PatchSafety.Watch(Name, _hookMethod, PatchTolerance.PrefixesOnly);
             if (_combatWalk)
             {
                 PatchSafety.WatchAll(Name, CombatHookWalkParts);
@@ -387,8 +393,8 @@ public static class HookFilter
         {
             hook.Watch();
         }
-        PatchSafety.Watch(Name, HookFilterCostColors.EnergyCostColor, PatchTolerance.SurroundingOnly);
-        PatchSafety.Watch(Name, HookFilterCostColors.StarCostColor, PatchTolerance.SurroundingOnly);
+        PatchSafety.Watch(Name, HookFilterCostColors.EnergyCostColor, PatchTolerance.PrefixesOnly);
+        PatchSafety.Watch(Name, HookFilterCostColors.StarCostColor, PatchTolerance.PrefixesOnly);
         ListenerCache.RunReleased += () =>
         {
             _filtered = null;
@@ -461,6 +467,13 @@ public static class HookFilter
     /// for), without building its list: a mirror asks it before the game's own early exits, which come before any walk.
     /// </summary>
     internal static bool HookSafe(int hook) => (_safe ??= CurrentSafety())[hook];
+
+    /// <summary>
+    /// The method a hook's list stands for (null when unknown: then never safe). For a caller that uses the list to skip that
+    /// call altogether rather than mirror it (SnapshotCardReuse): it must check it with no tolerance, as a skipped call skips
+    /// even the void prefixes <see cref="FilteredHook.IsSafe"/> lets stand.
+    /// </summary>
+    internal static MethodInfo? HookMethodOf(int hook) => hook >= 0 && hook < _hooks.Length ? _hooks[hook].HookMethod : null;
 
     /// <summary>Filtered listeners for one hook, or null when filtering that hook isn't safe right now.</summary>
     private static List<AbstractModel>? Get(IReadOnlyList<AbstractModel> listeners, int hook)
@@ -671,7 +684,12 @@ public static class HookFilter
         Log.Error($"[{ModEntry.Id}] {Name} disabled after exception, falling back to vanilla: {e}");
     }
 
-    /// <summary>The listener exception a mirror caught, thrown from its hook by <see cref="RethrowFinalizer"/>.</summary>
+    /// <summary>
+    /// The listener exception a mirror caught, thrown from its hook by <see cref="RethrowFinalizer"/>. Between the two only
+    /// Harmony's postfixes and other finalizers of that hook run: other mods' postfixes and finalizers back off (IsSafe,
+    /// PrefixesOnly), so no other mirrored hook can run there and find it. Not cleared at a mirror's entry: a nested mirror would
+    /// erase an outer pending exception, and the outer hook return its partial result.
+    /// </summary>
     [ThreadStatic] private static Exception? _passOn;
 
     /// <summary>
@@ -1160,8 +1178,8 @@ internal static class HookFilterCostColors
     /// </summary>
     internal static bool EnergyCostColorPrefix(CardModel card, ICombatState state, ref decimal hookModifiedCost, ref bool __result)
     {
-        // Mirror of the whole helper (its result and cost are the original's): postfixes and earlier void prefixes let stand.
-        if (!HookFilter.Active || state is not CombatState combat || PatchSafety.IsPatchedByOthers(EnergyCostColor, PatchTolerance.SurroundingOnly))
+        // Mirror of the whole helper, skipping it: only void prefixes sorted before this one are let stand (as the mirrored hooks).
+        if (!HookFilter.Active || state is not CombatState combat || PatchSafety.IsPatchedByOthers(EnergyCostColor, PatchTolerance.PrefixesOnly))
         {
             return true;
         }
@@ -1211,7 +1229,7 @@ internal static class HookFilterCostColors
     internal static bool StarCostColorPrefix(CardModel card, ICombatState state, ref decimal hookModifiedCost, ref bool __result)
     {
         // As the energy cost color helper.
-        if (!HookFilter.Active || state is not CombatState combat || PatchSafety.IsPatchedByOthers(StarCostColor, PatchTolerance.SurroundingOnly))
+        if (!HookFilter.Active || state is not CombatState combat || PatchSafety.IsPatchedByOthers(StarCostColor, PatchTolerance.PrefixesOnly))
         {
             return true;
         }

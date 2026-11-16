@@ -48,6 +48,24 @@ public static partial class HookSkip
 #if BENCH
     /// <summary>Hook walks that ran filtered (the effects check).</summary>
     public static long FilteredWalks { get; private set; }
+
+    /// <summary>Per hook: filters handed out with gates (another mod's type-gated patches on its defaults), for the foreign tests.</summary>
+    private static long[] _gatedWalks = Array.Empty<long>();
+
+    private static void CountGated(int index)
+    {
+        long[] counts = _gatedWalks;
+        if (counts.Length != Hooks.Length)
+        {
+            counts = _gatedWalks = new long[Hooks.Length];
+        }
+        System.Threading.Interlocked.Increment(ref counts[index]);
+    }
+
+    /// <summary>"Hook.Name N" per hook that ran with gates (test tooling: what only a runtime walk produces).</summary>
+    public static IReadOnlyList<string> GatedWalkReport() =>
+        Hooks.Select((entry, i) => (entry.Hook, Count: i < _gatedWalks.Length ? _gatedWalks[i] : 0)).Where(e => e.Count > 0)
+            .Select(e => $"Hook.{e.Hook} {e.Count}").ToList();
     /// <summary>BaseLib walk filters a combat walk dropped before a RunState walk took them (BaseLib walking NullRunState): 0 in runs.</summary>
     public static long PendingFiltersDropped { get; private set; }
 #endif
@@ -61,7 +79,9 @@ public static partial class HookSkip
         /// is built (first MoveNext), where vanilla signals each listener at its turn: an entry keeping the defaults that
         /// gets its first subscriber while the walk runs, before its turn, isn't signalled by this walk. Accepted: the only
         /// subscriber (NPlayerHand's card selection) moves hand nodes back, UI only, and is consumed by the source's own
-        /// later walks first in the flows read.
+        /// later walks first in the flows read. Another mod's code subscribing during the walk joins that gap: its listeners'
+        /// code (as before), and a postfix let stand on an async hook, which runs once the hook first awaits, the walk suspended
+        /// (no mod read subscribes: RitsuLib and BaseLib only invoke ExecutionFinished).
         /// </summary>
         public readonly bool Subscribed;
         /// <summary>Index in <see cref="HelperProfiles"/> of the version this entry was classified on, -1 when it uses no helper.</summary>
@@ -74,22 +94,14 @@ public static partial class HookSkip
         public MethodBase? Body;
         public PileFilter? Filter;
 
-        private sealed record Combined(Type[] A, Type[] B, Type[] Both);
+        /// <summary>
+        /// The gates of several of this hook's defaults together (<see cref="Inputs"/>: PatchSafety's arrays for them, in base
+        /// order), kept while those answers (the same arrays) stay: a walk compares references, no allocation, and the filter
+        /// gets the same array (its gated filter kept by reference). Read and replaced whole (a hook may run off the main thread).
+        /// </summary>
+        public sealed record Combined(Type[][] Inputs, Type[] Gates);
 
-        /// <summary>A reference, read and replaced whole (a hook may run off the main thread).</summary>
-        private Combined? _combined;
-
-        /// <summary>Gates of two of this hook's defaults together, kept while PatchSafety's answers (their arrays) stay the same.</summary>
-        public Type[] CombinedGates(Type[] a, Type[] b)
-        {
-            if (_combined is { } known && ReferenceEquals(known.A, a) && ReferenceEquals(known.B, b))
-            {
-                return known.Both;
-            }
-            Type[] both = a.Concat(b).Distinct().ToArray();
-            _combined = new Combined(a, b, both);
-            return both;
-        }
+        public Combined? LastCombined;
 
         public Entry(string hook, string fingerprint, bool subscribed, int profile, params string[] methods)
         {
@@ -544,10 +556,12 @@ public static partial class HookSkip
         // never sees it), so it turns HookSkip off and this walk runs vanilla.
         try
         {
-            // The hook itself: postfixes and void prefixes are let stand. The transpiled body runs the same listeners with the same
-            // effects (only no-op calls are left out), so a patch around it sees what it sees without this mod (RitsuLib's
-            // lifecycle postfixes wrapping the returned task). Not on an async hook's state machine: a patch there can read the
-            // machine's fields, the walk's enumerator among them, which the redirect makes another object.
+            // The hook itself: postfixes (arguments by value, __result and __state aside; no __args, no __runOriginal) and void
+            // prefixes Harmony runs before every prefix of this mod there (HookFilter's mirrors on some) are let stand. The
+            // transpiled body runs the same listeners with the same effects (only no-op calls are left out), so a patch around it
+            // sees what it sees without this mod (RitsuLib's lifecycle postfixes wrapping the returned task). Not on an async
+            // hook's state machine: a patch there can read the machine's fields, the walk's enumerator among them, which the
+            // redirect makes another object. A postfix of an async hook subscribing to ExecutionFinished: Entry.Subscribed.
             if (PatchSafety.IsPatchedByOthers(entry.Method, AllowedBodyPatches(), PatchTolerance.SurroundingOnly)
                 || (entry.Body != entry.Method && PatchSafety.IsPatchedByOthers(entry.Body, AllowedBodyPatches()))
                 || (entry.Profile >= 0 && HelpersPatched(entry.Profile)))
@@ -557,8 +571,10 @@ public static partial class HookSkip
             // The defaults a dropped listener's call would run: a postfix or prefix there would miss the skipped calls, so only
             // patches doing nothing unless the listener is of some types stand (TypeGated), and those types keep their calls
             // (the filter treats them as overriders); any other patch keeps the hook vanilla.
-            Type[]? gates = null;
+            Type[]? single = null;
             int gated = 0;
+            Entry.Combined? known = entry.LastCombined;
+            bool same = known != null;
             MethodInfo[] bases = entry.Filter!.BaseMethods!;
             for (int i = 0; i < bases.Length; i++)
             {
@@ -568,10 +584,46 @@ public static partial class HookSkip
                 }
                 if (found.Length > 0)
                 {
-                    gates = gated++ == 0 ? found : entry.CombinedGates(gates!, found);
+                    if (same)
+                    {
+                        same = gated < known!.Inputs.Length && ReferenceEquals(known.Inputs[gated], found);
+                    }
+                    single = found;
+                    gated++;
                 }
             }
-            return gates == null ? entry.Filter : entry.Filter.WithGates(gates);
+            if (gated == 0)
+            {
+                return entry.Filter;
+            }
+#if BENCH
+            CountGated(index);
+#endif
+            if (gated == 1)
+            {
+                return entry.Filter.WithGates(single!);
+            }
+            if (same && gated == known!.Inputs.Length)
+            {
+                return entry.Filter.WithGates(known.Gates);
+            }
+            // Several gated defaults with a new answer: their arrays taken again (cached answers, the same unless one expired
+            // meanwhile: then a patched one keeps the hook vanilla) and combined once for the following walks.
+            var inputs = new List<Type[]>(gated);
+            foreach (MethodInfo baseMethod in bases)
+            {
+                if (PatchSafety.IsPatchedByOthers(baseMethod, out Type[] found))
+                {
+                    return null;
+                }
+                if (found.Length > 0)
+                {
+                    inputs.Add(found);
+                }
+            }
+            var combined = new Entry.Combined(inputs.ToArray(), inputs.SelectMany(g => g).Distinct().ToArray());
+            entry.LastCombined = combined;
+            return entry.Filter.WithGates(combined.Gates);
         }
         catch (Exception e)
         {

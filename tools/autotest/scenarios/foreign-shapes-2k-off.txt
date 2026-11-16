@@ -1,4 +1,4 @@
-# Foreign patches judged by their shape (A/B, mod off): the same synthetic patches of "another mod" (Harmony ids bdtest.foreign.*, Bench/ForeignPatches.cs) as foreign-shapes-2k-on; CHECKSUM and STATE lines (the foreign patches' call counts included) must match line for line. ab-2k-off otherwise.
+# Foreign patches judged by their shape (A/B, mod off): the same synthetic patches of "another mod" (Harmony ids bdtest.foreign.*, Bench/ForeignPatches.cs) as foreign-shapes-2k-on; CHECKSUM and STATE lines (the foreign patches' call counts, cost reads and near-miss calls included; keyword and cost changes in the checksums) must match line for line. ab-2k-off otherwise.
 timeout 2400
 cmd bdopt off
 newrun NECROBINDER
@@ -8,21 +8,42 @@ cmd bigdeck import ref all all
 cmd bigdeck import ref all cards
 cmd bdperf checks off
 enemyhp 999999
-# (1) no-op postfix and void prefix: tolerated, the optimizations keep running.
+# (1) no-op postfix and void prefixes: tolerated, the optimizations keep running.
 foreignpatch noop-postfix MegaCrit.Sts2.Core.Hooks.Hook:AfterCardDrawn
 foreignpatch noop-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:RemoveInternal
-foreignpatch noop-postfix MegaCrit.Sts2.Core.Hooks.Hook:ModifyEnergyCostInCombat
-# A void prefix Harmony runs before HookFilter's mirror (priority First): tolerated.
+# Void prefixes Harmony runs before HookFilter's mirrors (priority First): tolerated (PrefixesOnly). On the cost color helper a
+# no-op only: the Debug re-check (on side) calls that helper again 1 in 64, a counting shape there would differ for that reason.
 foreignpatch noop-prefix MegaCrit.Sts2.Core.Hooks.Hook:ShouldPlay priority 800
+foreignpatch noop-prefix MegaCrit.Sts2.Core.Helpers.Models.CardCostHelper:TryModifyEnergyCostWithHooks priority 800
 # (2) a real side effect vanilla has too: calls counted, the same counts with the mod on and off (STATE lines).
 foreignpatch count-postfix MegaCrit.Sts2.Core.Hooks.Hook:AfterCardPlayed
 foreignpatch count-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal
+# A void prefix on an async hook HookSkip transpiles (RitsuLib's Before* shape), and SynergyMod's AddInternal shape (ref __state).
+foreignpatch count-prefix MegaCrit.Sts2.Core.Hooks.Hook:BeforeCardPlayed
+foreignpatch state-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal
 # (3) a nested pile change: a card added to a discard pile takes the draw pile's last card with it (RemoveInternal + AddInternal).
 foreignpatch nested-postfix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal
-# (5) patches of AbstractModel defaults gated on the listener's type: recognized, Squeeze / relics keep their calls.
+# (4) effects the checksums see. Squeeze gets Retain from a void prefix before HookFilter's keyword mirror (let stand there and by
+# HookSkip; SnapshotCardReuse's local keyword reads skip the hook, so they must back off). Squeeze costs 1 more from a postfix
+# changing the hook's result (HookSkip lets it stand; HookFilter's mirror and SnapshotCardReuse's cost reads back off). Each added
+# card's cost read before and after the add (prefix at the default priority, before this mod's tracking; postfix): a hook walk over
+# the cached piles while a card moves, summed as STATE lines.
+foreignpatch keyword-prefix MegaCrit.Sts2.Core.Hooks.Hook:ModifyKeywordsInCombat squeeze priority 800
+foreignpatch cost-postfix MegaCrit.Sts2.Core.Hooks.Hook:ModifyEnergyCostInCombat squeeze
+foreignpatch probe-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal
+foreignpatch probe-postfix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal
+# (5) patches of AbstractModel defaults gated on the listener's type: recognized, Squeeze / relics keep their calls. Two gated
+# defaults of AfterCardPlayed and three of AfterPlayerTurnStart: their gates combined (one array per answer).
 foreignpatch gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardPlayed squeeze
+foreignpatch gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardPlayedLate relic
 foreignpatch gated-prefix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardDrawn squeeze
 foreignpatch gated-or-postfix MegaCrit.Sts2.Core.Models.AbstractModel:BeforeCardPlayed squeeze-relic
+foreignpatch gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterPlayerTurnStart relic
+foreignpatch gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterPlayerTurnStartEarly squeeze
+foreignpatch gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterPlayerTurnStartLate relic
+# (6) a near miss in the A/B (a static write before the type test): every call counted (STATE). Taken as gated, the walk would
+# drop calls and that count differ; its hook must stay the game's.
+foreignpatch nearmiss-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterSideTurnEnd squeeze
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 1

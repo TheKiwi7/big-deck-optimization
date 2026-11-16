@@ -31,8 +31,9 @@ $waiting = [Collections.Generic.Queue[object]]::new()
 # networked command and needs no run; at the menu no co-op run asks for 'bdopt off yes'), so the run's creation is the game's own
 # too; without the lines that only make sense with the mod on (bdperf comparisons, option switches, counters, effects and their
 # checks, positive controls, the mod's own probes: button input checks, tip rebuilds, a fake conflicting patch, a fault probe, a
-# rebuild check).
-$ModOnlyLine = '^\s*(cmd bdperf |cmd bdopt\b|counters\b|effects\b|effectcheck\b|expect\b|buttoninput\s+expect|tipsrebuilt\b|checktips\b|fakeconflict\b|foreignpatch\b|faultprobe\b|rebuildcheck\b)'
+# rebuild check). The synthetic foreign patches stay (they stand for another mod every side has), only 'foreignpatch require'
+# (a check of this mod's tolerance) goes.
+$ModOnlyLine = '^\s*(cmd bdperf |cmd bdopt\b|counters\b|effects\b|effectcheck\b|expect\b|buttoninput\s+expect|tipsrebuilt\b|checktips\b|fakeconflict\b|foreignpatch\s+require\b|faultprobe\b|rebuildcheck\b)'
 function New-OffTwin([string]$source, [string]$target) {
     $lines = [Collections.Generic.List[string]]::new()
     $placed = $false

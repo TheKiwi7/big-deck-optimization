@@ -382,6 +382,9 @@ public static class SnapshotCardReuse
         if (_fastReads)
         {
             PatchSafety.Watch(Name, new MethodBase?[] { _withModifiers, _keywordsMethod, _keywordsGetter });
+            // The hooks those reads skip (HookFilter's methods, known once it applied).
+            PatchSafety.WatchAll(Name, () => new MethodBase?[] { HookFilter.HookMethodOf(HookFilter.Keywords), HookFilter.HookMethodOf(HookFilter.EnergyCost) }
+                .Where(m => m != null).Select(m => m!).ToArray());
         }
         PatchSafety.Watch(Name, _skippedGetters);
         Func<MethodInfo[]> allowed = () => RelicStateReuse.UnlimitedTranspilerMethod is { } unlimited ? _baseLibWrites.Append(unlimited).ToArray() : _baseLibWrites;
@@ -1200,8 +1203,11 @@ public static class SnapshotCardReuse
         long stamp = LimitlessReserialize.MemoStamp();
         bool keywordsPatched = !_fastReads || KeywordsPatched();
         // No listeners (null): no pile trusted or kept as moved.
-        // No tolerance: GetWithModifiers is answered from kept reads, not called.
+        // No tolerance: GetWithModifiers is answered from kept reads, not called. Nor on the keyword and cost hooks themselves:
+        // HookFilter's lists let void prefixes stand there (its mirrors still call the hook), but these reads skip the hook call
+        // altogether (local keywords and cost, reused pile states), so any patch there would miss calls.
         if (!_fastReads || !HookFilter.Active || keywordsPatched || PatchSafety.IsPatchedByOthers(_withModifiers) || GettersPatched()
+            || PatchSafety.IsPatchedByOthers(HookFilter.HookMethodOf(HookFilter.Keywords)) || PatchSafety.IsPatchedByOthers(HookFilter.HookMethodOf(HookFilter.EnergyCost))
             || pile.Cards.Count == 0 || pile.Cards[0].Owner?.Creature.CombatState is not CombatState combat)
         {
             return new Reads(stamp, false, false, null, keywordsPatched);

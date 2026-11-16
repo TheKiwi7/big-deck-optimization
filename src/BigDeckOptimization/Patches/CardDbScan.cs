@@ -106,8 +106,10 @@ public static class CardDbScan
         _add = add;
         _cardToId = AccessTools.FieldRefAccess<NetCombatCardDb, Dictionary<CardModel, uint>>("_cardToId");
 
-        // Tracking first: it must see every add before the walk can be skipped.
-        PatchGuard.Patch(harmony, add, prefix: new HarmonyMethod(typeof(CardDbScan), nameof(RecordAdd)));
+        // Tracking first: it must see every add before the walk can be skipped. Late among prefixes (Priority.Last + 1, before
+        // PileIndex's update as at the default priority): another mod's void prefix let stand runs before it, so a card that
+        // prefix adds to the same pile is recorded before this one, in the pile's own order.
+        PatchGuard.Patch(harmony, add, prefix: new HarmonyMethod(typeof(CardDbScan), nameof(RecordAdd)) { priority = Priority.Last + 1 });
         // Harmony doesn't call RecordAdd (it takes the card) once an earlier prefix returned false: the pile's count is taken
         // by a first prefix that always runs, and an add skipped that way but changing the pile anyway is seen after it.
         PatchGuard.Patch(harmony, add, prefix: new HarmonyMethod(typeof(CardDbScan), nameof(WatchAdd)) { priority = Priority.First },
@@ -149,6 +151,8 @@ public static class CardDbScan
         }
     }
 
+    /// <summary>The pile's count, read only when the original didn't run (another mod's bool prefix skipped it).</summary>
+    [OrderFreePrefix]
     private static void WatchAdd(CardPile __instance, out int __state) => __state = __instance.Cards.Count;
 
     /// <summary>An add whose original didn't run but whose pile changed anyway: what entered isn't known, that pile walks in full.</summary>
@@ -213,9 +217,10 @@ public static class CardDbScan
         {
             return true;
         }
-        // AddInternal: postfixes and void prefixes let stand. They can't skip the original (RecordAdd, a prefix taking the card,
-        // always runs then), and a card they put in a pile goes through AddInternal again, recorded there (and its own
-        // ContentsChanged walks it); the sampled whole-pile check stays.
+        // AddInternal: postfixes (arguments by value) and void prefixes sorted before RecordAdd let stand. They can't skip the
+        // original (RecordAdd, a prefix taking the card, always runs then), and a card they put in a pile goes through
+        // AddInternal again, recorded there in the pile's order (and its own ContentsChanged walks it); the sampled whole-pile
+        // check stays. Not seen: a patch writing CardPile._cards directly (no rule tells it from its shape; DESIGN).
         if (_addPatchedSinceStart || PatchSafety.IsPatchedByOthers(_add, PatchTolerance.SurroundingOnly))
         {
             _addPatchedSinceStart = true;

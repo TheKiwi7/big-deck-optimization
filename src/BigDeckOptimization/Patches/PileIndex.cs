@@ -115,10 +115,12 @@ public static class PileIndex
         bool others = false;
         foreach (MethodBase? method in _listMethods)
         {
-            // AddInternal and RemoveInternal: postfixes and void prefixes are let stand. They can't skip the original nor change
+            // AddInternal and RemoveInternal: postfixes (arguments by value: the finalizer reads card and pile from those slots)
+            // and void prefixes Harmony runs before BeforeAdd/BeforeRemove are let stand. They can't skip the original nor change
             // its arguments, so the index is updated by this class's own prefix and finalizer as without them; a card they move
-            // goes through these methods again, counted there; one they throw is judged by the pile's list (Judge). The other
-            // list methods (clear, moves, shuffle): no tolerance.
+            // goes through these methods again, counted there; one they throw is judged by the pile's list (Judge). Not seen: a
+            // patch writing CardPile._cards directly (no rule tells it from its shape; DESIGN). The other list methods (clear,
+            // moves, shuffle): no tolerance.
             others |= method == _addMethod || method == _removeMethod
                 ? PatchSafety.IsPatchedByOthers(method, PatchTolerance.SurroundingOnly)
                 : PatchSafety.IsPatchedByOthers(method);
@@ -438,9 +440,14 @@ public static class PileIndex
         public static Saved CountOf(CardPile pile) => new(null, 0, null, false, 0, false, pile.Cards.Count, true);
     }
 
-    /// <summary>First prefix, always run (it takes neither the card nor a ref): the pile's count before anything else.</summary>
+    /// <summary>
+    /// First prefix, always run (it takes neither the card nor a ref): the pile's count before anything else. Order-free for
+    /// another mod's void prefix let stand: its count is only read when <see cref="BeforeAdd"/> didn't run (Judge, !Set).
+    /// </summary>
+    [OrderFreePrefix]
     private static void WatchAdd(CardPile __instance, out Saved __state) => __state = Saved.CountOf(__instance);
 
+    [OrderFreePrefix]
     private static void WatchRemove(CardPile __instance, out Saved __state) => __state = Saved.CountOf(__instance);
 
     /// <summary>Only called while the original is still to run (Harmony skips it after another prefix returned false).</summary>
