@@ -2,7 +2,7 @@
 // use (private, protected outside a derived class): what the load check, PatchSafety.RequireResolvable, would skip, by
 // the same rules (MethodFingerprint.Accessible, MethodFingerprint.PartCode), all at once instead of one patch per start.
 // Usage: dotnet run --project tools/compat -- <BigDeckOptimization.dll> [game data dir, default: installed game]
-// e.g. against the beta's saved assemblies: ... -- src/BigDeckOptimization/bin/Debug/BigDeckOptimization.dll refs/v0.111.0
+// e.g. against the beta's saved assemblies: ... -- src/BigDeckOptimization/bin/Debug/BigDeckOptimization.dll refs/v0.113.1
 // (game assemblies missing from that folder, e.g. GodotSharp's dependencies, are taken from the installed game).
 using System.Reflection;
 using System.Runtime.Loader;

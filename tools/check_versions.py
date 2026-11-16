@@ -4,7 +4,9 @@ and what a game log says was left vanilla or which of those mods it didn't load.
 
 The game: versions.json's "game"/"game_assembly_hash" is the verified public version, "betas" the verified beta versions
 (version -> assembly hash, tested on copies). The branch Steam has installed (the appmanifest's BetaKey) decides which
-build it is compared with; a version/hash pair verified on either branch is not a change.
+build it is compared with; a version/hash pair verified on either branch is not a change. "former_betas" keeps the pairs
+of betas no longer distributed nor tested (v0.111.0 since 2026-11-16: the DLL keeps its code paths): a record only, never
+read here, so a copy of one shows as changed; --accept leaves it as it is.
 
 Also asks Steam what is PUBLISHED (not only what this machine downloaded): the build of the game's public and
 public-beta branches (SteamCMD, anonymous login) and the last update of every watched mod's Workshop item (Steam Web
@@ -47,7 +49,7 @@ GAME = Path(os.environ.get("STS2_GAME_DIR", r"C:\Program Files (x86)\Steam\steam
 
 def steamapps() -> Path:
     """The steamapps folder holding the Workshop items and manifests: the game's own library, or, for a game copy outside
-    Steam's library (STS2_GAME_DIR, e.g. C:\\Games\\StS2-beta-0.111.0), Steam's main one (as tools/autotest/common.ps1)."""
+    Steam's library (STS2_GAME_DIR, e.g. C:\\Games\\StS2-beta-0.113.1), Steam's main one (as tools/autotest/common.ps1)."""
     library = GAME.parent.parent
     if (library / "workshop").exists():
         return library

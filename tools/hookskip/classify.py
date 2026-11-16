@@ -33,8 +33,9 @@ Known and accepted: PlayerChoiceContext creates its model stack on the first Pus
 listeners were all dropped keeps a null stack where vanilla leaves an empty one. Only `ModelStack` (public since v0.111)
 tells them apart and nothing reads it (game, decompiled mods); a new reader would change no pinned fingerprint.
 
-Every supported game version is classified on its own code: an entry is kept for a version only when that version's
-hook passes, and carries what it relies on in that version: the hook's code fingerprint, the fingerprint of each
+Every game version the DLL has code paths for is classified on its own code (the table is rewritten from the versions
+given: one left out loses its rows; v0.111.0, the former beta, is no longer tested since 2026-11-16 but keeps its rows, so
+it stays in the command below): an entry is kept for a version only when that version's hook passes, and carries what it relies on in that version: the hook's code fingerprint, the fingerprint of each
 AbstractModel default it calls ("Name=FP"), and, for hooks using choice contexts / PushModel / ExecutionFinished, the
 helpers' fingerprints of that version (HelperProfiles, reviewed by hand: tools/fpdiff review flags them when they change).
 HookSkip turns a hook on only when all of these match the running game.

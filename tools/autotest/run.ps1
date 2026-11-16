@@ -1,7 +1,7 @@
 # Unattended singleplayer session through Steam: runs scenarios/<Name>.txt with the Debug build's AutoTest runner,
 # optionally records a CPU trace, and copies the game log to results/<Name>.log.
 #   powershell -File tools/autotest/run.ps1 -Name solo-8k [-TimeoutSec 900] [-TraceSec 60 [-TraceProfile gc-verbose] [-TraceProviders <providers>]] [-KeepConfig] [-Visible] [-Sound] [-Screen 1] [-Show] [-GameDir <copy>]
-# -GameDir: a full copy of another game version (e.g. the beta, C:\Games\StS2-beta-0.111.0) with a steam_appid.txt
+# -GameDir: a full copy of another game version (e.g. the beta, C:\Games\StS2-beta-0.113.1) with a steam_appid.txt
 # (2868840) next to its exe, launched directly instead of through Steam (Steam must be running; Workshop mods load as
 # usual). Deploy the Debug build into it with dotnet build ... -p:ModDeployDir=<copy>\mods\BigDeckOptimization.
 # A trace must end while the game still runs (method names are written at the end): give the scenario a final wait.
