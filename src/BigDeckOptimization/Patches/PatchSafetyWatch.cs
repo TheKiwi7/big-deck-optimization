@@ -33,6 +33,11 @@ public static partial class PatchSafety
         public readonly Func<IEnumerable<(MethodBase? Method, MethodInfo[]? Allowed)>>? Pairs;
         /// <summary>The tolerance the runtime check passes (<see cref="PatchTolerance"/>).</summary>
         public readonly PatchTolerance Tolerance;
+        /// <summary>
+        /// Unregistered (<see cref="Unwatch"/>) after a preflight already took it: that preflight's later steps skip it, so it
+        /// doesn't record again what Unwatch forgot. Main thread only (the preflight and the late patch batches).
+        /// </summary>
+        public bool Removed;
 
         public Watched(string patch, MethodBase? method, MethodInfo[]? allowed, Func<MethodInfo[]>? lazyAllowed, Func<IEnumerable<MethodBase?>>? source,
             Func<IEnumerable<(MethodBase? Method, MethodInfo[]? Allowed)>>? pairs = null, PatchTolerance tolerance = PatchTolerance.None)
@@ -99,15 +104,25 @@ public static partial class PatchSafety
             }
             lock (_watched)
             {
-                _watched.RemoveAll(w => w.Patch == patch && w.Method == method);
+                _watched.RemoveAll(w =>
+                {
+                    bool match = w.Patch == patch && w.Method == method;
+                    w.Removed |= match;
+                    return match;
+                });
                 _watchedKeys.RemoveWhere(k => k.Item1 == patch && k.Item2 == method);
             }
+            bool forgot = false;
             foreach ((string Patch, MethodBase Method, PatchTolerance Tolerance) key in _conflicts.Keys)
             {
                 if (key.Patch == patch && key.Method == method)
                 {
-                    _conflicts.TryRemove(key, out _);
+                    forgot |= _conflicts.TryRemove(key, out _);
                 }
+            }
+            if (forgot)
+            {
+                Config.Settings.NotifyStatesChanged();
             }
         }
         catch
@@ -287,45 +302,114 @@ public static partial class PatchSafety
         }
     }
 
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Patch, string Key), (string Text, string[] Mods)> _notes = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Patch, string Key), (string Text, string[] Mods, bool Whole)> _notes = new();
 
     /// <summary>
     /// Records a back-off that no method check sees: another mod's types or data keep part of <paramref name="patch"/> on the
     /// normal game (<paramref name="text"/>, English, for bdopt and the log; <paramref name="mods"/>: the mods responsible,
     /// empty when they can't be named). Logged once per change, like a back-off. Shown with the patch's back-offs.
+    /// <paramref name="whole"/>: what it says keeps all of that patch on the normal game (the menu's red title).
     /// </summary>
-    internal static void Note(string patch, string key, string text, string[] mods)
+    internal static void Note(string patch, string key, string text, string[] mods, bool whole = false)
     {
         string[] sorted = mods.Where(m => !string.IsNullOrEmpty(m)).Distinct().OrderBy(m => m, StringComparer.OrdinalIgnoreCase).ToArray();
-        if (_notes.TryGetValue((patch, key), out var known) && known.Text == text && known.Mods.SequenceEqual(sorted))
+        if (_notes.TryGetValue((patch, key), out var known) && known.Text == text && known.Mods.SequenceEqual(sorted) && known.Whole == whole)
         {
             return;
         }
-        _notes[(patch, key)] = (text, sorted);
-        Log.Info($"[{ModEntry.Id}] {patch}: {text}" + (sorted.Length > 0 ? $" ({string.Join(", ", sorted)}): normal game for that part" : ": normal game for that part"));
+        _notes[(patch, key)] = (text, sorted, whole);
+        Log.Info($"[{ModEntry.Id}] {patch}: {text}" + (sorted.Length > 0 ? $" ({string.Join(", ", sorted)})" : "") + (whole ? ": normal game for all of it" : ": normal game for that part"));
+        Config.Settings.NotifyStatesChanged();
     }
 
     /// <summary>The note no longer holds (nothing logged).</summary>
-    internal static void ClearNote(string patch, string key) => _notes.TryRemove((patch, key), out _);
+    internal static void ClearNote(string patch, string key)
+    {
+        if (_notes.TryRemove((patch, key), out _))
+        {
+            Config.Settings.NotifyStatesChanged();
+        }
+    }
+
+    /// <summary>Patches all of whose method back-offs keep the whole patch vanilla (<see cref="WholePatch"/>).</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _wholePatches = new(StringComparer.Ordinal);
+
+    /// <summary>Methods whose back-off keeps the whole patch vanilla (<see cref="WholeMethods"/>), by patch.</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Patch, MethodBase Method), byte> _wholeMethods = new();
+
+    /// <summary>
+    /// Display only (the menu's red title, bdopt): a back-off from any method this patch checks keeps all of it on the normal
+    /// game (one gate in front of everything it does), not just the part that method concerns. Never throws.
+    /// </summary>
+    internal static void WholePatch(string patch)
+    {
+        try
+        {
+            _wholePatches[patch] = 0;
+        }
+        catch
+        {
+            // Display only.
+        }
+    }
+
+    /// <summary>As <see cref="WholePatch"/>, for some of the patch's checked methods only (the others keep only their part vanilla). Never throws.</summary>
+    internal static void WholeMethods(string patch, IEnumerable<MethodBase?>? methods)
+    {
+        try
+        {
+            foreach (MethodBase? method in methods ?? Enumerable.Empty<MethodBase?>())
+            {
+                if (method != null)
+                {
+                    _wholeMethods[(patch, method)] = 0;
+                }
+            }
+        }
+        catch
+        {
+            // Display only.
+        }
+    }
+
+    private static bool IsWhole(string patch, MethodBase method) => _wholePatches.ContainsKey(patch) || _wholeMethods.ContainsKey((patch, method));
 
     /// <summary>
     /// A recorded back-off (<see cref="Note"/> texts have no method, <see cref="Method"/> null) for bdopt why and bdperf conflicts.
     /// <see cref="What"/>: <c>Type.Method</c>, with the parameter types (and generic arguments) when another recorded method
-    /// would print the same (overloads, generic instantiations, same-named types).
+    /// would print the same (overloads, generic instantiations, same-named types). <see cref="Whole"/>: it keeps all of its
+    /// patch on the normal game (<see cref="WholePatch"/>, <see cref="WholeMethods"/>, a whole note).
     /// </summary>
-    public readonly record struct BackOff(string Patch, string What, string[] Mods, bool IsNote, MethodBase? Method = null);
+    public readonly record struct BackOff(string Patch, string What, string[] Mods, bool IsNote, MethodBase? Method = null, bool Whole = false);
 
     /// <summary>Every back-off and note recorded now, sorted by patch then by what.</summary>
     public static IReadOnlyList<BackOff> BackOffs()
     {
         var conflicts = _conflicts.ToArray();
-        // Short names shared by different methods get their signatures.
-        var ambiguous = new HashSet<string>(conflicts.Select(e => e.Key.Method).Distinct().GroupBy(ShortName).Where(g => g.Count() > 1).Select(g => g.Key));
+        // Short names shared by different methods get their signatures (one method reached through two reflected types counts once).
+        var ambiguous = new HashSet<string>(conflicts.Select(e => e.Key.Method).DistinctBy(MethodKey).GroupBy(ShortName).Where(g => g.Count() > 1).Select(g => g.Key));
         return conflicts.Select(entry => new BackOff(entry.Key.Patch,
                 (ambiguous.Contains(ShortName(entry.Key.Method)) ? LongName(entry.Key.Method) : ShortName(entry.Key.Method))
-                + (entry.Key.Tolerance == PatchTolerance.None ? "" : $" (beyond {ToleranceText(entry.Key.Tolerance)})"), entry.Value, false, entry.Key.Method))
-            .Concat(_notes.Select(entry => new BackOff(entry.Key.Patch, entry.Value.Text, entry.Value.Mods, true)))
+                + (entry.Key.Tolerance == PatchTolerance.None ? "" : $" (beyond {ToleranceText(entry.Key.Tolerance)})"), entry.Value, false, entry.Key.Method,
+                IsWhole(entry.Key.Patch, entry.Key.Method)))
+            .Concat(_notes.Select(entry => new BackOff(entry.Key.Patch, entry.Value.Text, entry.Value.Mods, true, null, entry.Value.Whole)))
             .OrderBy(b => b.Patch, StringComparer.Ordinal).ThenBy(b => b.IsNote).ThenBy(b => b.What, StringComparer.Ordinal).ToList();
+    }
+
+    /// <summary>
+    /// One method whatever type it was reflected from (two <see cref="MethodBase"/> objects then, not equal): its handle and its
+    /// declaring type's (generic instantiations stay apart). The object itself when it has no handle (a dynamic method).
+    /// </summary>
+    private static object MethodKey(MethodBase method)
+    {
+        try
+        {
+            return (method.MethodHandle.Value, method.DeclaringType?.TypeHandle.Value ?? IntPtr.Zero);
+        }
+        catch
+        {
+            return method;
+        }
     }
 
     private static string ShortName(MethodBase method) => $"{method.DeclaringType?.Name}.{method.Name}";
@@ -352,7 +436,7 @@ public static partial class PatchSafety
     /// </summary>
     public static IReadOnlyList<(string Mod, int Count)> BackOffsPerMod(Func<string, bool>? includePatch = null) =>
         BackOffs().Where(b => includePatch == null || includePatch(b.Patch))
-            .SelectMany(b => b.Mods.Select(mod => (Mod: mod, What: b.IsNote ? (object)("note: " + b.What) : b.Method!)))
+            .SelectMany(b => b.Mods.Select(mod => (Mod: mod, What: b.IsNote ? (object)("note: " + b.What) : MethodKey(b.Method!))))
             .Distinct().GroupBy(e => e.Mod, StringComparer.OrdinalIgnoreCase)
             .Select(g => (g.Key, g.Count())).OrderByDescending(e => e.Item2).ThenBy(e => e.Key, StringComparer.OrdinalIgnoreCase).ToList();
 
@@ -396,10 +480,11 @@ public static partial class PatchSafety
     }
 
     /// <summary>
-    /// One step per check: every watched method (its source's methods each a step), then every note check. Each step catches
-    /// its own exception (logged once): one failing entry doesn't stop the others. <paramref name="checks"/> counts them.
-    /// <paramref name="resolved"/>: entries already resolved at load (<see cref="PreflightOverFrames"/>), the others resolved
-    /// in their step.
+    /// One step per check: every watched entry's resolution (when not done at load), every watched method (its source's methods
+    /// each a step), then every note check. Each step catches its own exception (logged once): one failing entry doesn't stop
+    /// the others. <paramref name="checks"/> counts them; <paramref name="checks"/>' <c>Current</c> names the patch of the step
+    /// under way (the startup log names the longest). <paramref name="resolved"/>: entries already resolved at load
+    /// (<see cref="PreflightOverFrames"/>); one that failed there is tried again in its own step.
     /// </summary>
     private static IEnumerable<bool> PreflightSteps(Counter checks, Dictionary<Watched, (MethodBase? Method, MethodInfo[]? Allowed)[]?>? resolved = null)
     {
@@ -412,17 +497,30 @@ public static partial class PatchSafety
         }
         foreach (Watched entry in watched)
         {
-            (MethodBase? Method, MethodInfo[]? Allowed)[]? pairs = resolved != null && resolved.TryGetValue(entry, out var known) ? known : Resolve(entry);
+            if (entry.Removed)
+            {
+                continue;
+            }
+            checks.Current = entry.Patch;
+            (MethodBase? Method, MethodInfo[]? Allowed)[]? pairs = resolved != null && resolved.TryGetValue(entry, out var known) ? known : null;
+            if (pairs == null)
+            {
+                // Its own step: a lazy allowed list or a source may take a few ms (reflection, fingerprints).
+                pairs = Resolve(entry);
+                yield return true;
+            }
             if (pairs == null)
             {
                 continue;
             }
             foreach ((MethodBase? method, MethodInfo[]? listed) in pairs)
             {
-                if (method == null)
+                // Unwatched since this preflight took it (HookSkip's hook left vanilla in a late batch): what Unwatch forgot isn't recorded again.
+                if (method == null || entry.Removed)
                 {
                     continue;
                 }
+                checks.Current = entry.Patch;
                 // Nulls can't be in a list a runtime check passes (it would throw there): left out.
                 MethodInfo[]? allowed = listed != null && Array.IndexOf(listed, null) >= 0 ? listed.Where(a => a != null).ToArray() : listed;
                 try
@@ -440,6 +538,7 @@ public static partial class PatchSafety
         }
         foreach ((string patch, Action check) in notes)
         {
+            checks.Current = patch + " (note)";
             try
             {
                 check();
@@ -456,6 +555,8 @@ public static partial class PatchSafety
     private sealed class Counter
     {
         public int Value;
+        /// <summary>The patch name of the step under way.</summary>
+        public string? Current;
     }
 
     private static void PreflightFailed(string patch, Exception e)
@@ -499,13 +600,15 @@ public static partial class PatchSafety
     private const double PreflightBudgetMs = 3;
 
     /// <summary>
-    /// The startup preflight, in two parts. At load (still before the main menu shows, during the game's long loading frames):
-    /// every registered entry resolved (the patches' lazy allowed lists and sources: reflection on other mods' types, e.g. a
-    /// mod's patch method looked up by name), in one go. Then once the main menu shows (or a run exists), the checks themselves
-    /// (the Harmony lookups, the shape rules) and the note checks (which need every mod's own setup done: never before the
-    /// menu), a few per frame within <see cref="PreflightBudgetMs"/>, so they add no pause to the menu; a run starting meanwhile
-    /// gets the rest at once (its loading screen). When the menu already shows by then, everything goes to the frames. Logs
-    /// both parts' times and their longest step once. Never throws (async void).
+    /// The startup preflight, in up to two parts. The load part runs only when the patches finished before the main menu
+    /// showed (a start slowed by many mods' loading: seen with ten Workshop mods, 617 entries in 9 ms): every registered entry
+    /// resolved (the patches' lazy allowed lists and sources: reflection on other mods' types, e.g. a mod's patch method looked
+    /// up by name), in one go, its time adding to the game's loading. Usually the menu shows first (the remaining patches then
+    /// apply at once on its frame, ModEntry): the resolutions are then steps of the menu part, each entry its own step. The
+    /// menu part, once the main menu shows (or a run exists): the checks themselves (the Harmony lookups, the shape rules) and
+    /// the note checks (which need every mod's own setup done: never before the menu), a few per frame within
+    /// <see cref="PreflightBudgetMs"/>, so they add no pause to the menu; a run starting meanwhile gets the rest at once (its
+    /// loading screen). Logs both parts' times and their longest step (with its patch) once. Never throws (async void).
     /// </summary>
     internal static async void PreflightOverFrames()
     {
@@ -522,6 +625,7 @@ public static partial class PatchSafety
             // The load part: only while the menu isn't there yet (its time adds to the game's loading, not to a menu frame).
             Dictionary<Watched, (MethodBase? Method, MethodInfo[]? Allowed)[]?>? resolved = null;
             double loadMs = 0, loadLongest = 0;
+            string? loadLongestPatch = null;
             if (tree != null && !MenuOrRun())
             {
                 Watched[] watched;
@@ -535,7 +639,12 @@ public static partial class PatchSafety
                 {
                     long step = Stopwatch.GetTimestamp();
                     resolved[entry] = Resolve(entry);
-                    loadLongest = Math.Max(loadLongest, Stopwatch.GetElapsedTime(step).TotalMilliseconds);
+                    double ms = Stopwatch.GetElapsedTime(step).TotalMilliseconds;
+                    if (ms > loadLongest)
+                    {
+                        loadLongest = ms;
+                        loadLongestPatch = entry.Patch;
+                    }
                 }
                 loadMs = Stopwatch.GetElapsedTime(loadStart).TotalMilliseconds;
             }
@@ -554,6 +663,7 @@ public static partial class PatchSafety
             // A step can't be split (a note's scan of every BaseLib-dependent assembly is one): the longest is logged, the frame
             // it may have stretched beyond the budget.
             double longest = 0;
+            string? longestPatch = null;
             while (more)
             {
                 double budget = tree == null || RunInProgress() ? double.MaxValue : PreflightBudgetMs;
@@ -562,7 +672,12 @@ public static partial class PatchSafety
                 {
                     long step = Stopwatch.GetTimestamp();
                     more = steps.MoveNext();
-                    longest = Math.Max(longest, Stopwatch.GetElapsedTime(step).TotalMilliseconds);
+                    double ms = Stopwatch.GetElapsedTime(step).TotalMilliseconds;
+                    if (ms > longest)
+                    {
+                        longest = ms;
+                        longestPatch = checks.Current;
+                    }
                     if (!more || Stopwatch.GetElapsedTime(start).TotalMilliseconds >= budget)
                     {
                         break;
@@ -580,11 +695,13 @@ public static partial class PatchSafety
             PreflightRuns++;
 #endif
             int backOffs = _conflicts.Count, notes = _notes.Count;
-            string load = resolved == null ? "at load nothing (the menu already showed)"
-                : $"at load {resolved.Count} entries resolved in {loadMs:F1} ms, longest {loadLongest:F1} ms";
+            string load = resolved == null ? "at load nothing (the menu showed first: entries resolved at the menu)"
+                : $"at load {resolved.Count} entries resolved in {loadMs:F1} ms, longest {loadLongest:F1} ms ({loadLongestPatch})";
             Log.Info($"[{ModEntry.Id}] Preflight: {checks.Value} methods and notes checked; {load}; at the main menu {spent:F1} ms over {frames + 1} frames, "
-                + $"longest step {longest:F1} ms (done {Stopwatch.GetElapsedTime(started).TotalMilliseconds:F0} ms after the main menu): {backOffs} back-offs, {notes} notes"
+                + $"longest step {longest:F1} ms ({longestPatch}) (done {Stopwatch.GetElapsedTime(started).TotalMilliseconds:F0} ms after the main menu): {backOffs} back-offs, {notes} notes"
                 + (backOffs + notes > 0 ? $" ({string.Join(", ", BackOffsPerMod().Select(m => $"{m.Mod} {m.Count}"))}; bdopt why lists them)" : ""));
+            // The settings page may be open: its colours and texts follow what the preflight found.
+            Config.Settings.NotifyStatesChanged();
         }
         catch (Exception e)
         {

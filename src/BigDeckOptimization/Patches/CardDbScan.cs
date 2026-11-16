@@ -126,6 +126,8 @@ public static class CardDbScan
         PatchSafety.Watch(Name, walk);
         PatchSafety.Watch(Name, id, AllowedOnId);
         PatchSafety.Watch(Name, add, PatchTolerance.SurroundingOnly);
+        // Display only: one gate in front of all it does, any of these back-offs keeps the whole patch vanilla (the menu's red title).
+        PatchSafety.WholePatch(Name);
     }
 
     /// <summary>Recorded whatever <see cref="Enabled"/> says, so turning the patch on mid-combat stays exact.</summary>

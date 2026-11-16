@@ -109,14 +109,14 @@ public static class LimitlessHookSkip
     private static long _patchesCheckedAt = long.MinValue / 2; // So `now - at` can't overflow: the first check runs.
     private static bool _patchedByOthers;
 
-    /// <summary>
-    /// Another mod's patch on what a dropped MultiEnchantment would have run: its hooks, the list it rebuilds. Asked per
-    /// stacked enchantment: rechecked every 2 s, as <see cref="PatchSafety.IsPatchedByOthers(MethodBase?, string)"/> caches it.
-    /// </summary>
     /// <summary>The storage card's overrides on the clone's way (preflight source), none when unknown.</summary>
     private static IEnumerable<MethodBase?> StorageOverrides() =>
         _storageCard != null && LimitlessCloneMemo.OnTheWay(_storageCard) is { } storage ? storage : Array.Empty<MethodInfo>();
 
+    /// <summary>
+    /// Another mod's patch on what a dropped MultiEnchantment would have run: its hooks, the list it rebuilds. Asked per
+    /// stacked enchantment: rechecked every 2 s, as <see cref="PatchSafety.IsPatchedByOthers(MethodBase?, string)"/> caches it.
+    /// </summary>
     private static bool PatchedByOthers()
     {
         long now = Environment.TickCount64;

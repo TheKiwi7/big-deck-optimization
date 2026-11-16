@@ -111,12 +111,16 @@ def check_translations(dll: bytes) -> None:
 
 
 def changenote(version: str) -> str:
-    """The CHANGELOG section of this version, without its heading."""
+    """The CHANGELOG section of this version, without its heading. The Workshop change note is plain text (an HTML comment
+    shows as is) and players read it: a section still holding a comment or a pending mark is refused, not cleaned."""
     text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     match = re.search(rf"^## {re.escape(version)}\b.*?$(.*?)(?=^## |\Z)", text, re.M | re.S)
     if not match:
         sys.exit(f"CHANGELOG.md has no '## {version}' section")
-    return match.group(1).strip()
+    section = match.group(1).strip()
+    if "<!--" in section or re.search(r"\(Pending\b", section, re.I):
+        sys.exit(f"CHANGELOG.md's '## {version}' section still has an HTML comment or a pending mark: remove it (docs/RELEASE.md)")
+    return section
 
 
 def vdf_string(value: str) -> str:

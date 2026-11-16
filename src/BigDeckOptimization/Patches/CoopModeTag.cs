@@ -46,6 +46,13 @@ public static class CoopModeTag
     private static bool _notFoundLogged;
 
     /// <summary>
+    /// The game's join check tells this mod's on and off apart: the postfix is in place and has not met a list without this
+    /// mod's entry (a game change of the list's format). Another mod replacing the list afterwards isn't seen. The texts
+    /// promising that check (Settings.CoopOffOnlyNow, CoopRejoinNow) say it is missing otherwise.
+    /// </summary>
+    public static bool Working => Applied && !_notFoundLogged;
+
+    /// <summary>
     /// The lists handed out that hold this mod's entry, weakly (v0.111+ keeps one per net service for its whole life): a few
     /// per lobby or join, the dead ones dropped as new ones come.
     /// </summary>

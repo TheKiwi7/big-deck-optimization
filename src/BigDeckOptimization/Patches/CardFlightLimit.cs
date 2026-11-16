@@ -96,6 +96,9 @@ public static class CardFlightLimit
         PatchSafety.Watch(Name, _readyMethod, () => _allowedOnReady ??= AllowedReady());
         PatchSafety.Watch(Name, _skipped);
         PatchSafety.Watch(Name, _addCard);
+        // Display only: Create and what a skipped card skips gate every flight skipped (the menu's red title); AddCard only the
+        // pile buttons' merged counts.
+        PatchSafety.WholeMethods(Name, System.Linq.Enumerable.Concat(new System.Reflection.MethodBase?[] { _create, _readyMethod }, _skipped));
     }
 
     private static bool CreatePrefix(CardPile targetPile, ref NCardFlyShuffleVfx? __result)

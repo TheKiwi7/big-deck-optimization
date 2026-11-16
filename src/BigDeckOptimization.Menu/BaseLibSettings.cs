@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Threading;
 using BaseLib.Config;
 using BaseLib.Config.UI;
 using Godot;
@@ -143,6 +145,15 @@ public sealed class BaseLibSettings : SimpleModConfig
         }
         try
         {
+            _page = new WeakReference<Control>(optionContainer);
+            Colour(optionContainer, Settings.States());
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"[{ModEntry.Id}] {Name}: could not colour the options' titles: {e.Message}");
+        }
+        try
+        {
             AddCoopNote(optionContainer);
         }
         catch (Exception e)
@@ -261,6 +272,139 @@ public sealed class BaseLibSettings : SimpleModConfig
         }
     }
 
+    /// <summary>The page last built (BaseLib frees it when another mod's page or the menu closes), for <see cref="RefreshOpenPage"/>.</summary>
+    private static WeakReference<Control>? _page;
+    private static int _refreshQueued;
+    private static bool _refreshFailedLogged;
+
+    /// <summary>
+    /// <see cref="Settings.StatesChanged"/>: back-offs recorded at runtime or by the startup preflight, a fault, a switch. Raised
+    /// from any thread, possibly many times a frame: one refresh of the open page on the main thread, next idle time.
+    /// </summary>
+    private static void QueueRefresh()
+    {
+        if (Interlocked.Exchange(ref _refreshQueued, 1) == 1)
+        {
+            return;
+        }
+        try
+        {
+            Callable.From(RefreshOpenPage).CallDeferred();
+        }
+        catch
+        {
+            Interlocked.Exchange(ref _refreshQueued, 0); // No Godot to defer to (closing): nothing open to refresh.
+        }
+    }
+
+    /// <summary>
+    /// The page still shows: its hover texts, title colours, greyed rows and other mods' summary follow the current state
+    /// (nothing is checked again: no preflight here, only what is recorded). Nothing when no page of this mod is open.
+    /// </summary>
+    private static void RefreshOpenPage()
+    {
+        Interlocked.Exchange(ref _refreshQueued, 0);
+        try
+        {
+            if (_page == null || !_page.TryGetTarget(out Control? page) || !GodotObject.IsInstanceValid(page) || !page.IsInsideTree())
+            {
+                return;
+            }
+            SettingsText.Add();
+            GreyOut(page);
+            Colour(page, Settings.States());
+            if (page.GetNodeOrNull("ConflictSummaryMargin") is Node summary)
+            {
+                page.RemoveChild(summary);
+                summary.QueueFree();
+            }
+            AddConflictSummary(page);
+        }
+        catch (Exception e)
+        {
+            if (!_refreshFailedLogged)
+            {
+                _refreshFailedLogged = true;
+                Log.Warn($"[{ModEntry.Id}] {Name}: the open settings page not updated: {e.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Each optimization's title in its state's colour (<see cref="Settings.StateOf(Settings.Option)"/>, what bdopt why says
+    /// too): orange when part of it runs the normal game, red when nothing of it runs although it is switched on, the
+    /// normal colour otherwise (all of it runs, or the player switched it off). The relic threshold row follows the fast
+    /// combat start. A row whose title label isn't found (a BaseLib whose rows differ) keeps its colour.
+    /// </summary>
+    private static void Colour(Node node, IReadOnlyDictionary<string, Settings.PartState> states)
+    {
+        foreach (Node child in node.GetChildren())
+        {
+            if (child is NConfigOptionRow row)
+            {
+                string name = row.Name.ToString();
+                string key = name == nameof(FastCombatStartRelics) ? "fast_combat_start" : Key(name);
+                if (states.TryGetValue(key, out Settings.PartState state) && TitleOf(row) is { } title)
+                {
+                    if (state == Settings.PartState.Healthy)
+                    {
+                        title.RemoveThemeColorOverride(DefaultColor);
+                    }
+                    else
+                    {
+                        title.AddThemeColorOverride(DefaultColor, state == Settings.PartState.Inactive ? GameColours.Red : GameColours.Orange);
+                    }
+                }
+                continue;
+            }
+            Colour(child, states);
+        }
+    }
+
+    /// <summary>RichTextLabel's text colour (the theme item the game's MegaRichTextLabel uses too).</summary>
+    private static readonly StringName DefaultColor = "default_color";
+
+    /// <summary>The row's title: BaseLib names it "Label"; else its first rich text label that isn't the setting itself.</summary>
+    private static RichTextLabel? TitleOf(NConfigOptionRow row)
+    {
+        if (row.GetNodeOrNull("Label") is RichTextLabel named)
+        {
+            return named;
+        }
+        foreach (Node child in row.GetChildren())
+        {
+            if (child is RichTextLabel label && child != row.SettingControl)
+            {
+                return label;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>The game's own orange and red (StsColors), else the same values.</summary>
+    private static class GameColours
+    {
+        public static readonly Color Orange;
+        public static readonly Color Red;
+
+        static GameColours()
+        {
+            Orange = new Color(1f, 0.647f, 0.094f); // FFA518
+            Red = new Color(1f, 0.333f, 0.333f); // FF5555
+            try
+            {
+                (Orange, Red) = Read();
+            }
+            catch
+            {
+                // A game without those named colours: the values above.
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static (Color, Color) Read() => (MegaCrit.Sts2.Core.Helpers.StsColors.orange, MegaCrit.Sts2.Core.Helpers.StsColors.red);
+    }
+
     private static void StopInput(Control control)
     {
         control.MouseFilter = Control.MouseFilterEnum.Ignore;
@@ -289,6 +433,8 @@ public sealed class BaseLibSettings : SimpleModConfig
         ModConfigRegistry.Register(ModEntry.Id, _instance);
         // bdopt changes: show them in the menu and save them.
         Settings.Changed += (_, _) => _instance?.SaveDebounced();
+        // Back-offs recorded while the page is open (the startup preflight, a combat's runtime checks): its colours and texts follow.
+        Settings.StatesChanged += QueueRefresh;
         Log.Info($"[{ModEntry.Id}] {Name}: registered in BaseLib's mod configuration. {Settings.Status().Replace("\n", " |")}");
     }
 
@@ -346,16 +492,20 @@ public sealed class BaseLibSettings : SimpleModConfig
                         Settings.Find("fast_combat_start") is { } fastStart ? Settings.Why(fastStart, language) : null,
                         Translations.Get(language, Settings.FastStartRelicsKey + ".desc", Settings.FastStartRelicsDescription)),
                 };
+                IReadOnlyDictionary<string, Settings.PartState> states = Settings.States();
                 foreach (Settings.Option option in Settings.Options)
                 {
                     string slug = option.Key.ToUpperInvariant();
                     texts[$"{Prefix}-{slug}.title"] = Translations.Get(language, option.Key + ".title", option.Label);
                     string description = Translations.Get(language, option.Key + ".desc", option.Description);
-                    // Greyed out (Why), or still switchable but part of it doesn't run (PartlyOff) and/or is vanilla because of another
-                    // mod (Conflict): both lines when both hold, so the mods the summary names show on their options' hover.
+                    // Greyed out (Why), switched on but nothing of it runs (InactiveWhy, its title red), or still switchable but part
+                    // of it doesn't run (PartlyOff) and/or is vanilla because of another mod (Conflict): both lines when both hold,
+                    // so the mods the summary names show on their options' hover.
                     string? partly = Settings.PartlyOff(option, language), conflict = Settings.Conflict(option, language);
                     texts[$"{Prefix}-{slug}.hover.desc"] = WithReason(
-                        Settings.Why(option, language) ?? (partly != null && conflict != null ? partly + "\n" + conflict : partly ?? conflict), description);
+                        Settings.Why(option, language)
+                        ?? Settings.InactiveWhy(option, language, states.TryGetValue(option.Key, out Settings.PartState state) ? state : Settings.PartState.Healthy)
+                        ?? (partly != null && conflict != null ? partly + "\n" + conflict : partly ?? conflict), description);
                 }
                 table.MergeWith(texts);
             }

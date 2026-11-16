@@ -165,7 +165,7 @@ public static class RelicStateReuse
             return;
         }
         (string[] ids, string[] mods) = BaseLibTypes.ExtendedSaves(saves, null);
-        PatchSafety.Note(Name, "relic_saves", $"relic data other mods save with BaseLib ({string.Join(", ", ids.Take(4))}{(ids.Length > 4 ? ", ..." : "")}): every relic's state is built as the game does", mods);
+        PatchSafety.Note(Name, "relic_saves", $"relic data other mods save with BaseLib ({string.Join(", ", ids.Take(4))}{(ids.Length > 4 ? ", ..." : "")}): every relic's state is built as the game does", mods, whole: true);
     }
 
     // --- Scalar part: an unchanged relic recognized without SavedProperties.From ---

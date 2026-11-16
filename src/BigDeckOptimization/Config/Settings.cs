@@ -44,6 +44,9 @@ public static class Settings
         public Action<bool>? SetParts { get; } = setParts;
         public bool PartsEffective => Master && Wanted && !(wholeFaults ?? Array.Empty<string>()).Any(PatchSafety.IsFaulted);
 
+        /// <summary>Fault names that take the parts away too: switches over the whole option, not pieces of it (<see cref="StateOf(Option)"/>).</summary>
+        public string[] WholeFaults { get; } = wholeFaults ?? Array.Empty<string>();
+
         /// <summary>Its parts still run though the main patch is off after a fault: switching the option still means something.</summary>
         public bool PartsOutliveFault => SetParts != null && !(wholeFaults ?? Array.Empty<string>()).Any(PatchSafety.IsFaulted);
 
@@ -126,11 +129,12 @@ public static class Settings
 
     public static string StartedOffWhy(string? language) => Translations.Get(language, "why.started_off", StartedOffText);
 
+    // Neutral about who has what: a player switching back after a mistaken switch is told the same as one switching first.
     public const string CoopRunText =
-        "Locked during a co-op run: with the mod off, your combats would start far later than the other players'. To turn it off anyway, type bdopt off yes in the console.";
+        "Locked during a co-op run: every player must have the mod in the same state, and with it off your combats start far later than those of players who have it on. To turn it off anyway (only if every other player has it off), type bdopt off yes in the console.";
 
     public const string CoopRunOnText =
-        "Locked during a co-op run: every player must have the mod in the same state, and the others joined with it off, as you did. To turn it on anyway (only if every player does), type bdopt on yes in the console.";
+        "Locked during a co-op run: every player must have the mod in the same state, and with it on your combats start at another pace than those of players who have it off. To turn it on anyway (only if every other player has it on), type bdopt on yes in the console.";
 
     /// <summary>
     /// Why the menu's master switch is greyed out during a co-op run (<see cref="InCoopRun"/>), whichever way it is: the
@@ -221,13 +225,25 @@ public static class Settings
             sb.Append(group.Key).Append(":\n");
             foreach (PatchSafety.BackOff backOff in group)
             {
-                sb.Append($"  {backOff.Patch}: {backOff.What} <- {(backOff.Mods.Length > 0 ? string.Join(", ", backOff.Mods) : OtherModsText)}\n");
+                sb.Append($"  {backOff.Patch}: {backOff.What} <- {(backOff.Mods.Length > 0 ? string.Join(", ", backOff.Mods) : OtherModsText)}"
+                    + (backOff.Whole ? " (all of that part)" : "") + "\n");
             }
         }
         IReadOnlyList<(string Mod, int Count)> perMod = PatchSafety.BackOffsPerMod(patch => !Master || Running(patch));
         if (perMod.Count > 0)
         {
-            sb.Append("Per mod (methods and notes): ").Append(string.Join(", ", perMod.Select(m => $"{m.Mod} {m.Count}")));
+            sb.Append("Per mod (methods and notes): ").Append(string.Join(", ", perMod.Select(m => $"{m.Mod} {m.Count}"))).Append('\n');
+        }
+        // The menu's title colours (red, orange) in words, for the switched-on optimizations they concern.
+        IReadOnlyDictionary<string, PartState> states = States();
+        foreach (PartState state in new[] { PartState.Inactive, PartState.Partly })
+        {
+            string[] labels = Options.Where(o => states.TryGetValue(o.Key, out PartState s) && s == state).Select(o => o.Label).ToArray();
+            if (labels.Length > 0)
+            {
+                string words = StateWords(state);
+                sb.Append(char.ToUpperInvariant(words[0])).Append(words, 1, words.Length - 1).Append(" now: ").Append(string.Join(", ", labels)).Append('\n');
+            }
         }
         return sb.ToString().TrimEnd();
     }
@@ -264,6 +280,167 @@ public static class Settings
     /// <summary>The menu's sentence when part of a switchable optimization doesn't run, or null.</summary>
     public static string? PartlyOff(Option option, string? language) => !option.PartsOff().Any() ? null
         : Translations.Get(language, "parts_off", "Partly inactive: part of this optimization turned itself off or doesn't apply here (normal game for that part, details in the log).");
+
+    public const string InactiveText = "Inactive: nothing of this optimization runs here now (normal game). bdopt why in the console says why.";
+    public const string InactiveModsText = "Inactive: what this optimization speeds up is changed by {mods}, so all of it runs the normal game.";
+
+    /// <summary>
+    /// The menu's sentence for an optimization switched on that does nothing now although it can be switched
+    /// (<see cref="PartState.Inactive"/> without a <see cref="Why"/>): the mods responsible when known. Null otherwise.
+    /// </summary>
+    public static string? InactiveWhy(Option option, string? language, PartState state)
+    {
+        if (state != PartState.Inactive || Why(option, language) != null)
+        {
+            return null;
+        }
+        List<string> mods = ConflictingMods(option).ToList();
+        if (PatchSafety.HasUnnamedNotes(PatchNames(option)))
+        {
+            mods.Add(Translations.Get(language, "other_mods", OtherModsText));
+        }
+        return mods.Count == 0 ? Translations.Get(language, "inactive", InactiveText)
+            : Translations.Get(language, "inactive_mods", InactiveModsText).Replace("{mods}", string.Join(", ", mods));
+    }
+
+    /// <summary>What runs of an optimization now, for the menu's title colour and bdopt: one place, so both agree.</summary>
+    public enum PartState
+    {
+        /// <summary>All of it runs, or the player switched it off (the whole mod or this option): normal colour.</summary>
+        Healthy,
+        /// <summary>
+        /// Some of what it speeds up is left to the normal game: another mod's patch, types or data (back-offs, notes), or a
+        /// part that turned itself off or didn't apply. Orange.
+        /// </summary>
+        Partly,
+        /// <summary>
+        /// Switched on, but nothing of it runs: not applied (game or mod code changed), turned off after an error, or every part
+        /// of it off or kept vanilla as a whole by other mods. Red. Not when an optional mod it is for isn't installed (nothing
+        /// to speed up), nor when the mod started off (the player's choice).
+        /// </summary>
+        Inactive,
+    }
+
+    /// <summary>
+    /// Raised (from any thread: handlers marshal to the main thread themselves) when what <see cref="StateOf(Option)"/> reads
+    /// may have changed: a back-off or note recorded or dropped, a fault, the startup preflight done, a switch changed.
+    /// </summary>
+    public static event Action? StatesChanged;
+
+    internal static void NotifyStatesChanged()
+    {
+        try
+        {
+            StatesChanged?.Invoke();
+        }
+        catch
+        {
+            // Display only: a handler failing changes nothing of what runs.
+        }
+    }
+
+    /// <summary>Every option's state by key, the back-offs read once.</summary>
+    public static IReadOnlyDictionary<string, PartState> States()
+    {
+        var states = new Dictionary<string, PartState>(StringComparer.Ordinal);
+        IReadOnlyList<PatchSafety.BackOff> backOffs = SafeBackOffs();
+        foreach (Option option in Options)
+        {
+            states[option.Key] = StateOf(option, backOffs);
+        }
+        return states;
+    }
+
+    private static IReadOnlyList<PatchSafety.BackOff> SafeBackOffs()
+    {
+        try
+        {
+            return PatchSafety.BackOffs();
+        }
+        catch
+        {
+            return Array.Empty<PatchSafety.BackOff>();
+        }
+    }
+
+    /// <summary>This option's <see cref="PartState"/> now. Never throws (Healthy when it can't tell).</summary>
+    public static PartState StateOf(Option option) => StateOf(option, SafeBackOffs());
+
+    /// <summary>
+    /// Its pieces: the main patches and the parts (not the faults switching the whole option, not a part with nothing to do
+    /// here). A piece is off when it faulted, didn't apply, or a back-off keeps all of it vanilla
+    /// (<see cref="PatchSafety.BackOff.Whole"/>); partly off with any other back-off or note. Every piece off: Inactive.
+    /// </summary>
+    private static PartState StateOf(Option option, IReadOnlyList<PatchSafety.BackOff> backOffs)
+    {
+        try
+        {
+            if (ModEntry.StartedOff)
+            {
+                return PartState.Healthy; // Nothing of the mod loaded: the player's choice.
+            }
+            string? unavailable = option.Unavailable();
+            if (unavailable == LimitlessMissing)
+            {
+                return PartState.Healthy; // Limitless isn't installed: nothing for it to speed up (greyed out, Why says so).
+            }
+            if (unavailable != null || (option.Fault != null && !option.PartsOutliveFault))
+            {
+                return PartState.Inactive; // Can't run whatever the switches say.
+            }
+            if (!Master || !option.Wanted)
+            {
+                return PartState.Healthy; // Off by the player's choice.
+            }
+            int pieces = 0, off = 0;
+            bool partly = false;
+            foreach (string name in option.Faults.Concat(option.Parts.Select(part => part.Name)).Distinct())
+            {
+                if (option.WholeFaults.Contains(name))
+                {
+                    continue;
+                }
+                OptionPart[] part = option.Parts.Where(p => p.Name == name).ToArray();
+                bool notApplied = ModEntry.AllApplied && ModEntry.NotApplied(name);
+                if (part.Length > 0 && notApplied
+                    && (part[0].NotNeeded?.Invoke() == true || (part[0].NeedsMods && LimitlessReason() != LimitlessChanged)))
+                {
+                    continue; // Nothing for it to do here (this game version, Limitless absent).
+                }
+                pieces++;
+                bool wholeBackOff = false, someBackOff = false;
+                foreach (PatchSafety.BackOff backOff in backOffs)
+                {
+                    if (backOff.Patch == name)
+                    {
+                        someBackOff = true;
+                        wholeBackOff |= backOff.Whole;
+                    }
+                }
+                if (PatchSafety.IsFaulted(name) || notApplied || wholeBackOff)
+                {
+                    off++;
+                }
+                else if (someBackOff)
+                {
+                    partly = true;
+                }
+            }
+            return pieces > 0 && off == pieces ? PartState.Inactive : off > 0 || partly ? PartState.Partly : PartState.Healthy;
+        }
+        catch
+        {
+            return PartState.Healthy;
+        }
+    }
+
+    /// <summary>bdopt's words for a state ("" for Healthy).</summary>
+    private static string StateWords(PartState state) => state switch
+    {
+        PartState.Inactive => "inactive",
+        PartState.Partly => "partly inactive",
+        _ => "",
+    };
 
     public static bool Master { get; private set; } = true;
 
@@ -449,7 +626,20 @@ public static class Settings
     /// player's combats start at another pace than theirs. bdopt asks for a confirmation then (bdopt off yes, bdopt on yes).
     /// The menu needs no lobby check: BaseLib's mod configuration can't be opened from a lobby.
     /// </summary>
-    public static bool InCoopGame => InCoopRun || InCoopLobby();
+    public static bool InCoopGame => InCoopRun || (!RunInProgress() && InCoopLobby());
+
+    /// <summary>A run exists (solo or co-op): no lobby screen can be open then (the main menu is freed when a run starts), no walk needed.</summary>
+    private static bool RunInProgress()
+    {
+        try
+        {
+            return MegaCrit.Sts2.Core.Runs.RunManager.Instance.IsInProgress;
+        }
+        catch
+        {
+            return false; // Can't tell: the walk answers.
+        }
+    }
 
     /// <summary>
     /// A lobby screen in the scene tree holds a connected multiplayer lobby (host or client). The game keeps no global
@@ -569,15 +759,27 @@ public static class Settings
     public const string CoopOffOnly =
         "Co-op: with the mod off you can only play with players who also have it off (the game reports a mod mismatch otherwise).";
 
+    /// <summary><see cref="CoopOffOnly"/> and <see cref="CoopRejoinNote"/> when the game's join check can't tell on from off here.</summary>
+    public const string CoopCheckMissing =
+        "Co-op: the game can't tell here whether another player has this mod on or off (its join check of this mod isn't available, see the log): every player must set the same state by hand.";
+
+    /// <summary>What the game's join check does with the whole mod off (<see cref="CoopOffOnly"/>), or that it can't (<see cref="CoopCheckMissing"/>).</summary>
+    public static string CoopOffOnlyNow => CoopModeTag.Working ? CoopOffOnly : CoopCheckMissing;
+
+    /// <summary>What a disconnected player meets after a switch (<see cref="CoopRejoinNote"/>), or that nothing checks it (<see cref="CoopCheckMissing"/>).</summary>
+    public static string CoopRejoinNow => CoopModeTag.Working ? CoopRejoinNote : CoopCheckMissing;
+
+    // Neutral about who has what (a player undoing a mistaken switch reads the same): the condition, then what a mixed pair does.
     public const string CoopOffWarning =
-        "WARNING: this is a co-op game. With the mod off, your combats start at the unmodified game's pace while the other "
-        + "players' start fast: with many relics you start each combat far later than them, and the game can then drop their "
-        + "actions (desync or a stuck turn).";
+        "WARNING: this is a co-op game, and every player must have the mod in the same state. Turn it off only if every other "
+        + "player has it off: with it off while others have it on, your combats start at the unmodified game's pace while theirs "
+        + "start fast; with many relics you start each combat far later than them, and the game can then drop their actions "
+        + "(desync or a stuck turn).";
 
     public const string CoopOnWarning =
-        "WARNING: this is a co-op game, and every player must have the mod in the same state: you joined with it off, as the "
-        + "others did. Turned on by you alone, your combats start fast while theirs start at the unmodified game's pace, and the "
-        + "game can then drop actions (desync or a stuck turn). Turn it on only if every player does.";
+        "WARNING: this is a co-op game, and every player must have the mod in the same state. Turn it on only if every other "
+        + "player has it on: with it on while others have it off, your combats start fast while theirs start at the unmodified "
+        + "game's pace, and the game can then drop actions (desync or a stuck turn).";
 
     /// <summary>After a switch of the whole mod in a co-op game: what it costs a player who disconnects (the game's join check).</summary>
     public const string CoopRejoinNote =
@@ -603,6 +805,7 @@ public static class Settings
         {
             Changed?.Invoke(MasterKey, on);
         }
+        NotifyStatesChanged();
     }
 
     public static void SetOption(string key, bool on, bool notify = true)
@@ -619,6 +822,7 @@ public static class Settings
         {
             Changed?.Invoke(key, on);
         }
+        NotifyStatesChanged();
     }
 
     /// <summary>
@@ -656,7 +860,7 @@ public static class Settings
         {
             return $"BigDeckOptimization: inactive this session (turned off when the game started, nothing applied but the co-op check: unmodified game). "
                 + (Master ? "Turned on: takes effect when you restart the game." : "To use it: bdopt on, then restart the game.")
-                + " " + CoopOffOnly;
+                + " " + CoopOffOnlyNow;
         }
         StringBuilder sb = new($"BigDeckOptimization: {(Master ? "on" : "OFF (vanilla)")}\n");
         if (!Master && InCoopGame)
@@ -665,8 +869,13 @@ public static class Settings
         }
         else if (!Master)
         {
-            sb.Append(CoopOffOnly).Append('\n');
+            sb.Append(CoopOffOnlyNow).Append('\n');
         }
+        else if (!CoopModeTag.Working)
+        {
+            sb.Append(CoopCheckMissing).Append('\n');
+        }
+        IReadOnlyDictionary<string, PartState> states = States();
         foreach (Option option in Options)
         {
             string state = option.Unavailable() is { } why ? why
@@ -682,6 +891,12 @@ public static class Settings
             if (option.Unavailable() == null && option.Fault == null && option.PartsOff().ToList() is { Count: > 0 } off)
             {
                 state += $" (partly off: {string.Join(", ", off)})";
+            }
+            if (states.TryGetValue(option.Key, out PartState partState) && partState == PartState.Inactive && option.Unavailable() == null
+                && (option.Fault == null || option.PartsOutliveFault))
+            {
+                // Switched on, every part of it off or kept vanilla as a whole by other mods.
+                state += " (inactive: nothing of it runs now)";
             }
             sb.Append($"  {option.Label} [{option.Key}]: {state}\n");
             if (option.Key == "fast_combat_start")

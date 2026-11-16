@@ -128,6 +128,7 @@ public static class RichTextEnvRelease
         }
         Applied = true;
         PatchSafety.Watch(Name, _patched.ToArray()); // What OthersPatched asks about (display only).
+        PatchSafety.WholePatch(Name);
     }
 
     private static bool RemoveTrackerPatch(Harmony harmony, MethodInfo register)

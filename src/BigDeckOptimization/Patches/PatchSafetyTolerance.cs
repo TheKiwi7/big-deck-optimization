@@ -49,8 +49,10 @@ public enum PatchTolerance
     PrefixesOnly,
 
     /// <summary>
-    /// Only for an <c>AbstractModel</c> default whose calls this mod skips for listener types keeping it: a prefix or postfix
-    /// that provably does nothing unless <c>__instance</c> is one of some types (<see cref="PatchSafety.TypeGates"/>, a strict
+    /// Only for a method whose calls this mod skips for instances of some types and keeps for the others: HookSkip's
+    /// <c>AbstractModel</c> defaults (skipped for listener types keeping the default), LimitlessCloneMemo's card methods one
+    /// level down its clone chain (skipped with the chain, per saved card type; LimitlessHookSkip's storage card too). A prefix
+    /// or postfix that provably does nothing unless <c>__instance</c> is one of some types (<see cref="PatchSafety.TypeGates"/>, a strict
     /// IL shape) is let stand, and those types are reported, so the caller treats them as overriding the default (their calls
     /// stay the game's). Not when the patch method is itself patched by anyone (its replacement isn't the IL read), its class
     /// has a static constructor (its first call would run it at another time), or it renames its parameters. Anything else
@@ -216,7 +218,10 @@ public static partial class PatchSafety
     /// The shape rules' switch ("Foreign patches judged by their shape", DESIGN): false makes every tolerant check the strict
     /// one (no gates either), as before those rules, for a release that leaves them out until their in-game proof
     /// (docs/RELEASE.md). The rest of their commits (the tracking prefixes' late priorities, the order-free watches) changes
-    /// nothing without them.
+    /// nothing without them. "Before those rules" is the fourth pass's state (a501424), not v1.0.3's: that pass deepened
+    /// LimitlessCloneMemo's clone chain (CardModel.AddKeyword, RemoveKeyword, get_MaxUpgradeLevel among others), so with the
+    /// switch off a strict patch there (CardAscension's AddKeyword prefix) turns LimitlessCloneMemo and LimitlessHookSkip off
+    /// for every card, as before the rules; only the type gates keep them for other cards.
     /// </summary>
     internal static readonly bool ShapeRules = true;
 
@@ -340,11 +345,10 @@ public static partial class PatchSafety
     /// </summary>
     private static bool LoggedFor(TolerantAnswer answer, string caller)
     {
-        if (!IsRuntimeCaller(caller))
-        {
-            return false;
-        }
+        // By reference first, the hot path's whole cost: only runtime call sites are ever in the slots (a preflight's patch
+        // name never matches one), so the call site's kind is only looked at before taking a slot.
         string?[] sites = answer.LoggedFor;
+        int free = -1;
         for (int i = 0; i < sites.Length; i++)
         {
             string? site = sites[i];
@@ -352,13 +356,16 @@ public static partial class PatchSafety
             {
                 return true;
             }
-            if (site == null)
+            if (site == null && free < 0)
             {
-                sites[i] = caller;
-                return false;
+                free = i;
             }
         }
-        sites[0] = caller;
+        if (!IsRuntimeCaller(caller))
+        {
+            return false;
+        }
+        sites[free >= 0 ? free : 0] = caller;
         return false;
     }
 

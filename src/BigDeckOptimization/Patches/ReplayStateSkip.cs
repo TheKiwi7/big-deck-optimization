@@ -45,6 +45,7 @@ public static class ReplayStateSkip
         PatchGuard.Patch(harmony, _record, prefix: new HarmonyMethod(typeof(ReplayStateSkip), nameof(Prefix)));
         Applied = true;
         PatchSafety.Watch(Name, _record); // What Prefix asks about (display only).
+        PatchSafety.WholePatch(Name);
     }
 
     private static bool Prefix(CombatReplayWriter __instance, NetFullCombatState fullCombatState)

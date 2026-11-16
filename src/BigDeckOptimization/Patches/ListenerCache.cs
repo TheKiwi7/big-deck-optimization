@@ -219,9 +219,11 @@ public static class ListenerCache
         // What the scope check asks (display only): both walks, and the walk code FastListeners knows (resolved lazily).
         PatchSafety.Watch(Name, new MethodBase?[] { _combatIterate, _runIterate });
         PatchSafety.WatchAll(Name, FastListeners.WalkCodeMethods);
+        // Display only: these gate every scope (EnterAny's _safe), any back-off keeps all of it vanilla (the menu's red title).
+        PatchSafety.WholePatch(Name);
         // Kept lists aren't reused across display scopes while card modifiers may change (CardModifiersMayChange).
         PatchSafety.WatchNote(ReuseFault, () => BaseLibTypes.NoteIfDefined(ReuseFault, "card_modifiers", CardModifierType,
-            "listener lists are rebuilt in each refresh instead of reused: other mods define BaseLib card modifiers"));
+            "listener lists are rebuilt in each refresh instead of reused: other mods define BaseLib card modifiers", whole: true));
     }
 
     /// <summary>Set once <see cref="Apply"/> got through: until then (or when it threw) no scope caches.</summary>

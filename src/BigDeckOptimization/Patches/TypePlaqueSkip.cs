@@ -80,8 +80,9 @@ public static class TypePlaqueSkip
         Applied = true;
         // What CanSkip asks about (display only), and its silent condition: no mod defining a type line modifier.
         PatchSafety.Watch(Name, original);
+        PatchSafety.WholePatch(Name);
         PatchSafety.WatchNote(Name, () => BaseLibTypes.NoteIfDefined(Name, "plaque_modifiers", ModifierInterface,
-            "each card's type line is searched for changes as BaseLib does: other mods define type line modifiers"));
+            "each card's type line is searched for changes as BaseLib does: other mods define type line modifiers", whole: true));
     }
 
     /// <summary>Whether BaseLib's walk can only find nothing for this card (its result is then the original text).</summary>

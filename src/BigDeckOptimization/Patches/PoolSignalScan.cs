@@ -99,6 +99,8 @@ public static class PoolSignalScan
         // What Prefix and AnyPoolPatched ask about (display only): the pools that exist at each preflight.
         PatchSafety.Watch(Name, _staticFree);
         PatchSafety.WatchAll(Name, PoolMethods);
+        // Display only: one gate in front of all it does, any of these back-offs keeps the whole patch vanilla (the menu's red title).
+        PatchSafety.WholePatch(Name);
     }
 
     /// <summary>What <see cref="AnyPoolPatched"/> asks about for the pools that exist now (back-off preflight).</summary>

@@ -621,7 +621,7 @@ public class PerfConsoleCmd : AbstractConsoleCmd
         bool on = value == "on";
         if (!confirmed && on != Config.Settings.Master && !ModEntry.StartedOff && Config.Settings.InCoopRun)
         {
-            return new CmdResult(success: false, (on ? Config.Settings.CoopOnWarning : Config.Settings.CoopOffWarning) + " " + Config.Settings.CoopRejoinNote
+            return new CmdResult(success: false, (on ? Config.Settings.CoopOnWarning : Config.Settings.CoopOffWarning) + " " + Config.Settings.CoopRejoinNow
                 + $"\nTo turn it {value} anyway, type: bdperf opt {value} yes");
         }
         Config.Settings.SetMaster(on, notify: false, sessionOnly: true);

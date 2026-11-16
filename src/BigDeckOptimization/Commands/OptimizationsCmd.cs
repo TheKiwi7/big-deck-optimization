@@ -53,7 +53,7 @@ public class OptimizationsCmd : AbstractConsoleCmd
             // A switch of the whole mod that changes what runs (not after a start with the mod off: nothing of it runs then).
             if (!confirmed && on != Settings.Master && !ModEntry.StartedOff && Settings.InCoopGame)
             {
-                return new CmdResult(success: false, (on ? Settings.CoopOnWarning : Settings.CoopOffWarning) + " " + Settings.CoopRejoinNote
+                return new CmdResult(success: false, (on ? Settings.CoopOnWarning : Settings.CoopOffWarning) + " " + Settings.CoopRejoinNow
                     + $"\nTo turn it {first} anyway, type: bdopt {first} yes");
             }
             Settings.SetMaster(on);

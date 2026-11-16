@@ -357,11 +357,13 @@ public static class SnapshotCardReuse
             _keywordValuesDistinct = _keywordValues.Distinct().Count() == _keywordValues.Length;
             _storedVersion = AccessTools.FieldRefAccess<List<SerializableCard>, int>("_version");
             ApplyFastReads();
-            PatchGuard.Patch(harmony, _pileFrom, prefix: new HarmonyMethod(typeof(SnapshotCardReuse), nameof(PilePrefix)));
+            // The release first: a pile prefix in place is then the pile part applied (the flag below, what the preflight
+            // shows); a release without it finds no pile entries. ApplyBits and ApplyTrust catch their own errors.
             PatchGuard.Patch(harmony, AccessTools.Method(typeof(Player), nameof(Player.AfterCombatEnd)), postfix: new HarmonyMethod(typeof(SnapshotCardReuse), nameof(ReleaseCombat)));
+            PatchGuard.Patch(harmony, _pileFrom, prefix: new HarmonyMethod(typeof(SnapshotCardReuse), nameof(PilePrefix)));
+            pilesApplied = true;
             ApplyBits(harmony);
             ApplyTrust(harmony);
-            pilesApplied = true;
         }
         catch (Exception e)
         {

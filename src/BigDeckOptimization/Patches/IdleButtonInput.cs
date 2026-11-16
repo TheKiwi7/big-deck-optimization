@@ -70,6 +70,8 @@ public static class IdleButtonInput
         // What Active asks about (display only).
         PatchSafety.Watch(Name, _input);
         PatchSafety.Watch(Name, _dragCheck);
+        // Display only: one gate in front of all it does, any of these back-offs keeps the whole patch vanilla (the menu's red title).
+        PatchSafety.WholePatch(Name);
     }
 
     private static System.Reflection.MethodInfo? _input, _dragCheck;

@@ -311,7 +311,8 @@ internal static class BaseLibTypes
     /// BaseLib type: without BaseLib, or without that type in it, nothing is looked at (a missing type would make
     /// <see cref="AnyDefined"/> scan every assembly). For the preflight only.
     /// </summary>
-    public static void NoteIfDefined(string patch, string key, string baseTypeName, string text)
+    /// <param name="whole">The note keeps all of that patch vanilla (<see cref="PatchSafety.Note"/>).</param>
+    public static void NoteIfDefined(string patch, string key, string baseTypeName, string text, bool whole = false)
     {
         Assembly? baseLib = Loaded("BaseLib");
         if (baseLib == null || baseLib.GetType(baseTypeName, false) == null || NoneDefined(baseTypeName))
@@ -319,7 +320,7 @@ internal static class BaseLibTypes
             PatchSafety.ClearNote(patch, key);
             return;
         }
-        PatchSafety.Note(patch, key, text, DefiningMods(baseTypeName));
+        PatchSafety.Note(patch, key, text, DefiningMods(baseTypeName), whole);
     }
 
     private static int _spireNotesCounted = -1;

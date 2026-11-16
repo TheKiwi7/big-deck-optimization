@@ -69,11 +69,13 @@ public static partial class AutoTest
 
         // The selectors this tooling installed answer every hand choice before the game's screen opens (CardSelectCmd.FromHand):
         // off for this choice, put back in the finally.
+        // Last pushed first (the combat one, from autoroom, comes after 'selector auto'): v0.113's stack resumes a suspended
+        // selector when the newer one is disposed. Pushed back in the opposite order in the finally.
         bool hadSelector = _selector != null, hadCombatSelector = _combatSelector != null;
-        _selector?.Dispose();
-        _selector = null;
         _combatSelector?.Dispose();
         _combatSelector = null;
+        _selector?.Dispose();
+        _selector = null;
         long suspendedBefore = ListenerCache.SuspendedRevalidations;
         bool forced = false;
         try

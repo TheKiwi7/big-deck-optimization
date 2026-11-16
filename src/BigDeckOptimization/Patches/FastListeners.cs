@@ -2951,7 +2951,10 @@ public static class FastListeners
     /// only the pile entry cache (<see cref="GuardedPiles"/>), run inside walks that async hooks consume, where an
     /// exception would only fault the hook's task. On one, this walk adds every listener, unfiltered, as vanilla (the superset),
     /// then FastListeners turns off. The unfiltered walk is the mirror alone: its exceptions are the game's, passed on without
-    /// turning anything off.
+    /// turning anything off. The pile entry caches (snapshots, catch-ups, segments) are never left half-updated with
+    /// FastListeners on: they are only written inside <see cref="GuardedPiles"/> and <see cref="GuardedDeck"/>, which catch
+    /// any exception there (a getter's included) and turn FastListeners off for the session before anything else reads them;
+    /// what reaches the catch below comes from outside those caches.
     /// </summary>
     private static void AddCombatGuarded(List<AbstractModel> list, CombatState state, PileFilter? filter)
     {

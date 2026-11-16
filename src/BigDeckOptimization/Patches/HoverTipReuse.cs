@@ -143,6 +143,8 @@ public static class HoverTipReuse
         // What Prefix asks about (display only).
         PatchSafety.Watch(Name, handler);
         PatchSafety.Watch(Name, _skipped);
+        // Display only: one gate in front of all it does, any of these back-offs keeps the whole patch vanilla (the menu's red title).
+        PatchSafety.WholePatch(Name);
     }
 
     /// <summary>Where the game would place the panel from now; null when it couldn't (no game node: never reused).</summary>

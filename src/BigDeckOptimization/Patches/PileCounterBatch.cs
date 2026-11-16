@@ -55,6 +55,7 @@ public static class PileCounterBatch
         PatchGuard.Patch(harmony, removeCard, prefix: new HarmonyMethod(typeof(PileCounterBatch), nameof(RemoveCardPrefix)));
         Applied = true;
         PatchSafety.Watch(Name, removeCard); // What RemoveCardPrefix asks about (display only).
+        PatchSafety.WholePatch(Name);
     }
 
     /// <summary>

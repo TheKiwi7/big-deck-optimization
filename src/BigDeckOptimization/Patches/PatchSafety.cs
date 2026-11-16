@@ -30,9 +30,14 @@ public static partial class PatchSafety
     /// </summary>
     public static void Fault(string name)
     {
+        bool added;
         lock (_faults)
         {
-            _faults.Add(name);
+            added = _faults.Add(name);
+        }
+        if (added)
+        {
+            Config.Settings.NotifyStatesChanged(); // The settings page may be open: that option's colour and reason change.
         }
     }
 
@@ -427,9 +432,9 @@ public static partial class PatchSafety
         }
         foreach ((string Patch, MethodBase Method, PatchTolerance Tolerance) key in _conflicts.Keys)
         {
-            if (key.Method == method)
+            if (key.Method == method && _conflicts.TryRemove(key, out _))
             {
-                _conflicts.TryRemove(key, out _);
+                Config.Settings.NotifyStatesChanged();
             }
         }
     }
@@ -439,13 +444,17 @@ public static partial class PatchSafety
         string patch = PatchName(caller);
         if (mods.Length == 0)
         {
-            _conflicts.TryRemove((patch, method, tolerance), out _);
+            if (_conflicts.TryRemove((patch, method, tolerance), out _))
+            {
+                Config.Settings.NotifyStatesChanged();
+            }
             return;
         }
         _anyConflict = true;
         if (!_conflicts.TryGetValue((patch, method, tolerance), out string[]? known) || !known.SequenceEqual(mods))
         {
             _conflicts[(patch, method, tolerance)] = mods;
+            Config.Settings.NotifyStatesChanged();
             MegaCrit.Sts2.Core.Logging.Log.Info($"[{ModEntry.Id}] {patch}: {method.DeclaringType?.Name}.{method.Name} is also patched by {string.Join(", ", mods)}"
                 + (tolerance == PatchTolerance.None ? "" : $" ({ToleranceText(tolerance)} not enough)") + ": normal game for that part");
         }
@@ -458,16 +467,27 @@ public static partial class PatchSafety
     private static string PatchName(string caller) =>
         caller.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) ? System.IO.Path.GetFileNameWithoutExtension(caller.Replace('\\', '/')) : caller;
 
-    /// <summary>The loaded mod whose assembly holds the patch method (its display name), else the Harmony id.</summary>
+    /// <summary>
+    /// The loaded mod a patch comes from, by its display name (as the game's mods screen shows it): the mod holding the patch
+    /// method's assembly (<see cref="ModNameOf"/>), else the mod whose manifest id is a dot-separated part of the Harmony id
+    /// (<see cref="OwnerModName"/>), else the Harmony id itself. A mod patching under several Harmony ids (one per module of
+    /// a framework) thus reads as that one mod, its methods counted once.
+    /// </summary>
     private static string ModName(Patch patch)
     {
         Assembly? assembly = PatchMethodOf(patch)?.DeclaringType?.Assembly;
-        return assembly != null && assembly != typeof(PatchSafety).Assembly && ModNameOf(assembly) is { } name ? name : patch.owner;
+        if (assembly != null && assembly != typeof(PatchSafety).Assembly && ModNameOf(assembly) is { } name)
+        {
+            return name;
+        }
+        return OwnerModName(patch.owner) ?? patch.owner;
     }
 
     /// <summary>
     /// The display name of the loaded mod holding this assembly (manifest name, else id), or null when no mod holds it (the
-    /// game, the runtime, dynamic assemblies) or it is this mod's own.
+    /// game, the runtime, dynamic assemblies) or it is this mod's own. Held: one of the mod's assemblies as the game records
+    /// them, or a file under the mod's folder (a mod loading more assemblies itself, e.g. a framework's modules built per game
+    /// version: the deepest folder wins when mods' folders nest).
     /// </summary>
     internal static string? ModNameOf(Assembly? assembly)
     {
@@ -483,17 +503,119 @@ public static partial class PatchSafety
         {
             if (ModAssemblies(mod).Contains(assembly))
             {
-                if ((mod.manifest?.name ?? mod.manifest?.id) is { } name)
-                {
-                    // A mod's assemblies and manifest don't change once loaded. Not kept: an assembly no mod holds yet.
-                    _modNames[assembly] = name;
-                    return name;
-                }
+                return Keep(assembly, DisplayName(mod));
+            }
+        }
+        return Keep(assembly, FolderModName(assembly));
+    }
+
+    /// <summary>A name found is kept (a mod's assemblies, folder and manifest don't change once loaded); none: not kept, a mod may hold it later.</summary>
+    private static string? Keep(Assembly assembly, string? name)
+    {
+        if (name != null)
+        {
+            _modNames[assembly] = name;
+        }
+        return name;
+    }
+
+    private static string? DisplayName(MegaCrit.Sts2.Core.Modding.Mod mod) =>
+        mod.manifest?.name is { Length: > 0 } name ? name : mod.manifest?.id;
+
+    /// <summary>The loaded mod whose folder holds the assembly's file (the deepest folder), or null (no file: loaded from bytes).</summary>
+    private static string? FolderModName(Assembly assembly)
+    {
+        string location;
+        try
+        {
+            location = assembly.Location;
+            if (string.IsNullOrEmpty(location))
+            {
                 return null;
+            }
+            location = System.IO.Path.GetFullPath(location);
+        }
+        catch
+        {
+            return null;
+        }
+        StringComparison comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        string? best = null;
+        int bestLength = 0;
+        foreach ((string folder, string name) in ModFolders())
+        {
+            if (folder.Length > bestLength && location.StartsWith(folder, comparison))
+            {
+                best = name;
+                bestLength = folder.Length;
+            }
+        }
+        return best;
+    }
+
+    private static volatile (string Folder, string Name)[]? _modFolders;
+    private static int _modFoldersCount = -1;
+
+    /// <summary>Each loaded mod's folder (full path ending with a separator) and display name, built again when the mod list changed size.</summary>
+    private static (string Folder, string Name)[] ModFolders()
+    {
+        IReadOnlyList<MegaCrit.Sts2.Core.Modding.Mod> mods = MegaCrit.Sts2.Core.Modding.ModManager.Mods;
+        (string Folder, string Name)[]? known = _modFolders;
+        if (known != null && _modFoldersCount == mods.Count)
+        {
+            return known;
+        }
+        var folders = new List<(string, string)>();
+        foreach (MegaCrit.Sts2.Core.Modding.Mod mod in mods.ToArray())
+        {
+            try
+            {
+                if (mod.path is { Length: > 0 } path && DisplayName(mod) is { } name)
+                {
+                    string full = System.IO.Path.GetFullPath(path);
+                    char separator = System.IO.Path.DirectorySeparatorChar;
+                    folders.Add((full.EndsWith(separator) || full.EndsWith(System.IO.Path.AltDirectorySeparatorChar) ? full : full + separator, name));
+                }
+            }
+            catch
+            {
+                // A path the runtime can't read: that mod is named by its assemblies or Harmony ids only.
+            }
+        }
+        known = folders.ToArray();
+        _modFoldersCount = mods.Count;
+        _modFolders = known;
+        return known;
+    }
+
+    /// <summary>
+    /// The loaded mod whose manifest id is one of the Harmony id's dot-separated parts, case ignored ("com.author.my-mod.core"
+    /// for a mod of id "My-Mod"), or null. Ids of three characters or less are left out (too likely to match by chance).
+    /// </summary>
+    private static string? OwnerModName(string? owner)
+    {
+        if (string.IsNullOrEmpty(owner))
+        {
+            return null;
+        }
+        if (_ownerNames.TryGetValue(owner, out string? known))
+        {
+            return known;
+        }
+        string[] parts = owner.Split('.');
+        foreach (MegaCrit.Sts2.Core.Modding.Mod mod in MegaCrit.Sts2.Core.Modding.ModManager.Mods)
+        {
+            if (mod.manifest?.id is { Length: > 3 } id
+                && Array.Exists(parts, part => string.Equals(part, id, StringComparison.OrdinalIgnoreCase)) && DisplayName(mod) is { } name)
+            {
+                _ownerNames[owner] = name;
+                return name;
             }
         }
         return null;
     }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _ownerNames = new(StringComparer.Ordinal);
 
     /// <summary>Mod display name per assembly holding a patch method (<see cref="ModName"/>).</summary>
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<Assembly, string> _modNames = new();
@@ -528,13 +650,31 @@ public static partial class PatchSafety
         return method;
     }
 
-    // Game v0.107: Mod.assembly; v0.111 (beta): Mod.assemblies. Read by reflection so both work.
-    private static readonly FieldInfo? _modAssembly = AccessTools.Field(typeof(MegaCrit.Sts2.Core.Modding.Mod), "assembly");
-    private static readonly FieldInfo? _modAssemblies = AccessTools.Field(typeof(MegaCrit.Sts2.Core.Modding.Mod), "assemblies");
+    // Game v0.107: Mod.assembly; v0.111+: Mod.assemblies (the newer field first). Raw reflection, not AccessTools: a mod
+    // patching Harmony's lookups (CrossVersionCompat) answers a missing Mod.assembly with a stand-in FieldInfo giving only
+    // the first of Mod.assemblies, which lost the names of mods with several assemblies. Only the runtime's own FieldInfo of
+    // the game's Mod type is used.
+    private static readonly FieldInfo? _modAssemblies = RealModField("assemblies");
+    private static readonly FieldInfo? _modAssembly = RealModField("assembly");
+
+    private static FieldInfo? RealModField(string name)
+    {
+        try
+        {
+            FieldInfo? field = typeof(MegaCrit.Sts2.Core.Modding.Mod).GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            return field != null && field.Name == name && field.DeclaringType == typeof(MegaCrit.Sts2.Core.Modding.Mod)
+                && field.GetType().Assembly == typeof(object).Assembly ? field : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
     private static IEnumerable<Assembly> ModAssemblies(MegaCrit.Sts2.Core.Modding.Mod mod) =>
-        _modAssembly?.GetValue(mod) is Assembly single ? new[] { single }
-        : _modAssemblies?.GetValue(mod) as IEnumerable<Assembly> ?? Enumerable.Empty<Assembly>();
+        _modAssemblies?.GetValue(mod) is IEnumerable<Assembly> several ? several
+        : _modAssembly?.GetValue(mod) is Assembly single ? new[] { single }
+        : Enumerable.Empty<Assembly>();
 
     /// <summary>
     /// The mods other patches come from, for the methods these patches currently back off from, and the mods their notes

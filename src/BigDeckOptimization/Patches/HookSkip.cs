@@ -230,6 +230,8 @@ public static partial class HookSkip
     private static Func<ICombatState, IEnumerable<AbstractModel>>? _vanillaCombatHookWalk;
     private static MethodInfo? _redirectRun, _redirectCombat, _redirectCombatHook;
     private static readonly Dictionary<MethodBase, int> _indexByBody = new();
+    /// <summary>Hooks whose transpiler failed in a batch (left vanilla after registering for the preflight).</summary>
+    private static readonly HashSet<int> _failedIndexes = new();
 
     public static void Apply(Harmony harmony)
     {
@@ -502,11 +504,22 @@ public static partial class HookSkip
                 LeftVanilla++;
                 Log.Info($"[{ModEntry.Id}] {Name}: {hookName} left vanilla: {e.Message}");
                 // Registered at Apply (the preflight may run before the last batch): a hook left vanilla here shows no
-                // back-off from its own methods, which would change nothing.
+                // back-off from its own methods, which would change nothing: the hook, its state machine, and the
+                // AbstractModel defaults no other hook still filtered keeps (the version's helpers are shared: kept).
                 if (_indexByBody.TryGetValue(body, out int failed))
                 {
+                    _failedIndexes.Add(failed);
                     PatchSafety.Unwatch(Name, Hooks[failed].Method);
                     PatchSafety.Unwatch(Name, body);
+                    foreach (MethodInfo baseMethod in Hooks[failed].Filter?.BaseMethods ?? Array.Empty<MethodInfo>())
+                    {
+                        bool shared = _indexByBody.Values.Any(i => !_failedIndexes.Contains(i)
+                            && Hooks[i].Filter?.BaseMethods is { } others && Array.IndexOf(others, baseMethod) >= 0);
+                        if (!shared)
+                        {
+                            PatchSafety.Unwatch(Name, baseMethod);
+                        }
+                    }
                 }
             }
         }

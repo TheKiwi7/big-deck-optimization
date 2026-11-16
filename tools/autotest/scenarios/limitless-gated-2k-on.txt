@@ -1,0 +1,74 @@
+# A type-gated patch of another mod on the Limitless clone chain's card methods (CardModel.AddKeyword, a prefix doing nothing
+# unless the card is a Squeeze: Bench/ForeignPatches.cs gated-prefix), three combat starts at ~1,900 cards (the reference deck,
+# Limitless stacked enchantments). Mod on. Compare limitless-gated-2k-off and -on: CHECKSUM/STATE identical.
+# The on side: LimitlessCloneMemo and LimitlessHookSkip keep running past the gated patch (their effects grow), the runtime
+# check lets it stand (TypeGated kept), only a Squeeze saved card would lose the memo (the strict check, per card type).
+timeout 1500
+expect .*CardModel\.AddKeyword is also patched by bdtest\.foreign\.gated-prefix-squeeze \(patches gated on the listener's type: Squeeze treated as overriding it\): kept
+expect FOREIGN runtime LimitlessCloneMemo CardModel\.AddKeyword \(TypeGated\) kept [1-9]
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bdopt on
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+foreignpatch gated-prefix MegaCrit.Sts2.Core.Models.CardModel:AddKeyword squeeze
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum CULTISTS_NORMAL start
+state CULTISTS_NORMAL start
+effects first
+play 5
+waitfor idle 300
+checksum CULTISTS_NORMAL plays
+state CULTISTS_NORMAL plays
+endturn
+waitfor idle 600
+checksum CULTISTS_NORMAL t1 end
+state CULTISTS_NORMAL t1 end
+cmd kill all
+waitfor nocombat 300
+wait 2
+cmd fight KNIGHTS_ELITE
+waitfor idle 600
+wait 1
+checksum KNIGHTS_ELITE start
+state KNIGHTS_ELITE start
+play 5
+waitfor idle 300
+checksum KNIGHTS_ELITE plays
+state KNIGHTS_ELITE plays
+endturn
+waitfor idle 600
+checksum KNIGHTS_ELITE t1 end
+state KNIGHTS_ELITE t1 end
+cmd kill all
+waitfor nocombat 300
+wait 2
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum CULTISTS_NORMAL start
+state CULTISTS_NORMAL start
+play 5
+waitfor idle 300
+checksum CULTISTS_NORMAL plays
+state CULTISTS_NORMAL plays
+endturn
+waitfor idle 600
+checksum CULTISTS_NORMAL t1 end
+state CULTISTS_NORMAL t1 end
+cmd kill all
+waitfor nocombat 300
+wait 2
+foreignpatch report end
+effects end
+effectcheck LimitlessCloneMemo grew first
+effectcheck LimitlessHookSkip grew first
+cmd bdopt on
+wait 1
+foreignpatch remove
+quit
