@@ -66,19 +66,29 @@ public static class GridSortCache
         /// <summary>The comparers dictionary already checked in this call: the sort reads the getter at every comparison.</summary>
         public Dictionary<SortingOrders, Func<CardModel, CardModel, int>>? Wrapped;
         private Dictionary<System.Reflection.MethodInfo, bool>? _patched;
+        /// <summary>The comparer delegate asked last and its answer: a sort asks about the same delegate at every comparison.</summary>
+        private Delegate? _lastComparer;
+        private bool _lastPatched;
 
         /// <summary>
         /// Another mod patches this comparer: the game's comparer answers then, as its patch would see every comparison.
-        /// Asked once per comparer and SetCards call (no tolerance).
+        /// Asked once per comparer and SetCards call (no tolerance); the same delegate again is one reference compare.
         /// </summary>
-        public bool Patched(System.Reflection.MethodInfo comparer)
+        public bool Patched(Delegate comparer)
         {
-            _patched ??= new Dictionary<System.Reflection.MethodInfo, bool>();
-            if (!_patched.TryGetValue(comparer, out bool patched))
+            if (ReferenceEquals(comparer, _lastComparer))
             {
-                patched = PatchSafety.IsPatchedByOthers(comparer);
-                _patched[comparer] = patched;
+                return _lastPatched;
             }
+            System.Reflection.MethodInfo method = comparer.Method;
+            _patched ??= new Dictionary<System.Reflection.MethodInfo, bool>();
+            if (!_patched.TryGetValue(method, out bool patched))
+            {
+                patched = PatchSafety.IsPatchedByOthers(method);
+                _patched[method] = patched;
+            }
+            _lastComparer = comparer;
+            _lastPatched = patched;
             return patched;
         }
     }
@@ -107,11 +117,13 @@ public static class GridSortCache
         }
         PatchGuard.Patch(harmony, Reflect.PropertyGetter(typeof(NCardGrid), "SortingAlgorithms"),
             postfix: new HarmonyMethod(typeof(GridSortCache), nameof(SortingAlgorithmsPostfix)));
-        // The scope ends in a postfix first of the postfixes: another mod's postfix sorting the grid again (with the grid's own
-        // comparers, after SetCards refilled _cards) runs outside it, on the game's comparers. The finalizer ends it after a throw.
+        // The scope ends in a postfix first of the postfixes (the highest priority Harmony takes, above Priority.First: only a
+        // postfix at that same priority registered earlier sorts before it): another mod's postfix sorting the grid again (with
+        // the grid's own comparers, after SetCards refilled _cards) runs outside it, on the game's comparers. The finalizer ends
+        // it after a throw.
         PatchGuard.Patch(harmony, setCards,
             prefix: new HarmonyMethod(typeof(GridSortCache), nameof(SetCardsPrefix)),
-            postfix: new HarmonyMethod(typeof(GridSortCache), nameof(SetCardsPostfix)) { priority = Priority.First },
+            postfix: new HarmonyMethod(typeof(GridSortCache), nameof(SetCardsPostfix)) { priority = int.MaxValue },
             finalizer: new HarmonyMethod(typeof(GridSortCache), nameof(SetCardsFinalizer)));
     }
 
@@ -239,7 +251,7 @@ public static class GridSortCache
     private static int Compare(Mirrored mirrored, Func<CardModel, CardModel, int> original, CardModel a, CardModel b)
     {
         Scope? scope = _scope;
-        if (scope == null || !Enabled || a == null || b == null || scope.Patched(original.Method))
+        if (scope == null || !Enabled || a == null || b == null || scope.Patched(original))
         {
             return original(a!, b!);
         }

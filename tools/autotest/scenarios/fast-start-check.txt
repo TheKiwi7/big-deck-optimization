@@ -1,7 +1,14 @@
 # Fast combat start, normal waits and the mod off, in three successive fights of one run (waits skipped, PileIndex
 # verified on every answer). The STATE lines differ by design (each fight changes HP and relic counters): the results
 # equivalence is the A/B ab-2k-off vs ab-2k-on (separate sessions, same seed, fast start on by default).
+# The mod-off fight runs on the deck trimmed to 500 cards (bigdeck trim, with the mod on): the game's own combat start at the
+# full ~6,000 cards took ~23 minutes on v0.113.1 (its quadratic shuffle sort, CardSortKeys off), past par's stall limit; at
+# 500 it still starts the normal game's way (waits not skipped) and finishes in seconds.
 timeout 1500
+expect bigdeck trim: [0-9]+ cards removed, deck 500
+# bdperf roomleft (out of combat, fast start on): a window whose room the run left closes at its first wait, which is the game's.
+expect FASTSTART room left: window closed, the wait is the game's
+expect FastCombatStart: the combat start's room was left without the combat ending or starting
 newrun NECROBINDER
 waitfor run 120
 wait 2
@@ -21,12 +28,15 @@ waitfor idle 400
 state fast-t1
 cmd kill all
 waitfor nocombat 300
+cmd bdperf roomleft
 cmd bdopt fast_combat_start off
 cmd fight CULTISTS_NORMAL
 waitfor idle 400
 state slow-t1
 cmd kill all
 waitfor nocombat 300
+cmd bigdeck trim 500
+wait 1
 cmd bdopt off
 cmd fight CULTISTS_NORMAL
 waitfor idle 600

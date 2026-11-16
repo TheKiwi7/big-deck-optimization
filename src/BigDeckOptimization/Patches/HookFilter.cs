@@ -407,6 +407,11 @@ public static class HookFilter
         };
         PatchSafety.Watch(Name, walks);
         PatchSafety.WholeMethods(Name, walks);
+        // The same for the walk code ListenerCache's scopes also require unpatched (both state machines, Contains, ModHelper's
+        // subscriber walks: EnterAny's _safe), resolved lazily as ListenerCache's own registration. (The walk_mirrors note needs a
+        // patch on the walks themselves, which the check above already shows as a whole back-off of this class.)
+        PatchSafety.WatchAll(Name, FastListeners.WalkCodeMethods);
+        PatchSafety.WholeMethods(Name, FastListeners.WalkCodeMethods);
         ListenerCache.RunReleased += () =>
         {
             _filtered = null;

@@ -79,7 +79,9 @@ public static class ForeignLaunch
         {
             string answers = string.Join(", ", HookNames.Keys.Where(name => typeof(Hook).GetMethod(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static) == null)
                 .Select(name => $"{name} -> {AccessTools.Method(typeof(Hook), name)?.Name ?? "nothing"}"));
-            FieldInfo? stand = AccessTools.Field(typeof(Mod), typeof(Mod).GetField("assemblies") == null ? "assemblies" : "assembly");
+            // The runtime's own lookup (not AccessTools, which the shape intercepts), any visibility: the name this version lacks.
+            const BindingFlags any = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
+            FieldInfo? stand = AccessTools.Field(typeof(Mod), typeof(Mod).GetField("assemblies", any) == null ? "assemblies" : "assembly");
             return $"LAUNCHFOREIGN {shape}: Harmony answers {answers}; Mod field stand-in {(stand is StandInField ? "in place" : "missing")}";
         }
         return $"LAUNCHFOREIGN {shape}";

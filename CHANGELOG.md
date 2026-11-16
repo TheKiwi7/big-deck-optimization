@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-<!-- Not released yet: every item waits for the in-game checks in DESIGN ("Audit of 2026-11-15, fourth pass" and its re-audit). The item marked pending has its own checks (DESIGN roadmap, "Foreign patches by shape"): a release before they pass sets `PatchSafety.ShapeRules` to false and drops that item (docs/RELEASE.md). -->
+<!-- Not released yet: every item waits for the in-game checks in DESIGN ("Audit of 2026-11-15, fourth pass" and its re-audit). The two items marked pending have their own checks (DESIGN roadmap, "Foreign patches by shape"; both depend on `PatchSafety.ShapeRules`): a release before they pass sets it to false and drops both items (docs/RELEASE.md). -->
 
 - Co-op: every player must now have the mod on, or every player off: a player with it off can't join a game where it's on, and the other way round (the game says the mods don't match). In a co-op game (a run, its lobby, or the lobby of a saved co-op run), turning the whole mod off or on with `bdopt` shows a warning and only happens after `bdopt off yes` or `bdopt on yes`. With the mod off while the others have it on, your combats would start much later than theirs, and the game could then lose their actions; the same the other way round. After such a switch, a player who disconnects can only rejoin once every player has the same setting again. A game started with the mod off takes part in this check too.
 - The settings menu's minimum-relics slider for the fast combat start is now greyed out, with the reason on hover, whenever the fast combat start can't run.

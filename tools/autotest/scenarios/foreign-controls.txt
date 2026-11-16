@@ -36,6 +36,8 @@ expect FOREIGN classify AbstractModel\.AfterEnergyReset: bdtest\.foreign\.gated-
 expect FOREIGN runtime HookSkip AbstractModel\.AfterEnergyReset \(TypeGated\) kept 0 backed off [1-9]
 expect FOREIGN classify AbstractModel\.AfterSideTurnEnd: bdtest\.foreign\.cctor-gated-postfix-squeeze Postfix .*TypeGated backs off \(postfix not provably gated
 expect FOREIGN runtime HookSkip AbstractModel\.AfterSideTurnEnd \(TypeGated\) kept 0 backed off [1-9]
+expect HarmonyWatch: .*patch Harmony's own MethodCreator\.CreateReplacement: hidden IL hooks possible
+expect HarmonyWatch: Hook\.AfterPotionUsed rebuilt by another mod while hidden IL hooks are there: treated as patched by them
 newrun NECROBINDER
 waitfor run 120
 wait 2
@@ -86,5 +88,9 @@ cmd bdperf conflicts
 cmd kill all
 waitfor nocombat 300
 wait 2
+# A hidden IL hook installed at run time (HarmonyWatch reads the patch list the rebuild uses, not the one Harmony still holds then):
+# a no-op postfix on Harmony's own MethodCreator.CreateReplacement; a method another mod rebuilds afterwards is treated as patched.
+foreignpatch noop-postfix HarmonyLib.MethodCreator:CreateReplacement
+foreignpatch noop-postfix MegaCrit.Sts2.Core.Hooks.Hook:AfterPotionUsed
 foreignpatch remove
 quit

@@ -42,7 +42,7 @@ public class BigDeckConsoleCmd : AbstractConsoleCmd
 {
     public override string CmdName => "bigdeck";
 
-    public override string Args => "<count:int> [card-id] [seed:int] | relics <count:int> [relic-id] [seed:int] | import <file.run|shared-name> [all|i|i,j] [cards|relics|all] [hash] | hash <shared-name> | tank [hp]";
+    public override string Args => "<count:int> [card-id] [seed:int] | trim <count:int> | relics <count:int> [relic-id] [seed:int] | import <file.run|shared-name> [all|i|i,j] [cards|relics|all] [hash] | hash <shared-name> | tank [hp]";
 
     public override string Description => "[BigDeckOptimization] Inflates your deck/relics for perf testing. In co-op, every player must have the mod.";
 
@@ -74,6 +74,8 @@ public class BigDeckConsoleCmd : AbstractConsoleCmd
                 return Tank(args.Skip(1).ToArray());
             case "relics":
                 return AddRelics(issuingPlayer, args.Skip(1).ToArray());
+            case "trim":
+                return Trim(issuingPlayer, args.Skip(1).ToArray());
             case "mark":
                 // A barrier for co-op test scenarios: every peer records that this player got there (AutoTest's barrier waits for all).
                 lock (Marks)
@@ -109,6 +111,43 @@ public class BigDeckConsoleCmd : AbstractConsoleCmd
     /// <summary>Seeded so every peer generates the same sequence. Seed 0 when omitted.</summary>
     private static Random SeededRandom(string[] args, int seedIndex) =>
         new(args.Length > seedIndex && int.TryParse(args[seedIndex], out int seed) ? seed : 0);
+
+    /// <summary>
+    /// <c>bigdeck trim &lt;count&gt;</c> (outside combat): the deck's last cards removed through the game's own removal (its hook,
+    /// no preview) until <c>count</c> are left, so a later step can run the normal game at a size it finishes in (the mod-off
+    /// fight of fast-start-check: the game's own shuffle sort on v0.113 is quadratic in the draw pile). Same on every peer.
+    /// </summary>
+    private static CmdResult Trim(Player player, string[] args)
+    {
+        if (args.Length < 1 || !int.TryParse(args[0], out int keep) || keep < 0)
+        {
+            return new CmdResult(success: false, "Usage: bigdeck trim <count>");
+        }
+        if (CombatManager.Instance.IsInProgress)
+        {
+            return new CmdResult(success: false, "bigdeck trim: outside combat only (deck cards have combat copies there).");
+        }
+        List<CardModel> deck = PileType.Deck.GetPile(player).Cards.ToList();
+        if (deck.Count <= keep)
+        {
+            return new CmdResult(success: true, $"bigdeck trim: deck already has {deck.Count} cards.");
+        }
+        List<CardModel> removed = deck.Skip(keep).ToList();
+        async Task RemoveAndLog()
+        {
+            try
+            {
+                await CardPileCmd.RemoveFromDeck(removed, showPreview: false);
+                Log.Info($"[{ModEntry.Id}] bigdeck trim: {removed.Count} cards removed, deck {PileType.Deck.GetPile(player).Cards.Count}");
+            }
+            catch (Exception e)
+            {
+                Log.Info($"[{ModEntry.Id}] bigdeck trim failed: {e.Message}");
+            }
+        }
+        Task task = RemoveAndLog();
+        return new CmdResult(task, success: true, $"bigdeck trim: removing {removed.Count} cards, keeping {keep}");
+    }
 
     private static CmdResult Fill(Player player, ICardScope scope, string[] args)
     {

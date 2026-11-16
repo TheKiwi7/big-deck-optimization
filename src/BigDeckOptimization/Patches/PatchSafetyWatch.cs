@@ -373,7 +373,39 @@ public static partial class PatchSafety
         }
     }
 
-    private static bool IsWhole(string patch, MethodBase method) => _wholePatches.ContainsKey(patch) || _wholeMethods.ContainsKey((patch, method));
+    /// <summary>Methods known only later (resolved lazily, like <see cref="WatchAll"/>'s), registered whole per patch.</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Func<IEnumerable<MethodBase?>>> _wholeLazy = new(StringComparer.Ordinal);
+
+    /// <summary>As <see cref="WholeMethods(string, IEnumerable{MethodBase?})"/>, with the methods resolved when a back-off is recorded. Never throws.</summary>
+    internal static void WholeMethods(string patch, Func<IEnumerable<MethodBase?>>? methods)
+    {
+        if (patch != null && methods != null)
+        {
+            _wholeLazy[patch] = methods;
+        }
+    }
+
+    private static bool InWholeLazy(string patch, MethodBase method)
+    {
+        try
+        {
+            return _wholeLazy.TryGetValue(patch, out var methods) && methods().Contains(method);
+        }
+        catch
+        {
+            return false; // Display only.
+        }
+    }
+
+#if BENCH
+    /// <summary>The patches registered whole, and those with some methods registered whole ("Name (N methods)"): bdperf states.</summary>
+    internal static IEnumerable<string> WholeNames() => _wholePatches.Keys
+        .Concat(_wholeMethods.Keys.GroupBy(k => k.Patch).Where(g => !_wholePatches.ContainsKey(g.Key)).Select(g => $"{g.Key} ({g.Count()} methods)"))
+        .Concat(_wholeLazy.Keys.Where(k => !_wholePatches.ContainsKey(k) && !_wholeMethods.Keys.Any(m => m.Patch == k)).Select(k => $"{k} (lazy methods)"));
+#endif
+
+    private static bool IsWhole(string patch, MethodBase method) =>
+        _wholePatches.ContainsKey(patch) || _wholeMethods.ContainsKey((patch, method)) || InWholeLazy(patch, method);
 
     /// <summary>
     /// A recorded back-off (<see cref="Note"/> texts have no method, <see cref="Method"/> null) for bdopt why and bdperf conflicts.
@@ -489,58 +521,73 @@ public static partial class PatchSafety
     /// </summary>
     private static IEnumerable<bool> PreflightSteps(Counter checks, Dictionary<Watched, (MethodBase? Method, MethodInfo[]? Allowed)[]?>? resolved = null)
     {
-        Watched[] watched;
-        (string Patch, Action Check)[] notes;
-        lock (_watched)
+        // Entries are read in rounds until none is new: the startup preflight's first steps run during the game's loading, and
+        // the late batches (a mod's assembly loading: LimitlessReserialize, TypePlaqueSkip, ExtraScopes' BetterSpire2 part)
+        // register theirs afterwards; the notes are read only once the method checks are done (below), for the same reason.
+        var seen = new HashSet<Watched>(ReferenceEqualityComparer.Instance);
+        while (true)
         {
-            watched = _watched.ToArray();
-            notes = _noteChecks.ToArray();
-        }
-        foreach (Watched entry in watched)
-        {
-            if (entry.Removed)
+            Watched[] watched;
+            lock (_watched)
             {
-                continue;
+                watched = _watched.Where(w => !seen.Contains(w)).ToArray();
             }
-            checks.Current = entry.Patch;
-            (MethodBase? Method, MethodInfo[]? Allowed)[]? pairs = resolved != null && resolved.TryGetValue(entry, out var known) ? known : null;
-            if (pairs == null)
+            if (watched.Length == 0)
             {
-                // Its own step: a lazy allowed list or a source may take a few ms (reflection, fingerprints).
-                pairs = Resolve(entry);
-                yield return true;
+                break;
             }
-            if (pairs == null)
+            foreach (Watched entry in watched)
             {
-                continue;
-            }
-            foreach ((MethodBase? method, MethodInfo[]? listed) in pairs)
-            {
-                // Unwatched since this preflight took it (HookSkip's hook left vanilla in a late batch): what Unwatch forgot isn't recorded again.
-                if (method == null || entry.Removed)
+                seen.Add(entry);
+                if (entry.Removed)
                 {
                     continue;
                 }
                 checks.Current = entry.Patch;
-                // Nulls can't be in a list a runtime check passes (it would throw there): left out.
-                MethodInfo[]? allowed = listed != null && Array.IndexOf(listed, null) >= 0 ? listed.Where(a => a != null).ToArray() : listed;
-                try
+                (MethodBase? Method, MethodInfo[]? Allowed)[]? pairs = resolved != null && resolved.TryGetValue(entry, out var known) ? known : null;
+                if (pairs == null)
                 {
-                    _ = entry.Tolerance != PatchTolerance.None ? CheckTolerant(method, allowed ?? Array.Empty<MethodInfo>(), entry.Tolerance, entry.Patch, out _)
-                        : allowed == null ? CheckPatched(method, entry.Patch) : CheckPatched(method, allowed, entry.Patch);
-                    checks.Value++;
+                    // Its own step: a lazy allowed list or a source may take a few ms (reflection, fingerprints).
+                    pairs = Resolve(entry);
+                    yield return true;
                 }
-                catch (Exception e)
+                if (pairs == null)
                 {
-                    PreflightFailed(entry.Patch, e);
+                    continue;
                 }
-                yield return true;
+                foreach ((MethodBase? method, MethodInfo[]? listed) in pairs)
+                {
+                    // Unwatched since this preflight took it (HookSkip's hook left vanilla in a late batch): what Unwatch forgot isn't recorded again.
+                    if (method == null || entry.Removed)
+                    {
+                        continue;
+                    }
+                    checks.Current = entry.Patch;
+                    // Nulls can't be in a list a runtime check passes (it would throw there): left out.
+                    MethodInfo[]? allowed = listed != null && Array.IndexOf(listed, null) >= 0 ? listed.Where(a => a != null).ToArray() : listed;
+                    try
+                    {
+                        _ = entry.Tolerance != PatchTolerance.None ? CheckTolerant(method, allowed ?? Array.Empty<MethodInfo>(), entry.Tolerance, entry.Patch, out _)
+                            : allowed == null ? CheckPatched(method, entry.Patch) : CheckPatched(method, allowed, entry.Patch);
+                        checks.Value++;
+                    }
+                    catch (Exception e)
+                    {
+                        PreflightFailed(entry.Patch, e);
+                    }
+                    yield return true;
+                }
             }
         }
         // A step doing nothing, so a caller can stop before the notes (the startup preflight's loading part: notes need every
         // mod's own setup done, never before the main menu).
         checks.InNotes = true;
         yield return true;
+        (string Patch, Action Check)[] notes;
+        lock (_watched)
+        {
+            notes = _noteChecks.ToArray();
+        }
         foreach ((string patch, Action check) in notes)
         {
             checks.Current = patch + " (note)";

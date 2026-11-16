@@ -78,9 +78,9 @@ public static class HarmonyWatch
         List<MethodBase> patched = Harmony.GetAllPatchedMethods().ToList();
         foreach (MethodBase method in patched)
         {
-            if (IsHarmonyInternal(method))
+            if (IsHarmonyInternal(method) && Harmony.GetPatchInfo(method) is { } listed)
             {
-                NoteHidden(method);
+                NoteHidden(method, AllPatches(listed));
             }
         }
         if (_hidden.Count == 0)
@@ -96,8 +96,12 @@ public static class HarmonyWatch
         }
     }
 
-    /// <summary>Finalizer of <c>PatchFunctions.UpdateWrapper</c>: runs after every Patch and Unpatch (thrown or not), passes the exception on.</summary>
-    public static void Changed(MethodBase original, Exception? __exception)
+    /// <summary>
+    /// Finalizer of <c>PatchFunctions.UpdateWrapper</c>: runs after every Patch and Unpatch (thrown or not), passes the exception on.
+    /// <paramref name=__1/> is the patch list this rebuild uses (UpdateWrapper's second argument): Harmony stores it only after
+    /// UpdateWrapper returns, so <c>Harmony.GetPatchInfo</c> here still gives the list from before this call (none on a first patch).
+    /// </summary>
+    public static void Changed(MethodBase original, PatchInfo? __1, Exception? __exception)
     {
         try
         {
@@ -119,9 +123,12 @@ public static class HarmonyWatch
             }
             lock (_lock)
             {
+                // The list being built (after this Patch, or after this Unpatch's removal), not the one Harmony still holds.
+                Patch[] patches = __1 != null ? AllPatches(__1).ToArray()
+                    : Harmony.GetPatchInfo(original) is { } listed ? AllPatches(listed).ToArray() : Array.Empty<Patch>();
                 if (IsHarmonyInternal(original))
                 {
-                    NoteHidden(original);
+                    NoteHidden(original, patches);
                 }
                 else if (_hidden.Count > 0)
                 {
@@ -130,10 +137,10 @@ public static class HarmonyWatch
                 // The test tooling's synthetic patch methods (Bench, a "gated patched postfix" shape) aren't this mod's code.
                 if (original.DeclaringType?.Assembly is { } assembly && (assembly == typeof(HarmonyWatch).Assembly || assembly.GetName().Name?.StartsWith(ModEntry.Id + ".", StringComparison.Ordinal) == true)
                     && original.DeclaringType.Namespace?.StartsWith(ModEntry.Id + ".Bench", StringComparison.Ordinal) != true
-                    && Harmony.GetPatchInfo(original) is { } info && AllPatches(info).Any(p => !PatchGuard.IsOurs(p.owner))
+                    && patches.Any(p => !PatchGuard.IsOurs(p.owner))
                     && _ownCodePatched.Add($"{original.DeclaringType?.Name}.{original.Name}"))
                 {
-                    Log.Warn($"[{ModEntry.Id}] {Name}: another mod patches this mod's own {original.DeclaringType?.FullName}.{original.Name} ({string.Join(", ", AllPatches(info).Where(p => !PatchGuard.IsOurs(p.owner)).Select(p => p.owner).Distinct())})");
+                    Log.Warn($"[{ModEntry.Id}] {Name}: another mod patches this mod's own {original.DeclaringType?.FullName}.{original.Name} ({string.Join(", ", patches.Where(p => !PatchGuard.IsOurs(p.owner)).Select(p => p.owner).Distinct())})");
                 }
                 _pending[original] = (_pending.TryGetValue(original, out bool failed) && failed) || __exception != null;
                 if (!_checkScheduled)
@@ -197,13 +204,9 @@ public static class HarmonyWatch
         && ((assembly == typeof(Harmony).Assembly && (!type.IsVisible || type.Namespace?.StartsWith("MonoMod", StringComparison.Ordinal) == true))
             || assembly.GetName().Name?.StartsWith("MonoMod", StringComparison.Ordinal) == true);
 
-    private static void NoteHidden(MethodBase internalMethod)
+    private static void NoteHidden(MethodBase internalMethod, IEnumerable<Patch> patches)
     {
-        if (Harmony.GetPatchInfo(internalMethod) is not { } info)
-        {
-            return;
-        }
-        string[] owners = AllPatches(info).Where(p => !PatchGuard.IsOurs(p.owner))
+        string[] owners = patches.Where(p => !PatchGuard.IsOurs(p.owner))
             .Select(p => PatchSafety.ModNameOf(p.PatchMethod?.DeclaringType?.Assembly) ?? p.owner).Distinct().ToArray();
         if (owners.Length == 0)
         {
@@ -306,6 +309,9 @@ public static class HarmonyWatch
             }
         }
     }
+
+    private static IEnumerable<Patch> AllPatches(PatchInfo info) =>
+        info.prefixes.Concat(info.postfixes).Concat(info.transpilers).Concat(info.finalizers).Concat(info.innerprefixes).Concat(info.innerpostfixes);
 
     private static IEnumerable<Patch> AllPatches(HarmonyLib.Patches info) =>
         info.Prefixes.Concat(info.Postfixes).Concat(info.Transpilers).Concat(info.Finalizers).Concat(info.InnerPrefixes).Concat(info.InnerPostfixes);

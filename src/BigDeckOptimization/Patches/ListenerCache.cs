@@ -495,7 +495,7 @@ public static class ListenerCache
     /// </summary>
     private static IEnumerable<AbstractModel> CombatSource(CombatState combatState) =>
         !_combatAugmented ? combatState.IterateHookListeners()
-            : FastListeners.UnpatchedCombat(combatState) ?? throw new InvalidOperationException("the unpatched combat walk is unavailable");
+            : FastListeners.UnpatchedCombat(combatState) ?? throw new UnpatchedWalkMissing();
 
     /// <summary>
     /// <see cref="CombatSource"/> for the run walk. Its child combat walk goes through the game's call either way (as the
@@ -504,7 +504,19 @@ public static class ListenerCache
     /// </summary>
     private static IEnumerable<AbstractModel> RunSource(RunState runState, ICombatState? child) =>
         !_runAugmented ? runState.IterateHookListeners(child)
-            : FastListeners.UnpatchedRun(runState, child) ?? throw new InvalidOperationException("the unpatched run walk is unavailable");
+            : FastListeners.UnpatchedRun(runState, child) ?? throw new UnpatchedWalkMissing();
+
+    /// <summary>
+    /// An augmented scope's list can't be built: FastListeners' unpatched mirror declined (another mod patched the walk's state
+    /// machine or Contains since the scope opened: <see cref="HarmonyWatch"/> makes that visible mid-scope). Not an error of this
+    /// mod: the prefixes then let the game's call run (as outside a scope), ListenerCache stays on.
+    /// </summary>
+    private sealed class UnpatchedWalkMissing : Exception
+    {
+        public UnpatchedWalkMissing() : base("the unpatched listener walk is unavailable (its code is patched by another mod now)")
+        {
+        }
+    }
 
     /// <summary>
     /// <c>listeners.ToList().AsReadOnly()</c>, sized from the previous count: thousands of entries grown by doubling
@@ -895,6 +907,10 @@ public static class ListenerCache
 #endif
             return false;
         }
+        catch (UnpatchedWalkMissing)
+        {
+            return true; // The game's call: what an augmented scope relies on no longer holds (see UnpatchedWalkMissing).
+        }
         catch (Exception e)
         {
             Fail(e);
@@ -919,6 +935,10 @@ public static class ListenerCache
             Served++;
 #endif
             return false;
+        }
+        catch (UnpatchedWalkMissing)
+        {
+            return true; // The game's call: what an augmented scope relies on no longer holds (see UnpatchedWalkMissing).
         }
         catch (Exception e)
         {

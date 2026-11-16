@@ -20,6 +20,8 @@ foreignpatch il-store-local MegaCrit.Sts2.Core.Hooks.Hook:AfterCardDiscarded
 foreignpatch il-game-call MegaCrit.Sts2.Core.Hooks.Hook:AfterPlayerTurnStart
 foreignpatch il-branch MegaCrit.Sts2.Core.Hooks.Hook:BeforeHandDraw
 foreignpatch identity-transpiler MegaCrit.Sts2.Core.Hooks.Hook:ModifyDamageInternal priority 0
+# (3) ExtraScopes' first turn: code inserted in SetupPlayerTurn's state machine outside its card filters (accepted on the on side).
+foreignpatch il-firstturn-outside MegaCrit.Sts2.Core.Combat.CombatManager:SetupPlayerTurn
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 1

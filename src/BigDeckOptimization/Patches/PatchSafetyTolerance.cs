@@ -72,8 +72,10 @@ public enum PatchTolerance
     /// returns false (or leaves <c>__runOriginal</c> false) makes Harmony skip this mod's prefix as it skips the original, the
     /// caller getting its answer as without this mod; one that returns true leaves the call to this mod's prefix, whose answer
     /// is the original's. Postfixes as SurroundingOnly's (by value, <c>ref __result</c>, no <c>__runOriginal</c>: false here where
-    /// this mod answered). Still refused: such prefixes sorted after this mod's, a prefix taking an argument, the instance or
+    /// this mod answered). Still refused: such prefixes sorted after this mod's, a prefix taking the instance or
     /// <c>__runOriginal</c> by reference, <c>__args</c>, reference-type fields, transpilers, finalizers, factories, renamed parameters.
+    /// A prefix taking one of the original's own arguments by reference stands as under SurroundingOnly (sorted before every
+    /// prefix of this mod: it writes the slot before any code of this mod reads it; CardModel.Pile has no argument anyway).
     /// </summary>
     BeforeReplace,
 }
@@ -90,6 +92,10 @@ public enum PatchTolerance
 /// <item>The test tooling's read-only prefixes (Debug builds only: CombatStartTimer, PerfProbe), which only read the clock or
 /// a label into statics or <c>__state</c>: counted, a test build would back off where a Release build, without them, lets
 /// another mod's void prefix stand, and the tests would never run the shipped path.</item>
+/// <item>The listener walks' pending-filter prefixes (FastListeners' <c>TakeRunFilter</c>, HookSkip's <c>DropPendingFilter</c>,
+/// both <c>Priority.First</c>, no argument, never skipping the original): they only move HookSkip's filter for this walk from
+/// the pending slot. Another mod's void prefix sorted after them can only make a nested walk take or drop it, which leaves this
+/// walk unfiltered (every listener: the game's own list), never filtered for another walk.</item>
 /// </list>
 /// Such a prefix never reads the original's arguments (none does: the instance, <c>__state</c>, <c>__originalMethod</c> only):
 /// another mod's prefix rewriting an argument by reference may run after it (the shape rules let one stand before every
@@ -463,6 +469,13 @@ public static partial class PatchSafety
             {
                 return argument;
             }
+            // A postfix let stand because its IL only reads through a by-reference argument (OnlyReadThrough): the code that runs
+            // is its replacement when anyone patches it, not the IL read. Asked at each recheck, as TypeGated's gates are.
+            if (kind == PatchKind.Postfix && tolerance != PatchTolerance.TypeGated && ReadsThroughByReference(method)
+                && Harmony.GetPatchInfo(method) is { } patchedPostfix && AllPatches(patchedPostfix).Any())
+            {
+                return $"{KindText(kind, method)} whose own method is patched (its by-reference argument judged read-only from its IL)";
+            }
             if (tolerance == PatchTolerance.TypeGated)
             {
                 // Skipping a call to the default skips its patches: only a patch doing nothing for the skipped types stands.
@@ -490,6 +503,10 @@ public static partial class PatchSafety
             return "not classified: " + e.Message;
         }
     }
+
+    /// <summary>A postfix taking one of the original's arguments by reference (what ShapeRefusal lets stand only through <see cref="OnlyReadThrough"/>).</summary>
+    private static bool ReadsThroughByReference(MethodInfo method) => method.GetParameters()
+        .Any(p => (p.ParameterType.IsByRef || p.IsOut) && p.Name is not ("__state" or "__result") && IsArgumentName(p.Name));
 
     /// <summary>Per patch method, kind and tolerance: what its own shape refuses (<see cref="ShapeRefusal"/>), null when nothing.</summary>
     private static readonly ConcurrentDictionary<(RuntimeMethodHandle Method, PatchKind Kind, PatchTolerance Tolerance), string?> _shapes = new();

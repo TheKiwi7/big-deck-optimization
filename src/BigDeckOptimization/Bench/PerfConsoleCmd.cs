@@ -59,13 +59,44 @@ public class PerfConsoleCmd : AbstractConsoleCmd
 
     public override string CmdName => "bdperf";
 
-    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | verify [off|sample|all] | combatstart | grid [cards:int] | probe [reset|log|on|off|nodes|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | sortkeys [wrong] | checks on|off | opt on|off [yes] | listeners [iterations:int] | costwrites | fault piles|walk | snapgameerror <n> | reserialize [verify <n>] | clonememo [verify <n>] | conflicts | foreign <shape> <Type:Method> [gate] [priority N] | foreign remove|report|classify <Type:Method>";
+    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | verify [off|sample|all] | combatstart | grid [cards:int] | probe [reset|log|on|off|nodes|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | sortkeys [wrong] | checks on|off | opt on|off [yes] | listeners [iterations:int] | costwrites | fault piles|walk | snapgameerror <n> | reserialize [verify <n>] | clonememo [verify <n>] | conflicts | states | roomleft | foreign <shape> <Type:Method> [gate] [priority N] | foreign remove|report|classify <Type:Method>";
 
     public override string Description => "[BigDeckOptimization] Measures the multiplayer post-action checksum cost, vanilla vs optimized, or shows/sets live snapshot verification.";
 
     public override bool IsNetworked => false;
 
     private static int _spins;
+
+    /// <summary>Settings.StatesChanged raised since the first <c>bdperf states</c> (which subscribes).</summary>
+    private static int _statesChanged;
+    private static bool _statesSubscribed;
+
+    /// <summary>
+    /// <c>bdperf states</c>: after the preflight (as bdopt), one line per option with <c>Settings.StateOf</c> (the menu's title
+    /// colour: Healthy normal, Partly orange, Inactive red), the patches registered whole (<c>WholePatch</c>/<c>WholeMethods</c>),
+    /// how many times <c>StatesChanged</c> was raised since the first call, and who listens to it (the menu's refresh once BaseLib
+    /// loaded the menu DLL).
+    /// </summary>
+    private static string StatesReport()
+    {
+        if (!_statesSubscribed)
+        {
+            _statesSubscribed = true;
+            Config.Settings.StatesChanged += () => System.Threading.Interlocked.Increment(ref _statesChanged);
+        }
+        Config.Settings.RefreshConflicts();
+        var lines = new List<string>();
+        foreach ((string key, Config.Settings.PartState state) in Config.Settings.States().OrderBy(e => e.Key, StringComparer.Ordinal))
+        {
+            lines.Add($"STATES {key} {state}");
+        }
+        lines.Add("STATES whole " + string.Join(", ", PatchSafety.WholeNames().OrderBy(n => n, StringComparer.Ordinal)));
+        lines.Add($"STATES changed {_statesChanged}");
+        Delegate[] listeners = typeof(Config.Settings).GetField(nameof(Config.Settings.StatesChanged), BindingFlags.NonPublic | BindingFlags.Static)?.GetValue(null) is Delegate handler
+            ? handler.GetInvocationList() : Array.Empty<Delegate>();
+        lines.Add("STATES listeners " + string.Join(", ", listeners.Select(d => $"{d.Method.DeclaringType?.Name}.{d.Method.Name}")));
+        return string.Join('\n', lines);
+    }
 
     /// <summary>DeckCountMemo's own answers (kept + updated) and the game's counts (unsure) at <c>bdperf deckcount mark</c>.</summary>
     private static (long Answers, long Unsure) _deckCountMark;
@@ -175,6 +206,17 @@ public class PerfConsoleCmd : AbstractConsoleCmd
             ? EffectCounters.Freeze() : null;
         switch (sub)
         {
+            case "states":
+                return new CmdResult(success: true, StatesReport());
+            case "roomleft":
+                try
+                {
+                    return new CmdResult(success: true, FastCombatStart.BenchRoomLeft());
+                }
+                catch (InvalidOperationException e)
+                {
+                    return new CmdResult(success: false, e.Message);
+                }
             case "conflicts":
                 // bdopt why's report, plus the preflight's effect counters (checks run, back-offs and notes recorded).
                 Config.Settings.RefreshConflicts();

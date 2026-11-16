@@ -202,6 +202,44 @@ public static class FastCombatStart
         return true;
     }
 
+#if BENCH
+    /// <summary>
+    /// <c>bdperf roomleft</c> (outside a combat start): a window opened for a room the run is no longer in (a room object no run
+    /// holds) must close at its first wait, with its log line, and that wait be the game's. The room-binding path no other test
+    /// reaches (a run torn down or another room entered without Reset or the first turn: a mod's quick restart).
+    /// </summary>
+    internal static string BenchRoomLeft()
+    {
+        if (_window)
+        {
+            return "FASTSTART room left: a combat start is under way, run it outside one";
+        }
+        if (!On)
+        {
+            return "FASTSTART room left: the fast combat start is off here, nothing to check";
+        }
+        _room = new WeakReference<CombatRoom>(null!);
+        _window = true;
+        bool loading;
+        try
+        {
+            loading = Loading();
+        }
+        finally
+        {
+            bool closed = !_window;
+            _window = false;
+            _room = null;
+            if (!closed)
+            {
+                throw new InvalidOperationException("FASTSTART room left: the window stayed open after its room was left");
+            }
+        }
+        return loading ? throw new InvalidOperationException("FASTSTART room left: a wait would have been skipped outside its combat start")
+            : "FASTSTART room left: window closed, the wait is the game's";
+    }
+#endif
+
     /// <summary>The run in progress is still in the room the window opened for (any doubt: no).</summary>
     private static bool InItsRoom()
     {
@@ -317,7 +355,7 @@ public static class FastCombatStart
         if (Config.Settings.InCoopRun)
         {
             // The other players keep their fast start: this one now starts each combat at the game's pace, far later.
-            Log.Error($"[{ModEntry.Id}] {Name}: off during a co-op run. {Config.Settings.CoopOffWarning} Restarting the game turns it back on.");
+            Log.Error($"[{ModEntry.Id}] {Name}: off during a co-op run after an error (no switch was changed): this player now starts each combat at the game's pace, far later than the other players, who keep the fast start. Restarting the game turns it back on.");
         }
     }
 }

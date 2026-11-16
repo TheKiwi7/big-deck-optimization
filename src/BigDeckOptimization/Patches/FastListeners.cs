@@ -317,11 +317,25 @@ public static class FastListeners
         /// </summary>
         internal static void Meet(object? model)
         {
-            if (model == null || _known is not { } known)
+            if (model == null)
             {
-                return; // Nothing scanned yet: the first walk scans, and no kind is left out before that.
+                return;
             }
             Type type = model.GetType();
+            if (_known is not { } known)
+            {
+                // Nothing scanned yet (or the last scan failed): no kind is left out before the next scan, which merges every
+                // type met here. Recorded even so: a type the scan can't list (emitted at run time) that joined in this window,
+                // a saved run's relics among them, must not be missing from the kinds afterwards.
+                lock (_met)
+                {
+                    if (!_met.Contains(type))
+                    {
+                        _met.Add(type);
+                    }
+                }
+                return;
+            }
             if (known.Contains(type))
             {
                 return;
@@ -2698,6 +2712,7 @@ public static class FastListeners
     /// <summary>A HookSkip filter is waiting for, or was taken by, the RunState walk being called (ListenerCache then serves nothing).</summary>
     internal static bool RunFilterPending => PendingRunFilter != null || _takenRunFilter != null;
 
+    [OrderFreePrefix]
     private static void TakeRunFilter()
     {
         _takenRunFilter = PendingRunFilter;

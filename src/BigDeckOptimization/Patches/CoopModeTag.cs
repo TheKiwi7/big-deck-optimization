@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Modding;
@@ -50,9 +52,10 @@ public static class CoopModeTag
     /// <summary>
     /// The game's join check tells this mod's on and off apart: the postfix is in place and has not met a list without this
     /// mod's entry (a game change of the list's format). Another mod replacing the list afterwards isn't seen. The texts
-    /// promising that check (Settings.CoopOffOnlyNow, CoopRejoinNow) say it is missing otherwise.
+    /// promising that check (Settings.CoopOffOnlyNow, CoopRejoinNow) say it is missing otherwise. Faulted (HarmonyWatch found the
+    /// method without its detour, so no postfix of any mod runs there): not working either.
     /// </summary>
-    public static bool Working => Applied && !_notFoundLogged;
+    public static bool Working => Applied && !_notFoundLogged && !PatchSafety.IsFaulted(Name);
 
     /// <summary>
     /// The lists handed out that hold this mod's entry, weakly (v0.111+ keeps one per net service for its whole life): a few
@@ -78,8 +81,10 @@ public static class CoopModeTag
     private static bool _orderChecked;
 
     /// <summary>
-    /// Once, at the first list: another mod's postfix that Harmony runs after this one (also Priority.Last, registered later)
-    /// may replace the list, which a mid-session switch then can't retag: logged, so a join refusal's cause shows in the log.
+    /// Once, at the first list: another mod's postfix that Harmony runs after this one (also Priority.Last, registered later, or
+    /// ordered after it with HarmonyAfter/HarmonyBefore) may replace the list, which a mid-session switch then can't retag: logged,
+    /// so a join refusal's cause shows in the log. The order is Harmony's own sort (priorities, before/after ids, registration),
+    /// or priority and registration only when a postfix is made by a factory (Harmony's sort would call it). Only logs.
     /// </summary>
     private static void CheckOrder()
     {
@@ -88,20 +93,32 @@ public static class CoopModeTag
         {
             return;
         }
-        Patch? ours = null;
-        foreach (Patch patch in info.Postfixes)
+        Patch[] postfixes = info.Postfixes.ToArray();
+        Patch? ours = postfixes.FirstOrDefault(p => p.owner.StartsWith(ModEntry.Harmony.Id, StringComparison.Ordinal) && p.PatchMethod?.Name == nameof(Postfix));
+        if (ours == null)
         {
-            if (patch.owner.StartsWith(ModEntry.Harmony.Id, StringComparison.Ordinal) && patch.PatchMethod?.Name == nameof(Postfix))
-            {
-                ours = patch;
-            }
+            return;
         }
-        foreach (Patch patch in info.Postfixes)
+        IEnumerable<Patch> after;
+        MethodInfo?[] methods = postfixes.Select(PatchSafety.PatchMethodOf).ToArray();
+        if (methods.All(m => m != null && !PatchSafety.IsFactory(m)))
         {
-            if (ours != null && !PatchGuard.IsOurs(patch.owner) && (patch.priority < ours.priority || (patch.priority == ours.priority && patch.index > ours.index)))
+            for (int i = 0; i < postfixes.Length; i++)
             {
-                Log.Warn($"[{ModEntry.Id}] {Name}: {patch.owner}'s postfix on the gameplay mod list runs after this mod's: a list it returns isn't retagged when the mod is switched mid-session");
+                postfixes[i].PatchMethod = methods[i];
             }
+            List<MethodInfo> sorted = PatchProcessor.GetSortedPatchMethods(_original, postfixes);
+            int own = sorted.FindIndex(m => m.MethodHandle == ours.PatchMethod.MethodHandle);
+            after = own < 0 ? Enumerable.Empty<Patch>()
+                : postfixes.Where(p => !PatchGuard.IsOurs(p.owner) && sorted.FindIndex(m => m.MethodHandle == p.PatchMethod.MethodHandle) > own).ToList();
+        }
+        else
+        {
+            after = postfixes.Where(p => !PatchGuard.IsOurs(p.owner) && (p.priority < ours.priority || (p.priority == ours.priority && p.index > ours.index))).ToList();
+        }
+        foreach (Patch patch in after)
+        {
+            Log.Warn($"[{ModEntry.Id}] {Name}: {patch.owner}'s postfix on the gameplay mod list runs after this mod's: a list it returns isn't retagged when the mod is switched mid-session");
         }
     }
 
@@ -109,10 +126,6 @@ public static class CoopModeTag
     {
         try
         {
-            if (!_orderChecked)
-            {
-                CheckOrder();
-            }
             if (__result == null)
             {
                 return;
@@ -123,6 +136,18 @@ public static class CoopModeTag
                 {
                     _given.RemoveAll(w => !w.TryGetTarget(out _));
                     _given.Add(new WeakReference<List<string>>(__result));
+                }
+                // After the tag and its bookkeeping, in a try of its own: a logging step never leaves a list untagged.
+                if (!_orderChecked)
+                {
+                    try
+                    {
+                        CheckOrder();
+                    }
+                    catch (Exception e)
+                    {
+                        Log.Warn($"[{ModEntry.Id}] {Name}: order of the postfixes on the gameplay mod list not checked: {e.Message}");
+                    }
                 }
                 return;
             }

@@ -12,7 +12,8 @@ namespace BigDeckOptimization.Commands;
 /// (<see cref="Settings.WhyReport"/>). Local only. Each option gives the same results on or off,
 /// so peers may differ, with one exception: the whole mod, which every co-op player must have in the same state (all on or
 /// all off, <see cref="Patches.CoopModeTag"/>). Switched in a co-op game (<see cref="Settings.InCoopGame"/>: a run, a start
-/// lobby or a co-op save's load lobby), one player's combats would start at another pace than the others' (the fast combat
+/// lobby, a co-op save's load lobby, or the run manager's net session connected as host or client), one player's combats
+/// would start at another pace than the others' (the fast combat
 /// start), so <c>bdopt off</c> and <c>bdopt on</c> then warn and need <c>bdopt off yes</c> / <c>bdopt on yes</c>. Not when the
 /// mod was turned off at the start (<see cref="ModEntry.StartedOff"/>: nothing of it runs this session either way).
 /// Saved in BaseLib's mod configuration when BaseLib is installed. Part of the public build, unlike the test tooling in Bench.

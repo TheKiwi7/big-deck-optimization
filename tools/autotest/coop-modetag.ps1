@@ -27,7 +27,7 @@ foreach ($role in "host", "client") {
     $log = Join-Path $Results "coopbothoff-$role.log"
     $tags = @(if (Test-Path $log) { Select-String -Path $log -Pattern "COOPMODETAG BigDeckOptimization-v[0-9.]+\+off " })
     $run = (Test-Path $log) -and (Select-String -Path $log -Pattern "> waitfor run" -Quiet) -and -not (Select-String -Path $log -Pattern "FAILED line" -Quiet)
-    if (-not $tags.Count -or -not $run) { $joined = $false; Write-Output "PROBLEM coop-modetag: $role of the off pair: $(if (-not $tags.Count) { 'no -off join list' } else { 'no run (a failed line)' })" }
+    if (-not $tags.Count -or -not $run) { $joined = $false; Write-Output "PROBLEM coop-modetag: $role of the off pair: $(if (-not $tags.Count) { 'no +off join list' } else { 'no run (a failed line)' })" }
 }
 if ($joined) { Write-Output "ok      coop-modetag: two players with the mod off joined, their join lists saying '+off'" } else { $bad++ }
 exit $(if ($bad) { 1 } else { 0 })

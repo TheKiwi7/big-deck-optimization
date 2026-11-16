@@ -775,7 +775,9 @@ public static class ForeignPatches
     /// <summary>Who Carried?'s shape: the out parameter taken by reference, only read (the modifiers counted).</summary>
     private static void ModifiersReadPostfix(ref IEnumerable<AbstractModel> modifiers)
     {
-        Add("byref-out-postfix modifiers", modifiers?.Count() ?? 0);
+        // Counted without enumerating (a list in both versions): a lazy sequence would run again here, perturbing what the
+        // control measures. -1 marks one that isn't a collection (the same on both sides of the A/B).
+        Add("byref-out-postfix modifiers", modifiers is IReadOnlyCollection<AbstractModel> collection ? collection.Count : modifiers == null ? 0 : -1);
     }
 
     /// <summary>The control: the same parameter written back (the same value): a write through it, refused.</summary>

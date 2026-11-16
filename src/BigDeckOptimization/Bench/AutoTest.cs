@@ -974,7 +974,7 @@ public static partial class AutoTest
     /// <summary>
     /// Script <c>coopmodetag on|off</c>: this mod's entry in the co-op join list the game uses now (v0.111+: the lobby's net
     /// service's own, kept since hosting or joining started; v0.107.1: the game's list as built at each connection) must say
-    /// that state ("-off" or not). Logs it with <see cref="CoopModeTag.Tagged"/>.
+    /// that state ("+off" or not). Logs it with <see cref="CoopModeTag.Tagged"/>.
     /// </summary>
     private static void CheckCoopModeTag(string arg)
     {

@@ -29,13 +29,17 @@ namespace BigDeckOptimization.Bench;
 /// <c>foreignpatch iljudge selftest</c> runs the judge on the game's own code of three hooks with each shape and its near misses
 /// built as instruction lists (nothing patched): a reordered pair, a changed branch, a handler mark removed, an observer at the
 /// state machine's entry, an ungated observer in the iteration, the listener read after its loop, a gated method in a class with a
-/// static constructor, Minty's own shape (a <c>GetCurrentMethod</c> call next to the gated one); each verdict must be the expected one.
+/// static constructor, Minty's own shape (a <c>GetCurrentMethod</c> call next to the gated one); and ExtraScopes' first-turn judge on
+/// <c>SetupPlayerTurn</c>'s state machine (code changed outside the queries accepted, RitsuLib's hand size rewrite among them; an
+/// observer inside a query, a predicate swapped, the pile stored again, a jump into a query, a query dropped refused); each verdict
+/// must be the expected one. <c>il-firstturn-outside</c> on <c>CombatManager:SetupPlayerTurn</c>: code inserted at the state
+/// machine's entry (accepted: the first turn's filters keep their scope).
 /// <c>foreignpatch iljudge sweep</c>: the prewalk observer and the gated observer on every classified hook of this game (how many the
 /// analysis follows).
 /// </summary>
 public static class IlJudgeShapes
 {
-    public static readonly string[] Shapes = { "il-gated-observer", "il-prewalk-observer", "il-ungated-observer", "il-store-local", "il-game-call", "il-branch" };
+    public static readonly string[] Shapes = { "il-gated-observer", "il-prewalk-observer", "il-ungated-observer", "il-store-local", "il-game-call", "il-branch", "il-firstturn-outside" };
 
     private static readonly ConcurrentDictionary<string, long> _counts = new();
 
@@ -52,6 +56,16 @@ public static class IlJudgeShapes
     /// <summary>Installs a shape on the hook's code; returns the method patched.</summary>
     public static MethodBase Install(string shape, string gate, MethodBase hook, Harmony harmony, int priority)
     {
+        if (shape == "il-firstturn-outside")
+        {
+            if (hook.DeclaringType != typeof(CombatManager) || hook.Name != "SetupPlayerTurn")
+            {
+                throw new ArgumentException(shape + " goes on MegaCrit.Sts2.Core.Combat.CombatManager:SetupPlayerTurn");
+            }
+            MethodBase setup = FirstTurnBody();
+            harmony.Patch(setup, transpiler: new HarmonyMethod(typeof(IlJudgeShapes), nameof(FirstTurnOutsideTranspiler)) { priority = priority });
+            return setup;
+        }
         if (hook.DeclaringType != typeof(Hook))
         {
             throw new ArgumentException(shape + " goes on a MegaCrit.Sts2.Core.Hooks.Hook method");
@@ -79,6 +93,11 @@ public static class IlJudgeShapes
     /// <summary>The judge's verdict on the method (after an install).</summary>
     public static IEnumerable<string> Verdict(MethodBase body)
     {
+        if (body.DeclaringType?.DeclaringType == typeof(CombatManager))
+        {
+            yield return "FOREIGN iljudge SetupPlayerTurn: " + (ExtraScopes.FirstTurnVerdict.Length == 0 ? "no other mod's transpiler" : ExtraScopes.FirstTurnVerdict);
+            yield break;
+        }
         string hook = HookName(body);
         TranspilerJudge.Verdict? verdict = TranspilerJudge.Judge(body, HookSkip.OwnTranspiler, IsWalk, hook, Array.Empty<MethodInfo>());
         yield return $"FOREIGN iljudge Hook.{hook}: " + (verdict == null ? "no other mod's transpiler"
@@ -101,6 +120,13 @@ public static class IlJudgeShapes
 
     private static IEnumerable<CodeInstruction> GatedObserverTranspiler(IEnumerable<CodeInstruction> instructions) =>
         InsertBefore(instructions, IsExecutionFinished, _ => new[] { new CodeInstruction(OpCodes.Dup), Call(typeof(Gated), nameof(Gated.Squeeze)) });
+
+    /// <summary>
+    /// Code inserted at SetupPlayerTurn's state machine's entry, outside the first turn's queries (a value loaded and popped: nothing
+    /// counted, the number of MoveNext calls differing with combat start waits skipped).
+    /// </summary>
+    private static IEnumerable<CodeInstruction> FirstTurnOutsideTranspiler(IEnumerable<CodeInstruction> instructions) =>
+        Insert(instructions.ToList(), 0, new CodeInstruction(OpCodes.Ldstr, "SetupPlayerTurn"), new CodeInstruction(OpCodes.Pop))!;
 
     private static IEnumerable<CodeInstruction> UngatedObserverTranspiler(IEnumerable<CodeInstruction> instructions) =>
         InsertBefore(instructions, IsExecutionFinished, _ => new[] { new CodeInstruction(OpCodes.Dup), Call(typeof(Plain), nameof(Plain.Every)) });
@@ -249,6 +275,25 @@ public static class IlJudgeShapes
                 }
             }
         }
+        // ExtraScopes' first turn: other mods' transpilers on SetupPlayerTurn's state machine, judged by what feeds the queries.
+        MethodBase setup = FirstTurnBody();
+        List<CodeInstruction> setupCode = PatchProcessor.GetOriginalInstructions(setup, out ILGenerator setupGenerator);
+        var setupIns = setupCode.Select(TranspilerJudge.Ins.From).ToList();
+        foreach ((string name, bool accept, List<CodeInstruction>? variant) in FirstTurnVariants(setupCode, setupGenerator))
+        {
+            if (variant == null)
+            {
+                continue;
+            }
+            cases++;
+            string? why = ExtraScopes.FirstTurnRefusal(setupIns, variant.Select(TranspilerJudge.Ins.From).ToList(), ToListOfCards);
+            string line = $"FOREIGN iljudge SetupPlayerTurn {name}: {(why == null ? "accepted" : "refused (" + why + ")")}";
+            lines.Add(line);
+            if ((why == null) != accept)
+            {
+                failures.Add(line + $" (expected {(accept ? "accepted" : "refused")})");
+            }
+        }
         if (failures.Count > 0)
         {
             throw new InvalidOperationException($"IL judge self-test: {failures.Count} of {cases} case(s) unexpected: " + string.Join(" | ", failures));
@@ -333,6 +378,75 @@ public static class IlJudgeShapes
         }
     }
 
+    private static readonly MethodInfo ToListOfCards = AccessTools.Method(typeof(Enumerable), nameof(Enumerable.ToList)).MakeGenericMethod(typeof(CardModel));
+
+    /// <summary>CombatManager.SetupPlayerTurn's state machine (ExtraScopes' first turn).</summary>
+    internal static MethodBase FirstTurnBody() =>
+        AccessTools.AsyncMoveNext(AccessTools.Method(typeof(CombatManager), "SetupPlayerTurn") ?? throw new MissingMethodException("CombatManager.SetupPlayerTurn"));
+
+    private static bool IsToList(CodeInstruction code) => code.opcode == OpCodes.Call && code.operand is MethodInfo m && m == ToListOfCards;
+
+    /// <summary>
+    /// Other mods' transpilers on SetupPlayerTurn's state machine: accepted when they leave the queries and what feeds them as the
+    /// game's (code elsewhere: an observer at the entry, RitsuLib's shape, a constant rewritten), refused otherwise.
+    /// </summary>
+    private static IEnumerable<(string Name, bool Accept, List<CodeInstruction>? Code)> FirstTurnVariants(List<CodeInstruction> o, ILGenerator generator)
+    {
+        int first = o.FindIndex(IsToList);
+        int second = first < 0 ? -1 : o.FindIndex(first + 1, IsToList);
+        yield return ("unchanged", true, new List<CodeInstruction>(o));
+        yield return ("entry-observer", true, Insert(o, 0, new CodeInstruction(OpCodes.Ldstr, "selftest"), Call(typeof(Plain), nameof(Plain.PreWalk))));
+        // RitsuLib's shape: the hand size read (a constant or CardPile.MaxCardsInHand) replaced by a call of its own.
+        int handSize = o.FindIndex(c => c.operand is MethodInfo { Name: "get_MaxCardsInHand" });
+        List<CodeInstruction>? ritsu = null;
+        if (handSize >= 0)
+        {
+            ritsu = new List<CodeInstruction>(o);
+            CodeInstruction replaced = Copy(o[handSize]);
+            replaced.opcode = OpCodes.Ldc_I4_S;
+            replaced.operand = (sbyte)10;
+            ritsu[handSize] = replaced;
+        }
+        yield return ("hand-size-rewritten", true, ritsu);
+        yield return ("observer-in-query", false, first < 0 ? null : Insert(o, first, new CodeInstruction(OpCodes.Ldstr, "selftest"), Call(typeof(Plain), nameof(Plain.PreWalk))));
+        // The second query's predicate swapped for the first one's (its ldftn operand).
+        int[] lambdas = Enumerable.Range(0, o.Count).Where(i => o[i].opcode == OpCodes.Ldftn).ToArray();
+        List<CodeInstruction>? swapped = null;
+        if (lambdas.Length >= 2 && !Equals(o[lambdas[0]].operand, o[lambdas[1]].operand))
+        {
+            swapped = new List<CodeInstruction>(o);
+            CodeInstruction other = Copy(o[lambdas[1]]);
+            other.operand = o[lambdas[0]].operand;
+            swapped[lambdas[1]] = other;
+        }
+        yield return ("predicate-swapped", false, swapped);
+        // The pile the second query reads stored once more (at the entry: outside every query).
+        int pileLoad = second < 0 ? -1 : Enumerable.Range(0, second).Reverse().Take(30).FirstOrDefault(i => LocalOf(o[i]) != null, -1);
+        yield return ("pile-stored-again", false, pileLoad < 0 ? null
+            : Insert(o, 0, new CodeInstruction(OpCodes.Ldnull), new CodeInstruction(OpCodes.Stloc, LocalOf(o[pileLoad]))));
+        // A jump to the first query's call from the entry.
+        List<CodeInstruction>? jump = null;
+        if (first >= 0)
+        {
+            jump = new List<CodeInstruction>(o);
+            Label label = generator.DefineLabel();
+            CodeInstruction target = Copy(o[first]);
+            target.labels.Add(label);
+            jump[first] = target;
+            jump.Insert(0, new CodeInstruction(OpCodes.Br, label));
+        }
+        yield return ("jump-into-query", false, jump);
+        yield return ("query-dropped", false, second < 0 ? null : o.Where((_, i) => i != second).ToList());
+    }
+
+    /// <summary>The local an <c>ldloc</c> loads, as an operand for <c>stloc</c> (its index), else null.</summary>
+    private static object? LocalOf(CodeInstruction code)
+    {
+        OpCode op = code.opcode;
+        return op == OpCodes.Ldloc_0 ? 0 : op == OpCodes.Ldloc_1 ? 1 : op == OpCodes.Ldloc_2 ? 2 : op == OpCodes.Ldloc_3 ? 3
+            : op == OpCodes.Ldloc_S || op == OpCodes.Ldloc ? code.operand : null;
+    }
+
     private static CodeInstruction Copy(CodeInstruction code)
     {
         CodeInstruction copy = code.Clone();
@@ -361,10 +475,18 @@ public static class IlJudgeShapes
         return result;
     }
 
+    /// <summary>
+    /// The hooks whose code the judge doesn't follow today (both versions): their walk is passed to <c>Contains</c>. The sweep
+    /// fails when another hook isn't understood (a judge regression would otherwise only change the count it prints) or when
+    /// one of these starts being understood (the list kept current).
+    /// </summary>
+    private static readonly string[] NotUnderstood = { "AfterPreventingBlockClear", "AfterPreventingDeath", "AfterPreventingDraw" };
+
     /// <summary>The prewalk observer and (async hooks) the gated observer on every classified hook of this game: how many the judge follows.</summary>
     public static IReadOnlyList<string> Sweep()
     {
         var lines = new List<string>();
+        var unexpected = new List<string>();
         int hooks = 0, understood = 0;
         foreach (MethodInfo hook in typeof(Hook).GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
             .Where(m => !m.Name.Contains('<')).OrderBy(m => m.Name, StringComparer.Ordinal))
@@ -397,16 +519,29 @@ public static class IlJudgeShapes
             string? gated = finished < 0 || body.IsStatic ? null : TranspilerJudge.JudgeCode(body, ins,
                 Insert(original, finished, new CodeInstruction(OpCodes.Dup), Call(typeof(Gated), nameof(Gated.Squeeze)))!.Select(TranspilerJudge.Ins.From).ToList(),
                 IsWalk, out _, out _, out _);
+            bool known = NotUnderstood.Contains(hook.Name);
             if (pre == null && gated == null)
             {
                 understood++;
+                if (known)
+                {
+                    unexpected.Add(hook.Name + " now understood (update NotUnderstood)");
+                }
             }
             else
             {
                 lines.Add($"FOREIGN iljudge sweep {hook.Name}: prewalk {pre ?? "accepted"}; gated {gated ?? (finished < 0 || body.IsStatic ? "n/a" : "accepted")}");
+                if (!known)
+                {
+                    unexpected.Add(hook.Name + " not understood");
+                }
             }
         }
-        lines.Add($"FOREIGN iljudge sweep: {understood} of {hooks} hooks with a walk accept both shapes");
+        if (unexpected.Count > 0)
+        {
+            throw new InvalidOperationException($"IL judge sweep: {unexpected.Count} unexpected verdict(s): " + string.Join(" | ", unexpected));
+        }
+        lines.Add($"FOREIGN iljudge sweep: {understood} of {hooks} hooks with a walk accept both shapes, the {NotUnderstood.Length} known exceptions aside");
         return lines;
     }
 }

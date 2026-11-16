@@ -628,7 +628,8 @@ public static class Settings
     }
 
     /// <summary>
-    /// In a co-op run, or in a co-op lobby: the players there were let in with the same state as this player, all on or all off
+    /// In a co-op run, with the run manager's net session connected (host or client), or in a co-op lobby: the players there
+    /// were let in with the same state as this player, all on or all off
     /// (<see cref="Patches.CoopModeTag"/> compares it at the join only), so switching the whole mod now, either way, makes this
     /// player's combats start at another pace than theirs. bdopt asks for a confirmation then (bdopt off yes, bdopt on yes).
     /// The menu needs no lobby check: BaseLib's mod configuration can't be opened from a lobby.

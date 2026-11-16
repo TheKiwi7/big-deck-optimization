@@ -1024,6 +1024,7 @@ public static partial class HookSkip
             }
         }
 
+        [OrderFreePrefix]
         private static void DropPendingFilter()
         {
             if (FastListeners.PendingRunFilter != null)

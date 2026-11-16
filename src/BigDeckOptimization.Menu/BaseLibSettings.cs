@@ -311,6 +311,9 @@ public sealed class BaseLibSettings : SimpleModConfig
                 return;
             }
             SettingsText.Add();
+            // Greying only adds: what greys a row (a session started off, an option unavailable, a fault, the co-op lock) never
+            // clears while this page is open (mods load before the menu; faults last the session; BaseLib opens the page from the
+            // main menu only, outside any co-op run), so nothing greyed has to be restored here.
             GreyOut(page);
             Colour(page, Settings.States());
             if (page.GetNodeOrNull("ConflictSummaryMargin") is Node summary)

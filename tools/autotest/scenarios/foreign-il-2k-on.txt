@@ -6,10 +6,11 @@
 # vanilla, its counts the mod off's): the same insertion point with an ungated call, a store to a local, a call into the game, a
 # jump, and an identity transpiler Harmony sorts after this mod's (priority 0, registered later). The judge's self-test (the game's
 # own code of three hooks with each shape and its near misses: reorder, changed branch, handler, entry observer, stale listener,
-# static constructor, Minty's GetCurrentMethod) and its sweep over every hook run too.
+# static constructor, Minty's GetCurrentMethod) and its sweep over every hook run too (the sweep fails when a hook other than the
+# three AfterPreventing* ones, whose walk goes to Contains, isn't understood, or when one of those three becomes understood).
 timeout 2400
 expect FOREIGN iljudge selftest: [0-9]+ cases as expected
-expect FOREIGN iljudge sweep: [0-9]+ of [0-9]+ hooks with a walk accept both shapes
+expect FOREIGN iljudge sweep: [0-9]+ of [0-9]+ hooks with a walk accept both shapes, the 3 known exceptions aside
 expect FOREIGN iljudge Hook\.BeforeCardPlayed: accepted \([0-9]+ insertion\(s\), gates Squeeze\)
 expect FOREIGN iljudge Hook\.AfterEnergySpent: accepted \([0-9]+ insertion\(s\)\)
 expect FOREIGN iljudge Hook\.ModifyHpLost: accepted \([0-9]+ insertion\(s\)\)
@@ -27,6 +28,9 @@ expect FOREIGN judged walks Hook\.AfterEnergySpent [1-9]
 expect FOREIGN judged walks Hook\.ModifyHpLost [1-9]
 expect FOREIGN runtime HookSkip <AfterCardDrawn>d__[0-9]+\.MoveNext \(None\) kept 0 backed off [1-9]
 expect FOREIGN iljudge BeforeCardPlayed accepted
+expect FOREIGN iljudge SetupPlayerTurn: accepted
+expect ExtraScopes: SetupPlayerTurn's first-turn card filters, other mods' transpilers judged by their IL: the code feeding them is the game's: kept
+expect ExtraScopes first-turn filter \(in a scope\): [0-9]+ cards, .*OK: identical to vanilla
 expect STATE foreign end il-gated-observer squeeze calls [1-9]
 expect STATE foreign end il-prewalk-observer AfterEnergySpent walk 0 [1-9]
 expect STATE foreign end il-prewalk-observer ModifyHpLost walk 0 [1-9]
@@ -50,6 +54,8 @@ foreignpatch il-store-local MegaCrit.Sts2.Core.Hooks.Hook:AfterCardDiscarded
 foreignpatch il-game-call MegaCrit.Sts2.Core.Hooks.Hook:AfterPlayerTurnStart
 foreignpatch il-branch MegaCrit.Sts2.Core.Hooks.Hook:BeforeHandDraw
 foreignpatch identity-transpiler MegaCrit.Sts2.Core.Hooks.Hook:ModifyDamageInternal priority 0
+# (3) ExtraScopes' first turn: code inserted in SetupPlayerTurn's state machine outside its card filters (accepted on the on side).
+foreignpatch il-firstturn-outside MegaCrit.Sts2.Core.Combat.CombatManager:SetupPlayerTurn
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 1

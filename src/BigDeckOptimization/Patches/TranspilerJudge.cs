@@ -553,6 +553,279 @@ internal static class TranspilerJudge
         bool SameTarget(int la, int lb) => labelO.TryGetValue(la, out int ta) && labelF.TryGetValue(lb, out int tb) && match[ta] == tb;
     }
 
+    // ---- Feeds: the code computing what some calls consume, unchanged (ExtraScopes' first turn) ----
+
+    /// <summary>
+    /// Null when, in <paramref name="result"/> (other mods' transpilers applied to a method), every call <paramref name="isTarget"/>
+    /// picks is fed exactly as in the game's code (<paramref name="original"/>), else why not. For each target (as many, in the
+    /// same order) the code computing the values it consumes (found backwards from the call by stack depth, to the point where the
+    /// stack held none of them: the "window") is the game's instruction for instruction (same opcodes and operands, branch targets
+    /// at the same places inside the window, no exception block, no branch from outside to an instruction of the window but its
+    /// first); and so is every store to a local or field such a window reads (the same number of stores in the method, each fed
+    /// the same way, followed through the locals and fields those read in turn), none of them with its address taken. The rest
+    /// of the method is not judged: code outside the windows runs before or after the targets, never inside them. Fields stored
+    /// by other methods (a state machine's kickoff, a lambda class's static constructor) are not followed. Never throws.
+    /// </summary>
+    internal static string? FeedsUnchanged(IReadOnlyList<Ins> original, IReadOnlyList<Ins> result, Func<Ins, bool> isTarget)
+    {
+        try
+        {
+            int[] targetsO = Enumerable.Range(0, original.Count).Where(i => isTarget(original[i])).ToArray();
+            int[] targetsF = Enumerable.Range(0, result.Count).Where(i => isTarget(result[i])).ToArray();
+            if (targetsO.Length == 0 || targetsO.Length != targetsF.Length)
+            {
+                return $"{targetsF.Length} target call(s) where the game has {targetsO.Length}";
+            }
+            Dictionary<int, int> labelsO = LabelPositions(original), labelsF = LabelPositions(result);
+            var pending = new List<(int O, int F)>();
+            for (int t = 0; t < targetsO.Length; t++)
+            {
+                pending.Add((targetsO[t], targetsF[t]));
+            }
+            var followed = new List<object>();
+            var judged = new List<(int Start, int End, int Shift)>();
+            for (int p = 0; p < pending.Count; p++)
+            {
+                if (p > 64)
+                {
+                    return "too many stores to follow";
+                }
+                (int o, int f) = pending[p];
+                // A store inside a window already compared (a lambda's cached delegate): judged with it.
+                if (judged.Any(w => o >= w.Start && o <= w.End && f == o - w.Shift))
+                {
+                    continue;
+                }
+                if (Window(original, o) is not { } startO)
+                {
+                    return $"the game's code feeding instruction {o} ({original[o].Op}) not followed";
+                }
+                int startF = f - (o - startO);
+                if (startF < 0)
+                {
+                    return $"the code feeding instruction {o} ({original[o].Op}) changed";
+                }
+                if (WindowRefusal(original, labelsO, startO, o, null, null, 0) is { } whyO)
+                {
+                    return $"the game's code feeding instruction {o} ({original[o].Op}): {whyO}";
+                }
+                if (WindowRefusal(result, labelsF, startF, f, original, labelsO, startO - startF) is { } whyF)
+                {
+                    return $"the code feeding instruction {o} ({original[o].Op}) changed: {whyF}";
+                }
+                judged.Add((startO, o, startO - startF));
+                // Each local or field read inside the window: every store of it in the method fed the same way.
+                for (int i = startO; i < o; i++)
+                {
+                    object? read = ReadKey(original[i]);
+                    if (read == null || followed.Any(k => SameKey(k, read)))
+                    {
+                        continue;
+                    }
+                    followed.Add(read);
+                    if (AddressTaken(original, read) || AddressTaken(result, read))
+                    {
+                        return $"the address of {read} taken";
+                    }
+                    int[] storesO = Enumerable.Range(0, original.Count).Where(j => SameKey(StoreKey(original[j]), read)).ToArray();
+                    int[] storesF = Enumerable.Range(0, result.Count).Where(j => SameKey(StoreKey(result[j]), read)).ToArray();
+                    if (storesO.Length != storesF.Length)
+                    {
+                        return $"{storesF.Length} store(s) to {read} where the game has {storesO.Length}";
+                    }
+                    for (int s = 0; s < storesO.Length; s++)
+                    {
+                        pending.Add((storesO[s], storesF[s]));
+                    }
+                }
+            }
+            return null;
+        }
+        catch (Exception e)
+        {
+            return "not judged: " + e.Message;
+        }
+    }
+
+    /// <summary>The same instructions in the same order (branch targets aside): no other mod's transpiler changed the code.</summary>
+    internal static bool SameInstructions(IReadOnlyList<Ins> a, IReadOnlyList<Ins> b) =>
+        a.Count == b.Count && Enumerable.Range(0, a.Count).All(i => Same(a[i], b[i]));
+
+    private static Dictionary<int, int> LabelPositions(IReadOnlyList<Ins> code)
+    {
+        var positions = new Dictionary<int, int>();
+        for (int i = 0; i < code.Count; i++)
+        {
+            foreach (int label in code[i].Labels)
+            {
+                positions[label] = i;
+            }
+        }
+        return positions;
+    }
+
+    /// <summary>
+    /// The first instruction of the code computing what <paramref name="code"/>[<paramref name="at"/>] consumes: walking back from
+    /// it, the point where every value it pops has been pushed (null when an instruction there pushes more than is left to find,
+    /// or its stack effect is unknown). Straight-line accounting: branches inside are checked by <see cref="WindowRefusal"/>.
+    /// </summary>
+    private static int? Window(IReadOnlyList<Ins> code, int at)
+    {
+        int? need = Pops(code[at]);
+        if (need is not > 0)
+        {
+            return need == 0 ? at : null;
+        }
+        for (int i = at - 1; i >= 0; i--)
+        {
+            if (Pushes(code[i]) is not { } push || Pops(code[i]) is not { } pop)
+            {
+                return null;
+            }
+            need -= push;
+            if (need < 0)
+            {
+                return null;
+            }
+            need += pop;
+            if (need == 0)
+            {
+                return i;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Why the window [<paramref name="start"/>, <paramref name="end"/>] can't be trusted, else null: an exception block mark, a
+    /// return or throw, a branch leaving it, a label inside it (its first instruction aside) reached from outside. With
+    /// <paramref name="reference"/> (the game's code, its window <paramref name="shift"/> instructions further), every instruction
+    /// must also be the reference's, branches to the same relative places.
+    /// </summary>
+    private static string? WindowRefusal(IReadOnlyList<Ins> code, Dictionary<int, int> labels, int start, int end,
+        IReadOnlyList<Ins>? reference, Dictionary<int, int>? referenceLabels, int shift)
+    {
+        for (int i = start; i <= end; i++)
+        {
+            Ins ins = code[i];
+            if (ins.Blocks.Length > 0)
+            {
+                return $"an exception block at instruction {i}";
+            }
+            if (ins.Op.FlowControl is FlowControl.Return or FlowControl.Throw)
+            {
+                return $"{ins.Op} at instruction {i}";
+            }
+            if (reference != null && !Same(reference[i + shift], ins))
+            {
+                return $"{ins.Op} at instruction {i} where the game has {reference[i + shift].Op}";
+            }
+            int[] targets = Targets(ins);
+            for (int k = 0; k < targets.Length; k++)
+            {
+                if (!labels.TryGetValue(targets[k], out int to) || to < start || to > end)
+                {
+                    return $"a branch at instruction {i} leaves the code feeding the call";
+                }
+                if (reference != null && (Targets(reference[i + shift]) is not { } refTargets || refTargets.Length != targets.Length
+                    || !referenceLabels!.TryGetValue(refTargets[k], out int refTo) || refTo - shift != to))
+                {
+                    return $"the branch at instruction {i} goes elsewhere";
+                }
+            }
+        }
+        // No branch from outside the window to an instruction inside it (its first aside: where the computation starts).
+        var inside = new HashSet<int>();
+        for (int i = start + 1; i <= end; i++)
+        {
+            inside.UnionWith(code[i].Labels);
+        }
+        if (inside.Count > 0)
+        {
+            for (int i = 0; i < code.Count; i++)
+            {
+                if ((i < start || i > end) && Targets(code[i]).Any(inside.Contains))
+                {
+                    return $"a branch at instruction {i} enters the code feeding the call";
+                }
+            }
+        }
+        return null;
+    }
+
+    private static int[] Targets(Ins ins) => ins.Operand switch
+    {
+        int label when ins.IsBranch => new[] { label },
+        int[] labels => labels,
+        _ => Array.Empty<int>(),
+    };
+
+    private static int? Pops(Ins ins)
+    {
+        if (ins.Op.StackBehaviourPop == StackBehaviour.Varpop)
+        {
+            if (ins.Operand is not MethodBase method || (ins.Op != OpCodes.Call && ins.Op != OpCodes.Callvirt && ins.Op != OpCodes.Newobj))
+            {
+                return null;
+            }
+            return method.GetParameters().Length + (method.IsStatic || ins.Op == OpCodes.Newobj ? 0 : 1);
+        }
+        return ins.Op.StackBehaviourPop switch
+        {
+            StackBehaviour.Pop0 => 0,
+            StackBehaviour.Pop1 or StackBehaviour.Popi or StackBehaviour.Popref => 1,
+            StackBehaviour.Pop1_pop1 or StackBehaviour.Popi_pop1 or StackBehaviour.Popi_popi or StackBehaviour.Popi_popi8
+                or StackBehaviour.Popi_popr4 or StackBehaviour.Popi_popr8 or StackBehaviour.Popref_pop1 or StackBehaviour.Popref_popi => 2,
+            StackBehaviour.Popi_popi_popi or StackBehaviour.Popref_popi_popi or StackBehaviour.Popref_popi_popi8 or StackBehaviour.Popref_popi_popr4
+                or StackBehaviour.Popref_popi_popr8 or StackBehaviour.Popref_popi_popref or StackBehaviour.Popref_popi_pop1 => 3,
+            _ => null,
+        };
+    }
+
+    private static int? Pushes(Ins ins)
+    {
+        if (ins.Op.StackBehaviourPush == StackBehaviour.Varpush)
+        {
+            return ins.Operand is MethodInfo method && (ins.Op == OpCodes.Call || ins.Op == OpCodes.Callvirt) ? (method.ReturnType == typeof(void) ? 0 : 1) : null;
+        }
+        return ins.Op.StackBehaviourPush switch
+        {
+            StackBehaviour.Push0 => 0,
+            StackBehaviour.Push1 or StackBehaviour.Pushi or StackBehaviour.Pushi8 or StackBehaviour.Pushr4 or StackBehaviour.Pushr8
+                or StackBehaviour.Pushref => 1,
+            StackBehaviour.Push1_push1 => 2,
+            _ => null,
+        };
+    }
+
+    /// <summary>The local ("local n") or field an instruction loads by value, else null.</summary>
+    private static object? ReadKey(Ins ins)
+    {
+        if (LocalIndex(ins.Op, ins.Operand, load: true) is { } local)
+        {
+            return "local " + local;
+        }
+        return (ins.Op == OpCodes.Ldfld || ins.Op == OpCodes.Ldsfld) && ins.Operand is FieldInfo field ? field : null;
+    }
+
+    /// <summary>The local ("local n") or field an instruction stores, else null.</summary>
+    private static object? StoreKey(Ins ins)
+    {
+        if (LocalIndex(ins.Op, ins.Operand, load: false) is { } local)
+        {
+            return "local " + local;
+        }
+        return (ins.Op == OpCodes.Stfld || ins.Op == OpCodes.Stsfld) && ins.Operand is FieldInfo field ? field : null;
+    }
+
+    private static bool SameKey(object? a, object b) =>
+        a != null && (a is string sa ? b is string sb && sa == sb : a is FieldInfo && b is FieldInfo && SameOperand(a, b));
+
+    private static bool AddressTaken(IReadOnlyList<Ins> code, object key) => code.Any(ins =>
+        key is string local
+            ? (ins.Op == OpCodes.Ldloca || ins.Op == OpCodes.Ldloca_S) && "local " + OperandIndex(ins.Operand) == local
+            : (ins.Op == OpCodes.Ldflda || ins.Op == OpCodes.Ldsflda) && ins.Operand is FieldInfo field && SameOperand(field, key));
+
     // ---- The inserted runs ----
 
     private enum RunKind : byte { Entry, Pure, Listener, Result }
