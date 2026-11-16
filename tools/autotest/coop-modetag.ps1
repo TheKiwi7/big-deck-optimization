@@ -20,6 +20,9 @@ $refused = (Test-Path $clientLog) -and (Select-String -Path $clientLog -Pattern 
     -and (Select-String -Path $clientLog -Pattern "Mods that (host has that we don't|remote has that local does not): .*BigDeckOptimization-v[0-9.]+(,|$)" -Quiet)
 if ($refused) { Write-Output "ok      coop-modetag: the client with the mod off was refused by the host with it on (the game's refusal names its '+off' entry and the host's)" }
 else { Write-Output "PROBLEM coop-modetag: the client with the mod off was not refused, or the game's refusal doesn't name its '+off' entry against the host's"; $bad++ }
+# The mixed pair's games were just closed: coop.ps1 refuses to start while one is still exiting.
+$waitUntil = (Get-Date).AddSeconds(60)
+while ((Get-Process -Name SlayTheSpire2 -ErrorAction SilentlyContinue) -and (Get-Date) -lt $waitUntil) { Start-Sleep -Milliseconds 500 }
 & (Join-Path $PSScriptRoot "coop.ps1") -Name coopbothoff -TimeoutSec 300
 if ($LASTEXITCODE) { $bad++ }
 $joined = $true
