@@ -15,9 +15,10 @@ namespace BigDeckOptimization.Patches;
 /// menu on. Back-offs that don't come from a patch on a method (another mod's types or data turning a shortcut off) are
 /// recorded as notes (<see cref="Note"/>), computed by checks registered with <see cref="WatchNote"/>.
 /// Registering only stores what Apply already resolved (no Harmony lookup, no fingerprint); what the entries ask about is
-/// resolved at load when the menu isn't there yet, the checks run after the main menu shows, spread over frames
-/// (<see cref="PreflightOverFrames"/>), and again synchronously when the menu page opens or bdopt shows its status (answers
-/// younger than <see cref="RecheckAfterMs"/> come from the runtime checks' cache).
+/// resolved and checked during the game's loading when the menu isn't there yet (the notes after it shows), what is left
+/// spread over the main menu's frames (<see cref="PreflightOverFrames"/>), the rest at once when the menu page opens or bdopt
+/// shows its status before that ended, then again synchronously there (answers younger than <see cref="RecheckAfterMs"/> come
+/// from the runtime checks' cache).
 /// </summary>
 public static partial class PatchSafety
 {
@@ -536,6 +537,10 @@ public static partial class PatchSafety
                 yield return true;
             }
         }
+        // A step doing nothing, so a caller can stop before the notes (the startup preflight's loading part: notes need every
+        // mod's own setup done, never before the main menu).
+        checks.InNotes = true;
+        yield return true;
         foreach ((string patch, Action check) in notes)
         {
             checks.Current = patch + " (note)";
@@ -557,6 +562,8 @@ public static partial class PatchSafety
         public int Value;
         /// <summary>The patch name of the step under way.</summary>
         public string? Current;
+        /// <summary>The method checks are done, the note checks come next.</summary>
+        public bool InNotes;
     }
 
     private static void PreflightFailed(string patch, Exception e)
@@ -569,9 +576,11 @@ public static partial class PatchSafety
     }
 
     /// <summary>
-    /// Checks every registered method and note now (the settings page opening, bdopt's status). Methods checked within the
-    /// last <see cref="RecheckAfterMs"/> are answered from the runtime checks' cache. Does nothing before every patch applied
-    /// (allowed lists are built once every mod has loaded) or when the mod started off. Never throws.
+    /// Checks every registered method and note now (the settings page opening, bdopt's status). The startup preflight's steps
+    /// still left are run first, at once (<see cref="FinishStartup"/>: the page and bdopt never show a half-checked state, a
+    /// one-off pause of tens of ms at most). Methods checked within the last <see cref="RecheckAfterMs"/> are answered from
+    /// the runtime checks' cache. Does nothing before every patch applied (allowed lists are built once every mod has loaded)
+    /// or when the mod started off. Never throws.
     /// </summary>
     internal static void Preflight()
     {
@@ -581,6 +590,7 @@ public static partial class PatchSafety
             {
                 return;
             }
+            FinishStartup();
             var checks = new Counter();
             foreach (bool _ in PreflightSteps(checks))
             {
@@ -596,19 +606,61 @@ public static partial class PatchSafety
         }
     }
 
-    /// <summary>Time given to the startup preflight per frame.</summary>
+    /// <summary>Time given to the startup preflight per main menu frame (what is left after the loading part).</summary>
     private const double PreflightBudgetMs = 3;
 
+    /// <summary>The startup preflight under way (main thread only): its steps, and the time the rest took when finished on demand.</summary>
+    private sealed class Startup
+    {
+        public readonly Counter Checks = new();
+        public IEnumerator<bool>? Steps;
+        public double OnDemandMs;
+        public int OnDemandSteps;
+        public string? OnDemandBy;
+    }
+
+    private static Startup? _startup;
+
     /// <summary>
-    /// The startup preflight, in up to two parts. The load part runs only when the patches finished before the main menu
-    /// showed (a start slowed by many mods' loading: seen with ten Workshop mods, 617 entries in 9 ms): every registered entry
-    /// resolved (the patches' lazy allowed lists and sources: reflection on other mods' types, e.g. a mod's patch method looked
-    /// up by name), in one go, its time adding to the game's loading. Usually the menu shows first (the remaining patches then
-    /// apply at once on its frame, ModEntry): the resolutions are then steps of the menu part, each entry its own step. The
-    /// menu part, once the main menu shows (or a run exists): the checks themselves (the Harmony lookups, the shape rules) and
-    /// the note checks (which need every mod's own setup done: never before the menu), a few per frame within
-    /// <see cref="PreflightBudgetMs"/>, so they add no pause to the menu; a run starting meanwhile gets the rest at once (its
-    /// loading screen). Logs both parts' times and their longest step (with its patch) once. Never throws (async void).
+    /// Runs the startup preflight's remaining steps now (the settings page or bdopt opened before it finished over the menu's
+    /// frames). Main thread (the menu, the console, the startup preflight's frames). Never throws.
+    /// </summary>
+    private static void FinishStartup([System.Runtime.CompilerServices.CallerMemberName] string by = "")
+    {
+        Startup? startup = _startup;
+        if (startup?.Steps == null)
+        {
+            return;
+        }
+        long start = Stopwatch.GetTimestamp();
+        try
+        {
+            while (startup.Steps.MoveNext())
+            {
+                startup.OnDemandSteps++;
+            }
+        }
+        catch (Exception e)
+        {
+            PreflightFailed("startup (finished on demand)", e);
+        }
+        startup.Steps.Dispose();
+        startup.Steps = null;
+        startup.OnDemandMs += Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        startup.OnDemandBy ??= by;
+    }
+
+    /// <summary>
+    /// The startup preflight, in up to three parts, so the menu and bdopt show the back-offs before any combat and never a
+    /// half-checked state (the owner's choice: a little more loading time rather than a settings page opened early showing
+    /// less than it should). (1) While the game is still loading (the patches finished before the main menu showed): every
+    /// registered entry resolved (the patches' lazy allowed lists and sources) and checked (the Harmony lookups, the shape
+    /// rules), in one go, its time adding to the loading; the note checks wait for the menu (they need every mod's own setup
+    /// done). (2) Once the main menu shows (or a run exists), whatever is left, a few steps per frame within
+    /// <see cref="PreflightBudgetMs"/>, so they add no pause to a menu nobody uses yet; a run starting meanwhile gets the rest
+    /// at once (its loading screen). (3) The settings page or bdopt opened before (2) finished: the rest at once
+    /// (<see cref="FinishStartup"/>). Usually the menu shows first (the remaining patches then apply at once on its frame,
+    /// ModEntry): part (1) is then empty. Logs each part's time and longest step (with its patch) once. Never throws (async void).
     /// </summary>
     internal static async void PreflightOverFrames()
     {
@@ -619,60 +671,66 @@ public static partial class PatchSafety
                 return;
             }
             Godot.SceneTree? tree = Godot.Engine.GetMainLoop() as Godot.SceneTree;
-            var checks = new Counter();
+            var startup = new Startup();
+            Counter checks = startup.Checks;
+            startup.Steps = PreflightSteps(checks).GetEnumerator();
+            _startup = startup;
             int frames = 0;
             double spent = 0;
-            // The load part: only while the menu isn't there yet (its time adds to the game's loading, not to a menu frame).
-            Dictionary<Watched, (MethodBase? Method, MethodInfo[]? Allowed)[]?>? resolved = null;
+            // Part (1): only while the menu isn't there yet (its time adds to the game's loading, not to a menu frame).
             double loadMs = 0, loadLongest = 0;
+            int loadSteps = 0;
             string? loadLongestPatch = null;
             if (tree != null && !MenuOrRun())
             {
-                Watched[] watched;
-                lock (_watched)
-                {
-                    watched = _watched.ToArray();
-                }
-                resolved = new Dictionary<Watched, (MethodBase? Method, MethodInfo[]? Allowed)[]?>(watched.Length);
                 long loadStart = Stopwatch.GetTimestamp();
-                foreach (Watched entry in watched)
+                while (!checks.InNotes && startup.Steps != null)
                 {
                     long step = Stopwatch.GetTimestamp();
-                    resolved[entry] = Resolve(entry);
+                    if (!startup.Steps.MoveNext())
+                    {
+                        break;
+                    }
+                    loadSteps++;
                     double ms = Stopwatch.GetElapsedTime(step).TotalMilliseconds;
                     if (ms > loadLongest)
                     {
                         loadLongest = ms;
-                        loadLongestPatch = entry.Patch;
+                        loadLongestPatch = checks.Current;
                     }
                 }
                 loadMs = Stopwatch.GetElapsedTime(loadStart).TotalMilliseconds;
             }
-            using IEnumerator<bool> steps = PreflightSteps(checks, resolved).GetEnumerator();
             // The main menu's first frames first: a frame or two after it shows.
-            while (tree != null && !MenuOrRun())
+            while (tree != null && !MenuOrRun() && startup.Steps != null)
             {
                 await tree.ToSignal(tree, Godot.SceneTree.SignalName.ProcessFrame);
             }
-            for (int wait = 0; tree != null && wait < 2; wait++)
+            for (int wait = 0; tree != null && wait < 2 && startup.Steps != null; wait++)
             {
                 await tree.ToSignal(tree, Godot.SceneTree.SignalName.ProcessFrame);
             }
             long started = Stopwatch.GetTimestamp();
-            bool more = true;
             // A step can't be split (a note's scan of every BaseLib-dependent assembly is one): the longest is logged, the frame
             // it may have stretched beyond the budget.
             double longest = 0;
             string? longestPatch = null;
-            while (more)
+            int menuSteps = 0;
+            // Part (2); FinishStartup (part 3) may run the rest between two frames: Steps is then null.
+            while (startup.Steps != null)
             {
                 double budget = tree == null || RunInProgress() ? double.MaxValue : PreflightBudgetMs;
                 long start = Stopwatch.GetTimestamp();
+                bool more = true;
                 while (true)
                 {
                     long step = Stopwatch.GetTimestamp();
-                    more = steps.MoveNext();
+                    more = startup.Steps.MoveNext();
                     double ms = Stopwatch.GetElapsedTime(step).TotalMilliseconds;
+                    if (more)
+                    {
+                        menuSteps++;
+                    }
                     if (ms > longest)
                     {
                         longest = ms;
@@ -684,21 +742,27 @@ public static partial class PatchSafety
                     }
                 }
                 spent += Stopwatch.GetElapsedTime(start).TotalMilliseconds;
-                if (more)
+                if (!more)
                 {
-                    await tree!.ToSignal(tree, Godot.SceneTree.SignalName.ProcessFrame);
-                    frames++;
+                    startup.Steps.Dispose();
+                    startup.Steps = null;
+                    break;
                 }
+                await tree!.ToSignal(tree, Godot.SceneTree.SignalName.ProcessFrame);
+                frames++;
             }
 #if BENCH
             PreflightChecks += checks.Value;
             PreflightRuns++;
 #endif
             int backOffs = _conflicts.Count, notes = _notes.Count;
-            string load = resolved == null ? "at load nothing (the menu showed first: entries resolved at the menu)"
-                : $"at load {resolved.Count} entries resolved in {loadMs:F1} ms, longest {loadLongest:F1} ms ({loadLongestPatch})";
-            Log.Info($"[{ModEntry.Id}] Preflight: {checks.Value} methods and notes checked; {load}; at the main menu {spent:F1} ms over {frames + 1} frames, "
-                + $"longest step {longest:F1} ms ({longestPatch}) (done {Stopwatch.GetElapsedTime(started).TotalMilliseconds:F0} ms after the main menu): {backOffs} back-offs, {notes} notes"
+            string load = loadSteps == 0 ? "during loading nothing (the menu showed first)"
+                : $"during loading {loadSteps} steps in {loadMs:F1} ms, longest {loadLongest:F1} ms ({loadLongestPatch})";
+            string menu = menuSteps == 0 ? "at the main menu nothing"
+                : $"at the main menu {menuSteps} steps, {spent:F1} ms over {frames + 1} frames, longest step {longest:F1} ms ({longestPatch})";
+            string onDemand = startup.OnDemandSteps == 0 ? "" : $"; finished on demand ({startup.OnDemandBy}): {startup.OnDemandSteps} steps in {startup.OnDemandMs:F1} ms";
+            Log.Info($"[{ModEntry.Id}] Preflight: {checks.Value} methods and notes checked; {load}; {menu}{onDemand} "
+                + $"(done {Stopwatch.GetElapsedTime(started).TotalMilliseconds:F0} ms after the main menu): {backOffs} back-offs, {notes} notes"
                 + (backOffs + notes > 0 ? $" ({string.Join(", ", BackOffsPerMod().Select(m => $"{m.Mod} {m.Count}"))}; bdopt why lists them)" : ""));
             // The settings page may be open: its colours and texts follow what the preflight found.
             Config.Settings.NotifyStatesChanged();

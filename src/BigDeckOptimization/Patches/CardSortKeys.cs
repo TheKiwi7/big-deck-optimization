@@ -577,8 +577,15 @@ public static class CardSortKeys
             PatchSafety.ClearNote(Name, "mod_types");
             return;
         }
-        PatchSafety.Note(Name, "mod_types", "other mods' cards with their own sort order, or cards and relics whose cost hooks may change more than a cost: "
-            + "sorts with them run the game's comparison (seen in the combats so far)", cards.Concat(listeners).ToArray());
+        // The types themselves (a few), not only their mods: a run modifier present in every run (ARAM's) is then named as the cause.
+        // No purity analysis of other mods' hooks (DESIGN "Needless back-offs made safe"): only the game's fingerprinted pure
+        // overrides are trusted, so these keep the game's comparison.
+        string[] types = _plain.ToArray().Where(entry => !entry.Value).Select(entry => entry.Key)
+            .Concat(_costOverrides.ToArray().Where(entry => entry.Value == null).Select(entry => entry.Key))
+            .Where(type => type.Assembly != typeof(AbstractModel).Assembly).Select(type => type.Name).Distinct().OrderBy(n => n, StringComparer.Ordinal).ToArray();
+        string named = types.Length == 0 ? "" : " (" + string.Join(", ", types.Take(3)) + (types.Length > 3 ? $" and {types.Length - 3} more" : "") + ")";
+        PatchSafety.Note(Name, "mod_types", "other mods' cards with their own sort order, or cards and relics whose cost hooks may change more than a cost"
+            + named + ": sorts with them run the game's comparison (seen in the combats so far)", cards.Concat(listeners).ToArray());
     }
 
     /// <summary>The cost and keyword hook overrides of the listener types sorts met so far (back-off preflight).</summary>

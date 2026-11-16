@@ -6,9 +6,13 @@ using System.Reflection;
 using System.Threading.Tasks;
 using BigDeckOptimization.Patches;
 using HarmonyLib;
+using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
+using MegaCrit.Sts2.Core.Runs;
 
 namespace BigDeckOptimization.Bench;
 
@@ -38,6 +42,17 @@ namespace BigDeckOptimization.Bench;
 /// <c>field-postfix</c> (<c>List&lt;CardModel&gt; ____cards</c>, Harmony's field injection: the pile's own list, on a CardPile method),
 /// <c>argsrename-prefix</c> (<c>[HarmonyArgument("__args")] object[]</c>), <c>factory-postfix</c> (a factory method returning the
 /// postfix), <c>dup-prefix</c> (one void prefix registered twice: priority 800, then the default priority).</item>
+/// <item>Needless back-offs made safe (2026-11-16, "Needless back-offs made safe" in DESIGN): <c>walk-expand-postfix</c> (on
+/// <c>CombatState</c>/<c>RunState.IterateHookListeners</c>, RitsuLib's shape: a lazy wrapper inserting a second copy of each Squeeze
+/// after it, Squeeze reacting to no hook; a second application on its own output is counted, <c>foreignpatch require nodouble</c>),
+/// <c>walk-filter-repeat</c> (the same walks, EnchantLib's shape: the stream snapshotted, Squeezes moved to its end),
+/// <c>pile-prefix-narrow</c> (on <c>CardModel.Pile</c>, RitsuLib's extra hand: a bool prefix answering Hand for one card while
+/// <c>foreignpatch narrow</c> sets it, true otherwise; priority 800 sorts it before this mod's prefix as a mod patching at its
+/// load), <c>piles-postfix</c> (on <c>Player.Piles</c>, RitsuLib's mod piles: a pile of this tooling appended, filled by
+/// <c>foreignpatch pilecard</c>), <c>byref-arg-prefix</c> (a void prefix taking an argument by reference: on
+/// <c>Hook.ModifyHpLost</c> a monster loses 1 HP more, on <c>CardPile.AddInternal</c> the card passed through unchanged),
+/// <c>byref-out-postfix</c> (on <c>Hook.ModifyHpLost</c>: <c>ref</c> to the out parameter <c>modifiers</c>, only read, their count
+/// summed), and their controls <c>byref-write-postfix</c> (the same, writing it back: must back off).</item>
 /// <item>Type gates on an <c>AbstractModel</c> default (TypeGated): <c>gated-postfix</c>, <c>gated-prefix</c> (bool, true) and
 /// <c>gated-or-postfix</c> with gate <c>squeeze</c> (the card <c>Squeeze</c>, which overrides no hook), <c>relic</c> (RelicModel) or
 /// <c>squeeze-relic</c> (or-ed, gated-or-postfix only): counting their gated calls per target. Near misses (must not be
@@ -68,6 +83,8 @@ public static class ForeignPatches
         "argsrename-prefix", "factory-postfix", "dup-prefix",
         "gated-postfix", "gated-prefix", "gated-or-postfix", "nearmiss-postfix", "renamed-gated-postfix", "gated-patched-postfix",
         "cctor-gated-postfix",
+        "walk-expand-postfix", "walk-filter-repeat", "pile-prefix-narrow", "piles-postfix", "byref-arg-prefix", "byref-out-postfix",
+        "byref-write-postfix",
     };
 
     /// <summary>
@@ -75,7 +92,8 @@ public static class ForeignPatches
     /// piles): in co-op every peer must install them, before any combat (AutoTest refuses them later; bdperf foreign refuses them).
     /// </summary>
     public static bool ChangesState(string arg) =>
-        arg.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() is "keyword-prefix" or "cost-postfix" or "nested-postfix";
+        arg.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() is "keyword-prefix" or "cost-postfix" or "nested-postfix"
+            or "byref-arg-prefix" or "pilecard";
 
     /// <summary>Runs one <c>foreignpatch</c> line; returns the lines to log.</summary>
     public static IReadOnlyList<string> Run(string arg)
@@ -101,6 +119,17 @@ public static class ForeignPatches
 #else
                 return Array.Empty<string>();
 #endif
+            case "require" when parts.Length > 1 && parts[1] == "nodouble":
+                // A walk postfix let stand runs once per call on the unpatched stream: never on its own output (a list kept with it).
+                if (_counts.TryGetValue("walk-expand-postfix applied twice", out long twice) && twice > 0)
+                {
+                    throw new InvalidOperationException($"walk-expand-postfix ran on its own output {twice} time(s): a cached list held another mod's postfix output");
+                }
+                return new[] { "FOREIGN walk-expand-postfix never ran on its own output" };
+            case "narrow":
+                return Narrow(parts.Length > 1 ? parts[1] : "");
+            case "pilecard":
+                return PileCard(parts.Length > 1 ? parts[1] : "");
             case "classify" when parts.Length > 1:
                 MethodBase classified = Target(parts[1]);
                 return Classification(classified);
@@ -243,6 +272,44 @@ public static class ForeignPatches
                 Gate("squeeze");
                 harmony.Patch(target, postfix: new HarmonyMethod(typeof(CctorGate), nameof(CctorGate.Postfix)) { priority = priority });
                 break;
+            case "walk-expand-postfix":
+                RequireWalk(target);
+                harmony.Patch(target, postfix: Fix(nameof(WalkExpandPostfix)));
+                break;
+            case "walk-filter-repeat":
+                RequireWalk(target);
+                harmony.Patch(target, postfix: Fix(nameof(WalkFilterRepeatPostfix)));
+                break;
+            case "pile-prefix-narrow":
+                if (target.DeclaringType != typeof(CardModel) || target.Name != "get_Pile")
+                {
+                    throw new ArgumentException("pile-prefix-narrow goes on MegaCrit.Sts2.Core.Models.CardModel:get_Pile");
+                }
+                harmony.Patch(target, prefix: Fix(nameof(NarrowPilePrefix)));
+                break;
+            case "piles-postfix":
+                if (target.DeclaringType != typeof(Player) || target.Name != "get_Piles")
+                {
+                    throw new ArgumentException("piles-postfix goes on MegaCrit.Sts2.Core.Entities.Players.Player:get_Piles");
+                }
+                harmony.Patch(target, postfix: Fix(nameof(PilesPostfix)));
+                break;
+            case "byref-arg-prefix":
+                harmony.Patch(target, prefix: Fix(target.Name switch
+                {
+                    "ModifyHpLost" => nameof(HpLostByRefPrefix),
+                    nameof(CardPile.AddInternal) or nameof(CardPile.RemoveInternal) => nameof(CardByRefPrefix),
+                    _ => throw new ArgumentException("byref-arg-prefix goes on Hook:ModifyHpLost or CardPile:AddInternal/RemoveInternal"),
+                }));
+                break;
+            case "byref-out-postfix":
+            case "byref-write-postfix":
+                if (target.Name != "ModifyHpLost")
+                {
+                    throw new ArgumentException(shape + " goes on MegaCrit.Sts2.Core.Hooks.Hook:ModifyHpLost");
+                }
+                harmony.Patch(target, postfix: Fix(shape == "byref-out-postfix" ? nameof(ModifiersReadPostfix) : nameof(ModifiersWritePostfix)));
+                break;
         }
         lock (_installed)
         {
@@ -252,6 +319,14 @@ public static class ForeignPatches
         var lines = new List<string> { $"FOREIGN installed {shape}{(gate.Length > 0 ? " " + gate : "")} on {Name(target)} as {id} (priority {priority})" };
         lines.AddRange(Classification(target));
         return lines;
+    }
+
+    private static void RequireWalk(MethodBase target)
+    {
+        if (target.Name != "IterateHookListeners" || (target.DeclaringType != typeof(MegaCrit.Sts2.Core.Combat.CombatState) && target.DeclaringType != typeof(RunState)))
+        {
+            throw new ArgumentException("this shape goes on MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners or MegaCrit.Sts2.Core.Runs.RunState:IterateHookListeners");
+        }
     }
 
     private static void RequirePileMethod(MethodBase target, string method)
@@ -319,6 +394,8 @@ public static class ForeignPatches
         }
 #if BENCH
         lines.Add($"FOREIGN tolerated checks {PatchSafety.ToleratedChecks}, gate analyses {PatchSafety.GateAnalyses} ({PatchSafety.GatedMethods} gated)");
+        lines.Add($"FOREIGN listener scopes with walk patches {ListenerCache.AugmentedScopes}, walks served {ListenerCache.Served}, "
+            + $"mirrored combat {FastListeners.CombatWalks} run {FastListeners.RunWalks}, pile lookups fast {PileIndex.Fast} verified {PileIndex.Verified}");
         lines.AddRange(PatchSafety.RuntimeReport().Select(t => "FOREIGN runtime " + t));
         lines.AddRange(HookSkip.GatedWalkReport().Select(t => "FOREIGN gated walks " + t));
 #endif
@@ -327,6 +404,99 @@ public static class ForeignPatches
     }
 
     private static void Count(string key) => _counts.AddOrUpdate(key, 1, (_, n) => n + 1);
+
+    /// <summary>The local player in a combat (the narrow and pilecard lines), or why not.</summary>
+    private static Player LocalPlayerInCombat()
+    {
+        RunState run = RunManager.Instance.DebugOnlyGetState() ?? throw new InvalidOperationException("no run");
+        Player me = LocalContext.GetMe(run) ?? throw new InvalidOperationException("no local player");
+        if (me.PlayerCombatState == null)
+        {
+            throw new InvalidOperationException("not in a combat");
+        }
+        return me;
+    }
+
+    /// <summary>
+    /// <c>foreignpatch narrow [label]</c> (with pile-prefix-narrow installed): the draw pile's first card is narrowed to the hand,
+    /// its pile read (the prefix answers: Hand), the narrowing lifted, its pile read again (the prefix lets the call through:
+    /// Draw, answered by this mod's index when it stands). STATE: the two answers (the same with this mod off); FOREIGN: whether
+    /// the index answered each read.
+    /// </summary>
+    private static IReadOnlyList<string> Narrow(string label)
+    {
+        Player me = LocalPlayerInCombat();
+        CardPile draw = CardPile.Get(PileType.Draw, me) ?? throw new InvalidOperationException("no draw pile");
+        if (draw.Cards.Count == 0)
+        {
+            throw new InvalidOperationException("the draw pile is empty");
+        }
+        CardModel card = draw.Cards[0];
+        _narrowPile = CardPile.Get(PileType.Hand, me);
+        _narrowCard = card;
+        long fast0 = PileIndex.Fast;
+        CardPile? narrowed;
+        try
+        {
+            narrowed = card.Pile;
+        }
+        finally
+        {
+            _narrowCard = null;
+            _narrowPile = null;
+        }
+        long fast1 = PileIndex.Fast;
+        CardPile? through = card.Pile;
+        long fast2 = PileIndex.Fast;
+        return new[]
+        {
+            $"STATE foreign {label} pile-prefix-narrow narrowed {narrowed?.Type.ToString() ?? "none"} through {through?.Type.ToString() ?? "none"}",
+            $"FOREIGN narrow: index answered while narrowed {fast1 > fast0}, through {fast2 > fast1}",
+        };
+    }
+
+    [ThreadStatic] private static CardModel? _narrowCard;
+    [ThreadStatic] private static CardPile? _narrowPile;
+
+    /// <summary>The extra pile <see cref="PilesPostfix"/> appends to each player's piles (made by <see cref="PileCard"/>).</summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Player, CardPile> _extraPiles = new();
+
+    /// <summary>
+    /// <c>foreignpatch pilecard [label]</c> (with piles-postfix installed): the draw pile's first card moves (silently, the game's
+    /// own pile methods) into the extra pile Player.Piles now lists, its pile is read (the extra pile, as the game's scan finds
+    /// it), then it goes back to its place. STATE: the answer; FOREIGN: whether the index answered.
+    /// </summary>
+    private static IReadOnlyList<string> PileCard(string label)
+    {
+        Player me = LocalPlayerInCombat();
+        CardPile draw = CardPile.Get(PileType.Draw, me) ?? throw new InvalidOperationException("no draw pile");
+        if (draw.Cards.Count == 0)
+        {
+            throw new InvalidOperationException("the draw pile is empty");
+        }
+        CardPile extra = _extraPiles.GetValue(me, _ => new CardPile(PileType.None));
+        CardModel card = draw.Cards[0];
+        draw.RemoveInternal(card, silent: true);
+        extra.AddInternal(card, -1, silent: true);
+        long fast0 = PileIndex.Fast;
+        CardPile? answer;
+        try
+        {
+            answer = card.Pile;
+        }
+        finally
+        {
+            extra.RemoveInternal(card, silent: true);
+            draw.AddInternal(card, 0, silent: true);
+        }
+        long fast1 = PileIndex.Fast;
+        string text = ReferenceEquals(answer, extra) ? "extra" : answer?.Type.ToString() ?? "none";
+        return new[]
+        {
+            $"STATE foreign {label} piles-postfix pile {text}, back in {card.Pile?.Type.ToString() ?? "none"}",
+            $"FOREIGN pilecard: index answered {fast1 > fast0}",
+        };
+    }
 
     private static void Add(string key, long value) => _counts.AddOrUpdate(key, value, (_, n) => n + value);
 
@@ -396,8 +566,12 @@ public static class ForeignPatches
     /// <summary>How much the pile grew over the call (nested moves included), summed: the same with this mod on or off.</summary>
     private static void StatePostfix(CardPile __instance, int __state) => Add("state-prefix growth", __instance.Cards.Count - __state);
 
-    /// <summary>The added card's cost, read before the add: a hook walk over the piles from a prefix of another mod.</summary>
-    private static void ProbePrefix(CardModel card) => Probe("probe-prefix", card);
+    /// <summary>
+    /// A cost read before the add: a hook walk over the piles from a prefix of another mod while the card is in no pile. Of the
+    /// target pile's first card (in combat), else of the added card: the added card is between piles here (removed from its
+    /// old one first), so its CombatState is null and its own cost read never walks (the shape counted 0 reads before).
+    /// </summary>
+    private static void ProbePrefix(CardPile __instance, CardModel card) => Probe("probe-prefix", __instance.Cards.Count > 0 ? __instance.Cards[0] : card);
 
     /// <summary>The same read after the add (and after this mod's tracking, before its finalizers).</summary>
     private static void ProbePostfix(CardModel card) => Probe("probe-postfix", card);
@@ -478,6 +652,80 @@ public static class ForeignPatches
 
     private static void DupPrefix()
     {
+    }
+
+    /// <summary>RitsuLib's walk shape: the walk wrapped lazily, by value with <c>ref __result</c> only.</summary>
+    private static void WalkExpandPostfix(ref IEnumerable<AbstractModel> __result) => __result = ExpandWalk(__result);
+
+    /// <summary>Each Squeeze yielded twice (it reacts to no hook); the same model twice in a row in the input means it was already expanded.</summary>
+    private static IEnumerable<AbstractModel> ExpandWalk(IEnumerable<AbstractModel> walk)
+    {
+        AbstractModel? previous = null;
+        foreach (AbstractModel model in walk)
+        {
+            if (previous is Squeeze && ReferenceEquals(previous, model))
+            {
+                Count("walk-expand-postfix applied twice");
+            }
+            previous = model;
+            yield return model;
+            if (model is Squeeze)
+            {
+                yield return model;
+            }
+        }
+    }
+
+    /// <summary>EnchantLib's walk shape: the stream snapshotted at once, Squeezes moved to its end (not per-item, not lazy).</summary>
+    private static void WalkFilterRepeatPostfix(ref IEnumerable<AbstractModel> __result)
+    {
+        List<AbstractModel> all = __result.ToList();
+        __result = all.Where(m => m is not Squeeze).Concat(all.Where(m => m is Squeeze)).ToList();
+    }
+
+    /// <summary>RitsuLib's extra-hand shape: a bool prefix answering for one card in its own context, true otherwise.</summary>
+    private static bool NarrowPilePrefix(CardModel __instance, ref CardPile? __result)
+    {
+        if (_narrowCard == null || !ReferenceEquals(__instance, _narrowCard))
+        {
+            return true;
+        }
+        __result = _narrowPile;
+        return false;
+    }
+
+    /// <summary>RitsuLib's mod piles shape: an extra pile appended to the player's piles.</summary>
+    private static void PilesPostfix(Player __instance, ref IEnumerable<CardPile> __result)
+    {
+        if (_extraPiles.TryGetValue(__instance, out CardPile? extra))
+        {
+            __result = __result.Concat(new[] { extra });
+        }
+    }
+
+    /// <summary>ARAM's shape (an argument rewritten by reference before the original): a monster loses 1 HP more.</summary>
+    private static void HpLostByRefPrefix(Creature target, ref decimal amount)
+    {
+        if (target.IsMonster && amount > 0)
+        {
+            amount += 1;
+            Count("byref-arg-prefix monster hp losses");
+        }
+    }
+
+    /// <summary>An argument by reference passed through unchanged (each call counted).</summary>
+    private static void CardByRefPrefix(ref CardModel card, MethodBase __originalMethod) => Count("byref-arg-prefix " + Name(__originalMethod) + " " + (card != null));
+
+    /// <summary>Who Carried?'s shape: the out parameter taken by reference, only read (the modifiers counted).</summary>
+    private static void ModifiersReadPostfix(ref IEnumerable<AbstractModel> modifiers)
+    {
+        Add("byref-out-postfix modifiers", modifiers?.Count() ?? 0);
+    }
+
+    /// <summary>The control: the same parameter written back (the same value): a write through it, refused.</summary>
+    private static void ModifiersWritePostfix(ref IEnumerable<AbstractModel> modifiers)
+    {
+        modifiers = modifiers?.ToList() ?? new List<AbstractModel>();
     }
 
     /// <summary>

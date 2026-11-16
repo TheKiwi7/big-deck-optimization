@@ -1,0 +1,107 @@
+# Needless back-offs made safe (A/B, mod on; DESIGN "Needless back-offs made safe (2026-11-16)"): the same synthetic patches of
+# "another mod" (Harmony ids bdtest.foreign.*, Bench/ForeignPatches.cs) as foreign-needless-2k-off; CHECKSUM and STATE lines must
+# match line for line. Shapes: postfixes augmenting the listener walks (RitsuLib's lazy expansion, EnchantLib's snapshot and
+# reorder), a bool prefix answering CardModel.Pile in its own context (RitsuLib's extra hand, priority 800: before this mod's
+# prefix, as a mod patching at its load), a Player.Piles postfix appending a pile (RitsuLib's mod piles), a void prefix rewriting a
+# declared argument by reference (ARAM's shape, on Hook.ModifyHpLost: monsters lose 1 HP more), a postfix reading the out
+# parameter by reference (Who Carried?'s shape). The on side must let them stand at run time (FOREIGN runtime ... kept), keep
+# ListenerCache, FastListeners' served walks, PileIndex and HookSkip running (effectcheck), answer the narrowed and appended piles
+# as the game does (STATE), never run a walk postfix on its own output (require nodouble), and give the reference's listener
+# sequences inside a refresh scope too (bdperf listeners). HookFilter stays off while the walks carry other mods' patches.
+timeout 2400
+expect ListenerCache: CombatState\.IterateHookListeners is also patched by .*bdtest\.foreign\.walk-expand-postfix.* \(postfixes and void prefixes: run around this mod's code as without it\): kept
+expect ListenerCache: RunState\.IterateHookListeners is also patched by .*bdtest\.foreign\.walk-filter-repeat.* \(postfixes and void prefixes: run around
+expect FastListeners: CombatState\.IterateHookListeners is also patched by .*bdtest\.foreign\.walk-expand-postfix.* \(postfixes and void prefixes: run around
+expect FastListeners: CombatState\.IterateHookListeners is also patched by .*bdtest\.foreign\.walk-expand-postfix.*: normal game for that part
+expect HookFilter: CombatState\.IterateHookListeners is also patched by .*bdtest\.foreign\.walk-expand-postfix.*: normal game for that part
+expect PileIndex: CardModel\.get_Pile is also patched by bdtest\.foreign\.pile-prefix-narrow \(postfixes and prefixes running before this mod's: run around this mod's code as without it\): kept
+expect HookSkip: Hook\.ModifyHpLost is also patched by .*bdtest\.foreign\.byref-arg-prefix.* \(postfixes and void prefixes: run around this mod's code as without it\): kept
+expect HookSkip: Hook\.ModifyHpLost is also patched by .*bdtest\.foreign\.byref-out-postfix.* \(postfixes and void prefixes: run around
+expect PileIndex: CardPile\.AddInternal is also patched by .*bdtest\.foreign\.byref-arg-prefix.* \(postfixes and void prefixes: run around
+expect FOREIGN classify CardModel\.get_Pile: bdtest\.foreign\.pile-prefix-narrow Prefix .*priority 800: .*BeforeReplace tolerated
+expect FOREIGN classify Hook\.ModifyHpLost: bdtest\.foreign\.byref-out-postfix Postfix .*SurroundingOnly tolerated
+expect FOREIGN classify Hook\.ModifyHpLost: bdtest\.foreign\.byref-arg-prefix Prefix .*SurroundingOnly tolerated
+expect STATE foreign narrow1 pile-prefix-narrow narrowed Hand through Draw
+expect FOREIGN narrow: index answered while narrowed False, through True
+expect STATE foreign pile1 piles-postfix pile extra, back in Draw
+expect FOREIGN pilecard: index answered True
+expect OK: identical listeners: .* in a refresh scope identical \([1-9] of 4 walks served
+expect STATE foreign end byref-arg-prefix monster hp losses [1-9]
+expect STATE foreign end byref-arg-prefix CardPile\.AddInternal True [1-9]
+expect STATE foreign end byref-out-postfix modifiers [0-9]
+expect FOREIGN listener scopes with walk patches [1-9]
+expect FOREIGN runtime ListenerCache CombatState\.IterateHookListeners \(SurroundingOnly\) kept [1-9]
+expect FOREIGN runtime FastListeners CombatState\.IterateHookListeners \(SurroundingOnly\) kept [1-9]
+expect FOREIGN runtime PileIndex CardModel\.get_Pile \(BeforeReplace\) kept [1-9]
+expect FOREIGN runtime HookSkip Hook\.ModifyHpLost \(SurroundingOnly\) kept [1-9]
+expect FOREIGN runtime PileIndex CardPile\.AddInternal \(SurroundingOnly\) kept [1-9]
+expect FOREIGN walk-expand-postfix never ran on its own output
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+enemyhp 999999
+# One pile answer in 64 compared with the getter's own scan (through the patched Player.Piles), both sides alike.
+cmd bdperf pile verify 64
+# (1) postfixes augmenting the listener walks, both walks, both shapes (their order the same on both sides).
+foreignpatch walk-expand-postfix MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners
+foreignpatch walk-filter-repeat MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners
+foreignpatch walk-expand-postfix MegaCrit.Sts2.Core.Runs.RunState:IterateHookListeners
+foreignpatch walk-filter-repeat MegaCrit.Sts2.Core.Runs.RunState:IterateHookListeners
+# (2) a bool prefix answering CardModel.Pile in its own context, sorted before this mod's (priority 800), and a Player.Piles postfix.
+foreignpatch pile-prefix-narrow MegaCrit.Sts2.Core.Models.CardModel:get_Pile priority 800
+foreignpatch piles-postfix MegaCrit.Sts2.Core.Entities.Players.Player:get_Piles
+# (3) arguments by reference: rewritten by a void prefix (an effect the checksums see), passed through on AddInternal (before this
+# mod's tracking prefixes), and an out parameter only read by a postfix.
+foreignpatch byref-arg-prefix MegaCrit.Sts2.Core.Hooks.Hook:ModifyHpLost
+foreignpatch byref-arg-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal
+foreignpatch byref-out-postfix MegaCrit.Sts2.Core.Hooks.Hook:ModifyHpLost
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+effects start
+foreignpatch narrow narrow1
+foreignpatch pilecard pile1
+checksum after pile reads
+cmd bdperf listeners 2
+cmd bdperf pile
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+play 4
+waitfor idle 120
+checksum t3 plays
+endturn
+waitfor idle 300
+checksum t3 end
+state t3
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+foreignpatch report end
+effects end
+effectcheck ListenerCache grew start
+effectcheck FastListeners.CombatWalk grew start
+effectcheck HookSkip grew start
+effectcheck PileIndex grew start
+foreignpatch require tolerated
+foreignpatch require nodouble
+cmd bdopt why
+counters end
+foreignpatch remove
+quit

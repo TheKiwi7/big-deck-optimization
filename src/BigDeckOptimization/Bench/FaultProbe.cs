@@ -26,9 +26,9 @@ public static class FaultProbe
     {
         string apply = CheckFailingApply();
         // Installed before the first await, like the others (the tooling's patches, not the optimizations').
-        Harmony foreign = ArmSwallowedFault();
+        Harmony foreign = FaultProbeSwallow.Arm();
         string runtime = await CheckThrowingPrefix(nextFrames);
-        string swallowed = await CheckSwallowedFault(foreign, nextFrames);
+        string swallowed = await FaultProbeSwallow.Check(foreign, nextFrames);
         return $"failing Apply: {apply} | throwing prefix: {runtime} | swallowing finalizer: {swallowed}";
     }
 
@@ -87,8 +87,34 @@ public static class FaultProbe
         }
     }
 
+    /// <summary>This mod's patches on the target, guard included.</summary>
+    private static int OurPatches() => OurPatches(_target);
+
+    internal static int OurPatches(MethodBase target)
+    {
+        HarmonyLib.Patches? info = Harmony.GetPatchInfo(target);
+        return info == null ? 0 : info.Prefixes.Concat(info.Postfixes).Concat(info.Transpilers).Concat(info.Finalizers)
+            .Count(p => PatchGuard.IsOurs(p.owner));
+    }
+
+    private static void Prefix()
+    {
+        if (_armed)
+        {
+            throw new InvalidOperationException(Name + ": simulated error inside a patch");
+        }
+    }
+}
+
+/// <summary>
+/// <see cref="FaultProbe"/>'s third check in a class of its own: PatchGuard faults every patch name registered from the same
+/// outermost class at once, so with both probes in FaultProbe the throwing prefix's fault also took this probe's patch away
+/// before it was checked ("found 0 patch(es)").
+/// </summary>
+internal static class FaultProbeSwallow
+{
     private static readonly MethodInfo _swallowTarget = AccessTools.Method(typeof(StringHelper), nameof(StringHelper.Unslugify));
-    private const string SwallowName = Name + ".Swallowed";
+    private const string SwallowName = FaultProbe.Name + ".Swallowed";
     private static bool _armedSwallow;
 
     /// <summary>
@@ -96,21 +122,21 @@ public static class FaultProbe
     /// method (so Harmony would run it first at the same priority): the guard runs first of the finalizers (Priority.First) and
     /// still sees the prefix's throw, so the patch is faulted although the game's caller saw no exception.
     /// </summary>
-    private static Harmony ArmSwallowedFault()
+    internal static Harmony Arm()
     {
         var foreign = new Harmony(ForeignPatches.IdPrefix + "swallow-finalizer");
-        foreign.Patch(_swallowTarget, finalizer: new HarmonyMethod(typeof(FaultProbe), nameof(Swallow)));
-        ModEntry.TryApply(SwallowName, harmony => PatchGuard.Patch(harmony, _swallowTarget, prefix: new HarmonyMethod(typeof(FaultProbe), nameof(SwallowedPrefix))));
+        foreign.Patch(_swallowTarget, finalizer: new HarmonyMethod(typeof(FaultProbeSwallow), nameof(Swallow)));
+        ModEntry.TryApply(SwallowName, harmony => PatchGuard.Patch(harmony, _swallowTarget, prefix: new HarmonyMethod(typeof(FaultProbeSwallow), nameof(SwallowedPrefix))));
         return foreign;
     }
 
-    private static async Task<string> CheckSwallowedFault(Harmony foreign, Func<Task> nextFrames)
+    internal static async Task<string> Check(Harmony foreign, Func<Task> nextFrames)
     {
         try
         {
-            if (OurPatches(_swallowTarget) != 2)
+            if (FaultProbe.OurPatches(_swallowTarget) != 2)
             {
-                return $"FAILED: expected prefix + guard, found {OurPatches(_swallowTarget)} patch(es)";
+                return $"FAILED: expected prefix + guard, found {FaultProbe.OurPatches(_swallowTarget)} patch(es)";
             }
             _armedSwallow = true;
             try
@@ -126,9 +152,9 @@ public static class FaultProbe
                 _armedSwallow = false;
             }
             await nextFrames();
-            return PatchSafety.IsFaulted(SwallowName) && OurPatches(_swallowTarget) == 0
+            return PatchSafety.IsFaulted(SwallowName) && FaultProbe.OurPatches(_swallowTarget) == 0
                 ? "OK: faulted and removed though another mod's finalizer swallowed the exception"
-                : $"FAILED: faulted {PatchSafety.IsFaulted(SwallowName)}, {OurPatches(_swallowTarget)} patch(es) of this mod left";
+                : $"FAILED: faulted {PatchSafety.IsFaulted(SwallowName)}, {FaultProbe.OurPatches(_swallowTarget)} patch(es) of this mod left";
         }
         finally
         {
@@ -143,24 +169,6 @@ public static class FaultProbe
         if (_armedSwallow)
         {
             throw new InvalidOperationException(SwallowName + ": simulated error inside a patch");
-        }
-    }
-
-    /// <summary>This mod's patches on the target, guard included.</summary>
-    private static int OurPatches() => OurPatches(_target);
-
-    private static int OurPatches(MethodBase target)
-    {
-        HarmonyLib.Patches? info = Harmony.GetPatchInfo(target);
-        return info == null ? 0 : info.Prefixes.Concat(info.Postfixes).Concat(info.Transpilers).Concat(info.Finalizers)
-            .Count(p => PatchGuard.IsOurs(p.owner));
-    }
-
-    private static void Prefix()
-    {
-        if (_armed)
-        {
-            throw new InvalidOperationException(Name + ": simulated error inside a patch");
         }
     }
 }

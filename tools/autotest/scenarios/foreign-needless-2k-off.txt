@@ -1,0 +1,63 @@
+# Needless back-offs made safe (A/B, mod off): the same synthetic patches of "another mod" as foreign-needless-2k-on (see there);
+# CHECKSUM and STATE lines must match line for line. The on side's own checks (expect, effects, bdperf listeners/pile) left out.
+timeout 2400
+cmd bdopt off
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 999999
+# One pile answer in 64 compared with the getter's own scan (through the patched Player.Piles), both sides alike.
+cmd bdperf pile verify 64
+# (1) postfixes augmenting the listener walks, both walks, both shapes (their order the same on both sides).
+foreignpatch walk-expand-postfix MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners
+foreignpatch walk-filter-repeat MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners
+foreignpatch walk-expand-postfix MegaCrit.Sts2.Core.Runs.RunState:IterateHookListeners
+foreignpatch walk-filter-repeat MegaCrit.Sts2.Core.Runs.RunState:IterateHookListeners
+# (2) a bool prefix answering CardModel.Pile in its own context, sorted before this mod's (priority 800), and a Player.Piles postfix.
+foreignpatch pile-prefix-narrow MegaCrit.Sts2.Core.Models.CardModel:get_Pile priority 800
+foreignpatch piles-postfix MegaCrit.Sts2.Core.Entities.Players.Player:get_Piles
+# (3) arguments by reference: rewritten by a void prefix (an effect the checksums see), passed through on AddInternal (before this
+# mod's tracking prefixes), and an out parameter only read by a postfix.
+foreignpatch byref-arg-prefix MegaCrit.Sts2.Core.Hooks.Hook:ModifyHpLost
+foreignpatch byref-arg-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal
+foreignpatch byref-out-postfix MegaCrit.Sts2.Core.Hooks.Hook:ModifyHpLost
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+foreignpatch narrow narrow1
+foreignpatch pilecard pile1
+checksum after pile reads
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+play 4
+waitfor idle 120
+checksum t3 plays
+endturn
+waitfor idle 300
+checksum t3 end
+state t3
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+foreignpatch report end
+foreignpatch remove
+cmd bdopt on
+quit

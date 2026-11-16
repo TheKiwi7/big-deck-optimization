@@ -2267,7 +2267,9 @@ public static class FastListeners
             PatchGuard.Patch(harmony, combatIterate, prefix: new HarmonyMethod(typeof(FastListeners), nameof(CombatPrefix)) { priority = Priority.Last });
             CombatMirrored = true;
             // CombatWalkPatched's methods, and Subscribers' when it reads the subscriber list (display only).
+            // The walk itself twice: tolerantly (the served walk: CombatServedPatched), strictly (the filtered walks: CombatWalkPatched).
             PatchSafety.Watch(Name, new MethodBase?[] { _combatIterate, _combatBody, _combatContains });
+            PatchSafety.Watch(Name, _combatIterate, PatchTolerance.SurroundingOnly);
             if (_combatSubscribers != null)
             {
                 PatchSafety.Watch(Name, new[] { _subscribersMethod, _subscribersBody, _subscribeMethod });
@@ -2306,6 +2308,7 @@ public static class FastListeners
             PatchGuard.Patch(harmony, runIterate, prefix: new HarmonyMethod(typeof(FastListeners), nameof(RunPrefix)) { priority = Priority.Last });
             RunMirrored = true;
             PatchSafety.Watch(Name, new MethodBase?[] { _runIterate, _runBody, _runContains });
+            PatchSafety.Watch(Name, _runIterate, PatchTolerance.SurroundingOnly);
         }
         catch (Exception e)
         {
@@ -2469,6 +2472,54 @@ public static class FastListeners
         PatchSafety.IsPatchedByOthers(_runIterate) || PatchSafety.IsPatchedByOthers(_runBody) || PatchSafety.IsPatchedByOthers(_runContains);
 
     /// <summary>
+    /// <see cref="CombatWalkPatched"/> for the walk this class serves through the game's own call (<see cref="CombatPrefix"/>):
+    /// another mod's postfixes (and void prefixes Harmony runs before every prefix of this mod) on <c>IterateHookListeners</c>
+    /// itself are let stand (SurroundingOnly). Exact: Harmony runs every postfix after a prefix that skipped the original, so
+    /// a postfix wrapping, extending or filtering the walk gets this mirror, the stream the unpatched body yields (same
+    /// listeners, same order, same laziness: the mirror's premise), once per call as without this mod, and the caller gets
+    /// what it leaves. The original only builds the iterator (its body runs at enumeration, outside the call): no exception
+    /// path where the game would run no postfix. Postfixes taking <c>__runOriginal</c>, other arguments by reference or
+    /// <c>__args</c> are refused by the rule. The state machine and <c>Contains</c> (the code mirrored) keep no tolerance, and
+    /// the filtered walks (<see cref="Filtered(CombatState, PileFilter)"/>: HookSkip's, called directly, not through the
+    /// game's call) keep the strict check: filtering before a postfix would drop what it would add after an owner, or what it
+    /// reads; they take the game's call then (<see cref="KeptOnly"/> over its result, this mirror served inside it).
+    /// </summary>
+    private static bool CombatServedPatched() =>
+        PatchSafety.IsPatchedByOthers(_combatIterate, PatchTolerance.SurroundingOnly) || PatchSafety.IsPatchedByOthers(_combatBody)
+        || PatchSafety.IsPatchedByOthers(_combatContains);
+
+    /// <summary>
+    /// <see cref="CombatServedPatched"/> for the run walk, served unfiltered only (<see cref="RunPrefix"/> with no HookSkip filter
+    /// taken: a filtered stream must not reach a postfix). Its child combat walk goes through the game's call as the original's
+    /// (the combat postfixes run there as without this mod).
+    /// </summary>
+    private static bool RunServedPatched() =>
+        PatchSafety.IsPatchedByOthers(_runIterate, PatchTolerance.SurroundingOnly) || PatchSafety.IsPatchedByOthers(_runBody)
+        || PatchSafety.IsPatchedByOthers(_runContains);
+
+    /// <summary>
+    /// The combat walk as the unpatched original yields it, without going through the game's call (no other mod's patch on
+    /// <c>IterateHookListeners</c> runs): for <see cref="ListenerCache"/>'s lists while other mods' postfixes there are let stand
+    /// (they then run on each replay, through the game's call, once). Null when this mirror can't answer (not mirrored, off,
+    /// inside the vanilla reference, or its code patched by another mod).
+    /// </summary>
+    internal static IEnumerable<AbstractModel>? UnpatchedCombat(CombatState state) =>
+        CombatMirrored && Enabled && !ListenerCache.IsSuspended && !PatchSafety.IsPatchedByOthers(_combatBody) && !PatchSafety.IsPatchedByOthers(_combatContains)
+            ? Combat(state, null) : null;
+
+    /// <summary>
+    /// <see cref="UnpatchedCombat"/> for the run walk. Its child combat walk goes through the game's call, as the original's:
+    /// the caller must not keep the result past a change of what the combat walk's other mods' patches return
+    /// (<see cref="ListenerCache"/> doesn't serve a run walk with a child combat while the combat walk carries one).
+    /// </summary>
+    internal static IEnumerable<AbstractModel>? UnpatchedRun(RunState run, ICombatState? child) =>
+        RunMirrored && Enabled && !ListenerCache.IsSuspended && !PatchSafety.IsPatchedByOthers(_runBody) && !PatchSafety.IsPatchedByOthers(_runContains)
+            ? Run(run, child, null) : null;
+
+    /// <summary>Whether both <see cref="UnpatchedCombat"/> and <see cref="UnpatchedRun"/> can answer now.</summary>
+    internal static bool MirrorsUnpatched => CombatMirrored && RunMirrored && Enabled && !ListenerCache.IsSuspended;
+
+    /// <summary>
     /// The code a walk's result comes from besides the two IterateHookListeners methods: both state machines, both
     /// Contains, and ModHelper's two subscriber walks (and their state machines). Looked up on their own, whatever this
     /// patch applied: <see cref="ListenerCache"/> replays a whole walk's result per scope, so another mod's patch on any of
@@ -2630,7 +2681,7 @@ public static class FastListeners
     {
         // Inside ListenerCache.RunVanilla (the snapshot verifier's and the bench's reference): the game's own walk, so the
         // reference doesn't rely on this mirror either.
-        if (!__runOriginal || !Enabled || ListenerCache.IsSuspended || CombatWalkPatched())
+        if (!__runOriginal || !Enabled || ListenerCache.IsSuspended || CombatServedPatched())
         {
             return __runOriginal;
         }
@@ -2663,7 +2714,8 @@ public static class FastListeners
     {
         PileFilter? filter = _takenRunFilter;
         _takenRunFilter = null;
-        if (!__runOriginal || RunWalkPatched())
+        // A filtered walk (BaseLib's hand size, HookSkip's pending filter) is never handed to another mod's postfix: strict.
+        if (!__runOriginal || (filter != null ? RunWalkPatched() : RunServedPatched()))
         {
             return __runOriginal;
         }

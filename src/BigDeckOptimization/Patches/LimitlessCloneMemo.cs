@@ -396,25 +396,55 @@ public static class LimitlessCloneMemo
     /// <summary>
     /// Every overload of each chain method (FromSerializable, Fill) with its allowed patches, built once: any of them patched
     /// counts. The overrides the clone reaches in the saved card's own types are checked per type (OnTheWay), not every type's.
+    /// Built entry by entry (<see cref="ChainPart"/>): the startup preflight resolves one entry per step, the whole chain at
+    /// once took ~10 ms of one main menu frame (reflection over the game types' methods, other mods' allowed patches looked up
+    /// and fingerprinted), over the 3 ms step budget.
     /// </summary>
     private static (System.Reflection.MethodBase Method, System.Reflection.MethodInfo[] Allowed, bool Gated)[] ChainMethods() =>
-        _chain ??= Chain.SelectMany(c => c.Type.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly)
-                .Where(m => m.Name == c.Method)
-                .Select(m => ((System.Reflection.MethodBase)m, c.Allowed.Select(a => Allowed(a.Patch, a.Fingerprint)).OfType<System.Reflection.MethodInfo>().ToArray(),
-                    c.Type == typeof(CardModel) && !m.IsStatic && GatedChain.Contains(c.Method))))
+        _chain ??= Enumerable.Range(0, Chain.Length).SelectMany(ChainPart).ToArray();
+
+    /// <summary>One <see cref="Chain"/> entry's methods (every overload) with their allowed patches, built once (idempotent: a race builds the same twice).</summary>
+    private static (System.Reflection.MethodBase Method, System.Reflection.MethodInfo[] Allowed, bool Gated)[] ChainPart(int index)
+    {
+        var parts = _chainParts ??= new (System.Reflection.MethodBase, System.Reflection.MethodInfo[], bool)[]?[Chain.Length];
+        if (parts[index] is { } known)
+        {
+            return known;
+        }
+        (Type type, string name, (string Patch, string Fingerprint)[] allowedPatches) = Chain[index];
+        System.Reflection.MethodInfo[] allowed = allowedPatches.Select(a => Allowed(a.Patch, a.Fingerprint)).OfType<System.Reflection.MethodInfo>().ToArray();
+        return parts[index] = DeclaredMethods(type).Where(m => m.Name == name)
+            .Select(m => ((System.Reflection.MethodBase)m, allowed, type == typeof(CardModel) && !m.IsStatic && GatedChain.Contains(name)))
             .ToArray();
+    }
+
+    private static (System.Reflection.MethodBase Method, System.Reflection.MethodInfo[] Allowed, bool Gated)[]?[]? _chainParts;
+
+    /// <summary>A type's declared methods, read once per type (several chain entries share CardModel's, AbstractModel's...).</summary>
+    private static System.Reflection.MethodInfo[] DeclaredMethods(Type type) =>
+        _declared.GetOrAdd(type, t => t.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+            | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly));
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, System.Reflection.MethodInfo[]> _declared = new();
 
     /// <summary>
     /// Registers the chain <see cref="ChainPatched"/> asks about for the back-off preflight, under this class's name (where
     /// its runtime check records, LimitlessHookSkip's asks included) or a patch relying on it (<paramref name="patch"/>:
     /// LimitlessHookSkip, so bdopt why and the menu show its back-offs while this one isn't running); the gated card methods
-    /// with their tolerance. Built inside the preflight. Never throws.
+    /// with their tolerance. One entry per chain entry (each its own preflight step), built inside the preflight. Never throws.
     /// </summary>
     internal static void WatchChain(string patch = Name)
     {
-        PatchSafety.WatchPairs(patch, () => ChainMethods().Where(c => !c.Gated).Select(c => ((System.Reflection.MethodBase?)c.Method, (System.Reflection.MethodInfo[]?)c.Allowed)));
-        PatchSafety.WatchPairs(patch, () => ChainMethods().Where(c => c.Gated).Select(c => ((System.Reflection.MethodBase?)c.Method, (System.Reflection.MethodInfo[]?)c.Allowed)),
-            PatchTolerance.TypeGated);
+        for (int i = 0; i < Chain.Length; i++)
+        {
+            int index = i;
+            PatchSafety.WatchPairs(patch, () => ChainPart(index).Where(c => !c.Gated).Select(c => ((System.Reflection.MethodBase?)c.Method, (System.Reflection.MethodInfo[]?)c.Allowed)));
+            if (Chain[index].Type == typeof(CardModel) && GatedChain.Contains(Chain[index].Method))
+            {
+                PatchSafety.WatchPairs(patch, () => ChainPart(index).Where(c => c.Gated).Select(c => ((System.Reflection.MethodBase?)c.Method, (System.Reflection.MethodInfo[]?)c.Allowed)),
+                    PatchTolerance.TypeGated);
+            }
+        }
     }
 
     /// <summary>

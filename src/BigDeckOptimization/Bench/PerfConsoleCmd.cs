@@ -588,9 +588,30 @@ public class PerfConsoleCmd : AbstractConsoleCmd
                 // Its mirrors backed off (another mod patches the walks) or don't apply here: vanilla against vanilla.
                 return new CmdResult(success: true, "FastListeners left the walks vanilla (back-off or not mirrored here): nothing to compare.");
             }
+            // The same walks inside one of ListenerCache's refresh scopes, each twice (built, then replayed): with other mods'
+            // postfixes on the walks let stand (Needless back-offs made safe), they run on the replayed unpatched list once per
+            // call, so these must equal the reference too (a postfix applied to its own kept output would differ).
+            long servedBefore = ListenerCache.Served;
+            List<AbstractModel> scopeCombat, scopeRun, scopeCombatAgain, scopeRunAgain;
+            ListenerCache.EnterRefresh();
+            try
+            {
+                scopeCombat = combat.IterateHookListeners().ToList();
+                scopeCombatAgain = combat.IterateHookListeners().ToList();
+                scopeRun = run.IterateHookListeners(combat).ToList();
+                scopeRunAgain = run.IterateHookListeners(combat).ToList();
+            }
+            finally
+            {
+                ListenerCache.ExitRefresh(null);
+            }
+            long scopeServed = ListenerCache.Served - servedBefore;
+            bool scopeSame = new[] { scopeCombat, scopeCombatAgain }.All(l => vanilla.Combat.SequenceEqual(l, ReferenceEqualityComparer.Instance))
+                && new[] { scopeRun, scopeRunAgain }.All(l => vanilla.Run.SequenceEqual(l, ReferenceEqualityComparer.Instance));
             bool same = vanilla.Combat.SequenceEqual(fast.Combat, ReferenceEqualityComparer.Instance)
-                && vanilla.Run.SequenceEqual(fast.Run, ReferenceEqualityComparer.Instance);
+                && vanilla.Run.SequenceEqual(fast.Run, ReferenceEqualityComparer.Instance) && scopeSame;
             string text = $"{(same ? "OK: identical" : "MISMATCH")} listeners: combat {vanilla.Combat.Count}/{fast.Combat.Count}, " +
+                $"in a refresh scope {(scopeSame ? "identical" : "DIFFERENT")} ({scopeServed} of 4 walks served from its lists, combat {scopeCombat.Count}/{scopeCombatAgain.Count}, run {scopeRun.Count}/{scopeRunAgain.Count}), " +
                 $"run {vanilla.Run.Count}/{fast.Run.Count}. Walk: combat {vanilla.CombatMs:F2} -> {fast.CombatMs:F2} ms, " +
                 $"run {vanilla.RunMs:F2} -> {fast.RunMs:F2} ms; gen2 collections {vanillaGen2} -> {fastGen2} over {iterations * 2} walks.";
             Log.Info($"[{ModEntry.Id}] bdperf listeners: {text}");

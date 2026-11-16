@@ -31,6 +31,8 @@ endturn
 waitfor idle 300
 checksum t2 start
 state t2 start
+# Turn 2 drew a full hand (10/10): room first, as on turn 1.
+emptyhand
 cmd card DUAL_WIELD hand
 cmd card PERFECTED_STRIKE hand
 cmd card PERFECTED_STRIKE hand

@@ -397,6 +397,16 @@ public static class HookFilter
         }
         PatchSafety.Watch(Name, HookFilterCostColors.EnergyCostColor, PatchTolerance.PrefixesOnly);
         PatchSafety.Watch(Name, HookFilterCostColors.StarCostColor, PatchTolerance.PrefixesOnly);
+        // Display only: the lists come from ListenerCache's scopes, which hand them to this class only while no other mod patches
+        // the two walks (ListenerCache.IsCaching: postfixes there are let stand for the walks' own calls, not for lists used
+        // directly). Any patch there keeps all of this class vanilla (the menu's red title), not only a hook.
+        MethodBase?[] walks =
+        {
+            Reflect.Method(typeof(CombatState), nameof(CombatState.IterateHookListeners)),
+            Reflect.Method(typeof(RunState), nameof(RunState.IterateHookListeners), new[] { typeof(ICombatState) }),
+        };
+        PatchSafety.Watch(Name, walks);
+        PatchSafety.WholeMethods(Name, walks);
         ListenerCache.RunReleased += () =>
         {
             _filtered = null;

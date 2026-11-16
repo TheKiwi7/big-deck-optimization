@@ -68,6 +68,11 @@ public static class ListenerCache
     [ThreadStatic] private static bool _materializingRun;
     [ThreadStatic] private static bool _suspended;
     [ThreadStatic] private static bool _safe;
+    /// <summary>
+    /// Other mods' patches on the combat (or run) walk, all let stand (postfixes run on each replay, see <see cref="EnterAny"/>):
+    /// the lists are built from FastListeners' unpatched mirrors, and nothing but the game's own call uses them.
+    /// </summary>
+    [ThreadStatic] private static bool _combatAugmented, _runAugmented;
     [ThreadStatic] private static int _version;
     /// <summary>Key: (CombatState, null) or (RunState, child combat state or null).</summary>
     [ThreadStatic] private static Dictionary<(object, object?), (int Version, ReadOnlyCollection<AbstractModel> Listeners)>? _cache;
@@ -78,8 +83,15 @@ public static class ListenerCache
     /// <summary>Inside a snapshot scope, whether or not its listener lists are cached (the snapshot reuse patches run either way).</summary>
     public static bool InSnapshotScope => _snapshotDepth > 0 && !_suspended;
 
-    /// <summary>True inside any scope (snapshot or refresh) where listener lists are cached.</summary>
-    public static bool IsCaching => _safe && !_suspended
+    /// <summary>
+    /// True inside any scope (snapshot or refresh) where listener lists are cached and may be used directly (HookFilter's
+    /// per-hook lists). False while other mods' postfixes on the walks are let stand: a list built here is the unpatched
+    /// walk's, only the game's own call (where those postfixes run on it) may use it then.
+    /// </summary>
+    public static bool IsCaching => Serving && !_combatAugmented && !_runAugmented;
+
+    /// <summary>Inside a scope where the walks' own calls are answered from the cached lists (<see cref="CombatIteratePrefix"/>).</summary>
+    private static bool Serving => _safe && !_suspended
         && ((SnapshotEnabled && _snapshotDepth > 0) || (RefreshEnabled && _refreshDepth > 0));
 
     /// <summary>Raised when the outermost scope ends, so dependent caches can drop their state.</summary>
@@ -225,13 +237,37 @@ public static class ListenerCache
         // and HookFilter open through this class would still cache (on a version nothing bumps any more) without this.
         _applied = true;
         // What the scope check asks (display only): both walks, and the walk code FastListeners knows (resolved lazily).
-        PatchSafety.Watch(Name, new MethodBase?[] { _combatIterate, _runIterate });
+        PatchSafety.Watch(Name, new MethodBase?[] { _combatIterate, _runIterate }, PatchTolerance.SurroundingOnly);
         PatchSafety.WatchAll(Name, FastListeners.WalkCodeMethods);
         // Display only: these gate every scope (EnterAny's _safe), any back-off keeps all of it vanilla (the menu's red title).
         PatchSafety.WholePatch(Name);
+        // With other mods' postfixes on the walks let stand, the lists come from FastListeners' unpatched mirrors: with that
+        // option off (or its mirrors not applied) no scope caches then. Display only.
+        PatchSafety.WatchNote(Name, NoteWalkMirrors);
         // Kept lists aren't reused across display scopes while card modifiers may change (CardModifiersMayChange).
         PatchSafety.WatchNote(ReuseFault, () => BaseLibTypes.NoteIfDefined(ReuseFault, "card_modifiers", CardModifierType,
             "listener lists are rebuilt in each refresh instead of reused: other mods define BaseLib card modifiers", whole: true));
+    }
+
+    /// <summary>The note (back-off preflight) for scopes that can't cache while other mods patch the walks: see <see cref="EnterAny"/>.</summary>
+    private static void NoteWalkMirrors()
+    {
+        var mods = new List<Assembly?>();
+        foreach (MethodInfo? walk in new[] { _combatIterate, _runIterate })
+        {
+            if (walk != null && PatchSafety.HasOtherPatches(walk) && Harmony.GetPatchInfo(walk) is { } info)
+            {
+                mods.AddRange(info.Prefixes.Concat(info.Postfixes).Concat(info.Transpilers).Concat(info.Finalizers)
+                    .Where(p => !PatchGuard.IsOurs(p.owner)).Select(p => p.PatchMethod?.DeclaringType?.Assembly));
+            }
+        }
+        if (mods.Count == 0 || FastListeners.MirrorsUnpatched)
+        {
+            PatchSafety.ClearNote(Name, "walk_mirrors");
+            return;
+        }
+        PatchSafety.Note(Name, "walk_mirrors", "other mods patch the listener walks: their lists are built from the listener-walk optimization's "
+            + "copies of the walks, which is off here, so no list is kept", PatchSafety.ModNamesOf(mods), whole: true);
     }
 
     /// <summary>Set once <see cref="Apply"/> got through: until then (or when it threw) no scope caches.</summary>
@@ -416,7 +452,7 @@ public static class ListenerCache
             ReadOnlyCollection<AbstractModel>? kept = Kept((combatState, null));
             ReadOnlyCollection<AbstractModel> listeners = kept != null && !VerifyThisReuse()
                 ? kept
-                : CheckedAgainstKept(kept, Materialize(combatState.IterateHookListeners(), entry.Listeners?.Count ?? kept?.Count ?? 0));
+                : CheckedAgainstKept(kept, Materialize(CombatSource(combatState), entry.Listeners?.Count ?? kept?.Count ?? 0));
             _cache[(combatState, null)] = (_version, listeners);
             return listeners;
         }
@@ -442,7 +478,7 @@ public static class ListenerCache
             ReadOnlyCollection<AbstractModel>? kept = Kept((runState, child));
             ReadOnlyCollection<AbstractModel> listeners = kept != null && !VerifyThisReuse()
                 ? kept
-                : CheckedAgainstKept(kept, Materialize(runState.IterateHookListeners(child), entry.Listeners?.Count ?? kept?.Count ?? 0));
+                : CheckedAgainstKept(kept, Materialize(RunSource(runState, child), entry.Listeners?.Count ?? kept?.Count ?? 0));
             _cache[(runState, child)] = (_version, listeners);
             return listeners;
         }
@@ -451,6 +487,24 @@ public static class ListenerCache
             _materializingRun = false;
         }
     }
+
+    /// <summary>
+    /// What a combat list is built from: the game's call (no other mod's patch there: <see cref="EnterAny"/>), or, while other
+    /// mods' postfixes on it are let stand, the unpatched walk (FastListeners' mirror, called directly): built through the
+    /// game's call, the list would hold their output and they would run on it again at each replay.
+    /// </summary>
+    private static IEnumerable<AbstractModel> CombatSource(CombatState combatState) =>
+        !_combatAugmented ? combatState.IterateHookListeners()
+            : FastListeners.UnpatchedCombat(combatState) ?? throw new InvalidOperationException("the unpatched combat walk is unavailable");
+
+    /// <summary>
+    /// <see cref="CombatSource"/> for the run walk. Its child combat walk goes through the game's call either way (as the
+    /// original's): never served with a child while the combat walk carries other mods' patches (<see cref="RunIteratePrefix"/>),
+    /// whose output would then be kept.
+    /// </summary>
+    private static IEnumerable<AbstractModel> RunSource(RunState runState, ICombatState? child) =>
+        !_runAugmented ? runState.IterateHookListeners(child)
+            : FastListeners.UnpatchedRun(runState, child) ?? throw new InvalidOperationException("the unpatched run walk is unavailable");
 
     /// <summary>
     /// <c>listeners.ToList().AsReadOnly()</c>, sized from the previous count: thousands of entries grown by doubling
@@ -523,15 +577,31 @@ public static class ListenerCache
             try
             {
                 // Checked per outermost scope: another mod may patch after we load. A replayed list stands for the whole
-                // walk: the iterators' state machines, Contains and the mod subscriber walks too (FastListeners knows them).
-                // No tolerance: the walks are replayed from a materialized list, a postfix there could change them.
-                _safe = _applied && !PatchSafety.IsPatchedByOthers(_combatIterate) && !PatchSafety.IsPatchedByOthers(_runIterate)
-                    && !FastListeners.WalkCodePatchedByOthers();
+                // walk: the iterators' state machines, Contains and the mod subscriber walks too (FastListeners knows them):
+                // no tolerance there. On IterateHookListeners itself, postfixes (and void prefixes sorted before every prefix
+                // of this mod) are let stand (SurroundingOnly): the lists are then built from the unpatched walk
+                // (FastListeners' mirror, not the game's call: CombatSource), and Harmony runs those postfixes after the
+                // serving prefix on every call, on the replayed list, once, as on the game's stream without this mod. Only
+                // the unpatched part is kept (what the scopes already assume stable); what the postfixes add, drop or reorder
+                // is computed live at each call. HookFilter, which uses the lists directly, stays off then (IsCaching).
+                bool combatOthers = PatchSafety.HasOtherPatches(_combatIterate), runOthers = PatchSafety.HasOtherPatches(_runIterate);
+                _safe = _applied && !PatchSafety.IsPatchedByOthers(_combatIterate, PatchTolerance.SurroundingOnly)
+                    && !PatchSafety.IsPatchedByOthers(_runIterate, PatchTolerance.SurroundingOnly)
+                    && !FastListeners.WalkCodePatchedByOthers() && (!(combatOthers || runOthers) || FastListeners.MirrorsUnpatched);
+                _combatAugmented = combatOthers;
+                _runAugmented = runOthers;
+#if BENCH
+                if (_safe && (combatOthers || runOthers))
+                {
+                    AugmentedScopes++;
+                }
+#endif
             }
             catch (Exception e)
             {
                 // Runs in the game's methods (scope prefixes): never throw there; this scope stays vanilla.
                 _safe = false;
+                _combatAugmented = _runAugmented = false;
                 if (!_safeCheckFailed)
                 {
                     _safeCheckFailed = true;
@@ -810,13 +880,16 @@ public static class ListenerCache
 
     private static bool CombatIteratePrefix(CombatState __instance, ref IEnumerable<AbstractModel> __result)
     {
-        if (!IsCaching || _materializingCombat)
+        // Other mods' postfixes let stand: only while the unpatched mirror can build the list (else the game's call).
+        if (!Serving || _materializingCombat || (_combatAugmented && !FastListeners.MirrorsUnpatched))
         {
             return true;
         }
         try
         {
-            __result = GetListeners(__instance);
+            // Another mod's postfix let stand gets the list behind a plain enumerable, as the game's iterator is (no list
+            // interface it could test, cast or change: the list is shared by every call of the scope).
+            __result = _combatAugmented ? new Replay(GetListeners(__instance)) : GetListeners(__instance);
 #if BENCH
             Served++;
 #endif
@@ -831,14 +904,17 @@ public static class ListenerCache
 
     private static bool RunIteratePrefix(RunState __instance, ICombatState? childCombatState, ref IEnumerable<AbstractModel> __result)
     {
-        // HookSkip asked for a filtered walk (BaseLib's hand size): no need for every listener.
-        if (!IsCaching || _materializingRun || FastListeners.RunFilterPending)
+        // HookSkip asked for a filtered walk (BaseLib's hand size): no need for every listener. A child combat walk with other
+        // mods' patches: what their postfixes return would be kept inside the run's list, so the game's call then (it calls the
+        // combat walk, served from the combat's own list, where they run live).
+        if (!Serving || _materializingRun || FastListeners.RunFilterPending || (childCombatState != null && _combatAugmented)
+            || (_runAugmented && !FastListeners.MirrorsUnpatched))
         {
             return true;
         }
         try
         {
-            __result = GetRunListeners(__instance, childCombatState);
+            __result = _runAugmented ? new Replay(GetRunListeners(__instance, childCombatState)) : GetRunListeners(__instance, childCombatState);
 #if BENCH
             Served++;
 #endif
@@ -850,6 +926,26 @@ public static class ListenerCache
             return true;
         }
     }
+
+    /// <summary>
+    /// A replayed list behind an enumerable only (no <c>IList</c>/<c>ICollection</c> to test, cast or change), handed to the game's
+    /// call while other mods' postfixes run on it: they see what the game's iterator offers, never the shared list itself.
+    /// </summary>
+    private sealed class Replay : IEnumerable<AbstractModel>
+    {
+        private readonly ReadOnlyCollection<AbstractModel> _listeners;
+
+        public Replay(ReadOnlyCollection<AbstractModel> listeners) => _listeners = listeners;
+
+        public IEnumerator<AbstractModel> GetEnumerator() => _listeners.GetEnumerator();
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+#if BENCH
+    /// <summary>Outermost scopes caching with other mods' patches on the walks let stand (the effects check of the tolerance).</summary>
+    public static long AugmentedScopes { get; private set; }
+#endif
 
     private static void Fail(Exception e)
     {

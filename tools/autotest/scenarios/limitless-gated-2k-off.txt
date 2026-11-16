@@ -8,7 +8,10 @@ waitfor run 120
 wait 2
 cmd bigdeck import ref all all
 cmd bigdeck import ref all cards
-foreignpatch gated-prefix MegaCrit.Sts2.Core.Models.CardModel:AddKeyword squeeze
+# Priority 800: sorted before this mod's own prefix there (SnapshotCardReuse's write mark, default priority), as a mod patching
+# at its load is (before this mod's deferred batches). Installed here at run time at the default priority, it sorted after that
+# prefix and TypeGated rightly refused it (a gated prefix running after the mark could serialize the card before the write).
+foreignpatch gated-prefix MegaCrit.Sts2.Core.Models.CardModel:AddKeyword squeeze priority 800
 enemyhp 999999
 immortal
 cmd fight CULTISTS_NORMAL

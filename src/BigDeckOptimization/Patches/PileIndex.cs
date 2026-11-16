@@ -238,7 +238,8 @@ public static class PileIndex
         // What RefreshOthers and GetterPatched ask about (display only).
         PatchSafety.Watch(Name, _listMethods.Where(m => m != _addMethod && m != _removeMethod));
         PatchSafety.Watch(Name, new[] { _addMethod, _removeMethod }, PatchTolerance.SurroundingOnly);
-        PatchSafety.Watch(Name, new[] { _getter, _playerPiles, _cardsGetter });
+        PatchSafety.Watch(Name, _getter, PatchTolerance.BeforeReplace);
+        PatchSafety.Watch(Name, PatchSafety.ShapeRules ? new[] { _cardsGetter } : new[] { _cardsGetter, _playerPiles });
         try
         {
             MethodInfo addInternal = Reflect.Method(typeof(CardPile), nameof(CardPile.AddInternal))!;
@@ -932,6 +933,10 @@ public static class PileIndex
 
     private static int _getterCheckCalls;
     private static bool _getterPatched;
+    /// <summary>Another mod patches Player.Piles: <see cref="OwnsPile"/> reads the owner's piles through it.</summary>
+    private static bool _pilesReadThrough;
+    /// <summary>Another mod's patches on CardModel.Pile, let stand: the sampled check compares with the original's scan (<see cref="OriginalScan"/>).</summary>
+    private static bool _getterOthers;
     private static int _getterEpoch;
 
     /// <summary>Another mod's patch on the getter this replaces. Read millions of times a turn: rechecked every 1,024 calls, no clock read per call.</summary>
@@ -945,8 +950,19 @@ public static class PileIndex
             // Also Player.Piles, which the answer reads the piles of directly (a mod adding a pile there), and CardPile.Cards,
             // through which the game's scan reads each pile (a mod answering another list there).
             // No tolerance: getters answered from the index or read around (a postfix there could answer otherwise).
-            _getterPatched = PatchSafety.IsPatchedByOthers(_getter) || PatchSafety.IsPatchedByOthers(_playerPiles)
-                || PatchSafety.IsPatchedByOthers(_cardsGetter);
+            // CardModel.Pile: another mod's prefix Harmony runs before PilePrefix (bool or void, ref __result allowed) and
+            // postfixes by value are let stand (BeforeReplace): one answering (false) skips PilePrefix as it skips the
+            // original, one letting the call through (true) gets the original's answer from PilePrefix. A prefix sorted
+            // after it, a transpiler or a finalizer: the game's getter.
+            // Player.Piles: not a back-off. The answer is only "the indexed pile, if the owner's piles hold it", so with any
+            // other mod's patch there the piles are read through the patched getter, as the original does (OwnsPile), not
+            // around it (_runPiles).
+            // CardPile.Cards: no tolerance (the game's scan and duplicate check read each pile through it).
+            // With the shape rules off (PatchSafety.ShapeRules, a release leaving them out) Player.Piles is a back-off as before.
+            _getterPatched = PatchSafety.IsPatchedByOthers(_getter, PatchTolerance.BeforeReplace) || PatchSafety.IsPatchedByOthers(_cardsGetter)
+                || (!PatchSafety.ShapeRules && PatchSafety.IsPatchedByOthers(_playerPiles));
+            _pilesReadThrough = PatchSafety.HasOtherPatches(_playerPiles);
+            _getterOthers = PatchSafety.HasOtherPatches(_getter);
         }
         return _getterPatched;
     }
@@ -988,7 +1004,9 @@ public static class PileIndex
             if (Fast % VerifyEvery == 0)
             {
                 Verified++;
-                CardPile? vanilla = Vanilla(__instance);
+                // With other mods' patches let stand on the getter, the original's own scan: what PilePrefix answers for (the
+                // prefixes before it let the call through), without running them a second time.
+                CardPile? vanilla = _getterOthers ? OriginalScan(__instance) : Vanilla(__instance);
                 if (vanilla != answer)
                 {
                     Fail($"{__instance} index says {answer?.Type.ToString() ?? "none"}, vanilla {vanilla?.Type.ToString() ?? "none"}");
@@ -1006,10 +1024,23 @@ public static class PileIndex
         }
     }
 
-    /// <summary>Whether <c>owner.Piles</c> holds the pile, read without allocating when that getter's code is known.</summary>
+    /// <summary>
+    /// The original getter's body (<see cref="GetterFingerprint"/>): <c>_owner?.Piles.FirstOrDefault(p =&gt; p.Cards.Contains(card))</c>,
+    /// through the same getters it reads.
+    /// </summary>
+    private static CardPile? OriginalScan(CardModel card)
+    {
+        Player? owner = _owner!(card);
+        return owner?.Piles.FirstOrDefault(p => p.Cards.Contains(card));
+    }
+
+    /// <summary>
+    /// Whether <c>owner.Piles</c> holds the pile, read without allocating when that getter's code is known and no other mod
+    /// patches it; through the getter otherwise (another mod adding its own piles there: vanilla's scan sees them too).
+    /// </summary>
     private static bool OwnsPile(Player owner, CardPile pile)
     {
-        CardPile[]? run = _runPiles?.Invoke(owner);
+        CardPile[]? run = _pilesReadThrough ? null : _runPiles?.Invoke(owner);
         if (run == null)
         {
             // Not known, or not made yet (the getter makes it).

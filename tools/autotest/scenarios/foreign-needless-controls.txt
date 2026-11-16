@@ -1,0 +1,47 @@
+# Needless back-offs made safe: the positive controls (DESIGN "Needless back-offs made safe (2026-11-16)"). Near misses of the
+# shapes foreign-needless-2k-on lets stand, each on its own method, must keep the back-off ("normal game for that part"): a walk
+# postfix reading __runOriginal (false behind this mod's serving prefix), the narrowing bool prefix of CardModel.Pile sorted after
+# this mod's prefix (the default priority, registered later: it would not run once this mod answered), a by-reference argument
+# prefix sorted after the tracking prefixes (priority 0 on RemoveInternal), a postfix writing through the out parameter it takes by
+# reference. FOREIGN runtime lines come from the runtime checks only: "kept 0 backed off N" is a back-off the runtime made.
+timeout 900
+expect FOREIGN classify CombatState\.IterateHookListeners: bdtest\.foreign\.runoriginal-postfix Postfix .*SurroundingOnly backs off \(postfix reading __runOriginal\)
+expect ListenerCache: CombatState\.IterateHookListeners is also patched by bdtest\.foreign\.runoriginal-postfix \(postfixes and void prefixes not enough\): normal game for that part
+expect FastListeners: CombatState\.IterateHookListeners is also patched by bdtest\.foreign\.runoriginal-postfix \(postfixes and void prefixes not enough\): normal game for that part
+expect FOREIGN runtime FastListeners CombatState\.IterateHookListeners \(SurroundingOnly\) kept 0 backed off [1-9]
+expect FOREIGN classify CardModel\.get_Pile: bdtest\.foreign\.pile-prefix-narrow Prefix .*priority 400: .*BeforeReplace backs off \(bool prefix running after a prefix of this mod
+expect PileIndex: CardModel\.get_Pile is also patched by bdtest\.foreign\.pile-prefix-narrow \(postfixes and prefixes running before this mod's not enough\): normal game for that part
+expect FOREIGN runtime PileIndex CardModel\.get_Pile \(BeforeReplace\) kept 0 backed off [1-9]
+expect FOREIGN classify CardPile\.RemoveInternal: bdtest\.foreign\.byref-arg-prefix Prefix .*priority 0: SurroundingOnly backs off \(void prefix running after a prefix of this mod
+expect FOREIGN runtime PileIndex CardPile\.RemoveInternal \(SurroundingOnly\) kept 0 backed off [1-9]
+expect FOREIGN classify Hook\.ModifyHpLost: bdtest\.foreign\.byref-write-postfix Postfix .*SurroundingOnly backs off \(postfix taking modifiers by reference\)
+expect HookSkip: Hook\.ModifyHpLost is also patched by bdtest\.foreign\.byref-write-postfix \(postfixes and void prefixes not enough\): normal game for that part
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all cards
+enemyhp 999999
+foreignpatch runoriginal-postfix MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners
+foreignpatch pile-prefix-narrow MegaCrit.Sts2.Core.Models.CardModel:get_Pile
+foreignpatch byref-arg-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:RemoveInternal priority 0
+foreignpatch byref-write-postfix MegaCrit.Sts2.Core.Hooks.Hook:ModifyHpLost
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+play 3
+waitfor idle 120
+endturn
+waitfor idle 300
+checksum t1 end
+play 3
+waitfor idle 120
+wait 3
+foreignpatch report end
+cmd bdopt why
+cmd bdperf conflicts
+cmd kill all
+waitfor nocombat 300
+wait 2
+foreignpatch remove
+quit

@@ -22,6 +22,9 @@
 - When a player has the mod off, the "mods don't match" message (and mod sync tools) now show this mod with a version ending in "+off", instead of an unknown mod.
 - Smoother with mods that preview cards (Random Foreseer): their previews no longer make the mod rebuild its lists.
 - *(Pending: held back until tested in game.)* Works better alongside big mod packs (RitsuLib, Spire Synergies, Zone the Spire, Ascended Expansion...): when another mod only adds its own effects around the game code the mod speeds up, or only reacts to its own cards and relics, that optimization now keeps running instead of falling back to the normal game. Other changes still leave that part to the game, as before.
+- *(Pending: held back until tested in game.)* Works better alongside mod libraries and content mods that add their own effect sources to the game's lists (RitsuLib and the mods built on it, multi-enchantment mods), give cards their own extra hand or card piles (RitsuLib), adjust a value before the game computes it (ARAM: Mayhem's shop prices) or only read what the game computed (Who Carried?): the checksum, screen refresh and card-location optimizations keep running there instead of falling back to the normal game.
+- The settings page and `bdopt why` now show the effect-list filter as not running when another mod changes the game's effect lists (it was shown as working while it waited), and name the cards or relics of other mods that keep the beta's shuffle sort on the normal game.
+- The check of which other mods keep part of the optimizations off now runs during the game's loading where it can, and opening the settings (or `bdopt`) right after the main menu appears finishes it first, so they never show an incomplete list.
 
 ## v1.0.3
 

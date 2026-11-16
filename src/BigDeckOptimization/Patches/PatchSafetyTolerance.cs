@@ -28,11 +28,15 @@ public enum PatchTolerance
     /// argument slots after it, a by-reference argument or instance is that very slot), no <c>__args</c> (Harmony writes the
     /// array back into the arguments), no <c>__runOriginal</c> (it differs where a prefix of this mod skips the original), no
     /// instance field of a reference type (<c>___name</c>, Harmony's field injection: the field's object itself, a pile's card
-    /// list it could change without going through the methods this mod tracks; a value-type or string field can only be read).</item>
+    /// list it could change without going through the methods this mod tracks; a value-type or string field can only be read).
+    /// One by-reference parameter shape stands (2026-11-16): one of the original's <c>out</c>/<c>ref</c> parameters the postfix
+    /// only reads through (its IL: each use an immediate load of the value, <see cref="OnlyReadThrough"/>).</item>
     /// <item>A prefix returning void with the same parameter rules (only <c>__state</c> by reference, no <c>__args</c>, no
     /// reference-type field), except that it may read <c>__runOriginal</c> by value: Harmony sorts it before every prefix of this
     /// mod on the method (<see cref="OrderFreePrefixAttribute"/> aside), so it sees what it would see without this mod. One
-    /// sorted after them runs after this mod's tracking or replacement, or not at all once it skipped the original.</item>
+    /// sorted after them runs after this mod's tracking or replacement, or not at all once it skipped the original. Since
+    /// 2026-11-16 it may also take one of the original's own parameters by reference (rewrite an argument): sorted before
+    /// every prefix of this mod, it writes the slot before any code of this mod reads it.</item>
     /// </list>
     /// Not let stand: transpilers, finalizers, inner prefixes and postfixes, bool prefixes, factory patch methods (returning the
     /// patch to use), patches renaming their parameters (<c>HarmonyArgument</c>: Harmony binds the real name), a patch whose
@@ -59,6 +63,19 @@ public enum PatchTolerance
     /// backs off.
     /// </summary>
     TypeGated,
+
+    /// <summary>
+    /// For a call site where a bool prefix of this mod answers for the original from its own state and skips it, with no
+    /// bookkeeping of its own that must run and no code of this mod reading around the method (PileIndex's
+    /// <c>CardModel.Pile</c>): what <see cref="SurroundingOnly"/> lets stand, plus prefixes of other mods returning bool or taking
+    /// <c>ref __result</c>, when Harmony sorts them before every prefix of this mod on the method (each copy). Exact: one that
+    /// returns false (or leaves <c>__runOriginal</c> false) makes Harmony skip this mod's prefix as it skips the original, the
+    /// caller getting its answer as without this mod; one that returns true leaves the call to this mod's prefix, whose answer
+    /// is the original's. Postfixes as SurroundingOnly's (by value, <c>ref __result</c>, no <c>__runOriginal</c>: false here where
+    /// this mod answered). Still refused: such prefixes sorted after this mod's, a prefix taking an argument, the instance or
+    /// <c>__runOriginal</c> by reference, <c>__args</c>, reference-type fields, transpilers, finalizers, factories, renamed parameters.
+    /// </summary>
+    BeforeReplace,
 }
 
 /// <summary>
@@ -74,6 +91,9 @@ public enum PatchTolerance
 /// a label into statics or <c>__state</c>: counted, a test build would back off where a Release build, without them, lets
 /// another mod's void prefix stand, and the tests would never run the shipped path.</item>
 /// </list>
+/// Such a prefix never reads the original's arguments (none does: the instance, <c>__state</c>, <c>__originalMethod</c> only):
+/// another mod's prefix rewriting an argument by reference may run after it (the shape rules let one stand before every
+/// other prefix of this mod).
 /// </summary>
 [AttributeUsage(AttributeTargets.Method)]
 internal sealed class OrderFreePrefixAttribute : Attribute
@@ -98,6 +118,7 @@ public static partial class PatchSafety
         PatchTolerance.SurroundingOnly => "postfixes and void prefixes",
         PatchTolerance.PrefixesOnly => "void prefixes",
         PatchTolerance.TypeGated => "patches gated on the listener's type",
+        PatchTolerance.BeforeReplace => "postfixes and prefixes running before this mod's",
         _ => "nothing",
     };
 
@@ -438,6 +459,10 @@ public static partial class PatchSafety
             {
                 return refused;
             }
+            if (tolerance != PatchTolerance.TypeGated && ArgumentRefusal(original, method, kind) is { } argument)
+            {
+                return argument;
+            }
             if (tolerance == PatchTolerance.TypeGated)
             {
                 // Skipping a call to the default skips its patches: only a patch doing nothing for the skipped types stands.
@@ -491,11 +516,13 @@ public static partial class PatchSafety
         }
         if (kind == PatchKind.Postfix)
         {
+            // BeforeReplace: postfixes as SurroundingOnly's (below).
             if (tolerance == PatchTolerance.PrefixesOnly)
             {
                 return "postfix (a prefix of this mod skips the original here: Harmony runs postfixes where the game may not)";
             }
-            foreach (ParameterInfo parameter in method.GetParameters())
+            ParameterInfo[] postfixParameters = method.GetParameters();
+            foreach (ParameterInfo parameter in postfixParameters)
             {
                 if (parameter.Name == "__args")
                 {
@@ -505,7 +532,11 @@ public static partial class PatchSafety
                 {
                     return "postfix reading __runOriginal";
                 }
-                if ((parameter.ParameterType.IsByRef || parameter.IsOut) && parameter.Name is not ("__state" or "__result"))
+                // An argument by reference only read through (every use of it an immediate load of the value: never written,
+                // never passed on as an address): Intolerable also requires one of the original's out/ref parameters (its value
+                // after the body, read as the game's caller would). Anything else by reference stays refused.
+                if ((parameter.ParameterType.IsByRef || parameter.IsOut) && parameter.Name is not ("__state" or "__result")
+                    && !(IsArgumentName(parameter.Name) && OnlyReadThrough(method, parameter.Position)))
                 {
                     return $"postfix taking {parameter.Name} by reference";
                 }
@@ -516,7 +547,10 @@ public static partial class PatchSafety
             }
             return null;
         }
-        if (method.ReturnType != typeof(void))
+        // BeforeReplace: a prefix may answer for the original (return bool, set __result) when it runs before this mod's
+        // (PrecedenceRefusal, asked by Intolerable): it skips this mod's answer exactly as it skips the original.
+        bool answers = tolerance == PatchTolerance.BeforeReplace;
+        if (method.ReturnType != typeof(void) && !(answers && method.ReturnType == typeof(bool)))
         {
             return $"prefix returning {method.ReturnType.Name} (may skip the original)";
         }
@@ -526,7 +560,13 @@ public static partial class PatchSafety
             {
                 return "prefix taking __args (Harmony writes it back into the arguments)";
             }
-            if ((parameter.ParameterType.IsByRef || parameter.IsOut) && parameter.Name != "__state")
+            // An argument by reference (its real name one of the original's parameters: Intolerable checks it) stands on a prefix
+            // Harmony runs before every prefix of this mod (Intolerable's PrecedenceRefusal): it writes the argument slot before
+            // any code of this mod reads it, so this mod's prefixes, the body (or this mod's mirror of it) and its finalizers all
+            // read the value it leaves, as the original would with the caller passing it. The instance, __runOriginal, Harmony's
+            // other special names and fields by reference stay refused.
+            if ((parameter.ParameterType.IsByRef || parameter.IsOut) && parameter.Name != "__state" && !(answers && parameter.Name == "__result")
+                && !IsArgumentName(parameter.Name))
             {
                 return $"prefix taking {parameter.Name} by reference";
             }
@@ -537,6 +577,82 @@ public static partial class PatchSafety
         }
         return null;
     }
+
+    /// <summary>
+    /// A parameter Harmony binds to one of the original's arguments by name: no special name (<c>__instance</c>, <c>__result</c>,
+    /// <c>__state</c>, <c>__0</c>...) nor field (<c>___name</c>). Whether the original has it is <see cref="ArgumentRefusal"/>'s.
+    /// </summary>
+    private static bool IsArgumentName(string? name) => !string.IsNullOrEmpty(name) && !name.StartsWith("__", StringComparison.Ordinal);
+
+    /// <summary>
+    /// For a patch's by-reference arguments the shape rules let stand (a prefix's: any of the original's parameters; a
+    /// postfix's: one of its out or ref parameters, only read through): why not, or null. Asked per original (the shape
+    /// itself is cached per patch method). Harmony would refuse to patch with a name the original lacks; checked anyway.
+    /// </summary>
+    private static string? ArgumentRefusal(MethodBase original, MethodInfo patch, PatchKind kind)
+    {
+        ParameterInfo[] arguments = original.GetParameters();
+        foreach (ParameterInfo parameter in patch.GetParameters())
+        {
+            if (!(parameter.ParameterType.IsByRef || parameter.IsOut) || !IsArgumentName(parameter.Name))
+            {
+                continue;
+            }
+            ParameterInfo? argument = Array.Find(arguments, a => a.Name == parameter.Name);
+            if (argument == null)
+            {
+                return $"{KindText(kind, patch)} taking {parameter.Name} by reference (not one of the original's parameters)";
+            }
+            if (kind == PatchKind.Postfix && !argument.ParameterType.IsByRef)
+            {
+                // A by-value argument's own slot, which this mod's finalizers read after it (the message the shape gave before).
+                return $"postfix taking {parameter.Name} by reference";
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Whether the patch method only reads through its by-reference parameter at <paramref name="position"/>: every
+    /// instruction naming that argument is <c>ldarg</c> immediately followed by a load through the address (<c>ldind.*</c>,
+    /// <c>ldobj</c>), so the address is never stored through, kept, compared or passed on (no <c>starg</c>, no <c>ldarga</c>, no
+    /// <c>dup</c>). A static patch method's IL only (an instance one: false). False when the IL can't be read.
+    /// </summary>
+    private static bool OnlyReadThrough(MethodInfo patch, int position)
+    {
+        try
+        {
+            if (!patch.IsStatic)
+            {
+                return false;
+            }
+            List<MethodFingerprint.Instruction> code = MethodFingerprint.Instructions(patch);
+            for (int i = 0; i < code.Count; i++)
+            {
+                OpCode op = code[i].Op;
+                bool names = LoadsArgument(code[i], position)
+                    || ((op == OpCodes.Starg || op == OpCodes.Starg_S || op == OpCodes.Ldarga || op == OpCodes.Ldarga_S) && code[i].Operand is int n && n == position);
+                if (!names)
+                {
+                    continue;
+                }
+                if (!LoadsArgument(code[i], position) || i + 1 >= code.Count || !LoadsThrough(code[i + 1].Op))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool LoadsThrough(OpCode op) =>
+        op == OpCodes.Ldobj || op == OpCodes.Ldind_I || op == OpCodes.Ldind_I1 || op == OpCodes.Ldind_I2 || op == OpCodes.Ldind_I4
+        || op == OpCodes.Ldind_I8 || op == OpCodes.Ldind_R4 || op == OpCodes.Ldind_R8 || op == OpCodes.Ldind_Ref || op == OpCodes.Ldind_U1
+        || op == OpCodes.Ldind_U2 || op == OpCodes.Ldind_U4;
 
     /// <summary>
     /// A by-value parameter Harmony fills with an instance field (its name starts with three underscores) of a reference type
@@ -595,6 +711,7 @@ public static partial class PatchSafety
             return order.Refused;
         }
         return order.AllPrecede || order.Preceding.Contains(prefix.MethodHandle) ? null
+            : prefix.ReturnType == typeof(bool) ? "bool prefix running after a prefix of this mod (after its replacement, or not at all once it skipped the original)"
             : "void prefix running after a prefix of this mod (after its tracking or replacement, or not at all once it skipped the original)";
     }
 
@@ -730,7 +847,7 @@ public static partial class PatchSafety
             string gated = Intolerable(method, info, patch, kind, PatchTolerance.TypeGated, gates) is { } whyGated ? "backs off (" + whyGated + ")"
                 : "tolerated, gates " + string.Join("|", gates.Select(g => g.Name));
             lines.Add($"{patch.owner} {kind} {patchMethod?.DeclaringType?.Name}.{patchMethod?.Name} priority {patch.priority}: SurroundingOnly {Verdict(PatchTolerance.SurroundingOnly)}; "
-                + $"PrefixesOnly {Verdict(PatchTolerance.PrefixesOnly)}; TypeGated {gated}");
+                + $"PrefixesOnly {Verdict(PatchTolerance.PrefixesOnly)}; TypeGated {gated}; BeforeReplace {Verdict(PatchTolerance.BeforeReplace)}");
         }
         return lines;
     }
