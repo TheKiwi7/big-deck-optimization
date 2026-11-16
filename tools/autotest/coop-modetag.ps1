@@ -8,6 +8,8 @@
 # Exit code 1 when the mixed pair was not refused, the off pair did not join, or coop.ps1 found a problem in a log.
 . (Join-Path $PSScriptRoot "common.ps1")
 $bad = 0
+# The games running before (none, or coop.ps1 refuses): the wait below is for the mixed pair's own games only.
+$before = @(Get-Process -Name SlayTheSpire2 -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
 & (Join-Path $PSScriptRoot "coop.ps1") -Name coopmixed -TimeoutSec 150 -StopWhen "Mismatch in gameplay-relevant mods"
 if ($LASTEXITCODE) { $bad++ }
 $clientLog = Join-Path $Results "coopmixed-client.log"
@@ -20,9 +22,19 @@ $refused = (Test-Path $clientLog) -and (Select-String -Path $clientLog -Pattern 
     -and (Select-String -Path $clientLog -Pattern "Mods that (host has that we don't|remote has that local does not): .*BigDeckOptimization-v[0-9.]+(,|$)" -Quiet)
 if ($refused) { Write-Output "ok      coop-modetag: the client with the mod off was refused by the host with it on (the game's refusal names its '+off' entry and the host's)" }
 else { Write-Output "PROBLEM coop-modetag: the client with the mod off was not refused, or the game's refusal doesn't name its '+off' entry against the host's"; $bad++ }
-# The mixed pair's games were just closed: coop.ps1 refuses to start while one is still exiting.
+# The mixed pair's games were just closed: coop.ps1 refuses to start while one is still exiting. Only the games that run
+# started are waited for (not a game the player opened meanwhile), 60 s at most; one still there is said, and the off pair isn't
+# run (coop.ps1 would refuse it, and an earlier session's logs would be judged instead).
+# Asked again each time by name, as coop.ps1's own check does (a process object can say it has exited while Windows still lists it).
+function Get-StartedGames { @(Get-Process -Name SlayTheSpire2 -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id } | ForEach-Object { $_.Id }) }
 $waitUntil = (Get-Date).AddSeconds(60)
-while ((Get-Process -Name SlayTheSpire2 -ErrorAction SilentlyContinue) -and (Get-Date) -lt $waitUntil) { Start-Sleep -Milliseconds 500 }
+while ((Get-StartedGames).Count -and (Get-Date) -lt $waitUntil) { Start-Sleep -Milliseconds 500 }
+Start-Sleep -Seconds 1
+$left = Get-StartedGames
+if ($left.Count) {
+    Write-Output "PROBLEM coop-modetag: the mixed pair's game(s) $($left -join ', ') still running 60 s after its session ended: the off pair not run"
+    exit 1
+}
 & (Join-Path $PSScriptRoot "coop.ps1") -Name coopbothoff -TimeoutSec 300
 if ($LASTEXITCODE) { $bad++ }
 $joined = $true

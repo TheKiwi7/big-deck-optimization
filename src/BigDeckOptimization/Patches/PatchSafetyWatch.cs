@@ -398,10 +398,14 @@ public static partial class PatchSafety
     }
 
 #if BENCH
-    /// <summary>The patches registered whole, and those with some methods registered whole ("Name (N methods)"): bdperf states.</summary>
+    /// <summary>
+    /// The patches registered whole, and those with some methods registered whole ("Name (N methods)", "+ lazy" when it also has
+    /// methods registered with a source, "Name (lazy methods)" with those only): bdperf states.
+    /// </summary>
     internal static IEnumerable<string> WholeNames() => _wholePatches.Keys
-        .Concat(_wholeMethods.Keys.GroupBy(k => k.Patch).Where(g => !_wholePatches.ContainsKey(g.Key)).Select(g => $"{g.Key} ({g.Count()} methods)"))
-        .Concat(_wholeLazy.Keys.Where(k => !_wholePatches.ContainsKey(k) && !_wholeMethods.Keys.Any(m => m.Patch == k)).Select(k => $"{k} (lazy methods)"));
+        .Concat(_wholeMethods.Keys.Select(k => k.Patch).Concat(_wholeLazy.Keys).Distinct(StringComparer.Ordinal).Where(p => !_wholePatches.ContainsKey(p))
+            .Select(p => (Patch: p, Fixed: _wholeMethods.Keys.Count(k => k.Patch == p), Lazy: _wholeLazy.ContainsKey(p)))
+            .Select(w => w.Fixed == 0 ? $"{w.Patch} (lazy methods)" : $"{w.Patch} ({w.Fixed} methods{(w.Lazy ? " + lazy" : "")})"));
 #endif
 
     private static bool IsWhole(string patch, MethodBase method) =>
@@ -512,20 +516,13 @@ public static partial class PatchSafety
         }
     }
 
-    /// <summary>
-    /// One step per check: every watched entry's resolution (when not done at load), every watched method (its source's methods
-    /// each a step), then every note check. Each step catches its own exception (logged once): one failing entry doesn't stop
-    /// the others. <paramref name="checks"/> counts them; <paramref name="checks"/>' <c>Current</c> names the patch of the step
-    /// under way (the startup log names the longest). <paramref name="resolved"/>: entries already resolved at load
-    /// (<see cref="PreflightOverFrames"/>); one that failed there is tried again in its own step.
-    /// </summary>
-    private static IEnumerable<bool> PreflightSteps(Counter checks, Dictionary<Watched, (MethodBase? Method, MethodInfo[]? Allowed)[]?>? resolved = null)
+    /// <summary>A bound on the rounds of <see cref="PreflightRounds"/> (entries registered without end: the rest waits for the runtime checks).</summary>
+    private const int PreflightMaxRounds = 64;
+
+    /// <summary>The watched entries not in <paramref name="seen"/>, in rounds until a round finds none new (bounded).</summary>
+    private static IEnumerable<bool> PreflightRounds(Counter checks, HashSet<Watched> seen)
     {
-        // Entries are read in rounds until none is new: the startup preflight's first steps run during the game's loading, and
-        // the late batches (a mod's assembly loading: LimitlessReserialize, TypePlaqueSkip, ExtraScopes' BetterSpire2 part)
-        // register theirs afterwards; the notes are read only once the method checks are done (below), for the same reason.
-        var seen = new HashSet<Watched>(ReferenceEqualityComparer.Instance);
-        while (true)
+        for (int round = 0; round < PreflightMaxRounds; round++)
         {
             Watched[] watched;
             lock (_watched)
@@ -534,7 +531,7 @@ public static partial class PatchSafety
             }
             if (watched.Length == 0)
             {
-                break;
+                yield break;
             }
             foreach (Watched entry in watched)
             {
@@ -544,13 +541,9 @@ public static partial class PatchSafety
                     continue;
                 }
                 checks.Current = entry.Patch;
-                (MethodBase? Method, MethodInfo[]? Allowed)[]? pairs = resolved != null && resolved.TryGetValue(entry, out var known) ? known : null;
-                if (pairs == null)
-                {
-                    // Its own step: a lazy allowed list or a source may take a few ms (reflection, fingerprints).
-                    pairs = Resolve(entry);
-                    yield return true;
-                }
+                // Its own step: a lazy allowed list or a source may take a few ms (reflection, fingerprints).
+                (MethodBase? Method, MethodInfo[]? Allowed)[]? pairs = Resolve(entry);
+                yield return true;
                 if (pairs == null)
                 {
                     continue;
@@ -579,10 +572,35 @@ public static partial class PatchSafety
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// One step per check: every watched entry's resolution, every watched method (its source's methods each a step), then
+    /// every note check. Each step catches its own exception (logged once): one failing entry doesn't stop the others.
+    /// <paramref name="checks"/> counts them; <paramref name="checks"/>' <c>Current</c> names the patch of the step under way
+    /// (the startup log names the longest). Nothing is carried over between preflights: the startup's part (1) runs these same
+    /// steps, and each later preflight (the menu, bdopt) resolves every entry again.
+    /// </summary>
+    private static IEnumerable<bool> PreflightSteps(Counter checks)
+    {
+        // Entries are read in rounds until none is new: the startup preflight's first steps run during the game's loading, and
+        // the late batches (a mod's assembly loading: LimitlessReserialize, TypePlaqueSkip, ExtraScopes' BetterSpire2 part)
+        // register theirs afterwards; the notes are read only once the method checks are done (below), for the same reason.
+        var seen = new HashSet<Watched>(ReferenceEqualityComparer.Instance);
+        foreach (bool step in PreflightRounds(checks, seen))
+        {
+            yield return step;
+        }
         // A step doing nothing, so a caller can stop before the notes (the startup preflight's loading part: notes need every
         // mod's own setup done, never before the main menu).
         checks.InNotes = true;
         yield return true;
+        // The startup's part (1) stops at the step above, during the loading, and part (2) resumes on the main menu's frames:
+        // entries a late batch registered in between (a mod's assembly loading meanwhile) are read again here, before the notes.
+        foreach (bool step in PreflightRounds(checks, seen))
+        {
+            yield return step;
+        }
         (string Patch, Action Check)[] notes;
         lock (_watched)
         {

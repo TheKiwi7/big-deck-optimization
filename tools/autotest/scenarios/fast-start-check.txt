@@ -6,8 +6,10 @@
 # 500 it still starts the normal game's way (waits not skipped) and finishes in seconds.
 timeout 1500
 expect bigdeck trim: [0-9]+ cards removed, deck 500
-# bdperf roomleft (out of combat, fast start on): a window whose room the run left closes at its first wait, which is the game's.
-expect FASTSTART room left: window closed, the wait is the game's
+# bdperf roomleft (out of combat, fast start on): a window whose room the run left closes at its first wait, which is the game's,
+# for a live room the run doesn't hold (a mod's quick restart: the reference compare) and a dead one; the run's own room, when a
+# combat room, must be recognised (control). No 'combat start skipped' summary line is logged for these bench windows.
+expect FASTSTART room left: window closed, the wait is the game's \(a live room the run left, a dead one;
 expect FastCombatStart: the combat start's room was left without the combat ending or starting
 newrun NECROBINDER
 waitfor run 120

@@ -1,0 +1,15 @@
+# CoopModeTag's postfix order check (Harmony's own sort) with a second postfix on ModManager.GetGameplayRelevantModNameList:
+# a foreign no-op postfix at priority 0 (Priority.Last, registered after this mod's) runs after this mod's and must be
+# listed and warned about; at priority 500 it runs before and must not be (the control). bdperf modorder runs the check again
+# (once per session otherwise) and fails when it disagrees. No run, no co-op needed: the check reads Harmony's patch info.
+timeout 300
+expect CoopModeTag: bdtest\.foreign\.noop-postfix's postfix on the gameplay mod list runs after this mod's
+expect MODORDER postfixes after this mod's on the gameplay mod list: bdtest\.foreign\.noop-postfix \(priority 0\)
+expect MODORDER postfixes after this mod's on the gameplay mod list: none
+foreignpatch noop-postfix MegaCrit.Sts2.Core.Modding.ModManager:GetGameplayRelevantModNameList priority 0
+cmd bdperf modorder bdtest.foreign.noop-postfix
+foreignpatch remove
+foreignpatch noop-postfix MegaCrit.Sts2.Core.Modding.ModManager:GetGameplayRelevantModNameList priority 500
+cmd bdperf modorder none
+foreignpatch remove
+quit

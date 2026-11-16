@@ -478,7 +478,9 @@ public static class IlJudgeShapes
     /// <summary>
     /// The hooks whose code the judge doesn't follow today (both versions): their walk is passed to <c>Contains</c>. The sweep
     /// fails when another hook isn't understood (a judge regression would otherwise only change the count it prints) or when
-    /// one of these starts being understood (the list kept current).
+    /// one of these starts being understood (the list kept current). Verified on v0.107.1 and v0.113.1 only: on another game
+    /// version (v0.111.0, v0.113.0, a new one) a failure may be that version's hooks, not a judge bug: read the hooks named,
+    /// then fix the judge or update this list.
     /// </summary>
     private static readonly string[] NotUnderstood = { "AfterPreventingBlockClear", "AfterPreventingDeath", "AfterPreventingDraw" };
 
@@ -539,7 +541,8 @@ public static class IlJudgeShapes
         }
         if (unexpected.Count > 0)
         {
-            throw new InvalidOperationException($"IL judge sweep: {unexpected.Count} unexpected verdict(s): " + string.Join(" | ", unexpected));
+            throw new InvalidOperationException($"IL judge sweep: {unexpected.Count} unexpected verdict(s): " + string.Join(" | ", unexpected)
+                + " (the list is v0.107.1's and v0.113.1's: on another game version, check that version's hooks before the judge)");
         }
         lines.Add($"FOREIGN iljudge sweep: {understood} of {hooks} hooks with a walk accept both shapes, the {NotUnderstood.Length} known exceptions aside");
         return lines;

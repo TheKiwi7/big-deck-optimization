@@ -59,7 +59,7 @@ public class PerfConsoleCmd : AbstractConsoleCmd
 
     public override string CmdName => "bdperf";
 
-    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | verify [off|sample|all] | combatstart | grid [cards:int] | probe [reset|log|on|off|nodes|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | sortkeys [wrong] | checks on|off | opt on|off [yes] | listeners [iterations:int] | costwrites | fault piles|walk | snapgameerror <n> | reserialize [verify <n>] | clonememo [verify <n>] | conflicts | states | roomleft | foreign <shape> <Type:Method> [gate] [priority N] | foreign remove|report|classify <Type:Method>";
+    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | verify [off|sample|all] | combatstart | grid [cards:int] | probe [reset|log|on|off|nodes|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | sortkeys [wrong] | checks on|off | opt on|off [yes] | listeners [iterations:int] | costwrites | fault piles|walk | snapgameerror <n> | reserialize [verify <n>] | clonememo [verify <n>] | conflicts | states | roomleft | modorder [none|<owner>] | firstturn inner | foreign <shape> <Type:Method> [gate] [priority N] | foreign remove|report|classify <Type:Method>";
 
     public override string Description => "[BigDeckOptimization] Measures the multiplayer post-action checksum cost, vanilla vs optimized, or shows/sets live snapshot verification.";
 
@@ -208,6 +208,24 @@ public class PerfConsoleCmd : AbstractConsoleCmd
         {
             case "states":
                 return new CmdResult(success: true, StatesReport());
+            case "firstturn" when args.Length >= 2 && args[1] == "inner":
+                try
+                {
+                    return new CmdResult(success: true, ExtraScopes.BenchInnerPatch());
+                }
+                catch (InvalidOperationException e)
+                {
+                    return new CmdResult(success: false, e.Message);
+                }
+            case "modorder":
+                try
+                {
+                    return new CmdResult(success: true, CoopModeTag.BenchOrder(args.Length >= 2 ? args[1] : null));
+                }
+                catch (InvalidOperationException e)
+                {
+                    return new CmdResult(success: false, e.Message);
+                }
             case "roomleft":
                 try
                 {

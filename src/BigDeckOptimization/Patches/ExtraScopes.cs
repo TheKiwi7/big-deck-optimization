@@ -151,30 +151,75 @@ public static class ExtraScopes
     {
         try
         {
-            if (_moveNext == null || Harmony.GetPatchInfo(_moveNext) is not { } info)
-            {
-                return Array.Empty<MethodInfo>();
-            }
-            var allowed = new List<MethodInfo>();
-            foreach (Patch patch in info.Prefixes.Concat(info.Postfixes).Concat(info.Finalizers))
-            {
-                if (!PatchGuard.IsOurs(patch.owner) && PatchSafety.PatchMethodOf(patch) is { } method)
-                {
-                    allowed.Add(method);
-                }
-            }
-            Patch[] transpilers = info.Transpilers.ToArray();
-            if (transpilers.Any(p => !PatchGuard.IsOurs(p.owner)) && OwnTranspilerLast(transpilers))
-            {
-                allowed.AddRange(transpilers.Where(p => !PatchGuard.IsOurs(p.owner)).Select(p => PatchSafety.PatchMethodOf(p)!));
-            }
-            return allowed.ToArray();
+            return _moveNext == null || Harmony.GetPatchInfo(_moveNext) is not { } info ? Array.Empty<MethodInfo>() : FirstTurnAllowed(info);
         }
         catch
         {
             return Array.Empty<MethodInfo>();
         }
     }
+
+    /// <summary>The allowed patches of that patch list (inner prefixes and postfixes never: they run inside the ToList calls).</summary>
+    private static MethodInfo[] FirstTurnAllowed(HarmonyLib.Patches info)
+    {
+        var allowed = new List<MethodInfo>();
+        foreach (Patch patch in info.Prefixes.Concat(info.Postfixes).Concat(info.Finalizers))
+        {
+            if (!PatchGuard.IsOurs(patch.owner) && PatchSafety.PatchMethodOf(patch) is { } method)
+            {
+                allowed.Add(method);
+            }
+        }
+        Patch[] transpilers = info.Transpilers.ToArray();
+        if (transpilers.Any(p => !PatchGuard.IsOurs(p.owner)) && OwnTranspilerLast(transpilers))
+        {
+            allowed.AddRange(transpilers.Where(p => !PatchGuard.IsOurs(p.owner)).Select(p => PatchSafety.PatchMethodOf(p)!));
+        }
+        return allowed.ToArray();
+    }
+
+#if BENCH
+    /// <summary>
+    /// <c>bdperf firstturn inner</c>: Harmony 2.4.2 registers inner prefixes and postfixes but can't build them, so no foreign
+    /// one can be installed in game. A synthetic patch list of the state machine (another mod's void prefix, postfix and inner
+    /// postfix) goes through the allowed list and the same filter as <see cref="PatchSafety.IsPatchedByOthers(MethodBase?, MethodInfo[], string)"/>:
+    /// the prefix and postfix must stand, the inner postfix must be left over (a back-off). Throws otherwise.
+    /// </summary>
+    internal static string BenchInnerPatch()
+    {
+        if (_moveNext == null)
+        {
+            throw new InvalidOperationException("FIRSTTURN inner: the first turn's state machine isn't resolved (part not applied)");
+        }
+        MethodInfo prefix = Reflect.Method(typeof(ExtraScopes), nameof(BenchForeignPrefix))!;
+        MethodInfo postfix = Reflect.Method(typeof(ExtraScopes), nameof(BenchForeignPostfix))!;
+        MethodInfo inner = Reflect.Method(typeof(ExtraScopes), nameof(BenchForeignInner))!;
+        const string owner = "bdtest.foreign.firstturn";
+        var none = Array.Empty<Patch>();
+        var info = new HarmonyLib.Patches(new[] { new Patch(prefix, 0, owner, Priority.Normal, null, null, false) },
+            new[] { new Patch(postfix, 1, owner, Priority.Normal, null, null, false) }, none, none, none,
+            new[] { new Patch(inner, 2, owner, Priority.Normal, null, null, false) });
+        MethodInfo[] allowed = FirstTurnAllowed(info);
+        List<MethodInfo> left = PatchSafety.AllPatches(info)
+            .Where(p => !PatchGuard.IsOurs(p.owner) && !(PatchSafety.PatchMethodOf(p) is { } m && allowed.Any(a => a.MethodHandle == m.MethodHandle)))
+            .Select(p => PatchSafety.PatchMethodOf(p)!).ToList();
+        string line = $"FIRSTTURN inner: allowed {string.Join(", ", allowed.Select(m => m.Name))}; backs off for {string.Join(", ", left.Select(m => m.Name))}";
+        bool ok = left.Count == 1 && left[0].MethodHandle == inner.MethodHandle;
+        return ok ? line : throw new InvalidOperationException(line + " (expected: the inner postfix only)");
+    }
+
+    private static void BenchForeignPrefix()
+    {
+    }
+
+    private static void BenchForeignPostfix()
+    {
+    }
+
+    private static void BenchForeignInner()
+    {
+    }
+#endif
 
     /// <summary>This mod's transpiler is the only one of this mod there and Harmony runs it last (no factory asked to sort).</summary>
     private static bool OwnTranspilerLast(Patch[] transpilers)

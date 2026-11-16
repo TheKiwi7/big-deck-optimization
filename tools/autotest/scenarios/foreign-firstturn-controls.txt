@@ -1,0 +1,29 @@
+# ExtraScopes' first turn, the negative controls of its allowed list (DESIGN "Re-audit of the fourth pass", fifth pass, SCS-D1;
+# foreign-il-2k-on has the positive one). (1) Code inserted outside the first turn's queries, by a transpiler Harmony runs after
+# this mod's (priority 0 = Priority.Last, registered later): this mod's transpiler judged the game's code, not what the other one
+# makes of it, so the state machine is a back-off and both filters run without a scope (no ExtraScopes effect since 'before').
+# (2) An inner postfix: Harmony 2.4.2 can't build one, so a synthetic patch list of the state machine (another mod's prefix,
+# postfix and inner postfix) goes through the allowed list: the prefix and postfix stand, the inner postfix backs off.
+timeout 900
+expect FIRSTTURN inner: allowed BenchForeignPrefix, BenchForeignPostfix; backs off for BenchForeignInner
+expect ExtraScopes: <SetupPlayerTurn>d__[0-9]+\.MoveNext is also patched by bdtest\.foreign\.il-firstturn-outside
+expect ExtraScopes first-turn filter \(without a scope\): [0-9]+ cards, .*OK: identical to vanilla
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all cards
+enemyhp 999999
+cmd bdperf firstturn inner
+foreignpatch il-firstturn-outside MegaCrit.Sts2.Core.Combat.CombatManager:SetupPlayerTurn priority 0
+# Past the 2 s a back-off answer is reused.
+wait 3
+effects before
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+effectcheck ExtraScopes same before
+cmd bdopt why
+cmd kill all
+waitfor nocombat 300
+foreignpatch remove
+quit

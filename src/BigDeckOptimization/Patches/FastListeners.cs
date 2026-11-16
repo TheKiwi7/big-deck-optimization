@@ -118,7 +118,11 @@ public static class FastListeners
         private static List<Type>[]? _types;
         /// <summary>Every type the last scan listed (any kind), for <see cref="Meet"/>.</summary>
         private static volatile HashSet<Type>? _known;
-        /// <summary>Types met where a relic, potion or orb joins that no scan listed (emitted at run time, or in an assembly the scan can't read).</summary>
+        /// <summary>
+        /// Types met where a relic, potion or orb joins that no scan listed (emitted at run time, or in an assembly the scan can't
+        /// read), plus every type met while no scan was published (before the first, or after a failed one: a saved run's relics,
+        /// many of them types a scan lists), merged and deduplicated by the next scan.
+        /// </summary>
         private static readonly List<Type> _met = new();
         private static int _stamp;
         /// <summary>Set when an assembly loads: types are then looked for again. Asking for the assembly list at each walk allocated it each time.</summary>

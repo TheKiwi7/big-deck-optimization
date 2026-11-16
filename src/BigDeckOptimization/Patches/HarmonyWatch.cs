@@ -100,6 +100,8 @@ public static class HarmonyWatch
     /// Finalizer of <c>PatchFunctions.UpdateWrapper</c>: runs after every Patch and Unpatch (thrown or not), passes the exception on.
     /// <paramref name=__1/> is the patch list this rebuild uses (UpdateWrapper's second argument): Harmony stores it only after
     /// UpdateWrapper returns, so <c>Harmony.GetPatchInfo</c> here still gives the list from before this call (none on a first patch).
+    /// Read only when <paramref name="__exception"/> is null: a failed call stores nothing, and the list Harmony holds is then the
+    /// one installed.
     /// </summary>
     public static void Changed(MethodBase original, PatchInfo? __1, Exception? __exception)
     {
@@ -123,8 +125,10 @@ public static class HarmonyWatch
             }
             lock (_lock)
             {
-                // The list being built (after this Patch, or after this Unpatch's removal), not the one Harmony still holds.
-                Patch[] patches = __1 != null ? AllPatches(__1).ToArray()
+                // The list being built (after this Patch, or after this Unpatch's removal), not the one Harmony still holds. Only
+                // when UpdateWrapper succeeded: on a throw Harmony never stores that list nor installs its detour, so the list it
+                // still holds is the one in place (a failed patch is no hidden hook, nor another mod's patch on this mod's code).
+                Patch[] patches = __exception == null && __1 != null ? AllPatches(__1).ToArray()
                     : Harmony.GetPatchInfo(original) is { } listed ? AllPatches(listed).ToArray() : Array.Empty<Patch>();
                 if (IsHarmonyInternal(original))
                 {

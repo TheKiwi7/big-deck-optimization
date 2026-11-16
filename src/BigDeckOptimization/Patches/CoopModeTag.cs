@@ -86,20 +86,20 @@ public static class CoopModeTag
     /// so a join refusal's cause shows in the log. The order is Harmony's own sort (priorities, before/after ids, registration),
     /// or priority and registration only when a postfix is made by a factory (Harmony's sort would call it). Only logs.
     /// </summary>
-    private static void CheckOrder()
+    private static List<Patch> CheckOrder()
     {
         _orderChecked = true;
         if (_original == null || Harmony.GetPatchInfo(_original) is not { } info)
         {
-            return;
+            return new List<Patch>();
         }
         Patch[] postfixes = info.Postfixes.ToArray();
         Patch? ours = postfixes.FirstOrDefault(p => p.owner.StartsWith(ModEntry.Harmony.Id, StringComparison.Ordinal) && p.PatchMethod?.Name == nameof(Postfix));
         if (ours == null)
         {
-            return;
+            return new List<Patch>();
         }
-        IEnumerable<Patch> after;
+        List<Patch> after;
         MethodInfo?[] methods = postfixes.Select(PatchSafety.PatchMethodOf).ToArray();
         if (methods.All(m => m != null && !PatchSafety.IsFactory(m)))
         {
@@ -109,7 +109,7 @@ public static class CoopModeTag
             }
             List<MethodInfo> sorted = PatchProcessor.GetSortedPatchMethods(_original, postfixes);
             int own = sorted.FindIndex(m => m.MethodHandle == ours.PatchMethod.MethodHandle);
-            after = own < 0 ? Enumerable.Empty<Patch>()
+            after = own < 0 ? new List<Patch>()
                 : postfixes.Where(p => !PatchGuard.IsOurs(p.owner) && sorted.FindIndex(m => m.MethodHandle == p.PatchMethod.MethodHandle) > own).ToList();
         }
         else
@@ -120,7 +120,27 @@ public static class CoopModeTag
         {
             Log.Warn($"[{ModEntry.Id}] {Name}: {patch.owner}'s postfix on the gameplay mod list runs after this mod's: a list it returns isn't retagged when the mod is switched mid-session");
         }
+        return after;
     }
+
+#if BENCH
+    /// <summary>
+    /// <c>bdperf modorder [none|&lt;owner&gt;]</c>: runs the order check again (it runs once per session otherwise) and lists the
+    /// other mods' postfixes Harmony runs after this mod's on the gameplay mod list. <c>none</c>: none may be (a control);
+    /// an owner: that Harmony id must be among them. Throws when the check disagrees (the command fails).
+    /// </summary>
+    internal static string BenchOrder(string? require)
+    {
+        List<Patch> after = CheckOrder();
+        string listed = after.Count == 0 ? "none" : string.Join(", ", after.Select(p => $"{p.owner} (priority {p.priority})"));
+        string line = $"MODORDER postfixes after this mod's on the gameplay mod list: {listed}";
+        if (require == "none" && after.Count > 0 || require is { Length: > 0 } and not "none" && !after.Any(p => p.owner == require))
+        {
+            throw new InvalidOperationException($"{line} (expected {require})");
+        }
+        return line;
+    }
+#endif
 
     private static void Postfix(List<string>? __result)
     {

@@ -170,6 +170,12 @@ public static class FastCombatStart
     private static void CloseWindow()
     {
         _window = false;
+#if BENCH
+        if (_benchWindow)
+        {
+            return; // bdperf roomleft's window: no combat start to sum up (its counters are the last fight's)
+        }
+#endif
         Log.Info($"[{ModEntry.Id}] {Name}: combat start skipped {SkippedWaits} animation waits ({SkippedSeconds:F1} s)");
     }
 
@@ -204,9 +210,12 @@ public static class FastCombatStart
 
 #if BENCH
     /// <summary>
-    /// <c>bdperf roomleft</c> (outside a combat start): a window opened for a room the run is no longer in (a room object no run
-    /// holds) must close at its first wait, with its log line, and that wait be the game's. The room-binding path no other test
-    /// reaches (a run torn down or another room entered without Reset or the first turn: a mod's quick restart).
+    /// <c>bdperf roomleft</c> (in a run, outside a combat start): a window opened for a room the run is no longer in must close
+    /// at its first wait, with its log line, and that wait be the game's. Two rooms: a live one the run doesn't hold (a mod's
+    /// quick restart keeping the old room: the reference compare) and one no longer alive (the weak reference). A control: the
+    /// run's own room, when it is a combat room, is recognised (a compare that is always false would close every window).
+    /// The room-binding path no other test reaches (a run torn down or another room entered without Reset or the first turn).
+    /// The window's summary line is not logged (no combat start happened; its counters are the last fight's).
     /// </summary>
     internal static string BenchRoomLeft()
     {
@@ -218,8 +227,41 @@ public static class FastCombatStart
         {
             return "FASTSTART room left: the fast combat start is off here, nothing to check";
         }
-        _room = new WeakReference<CombatRoom>(null!);
+        if (RunManager.Instance.DebugOnlyGetState() is not { } state)
+        {
+            throw new InvalidOperationException("FASTSTART room left: no run in progress, run it in a run");
+        }
+        // Never initialized, never entered: a live room object that is not the run's current room.
+        CombatRoom left = (CombatRoom)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(CombatRoom));
+        RoomLeftCase(left, "a live room the run left");
+        RoomLeftCase(null, "a room no longer alive");
+        GC.KeepAlive(left);
+        string control = "the run's room is not a combat room (no control)";
+        if (state.CurrentRoom is CombatRoom current)
+        {
+            _room = new WeakReference<CombatRoom>(current);
+            bool inside;
+            try
+            {
+                inside = InItsRoom();
+            }
+            finally
+            {
+                _room = null;
+            }
+            control = inside ? "the run's own room recognised"
+                : throw new InvalidOperationException("FASTSTART room left: the run's own room was taken for a room it left (every window would close)");
+        }
+        return $"FASTSTART room left: window closed, the wait is the game's (a live room the run left, a dead one; {control})";
+    }
+
+    private static bool _benchWindow;
+
+    private static void RoomLeftCase(CombatRoom? room, string what)
+    {
+        _room = new WeakReference<CombatRoom>(room!);
         _window = true;
+        _benchWindow = true;
         bool loading;
         try
         {
@@ -229,14 +271,17 @@ public static class FastCombatStart
         {
             bool closed = !_window;
             _window = false;
+            _benchWindow = false;
             _room = null;
             if (!closed)
             {
-                throw new InvalidOperationException("FASTSTART room left: the window stayed open after its room was left");
+                throw new InvalidOperationException($"FASTSTART room left: the window stayed open after its room was left ({what})");
             }
         }
-        return loading ? throw new InvalidOperationException("FASTSTART room left: a wait would have been skipped outside its combat start")
-            : "FASTSTART room left: window closed, the wait is the game's";
+        if (loading)
+        {
+            throw new InvalidOperationException($"FASTSTART room left: a wait would have been skipped outside its combat start ({what})");
+        }
     }
 #endif
 

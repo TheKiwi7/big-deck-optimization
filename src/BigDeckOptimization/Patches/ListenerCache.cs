@@ -73,6 +73,12 @@ public static class ListenerCache
     /// the lists are built from FastListeners' unpatched mirrors, and nothing but the game's own call uses them.
     /// </summary>
     [ThreadStatic] private static bool _combatAugmented, _runAugmented;
+    /// <summary>
+    /// FastListeners' unpatched mirror declined in this augmented scope (<see cref="UnpatchedWalkMissing"/>): the rest of the
+    /// scope's augmented walks take the game's call at once, with no exception thrown per walk. Cleared when the next outermost
+    /// scope opens (<see cref="EnterAny"/>).
+    /// </summary>
+    [ThreadStatic] private static bool _mirrorDeclined;
     [ThreadStatic] private static int _version;
     /// <summary>Key: (CombatState, null) or (RunState, child combat state or null).</summary>
     [ThreadStatic] private static Dictionary<(object, object?), (int Version, ReadOnlyCollection<AbstractModel> Listeners)>? _cache;
@@ -509,7 +515,8 @@ public static class ListenerCache
     /// <summary>
     /// An augmented scope's list can't be built: FastListeners' unpatched mirror declined (another mod patched the walk's state
     /// machine or Contains since the scope opened: <see cref="HarmonyWatch"/> makes that visible mid-scope). Not an error of this
-    /// mod: the prefixes then let the game's call run (as outside a scope), ListenerCache stays on.
+    /// mod: the prefixes then let the game's call run (as outside a scope) for the rest of the scope (<see cref="_mirrorDeclined"/>:
+    /// thrown once per scope, not once per walk), ListenerCache stays on.
     /// </summary>
     private sealed class UnpatchedWalkMissing : Exception
     {
@@ -602,6 +609,7 @@ public static class ListenerCache
                     && !FastListeners.WalkCodePatchedByOthers() && (!(combatOthers || runOthers) || FastListeners.MirrorsUnpatched);
                 _combatAugmented = combatOthers;
                 _runAugmented = runOthers;
+                _mirrorDeclined = false;
 #if BENCH
                 if (_safe && (combatOthers || runOthers))
                 {
@@ -614,6 +622,7 @@ public static class ListenerCache
                 // Runs in the game's methods (scope prefixes): never throw there; this scope stays vanilla.
                 _safe = false;
                 _combatAugmented = _runAugmented = false;
+                _mirrorDeclined = false;
                 if (!_safeCheckFailed)
                 {
                     _safeCheckFailed = true;
@@ -893,7 +902,7 @@ public static class ListenerCache
     private static bool CombatIteratePrefix(CombatState __instance, ref IEnumerable<AbstractModel> __result)
     {
         // Other mods' postfixes let stand: only while the unpatched mirror can build the list (else the game's call).
-        if (!Serving || _materializingCombat || (_combatAugmented && !FastListeners.MirrorsUnpatched))
+        if (!Serving || _materializingCombat || (_combatAugmented && (_mirrorDeclined || !FastListeners.MirrorsUnpatched)))
         {
             return true;
         }
@@ -909,7 +918,9 @@ public static class ListenerCache
         }
         catch (UnpatchedWalkMissing)
         {
-            return true; // The game's call: what an augmented scope relies on no longer holds (see UnpatchedWalkMissing).
+            // The game's call: what an augmented scope relies on no longer holds (see UnpatchedWalkMissing), for the rest of it.
+            _mirrorDeclined = true;
+            return true;
         }
         catch (Exception e)
         {
@@ -924,7 +935,7 @@ public static class ListenerCache
         // mods' patches: what their postfixes return would be kept inside the run's list, so the game's call then (it calls the
         // combat walk, served from the combat's own list, where they run live).
         if (!Serving || _materializingRun || FastListeners.RunFilterPending || (childCombatState != null && _combatAugmented)
-            || (_runAugmented && !FastListeners.MirrorsUnpatched))
+            || (_runAugmented && (_mirrorDeclined || !FastListeners.MirrorsUnpatched)))
         {
             return true;
         }
@@ -938,7 +949,9 @@ public static class ListenerCache
         }
         catch (UnpatchedWalkMissing)
         {
-            return true; // The game's call: what an augmented scope relies on no longer holds (see UnpatchedWalkMissing).
+            // The game's call: what an augmented scope relies on no longer holds (see UnpatchedWalkMissing), for the rest of it.
+            _mirrorDeclined = true;
+            return true;
         }
         catch (Exception e)
         {
