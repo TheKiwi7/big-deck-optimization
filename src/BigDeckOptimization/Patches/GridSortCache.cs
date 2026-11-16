@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Localization;
@@ -52,6 +53,7 @@ public static class GridSortCache
     private static readonly ConditionalWeakTable<Dictionary<SortingOrders, Func<CardModel, CardModel, int>>, object> _wrapped = new();
     private static readonly Dictionary<(SortingOrders, System.Reflection.MethodInfo), bool> _fingerprintOk = new();
     private static AccessTools.FieldRef<NCardGrid, List<CardModel>>? _cards;
+    private static System.Reflection.MethodInfo? _setCards;
 
     /// <summary>Per-card values for the SetCards call in progress (main thread only).</summary>
     internal sealed class Scope(NCardGrid grid)
@@ -63,6 +65,22 @@ public static class GridSortCache
         public CompareInfo? Culture;
         /// <summary>The comparers dictionary already checked in this call: the sort reads the getter at every comparison.</summary>
         public Dictionary<SortingOrders, Func<CardModel, CardModel, int>>? Wrapped;
+        private Dictionary<System.Reflection.MethodInfo, bool>? _patched;
+
+        /// <summary>
+        /// Another mod patches this comparer: the game's comparer answers then, as its patch would see every comparison.
+        /// Asked once per comparer and SetCards call (no tolerance).
+        /// </summary>
+        public bool Patched(System.Reflection.MethodInfo comparer)
+        {
+            _patched ??= new Dictionary<System.Reflection.MethodInfo, bool>();
+            if (!_patched.TryGetValue(comparer, out bool patched))
+            {
+                patched = PatchSafety.IsPatchedByOthers(comparer);
+                _patched[comparer] = patched;
+            }
+            return patched;
+        }
     }
 
     [ThreadStatic] private static Scope? _scope;
@@ -77,19 +95,23 @@ public static class GridSortCache
     {
         _costLoads = Loads(typeof(GridSortCost));
         _titleLoads = Loads(typeof(GridSortTitle));
-        _cards = AccessTools.FieldRefAccess<NCardGrid, List<CardModel>>("_cards");
-        System.Reflection.MethodInfo setCards = AccessTools.Method(typeof(NCardGrid), nameof(NCardGrid.SetCards))
+        _cards = Reflect.FieldRefAccess<NCardGrid, List<CardModel>>("_cards");
+        System.Reflection.MethodInfo setCards = Reflect.Method(typeof(NCardGrid), nameof(NCardGrid.SetCards))
             ?? throw new MissingMethodException(nameof(NCardGrid), nameof(NCardGrid.SetCards));
+        _setCards = setCards;
         string setCardsActual = MethodFingerprint.Of(setCards);
         _indexOk = PatchSafety.FingerprintMatches(setCardsActual, SetCardsFingerprint);
         if (!_indexOk)
         {
             Log.Info($"[{ModEntry.Id}] {Name}: NCardGrid.SetCards changed (fingerprint {setCardsActual}, expected {SetCardsFingerprint}): index orders left vanilla");
         }
-        PatchGuard.Patch(harmony, AccessTools.PropertyGetter(typeof(NCardGrid), "SortingAlgorithms"),
+        PatchGuard.Patch(harmony, Reflect.PropertyGetter(typeof(NCardGrid), "SortingAlgorithms"),
             postfix: new HarmonyMethod(typeof(GridSortCache), nameof(SortingAlgorithmsPostfix)));
+        // The scope ends in a postfix first of the postfixes: another mod's postfix sorting the grid again (with the grid's own
+        // comparers, after SetCards refilled _cards) runs outside it, on the game's comparers. The finalizer ends it after a throw.
         PatchGuard.Patch(harmony, setCards,
             prefix: new HarmonyMethod(typeof(GridSortCache), nameof(SetCardsPrefix)),
+            postfix: new HarmonyMethod(typeof(GridSortCache), nameof(SetCardsPostfix)) { priority = Priority.First },
             finalizer: new HarmonyMethod(typeof(GridSortCache), nameof(SetCardsFinalizer)));
     }
 
@@ -113,10 +135,31 @@ public static class GridSortCache
     private static void SetCardsPrefix(NCardGrid __instance, out Scope? __state)
     {
         __state = _scope;
-        _scope = Enabled ? new Scope(__instance) : null;
+        _scope = Enabled && !SetCardsRewritten() ? new Scope(__instance) : null;
     }
 
-    private static void SetCardsFinalizer(Scope? __state)
+    private static int _rewrittenEpoch = -1;
+    private static bool _rewritten;
+
+    /// <summary>
+    /// Another mod's transpiler (or inner patch) on SetCards: its body may then refill <c>_cards</c> before the sort, which the
+    /// index map relies on not happening (the fingerprint pins the game's own body only). No scope then. Prefixes stand (they
+    /// run before the sort reads anything), postfixes run after the scope ended. Asked again after each Patch or Unpatch.
+    /// </summary>
+    private static bool SetCardsRewritten()
+    {
+        int epoch = HarmonyWatch.Epoch;
+        if (epoch != _rewrittenEpoch || !HarmonyWatch.Applied)
+        {
+            _rewrittenEpoch = epoch;
+            HarmonyLib.Patches? info = _setCards == null ? null : Harmony.GetPatchInfo(_setCards);
+            _rewritten = info != null && info.Transpilers.Concat(info.InnerPrefixes).Concat(info.InnerPostfixes).Any(p => !PatchGuard.IsOurs(p.owner))
+                || (_setCards != null && HarmonyWatch.HiddenOwners(_setCards).Length > 0);
+        }
+        return _rewritten;
+    }
+
+    private static void SetCardsPostfix(Scope? __state)
     {
         if (_scope is { } scope && (scope.Index != null || scope.Cost.Count > 0 || scope.Title.Count > 0))
         {
@@ -124,6 +167,8 @@ public static class GridSortCache
         }
         _scope = __state;
     }
+
+    private static void SetCardsFinalizer(Scope? __state) => _scope = __state;
 
     /// <summary>Wraps each grid's comparers once (the dictionary is created lazily per grid).</summary>
     private static void SortingAlgorithmsPostfix(Dictionary<SortingOrders, Func<CardModel, CardModel, int>> __result)
@@ -148,6 +193,7 @@ public static class GridSortCache
             {
                 if (__result.TryGetValue(order, out Func<CardModel, CardModel, int>? original) && IsMirrored(order, original, mirrored))
                 {
+                    PatchSafety.Watch(Name, original.Method); // Display: what Compare asks about.
                     __result[order] = (a, b) => Compare(mirrored, original, a, b);
                 }
             }
@@ -193,7 +239,7 @@ public static class GridSortCache
     private static int Compare(Mirrored mirrored, Func<CardModel, CardModel, int> original, CardModel a, CardModel b)
     {
         Scope? scope = _scope;
-        if (scope == null || !Enabled || a == null || b == null)
+        if (scope == null || !Enabled || a == null || b == null || scope.Patched(original.Method))
         {
             return original(a!, b!);
         }

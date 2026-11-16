@@ -652,6 +652,8 @@ open(TABLE, 'w', encoding='utf-8', newline='\n').write(
     'public static partial class HookSkip\n{\n'
     '    /// <summary>Per classified game version: fingerprints of the helpers the hooks using choice contexts rely on ("-": absent).</summary>\n'
     '    private static readonly Dictionary<string, string>[] HelperProfiles =\n    {\n' + '\n'.join(profile_rows) + '\n    };\n\n'
+    '    /// <summary>The game version each helper profile was classified on (checked against the version the game declares).</summary>\n'
+    '    private static readonly string[] HelperProfileVersions = { ' + ', '.join(f'"{label}"' for label in labels) + ' };\n\n'
     '    /// <summary>\n'
     '    /// Hooks whose listener loops only do no-ops for a listener keeping the defaults of these methods, per classified\n'
     '    /// version: hook code fingerprint, ExecutionFinished kept, helper profile (-1: none used), "Method=default fingerprint".\n'

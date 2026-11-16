@@ -26,14 +26,14 @@ public static class SavedPropertyLookup
     public static bool Applied { get; private set; }
     public static long Served { get; private set; }
 
-    private static readonly MethodInfo _lookup = AccessTools.Method(typeof(CustomAttributeExtensions), nameof(CustomAttributeExtensions.GetCustomAttribute),
+    private static readonly MethodInfo _lookup = Reflect.Method(typeof(CustomAttributeExtensions), nameof(CustomAttributeExtensions.GetCustomAttribute),
         new[] { typeof(MemberInfo) }, new[] { typeof(SavedPropertyAttribute) });
     private static readonly ConcurrentDictionary<MemberInfo, SavedPropertyAttribute?> _cache = new();
     private static int _replaced;
 
     public static void Apply(Harmony harmony)
     {
-        MethodInfo fromInternal = AccessTools.Method(typeof(SavedProperties), nameof(SavedProperties.FromInternal))
+        MethodInfo fromInternal = Reflect.Method(typeof(SavedProperties), nameof(SavedProperties.FromInternal))
             ?? throw new MissingMethodException(nameof(SavedProperties), nameof(SavedProperties.FromInternal));
         _replaced = 0;
         PatchGuard.Patch(harmony, fromInternal, transpiler: new HarmonyMethod(typeof(SavedPropertyLookup), nameof(Transpiler)));
@@ -52,7 +52,7 @@ public static class SavedPropertyLookup
             {
                 _replaced++;
                 // Same stack: (member) -> attribute.
-                yield return new CodeInstruction(OpCodes.Call, AccessTools.Method(typeof(SavedPropertyLookup), nameof(Attribute)))
+                yield return new CodeInstruction(OpCodes.Call, Reflect.Method(typeof(SavedPropertyLookup), nameof(Attribute)))
                     .WithLabels(instruction.labels).WithBlocks(instruction.blocks);
                 continue;
             }

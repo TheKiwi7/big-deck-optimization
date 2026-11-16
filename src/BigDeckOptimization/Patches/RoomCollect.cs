@@ -39,7 +39,7 @@ public static class RoomCollect
     public static bool Applied { get; private set; }
     public static long Background { get; private set; }
 
-    private static readonly MethodInfo _collect = AccessTools.Method(typeof(GC), nameof(GC.Collect), Type.EmptyTypes);
+    private static readonly MethodInfo _collect = Reflect.Method(typeof(GC), nameof(GC.Collect), Type.EmptyTypes);
     private static bool _bigMemory;
     /// <summary>Calls replaced by <see cref="Transpiler"/> (it runs again on each rebuild of a method: only read right after a patch).</summary>
     private static int _replaced;
@@ -50,8 +50,8 @@ public static class RoomCollect
         int patched = 0;
         foreach (string name in new[] { "LoadRoomAssets", "LoadActAssets", "LoadRunAssets" })
         {
-            MethodInfo? method = AccessTools.Method(typeof(PreloadManager), name);
-            MethodInfo? body = method == null ? null : AccessTools.AsyncMoveNext(method);
+            MethodInfo? method = Reflect.Method(typeof(PreloadManager), name);
+            MethodInfo? body = method == null ? null : Reflect.AsyncMoveNext(method);
             if (body == null)
             {
                 Log.Info($"[{ModEntry.Id}] {Name}: PreloadManager.{name} not found or not async any more, it collects as the game does");
@@ -104,7 +104,7 @@ public static class RoomCollect
             if (instruction.Calls(_collect))
             {
                 _replaced++;
-                yield return new CodeInstruction(OpCodes.Call, AccessTools.Method(typeof(RoomCollect), nameof(Collect)))
+                yield return new CodeInstruction(OpCodes.Call, Reflect.Method(typeof(RoomCollect), nameof(Collect)))
                     .WithLabels(instruction.labels).WithBlocks(instruction.blocks);
                 continue;
             }

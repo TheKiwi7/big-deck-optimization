@@ -15,8 +15,10 @@ namespace BigDeckOptimization.Patches;
 /// The game already refuses a player whose gameplay mods differ from the host's: the client compares the host's
 /// <see cref="ModManager.GetGameplayRelevantModNameList"/> (<c>id-version</c> of each mod affecting gameplay, sent in the
 /// host's first message) with its own and stops the join with its "mod mismatch" error, naming both. With the mod off
-/// (master switch off, or turned off when the game started), this mod's entry reads <c>BigDeckOptimization-v1.0.3-off</c>:
-/// an "on" and an "off" player can't play together; two "off" players can. Anyone can host either way.
+/// (master switch off, or turned off when the game started), this mod's entry reads <c>BigDeckOptimization-v1.0.3+off</c>:
+/// an "on" and an "off" player can't play together; two "off" players can. Anyone can host either way. The marker is in the
+/// version part, without a dash: a mod splitting entries at their last dash (a mod sync or compatibility screen) reads this
+/// mod's id and a version "v1.0.3+off", not a mod "BigDeckOptimization-v1.0.3" nobody has.
 ///
 /// When the list is read: v0.107.1 builds it at each connection (the host's <c>InitialGameInfoMessage</c>, the client's
 /// <c>JoinFlow</c> check), so it is the state at that moment. v0.111+ builds it once, in <c>PeerVersionInfo.LocalDefault</c>
@@ -34,7 +36,7 @@ public static class CoopModeTag
 {
     public const string Name = "CoopModeTag";
 
-    public const string OffSuffix = "-off";
+    public const string OffSuffix = "+off";
 
     public static bool Applied { get; private set; }
 
@@ -63,16 +65,54 @@ public static class CoopModeTag
 
     public static void Apply(Harmony harmony)
     {
-        var original = AccessTools.Method(typeof(ModManager), nameof(ModManager.GetGameplayRelevantModNameList))
+        var original = Reflect.Method(typeof(ModManager), nameof(ModManager.GetGameplayRelevantModNameList))
             ?? throw new MissingMethodException(nameof(ModManager), nameof(ModManager.GetGameplayRelevantModNameList));
-        PatchGuard.Patch(harmony, original, postfix: new HarmonyMethod(typeof(CoopModeTag), nameof(Postfix)));
+        // Last of the postfixes: another mod's postfix returning a new or filtered list runs before, so the list tagged and
+        // tracked (Refresh) is the one the game gets.
+        PatchGuard.Patch(harmony, original, postfix: new HarmonyMethod(typeof(CoopModeTag), nameof(Postfix)) { priority = Priority.Last });
+        _original = original;
         Applied = true;
+    }
+
+    private static System.Reflection.MethodBase? _original;
+    private static bool _orderChecked;
+
+    /// <summary>
+    /// Once, at the first list: another mod's postfix that Harmony runs after this one (also Priority.Last, registered later)
+    /// may replace the list, which a mid-session switch then can't retag: logged, so a join refusal's cause shows in the log.
+    /// </summary>
+    private static void CheckOrder()
+    {
+        _orderChecked = true;
+        if (_original == null || Harmony.GetPatchInfo(_original) is not { } info)
+        {
+            return;
+        }
+        Patch? ours = null;
+        foreach (Patch patch in info.Postfixes)
+        {
+            if (patch.owner.StartsWith(ModEntry.Harmony.Id, StringComparison.Ordinal) && patch.PatchMethod?.Name == nameof(Postfix))
+            {
+                ours = patch;
+            }
+        }
+        foreach (Patch patch in info.Postfixes)
+        {
+            if (ours != null && !PatchGuard.IsOurs(patch.owner) && (patch.priority < ours.priority || (patch.priority == ours.priority && patch.index > ours.index)))
+            {
+                Log.Warn($"[{ModEntry.Id}] {Name}: {patch.owner}'s postfix on the gameplay mod list runs after this mod's: a list it returns isn't retagged when the mod is switched mid-session");
+            }
+        }
     }
 
     private static void Postfix(List<string>? __result)
     {
         try
         {
+            if (!_orderChecked)
+            {
+                CheckOrder();
+            }
             if (__result == null)
             {
                 return;

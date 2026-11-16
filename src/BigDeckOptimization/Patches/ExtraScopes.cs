@@ -92,17 +92,40 @@ public static class ExtraScopes
 
     private static void ApplyFirstTurn(Harmony harmony)
     {
-        MethodInfo setup = AccessTools.Method(typeof(CombatManager), "SetupPlayerTurn") ?? throw new MissingMethodException("CombatManager.SetupPlayerTurn");
-        MethodInfo moveNext = AccessTools.AsyncMoveNext(setup) ?? throw new MissingMethodException("SetupPlayerTurn state machine");
+        MethodInfo setup = Reflect.Method(typeof(CombatManager), "SetupPlayerTurn") ?? throw new MissingMethodException("CombatManager.SetupPlayerTurn");
+        MethodInfo moveNext = Reflect.AsyncMoveNext(setup) ?? throw new MissingMethodException("SetupPlayerTurn state machine");
         PatchSafety.RequireFingerprint(moveNext, SetupPlayerTurnFingerprint);
+        // The scope relies on the query reading the draw pile without changing it: its predicates are lambdas of that state
+        // machine. Another mod's patch on one of them (or on the state machine) may make the pass write: no scope then.
+        _firstTurnCode = new MethodBase[] { moveNext }.Concat(MethodFingerprint.GeneratedCode(moveNext).Where(m => m != moveNext)).Distinct().ToArray();
+        foreach (MethodBase code in _firstTurnCode)
+        {
+            PatchSafety.Watch(Name, code);
+        }
         PatchGuard.Patch(harmony, moveNext, transpiler: new HarmonyMethod(typeof(ExtraScopes), nameof(FirstTurnTranspiler)));
+    }
+
+    /// <summary>SetupPlayerTurn's state machine and the lambdas the scoped queries run.</summary>
+    private static MethodBase[] _firstTurnCode = Array.Empty<MethodBase>();
+
+    /// <summary>Another mod patches the first turn's query code (no tolerance: a patch there may write while the scope is open).</summary>
+    private static bool FirstTurnPatched()
+    {
+        foreach (MethodBase code in _firstTurnCode)
+        {
+            if (PatchSafety.IsPatchedByOthers(code))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static IEnumerable<CodeInstruction> FirstTurnTranspiler(IEnumerable<CodeInstruction> instructions)
     {
         List<CodeInstruction> code = instructions.ToList();
-        MethodInfo toList = AccessTools.Method(typeof(Enumerable), nameof(Enumerable.ToList)).MakeGenericMethod(typeof(CardModel));
-        MethodInfo scoped = AccessTools.Method(typeof(ExtraScopes), nameof(ToListInScope)).MakeGenericMethod(typeof(CardModel));
+        MethodInfo toList = Reflect.Method(typeof(Enumerable), nameof(Enumerable.ToList)).MakeGenericMethod(typeof(CardModel));
+        MethodInfo scoped = Reflect.Method(typeof(ExtraScopes), nameof(ToListInScope)).MakeGenericMethod(typeof(CardModel));
         List<CodeInstruction> calls = code.Where(c => c.Calls(toList)).ToList();
         if (calls.Count != 2)
         {
@@ -125,7 +148,7 @@ public static class ExtraScopes
         long start = System.Diagnostics.Stopwatch.GetTimestamp();
 #endif
         // The query itself is the game's: its exceptions reach the game as they would. Only the scope's are caught.
-        int scope = FirstTurnOn ? Enter(display: false, Name) : NoScope;
+        int scope = FirstTurnOn && !FirstTurnPatched() ? Enter(display: false, Name) : NoScope;
 #if BENCH
         if (scope != NoScope)
         {
@@ -206,15 +229,15 @@ public static class ExtraScopes
 
     private static void ApplyBetterSpire(Harmony harmony)
     {
-        Type tracker = AccessTools.TypeByName("BetterSpire2.DamageTracker") ?? throw new PatchSkippedException("BetterSpire2 has no DamageTracker");
-        MethodInfo recalculate = AccessTools.Method(tracker, "Recalculate", Type.EmptyTypes) ?? throw new PatchSkippedException("BetterSpire2 has no DamageTracker.Recalculate()");
+        Type tracker = Reflect.TypeByName("BetterSpire2.DamageTracker") ?? throw new PatchSkippedException("BetterSpire2 has no DamageTracker");
+        MethodInfo recalculate = Reflect.Method(tracker, "Recalculate", Type.EmptyTypes) ?? throw new PatchSkippedException("BetterSpire2 has no DamageTracker.Recalculate()");
         var methods = new List<MethodBase>();
         foreach ((string name, string fingerprint) in BetterSpireReadOnly)
         {
             MethodInfo? method;
             try
             {
-                method = name == "Recalculate" ? recalculate : AccessTools.Method(tracker, name);
+                method = name == "Recalculate" ? recalculate : Reflect.Method(tracker, name);
             }
             catch (AmbiguousMatchException)
             {

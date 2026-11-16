@@ -40,7 +40,7 @@ public static class ReplayStateSkip
 
     public static void Apply(Harmony harmony)
     {
-        _record = AccessTools.Method(typeof(CombatReplayWriter), "RecordChecksum") ?? throw new MissingMethodException(nameof(CombatReplayWriter), "RecordChecksum");
+        _record = Reflect.Method(typeof(CombatReplayWriter), "RecordChecksum") ?? throw new MissingMethodException(nameof(CombatReplayWriter), "RecordChecksum");
         PatchSafety.RequireFingerprint(_record, RecordChecksumFingerprint);
         PatchGuard.Patch(harmony, _record, prefix: new HarmonyMethod(typeof(ReplayStateSkip), nameof(Prefix)));
         Applied = true;

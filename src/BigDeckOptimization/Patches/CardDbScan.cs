@@ -89,24 +89,24 @@ public static class CardDbScan
 
     public static void Apply(Harmony harmony)
     {
-        var walk = AccessTools.Method(typeof(NetCombatCardDb), "OnPileContentsChanged")
+        var walk = Reflect.Method(typeof(NetCombatCardDb), "OnPileContentsChanged")
             ?? throw new MissingMethodException("NetCombatCardDb.OnPileContentsChanged");
-        var id = AccessTools.Method(typeof(NetCombatCardDb), "IdCardIfNecessary")
+        var id = Reflect.Method(typeof(NetCombatCardDb), "IdCardIfNecessary")
             ?? throw new MissingMethodException("NetCombatCardDb.IdCardIfNecessary");
-        var add = AccessTools.Method(typeof(CardPile), nameof(CardPile.AddInternal))
+        var add = Reflect.Method(typeof(CardPile), nameof(CardPile.AddInternal))
             ?? throw new MissingMethodException("CardPile.AddInternal");
         PatchSafety.RequireFingerprint(walk, WalkFingerprint);
         _walk = walk;
         PatchSafety.RequireFingerprint(id, IdFingerprint);
         _id = id;
-        MethodInfo startCombat = AccessTools.Method(typeof(NetCombatCardDb), nameof(NetCombatCardDb.StartCombat))
+        MethodInfo startCombat = Reflect.Method(typeof(NetCombatCardDb), nameof(NetCombatCardDb.StartCombat))
             ?? throw new MissingMethodException("NetCombatCardDb.StartCombat");
         PatchSafety.RequireFingerprint(startCombat, StartCombatFingerprint);
         PatchSafety.RequireFieldWriters(typeof(CardPile), "_cards", PatchSafety.CardListWriters);
         PatchSafety.RequireFieldWriters(typeof(NetCombatCardDb), "_cardToId", IdWriters);
         PatchSafety.RequireFieldWriters(typeof(NetCombatCardDb), "_nextId", IdWriters);
         _add = add;
-        _cardToId = AccessTools.FieldRefAccess<NetCombatCardDb, Dictionary<CardModel, uint>>("_cardToId");
+        _cardToId = Reflect.FieldRefAccess<NetCombatCardDb, Dictionary<CardModel, uint>>("_cardToId");
 
         // Tracking first: it must see every add before the walk can be skipped. Late among prefixes (Priority.Last + 1, before
         // PileIndex's update as at the default priority): another mod's void prefix let stand runs before it, so a card that

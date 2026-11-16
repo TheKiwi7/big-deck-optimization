@@ -45,6 +45,9 @@ public static partial class HookSkip
     /// <summary>Hooks redirected, and those left vanilla (changed code), for the status line.</summary>
     public static int Active { get; private set; }
     public static int LeftVanilla { get; private set; }
+
+    /// <summary>Hook lookups Harmony's AccessTools answered with another member than the runtime's (another mod intercepting them): ignored.</summary>
+    public static int AnsweredByOthers { get; private set; }
 #if BENCH
     /// <summary>Hook walks that ran filtered (the effects check).</summary>
     public static long FilteredWalks { get; private set; }
@@ -182,6 +185,7 @@ public static partial class HookSkip
 
     private static bool[]? _helpersPatched;
     private static long[]? _helpersCheckedAt;
+    private static int[]? _helpersEpoch;
 
     /// <summary>Asked per walk: answered from a per-profile result rechecked each second.</summary>
     private static bool HelpersPatched(int profile)
@@ -189,8 +193,11 @@ public static partial class HookSkip
         _helpersPatched ??= new bool[HelperProfiles.Length];
         _helpersCheckedAt ??= Enumerable.Repeat(long.MinValue / 2, HelperProfiles.Length).ToArray();
         long now = Environment.TickCount64;
-        if (now - _helpersCheckedAt[profile] >= 1000)
+        // Also at once after any Patch or Unpatch (HarmonyWatch.Epoch).
+        _helpersEpoch ??= new int[HelperProfiles.Length];
+        if (now - _helpersCheckedAt[profile] >= 1000 || _helpersEpoch[profile] != HarmonyWatch.Epoch)
         {
+            _helpersEpoch[profile] = HarmonyWatch.Epoch;
             _helpersPatched[profile] = AnyHelperPatched(profile);
             _helpersCheckedAt[profile] = now;
         }
@@ -239,13 +246,13 @@ public static partial class HookSkip
         {
             throw new PatchSkippedException("needs FastListeners (not applied)");
         }
-        _runWalk = AccessTools.Method(typeof(IRunState), nameof(IRunState.IterateHookListeners)) ?? throw new MissingMethodException("IRunState.IterateHookListeners");
-        _combatWalk = AccessTools.Method(typeof(ICombatState), nameof(ICombatState.IterateHookListeners)) ?? throw new MissingMethodException("ICombatState.IterateHookListeners");
-        _combatHookWalk = AccessTools.Method(typeof(Hook), "IterateCombatHookListeners") ?? throw new MissingMethodException("Hook.IterateCombatHookListeners");
+        _runWalk = Reflect.Method(typeof(IRunState), nameof(IRunState.IterateHookListeners)) ?? throw new MissingMethodException("IRunState.IterateHookListeners");
+        _combatWalk = Reflect.Method(typeof(ICombatState), nameof(ICombatState.IterateHookListeners)) ?? throw new MissingMethodException("ICombatState.IterateHookListeners");
+        _combatHookWalk = Reflect.Method(typeof(Hook), "IterateCombatHookListeners") ?? throw new MissingMethodException("Hook.IterateCombatHookListeners");
         _vanillaCombatHookWalk = AccessTools.MethodDelegate<Func<ICombatState, IEnumerable<AbstractModel>>>(_combatHookWalk);
-        _redirectRun = AccessTools.Method(typeof(HookSkip), nameof(RunWalk));
-        _redirectCombat = AccessTools.Method(typeof(HookSkip), nameof(CombatWalk));
-        _redirectCombatHook = AccessTools.Method(typeof(HookSkip), nameof(CombatHookWalk));
+        _redirectRun = Reflect.Method(typeof(HookSkip), nameof(RunWalk));
+        _redirectCombat = Reflect.Method(typeof(HookSkip), nameof(CombatWalk));
+        _redirectCombatHook = Reflect.Method(typeof(HookSkip), nameof(CombatHookWalk));
         // No fingerprint required on Hook.IterateCombatHookListeners here: only the hooks walking through it rely on its
         // code (CombatHookFiltered mirrors its "combat ending" check), and CombatHookWalk asks HookFilter.CombatHookWalkPatched
         // at each walk, which answers "patched" when that code changed. The hooks walking runState/combatState directly
@@ -258,7 +265,15 @@ public static partial class HookSkip
             string hookName = hookEntries.Key;
             try
             {
-                MethodInfo? hook = AccessTools.Method(typeof(Hook), hookName);
+                // The runtime's own lookup (Reflect): a mod patching Harmony's lookups may answer a hook of another game
+                // version with a hook of another name (BeforeTurnEnd for BeforeSideTurnEnd), whose code would then fail this
+                // row's fingerprint and read as "changed". Told apart in the log; that other hook is checked under its own row.
+                MethodInfo? hook = Reflect.Method(typeof(Hook), hookName);
+                if (Reflect.SubstitutedMethod(typeof(Hook), hookName, hook) is { } substitute)
+                {
+                    AnsweredByOthers++;
+                    Log.Info($"[{ModEntry.Id}] {Name}: {hookName}: Harmony's lookup answered by another member ({substitute.DeclaringType?.Name}.{substitute.Name}: another mod intercepts reflection lookups), ignored: the game's own {(hook == null ? "has no such hook" : "hook is used")}");
+                }
                 if (hook == null)
                 {
                     absent++; // A hook of another game version.
@@ -266,7 +281,7 @@ public static partial class HookSkip
                 }
                 // Async hooks run their code (and their walks) in the state machine's MoveNext.
                 MethodBase body = hook.GetCustomAttribute<System.Runtime.CompilerServices.AsyncStateMachineAttribute>() != null
-                    ? AccessTools.AsyncMoveNext(hook)
+                    ? Reflect.AsyncMoveNext(hook)
                     : hook;
                 string actual = MethodFingerprint.Of(body);
                 int match = -1;
@@ -439,6 +454,33 @@ public static partial class HookSkip
     private static bool _finished;
 
     /// <summary>
+    /// The game's declared version against the classified versions whose helpers this game's code matches: a cross-check,
+    /// never a lock (each hook is judged by its own code). A declared version that is classified but whose helpers don't
+    /// match is logged: game files changed, or reflection answered by another mod.
+    /// </summary>
+    private static void CrossCheckVersion()
+    {
+        try
+        {
+            string declared = Reflect.GameVersion() ?? "no version";
+            // Silent (HelperProfileHolds logs each helper differing from a profile the hooks rely on; another version's differs).
+            bool Holds(int profile) => _profiles?[profile] ?? HelperProfiles[profile].All(helper =>
+                MethodFingerprint.Resolve(typeof(AbstractModel).Assembly, helper.Key) is var method
+                && (method?.GetMethodBody() == null ? "-" : MethodFingerprint.Of(method)) == helper.Value);
+            string[] holding = Enumerable.Range(0, HelperProfiles.Length).Where(Holds).Select(i => HelperProfileVersions[i]).ToArray();
+            int classified = Array.FindIndex(HelperProfileVersions, label => declared.StartsWith(label, StringComparison.Ordinal));
+            Log.Info($"[{ModEntry.Id}] {Name}: the game declares {declared}; its code matches the tables of {(holding.Length == 0 ? "no classified version" : string.Join(", ", holding))}"
+                + (classified >= 0 && !holding.Contains(HelperProfileVersions[classified])
+                    ? $" (not {HelperProfileVersions[classified]}'s: game files changed, or another mod answers reflection lookups or rewrote the game's code)"
+                    : ""));
+        }
+        catch (Exception e)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: version cross-check skipped: {e.Message}");
+        }
+    }
+
+    /// <summary>
     /// The last hook is patched: logs the totals and checks every patched method has its detour again (ModEntry's check
     /// may have run while hooks were still queued). InlineGuard needs nothing here: no hook is inlined by its callers
     /// (each has a loop over an IEnumerable, i.e. exception handling, which the JIT doesn't inline).
@@ -450,7 +492,9 @@ public static partial class HookSkip
             return;
         }
         _finished = true;
-        Log.Info($"[{ModEntry.Id}] {Name}: {Active} hooks filtered, {LeftVanilla} left vanilla ({_absent} classified hooks not in this game version)");
+        Log.Info($"[{ModEntry.Id}] {Name}: {Active} hooks filtered, {LeftVanilla} left vanilla ({_absent} classified hooks not in this game version"
+            + (AnsweredByOthers > 0 ? $", {AnsweredByOthers} lookups answered by another member, ignored" : "") + ")");
+        CrossCheckVersion();
         try
         {
             // ModEntry's own check ran when its patches were in, possibly before these hooks: ~150 rebuilds since.
@@ -496,7 +540,10 @@ public static partial class HookSkip
                 // these batches) sees the game's calls; one at priority 0 or less registered after these batches sees
                 // the redirect calls instead (FilterFor then backs off from that hook, but its matcher may miss). Keeping
                 // the game's call and wrapping its result would change the walk's laziness: accepted, none does that.
-                PatchGuard.Patch(harmony, body, transpiler: new HarmonyMethod(typeof(HookSkip), nameof(Transpiler)) { priority = Priority.Last });
+                using (HarmonyWatch.Own())
+                {
+                    PatchGuard.Patch(harmony, body, transpiler: new HarmonyMethod(typeof(HookSkip), nameof(Transpiler)) { priority = Priority.Last });
+                }
                 Active++;
             }
             catch (Exception e)
@@ -844,10 +891,10 @@ public static partial class HookSkip
                 string name = typeName + "." + methodName;
                 try
                 {
-                    Type type = AccessTools.TypeByName(typeName) ?? throw new TypeLoadException(typeName);
-                    MethodInfo method = AccessTools.Method(type, methodName, args) ?? throw new MissingMethodException(name);
+                    Type type = Reflect.TypeByName(typeName) ?? throw new TypeLoadException(typeName);
+                    MethodInfo method = Reflect.Method(type, methodName, args) ?? throw new MissingMethodException(name);
                     PatchSafety.RequireFingerprint(method, fingerprint);
-                    Type iface = AccessTools.TypeByName(interfaceName) ?? throw new TypeLoadException(interfaceName);
+                    Type iface = Reflect.TypeByName(interfaceName) ?? throw new TypeLoadException(interfaceName);
                     _filters[method] = new PileFilter(iface.IsAssignableFrom, keepSubscribed: false);
                     PatchGuard.Patch(_harmony!, method, prefix: new HarmonyMethod(typeof(BaseLibHooks), nameof(Prefix)),
                         finalizer: new HarmonyMethod(typeof(BaseLibHooks), nameof(Finalizer)));
@@ -871,7 +918,7 @@ public static partial class HookSkip
                 // combat directly) would stay pending through BaseLib's whole loop, where a listener's code could start
                 // another hook's RunState walk. Any combat walk drops it: BaseLib's own RunState walk takes it in its first
                 // prefix, before it walks the combat. A prefix Harmony always runs (no bool return), first.
-                PatchGuard.Patch(_harmony!, AccessTools.Method(typeof(CombatState), nameof(CombatState.IterateHookListeners)),
+                PatchGuard.Patch(_harmony!, Reflect.Method(typeof(CombatState), nameof(CombatState.IterateHookListeners)),
                     prefix: new HarmonyMethod(typeof(BaseLibHooks), nameof(DropPendingFilter)) { priority = Priority.First });
             }
             catch (Exception e)

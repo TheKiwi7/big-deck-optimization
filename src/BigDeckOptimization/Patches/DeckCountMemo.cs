@@ -114,15 +114,15 @@ public static class DeckCountMemo
 
     public static void Apply(Harmony harmony)
     {
-        MethodBase? allCards = AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState), "AllCards");
+        MethodBase? allCards = Reflect.PropertyGetter(typeof(MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState), "AllCards");
         // What the three cards count is AllCards; the memo walks AllPiles: only while AllCards is that walk (else all three vanilla).
         PatchSafety.RequireFingerprint(allCards ?? throw new PatchSkippedException("PlayerCombatState.AllCards not found"), AllCardsFingerprint);
         // The game's count reads each pile through CardPile.Cards: another mod answering another list there gets the game's count.
-        MethodBase? pileCards = AccessTools.PropertyGetter(typeof(CardPile), nameof(CardPile.Cards));
-        _tagsGetter = AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.Tags));
-        _canonicalTagsGetter = AccessTools.PropertyGetter(typeof(CardModel), "CanonicalTags");
-        _starCostGetter = AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.CanonicalStarCost));
-        _starXGetter = AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.HasStarCostX));
+        MethodBase? pileCards = Reflect.PropertyGetter(typeof(CardPile), nameof(CardPile.Cards));
+        _tagsGetter = Reflect.PropertyGetter(typeof(CardModel), nameof(CardModel.Tags));
+        _canonicalTagsGetter = Reflect.PropertyGetter(typeof(CardModel), "CanonicalTags");
+        _starCostGetter = Reflect.PropertyGetter(typeof(CardModel), nameof(CardModel.CanonicalStarCost));
+        _starXGetter = Reflect.PropertyGetter(typeof(CardModel), nameof(CardModel.HasStarCostX));
         try
         {
             // Kept from the first read: only while nothing else writes the kept set.

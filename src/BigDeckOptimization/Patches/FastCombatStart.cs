@@ -69,12 +69,14 @@ public static class FastCombatStart
     public static double SkippedSeconds { get; private set; }
 
     private static bool _window;
+    /// <summary>The room whose combat start the window is for: the window closes itself when the run's current room is another.</summary>
+    private static WeakReference<CombatRoom>? _room;
 
     public static void Apply(Harmony harmony)
     {
-        MethodInfo wait = AccessTools.Method(typeof(Cmd), nameof(Cmd.Wait), new[] { typeof(float), typeof(CancellationToken), typeof(bool) })
+        MethodInfo wait = Reflect.Method(typeof(Cmd), nameof(Cmd.Wait), new[] { typeof(float), typeof(CancellationToken), typeof(bool) })
             ?? throw new MissingMethodException("Cmd.Wait");
-        MethodInfo scaledWait = AccessTools.Method(typeof(Cmd), nameof(Cmd.CustomScaledWait)) ?? throw new MissingMethodException("Cmd.CustomScaledWait");
+        MethodInfo scaledWait = Reflect.Method(typeof(Cmd), nameof(Cmd.CustomScaledWait)) ?? throw new MissingMethodException("Cmd.CustomScaledWait");
         // Skipping them must lose nothing but the time: their code only waits. One that changed only stays the game's. No back-off from
         // other mods' patches on them (Limitless, SpeedX): a wait holds no logic to keep, and the combat start must stay fast in co-op.
         bool waitKnown = Known(wait, WaitFingerprint);
@@ -83,15 +85,17 @@ public static class FastCombatStart
         {
             throw new PatchSkippedException("neither wait has the known code");
         }
-        PatchGuard.Patch(harmony, AccessTools.Method(typeof(CombatRoom), nameof(CombatRoom.EnterInternal)) ?? throw new MissingMethodException("CombatRoom.EnterInternal"),
+        PatchGuard.Patch(harmony, Reflect.Method(typeof(CombatRoom), nameof(CombatRoom.EnterInternal)) ?? throw new MissingMethodException("CombatRoom.EnterInternal"),
             prefix: new HarmonyMethod(typeof(FastCombatStart), nameof(OpenWindow)));
         // The first turn starting ends the loading (by name: game v0.111 added a parameter).
-        PatchGuard.Patch(harmony, AccessTools.Method(typeof(CombatManager), "StartTurn") ?? throw new MissingMethodException("CombatManager.StartTurn"),
+        PatchGuard.Patch(harmony, Reflect.Method(typeof(CombatManager), "StartTurn") ?? throw new MissingMethodException("CombatManager.StartTurn"),
             prefix: new HarmonyMethod(typeof(FastCombatStart), nameof(TurnStarting)));
-        // Without it only leaving a combat while it loads keeps the window open until the next combat.
-        if (AccessTools.Method(typeof(CombatManager), nameof(CombatManager.Reset)) is { } reset)
+        // Without it only leaving a combat while it loads keeps the window open until the next combat. A finalizer: it runs
+        // even when Reset throws (it cancels tasks and runs creature resets, other mods' code included) or another mod's prefix
+        // skips it, as a mod tearing a combat down and rebuilding it outside the menu flow (a quick restart, a reload) may.
+        if (Reflect.Method(typeof(CombatManager), nameof(CombatManager.Reset)) is { } reset)
         {
-            PatchGuard.Patch(harmony, reset, postfix: new HarmonyMethod(typeof(FastCombatStart), nameof(CombatReset)));
+            PatchGuard.Patch(harmony, reset, finalizer: new HarmonyMethod(typeof(FastCombatStart), nameof(CombatReset)));
         }
         else
         {
@@ -109,7 +113,7 @@ public static class FastCombatStart
 
     private static bool Known(MethodInfo method, string fingerprint)
     {
-        if (AccessTools.AsyncMoveNext(method) is not { } body)
+        if (Reflect.AsyncMoveNext(method) is not { } body)
         {
             Log.Info($"[{ModEntry.Id}] {Name}: Cmd.{method.Name} is not async any more: left vanilla");
             return false;
@@ -130,6 +134,7 @@ public static class FastCombatStart
             int relics = RunManager.Instance.DebugOnlyGetState()?.Players.Sum(p => p.Relics.Count) ?? 0;
             bool coop = RunManager.Instance is { IsSingleplayerOrFakeMultiplayer: false };
             _window = On && !__instance.IsPreFinished && (coop || relics >= RelicThreshold);
+            _room = _window ? new WeakReference<CombatRoom>(__instance) : null;
             SkippedWaits = 0;
             SkippedSeconds = 0;
         }
@@ -155,8 +160,12 @@ public static class FastCombatStart
         }
     }
 
-    /// <summary>The room or the run was left, possibly before the first turn.</summary>
-    private static void CombatReset() => _window = false;
+    /// <summary>The room or the run was left, possibly before the first turn (a finalizer: also after a throw or a skipped Reset).</summary>
+    private static void CombatReset()
+    {
+        _window = false;
+        _room = null;
+    }
 
     private static void CloseWindow()
     {
@@ -182,7 +191,29 @@ public static class FastCombatStart
             CloseWindow();
             return false;
         }
+        // The window checks its own room: a run torn down or another room entered without CombatManager.Reset or the first
+        // turn (a mod's quick restart or reload outside the menu flow) closes it, so no wait outside that combat start is skipped.
+        if (!InItsRoom())
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: the combat start's room was left without the combat ending or starting (run reloaded?): window closed");
+            CloseWindow();
+            return false;
+        }
         return true;
+    }
+
+    /// <summary>The run in progress is still in the room the window opened for (any doubt: no).</summary>
+    private static bool InItsRoom()
+    {
+        try
+        {
+            return _room != null && _room.TryGetTarget(out CombatRoom? room)
+                && RunManager.Instance.DebugOnlyGetState() is { } state && ReferenceEquals(state.CurrentRoom, room);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 
     /// <summary>

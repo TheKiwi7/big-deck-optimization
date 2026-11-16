@@ -145,7 +145,10 @@ public static class HarmonyRebuild
         MethodBase? before = Available ? Current(original, out key) : null;
         try
         {
-            return rebuild();
+            using (HarmonyWatch.Own())
+            {
+                return rebuild();
+            }
         }
         catch (Exception e)
         {

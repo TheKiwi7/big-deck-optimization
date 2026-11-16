@@ -15,6 +15,12 @@
 - The settings and the `bdopt` command now show, from the main menu, which other mods keep part of the optimizations off, and why (`bdopt why`).
 - In the settings menu, an optimization's name is now orange when part of it runs the normal game here (another mod changes what it speeds up, or part of it turned itself off), and red when it is switched on but none of it can run; hover it to see why. Other mods are named as on the game's mods screen, each mod once (a mod made of several parts no longer shows up several times under technical names).
 - Safer with other mods and future game updates: more of the game and mod code the optimizations rely on is checked, and a change there leaves only that part to the game.
+- Works alongside mods that redirect how other mods find the game's code (CrossVersionCompat): the mod now finds the game's code itself, so none of its optimizations is wrongly left to the game there, and other mods keep their names in its messages. If such a mod loads a modified copy of this mod, this mod stays inactive for that session (the co-op check aside) and its settings say why.
+- Safer with mods that add or remove their changes while you play: the mod notices at once, steps aside where needed, and turns a part off if another mod's change ever leaves it not running.
+- Fixed: with a mod that restarts or reloads a combat while it starts (quick restart, quick load), the game's animations could stay instant until the next combat.
+- With a mod that reloads a co-op run or brings everyone back to the lobby, `bdopt off` and `bdopt on` still ask for confirmation.
+- When a player has the mod off, the "mods don't match" message (and mod sync tools) now show this mod with a version ending in "+off", instead of an unknown mod.
+- Smoother with mods that preview cards (Random Foreseer): their previews no longer make the mod rebuild its lists.
 - *(Pending: held back until tested in game.)* Works better alongside big mod packs (RitsuLib, Spire Synergies, Zone the Spire, Ascended Expansion...): when another mod only adds its own effects around the game code the mod speeds up, or only reacts to its own cards and relics, that optimization now keeps running instead of falling back to the normal game. Other changes still leave that part to the game, as before.
 
 ## v1.0.3

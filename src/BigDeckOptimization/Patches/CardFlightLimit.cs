@@ -66,25 +66,25 @@ public static class CardFlightLimit
 
     public static void Apply(Harmony harmony)
     {
-        _create = AccessTools.Method(typeof(NCardFlyShuffleVfx), nameof(NCardFlyShuffleVfx.Create))
+        _create = Reflect.Method(typeof(NCardFlyShuffleVfx), nameof(NCardFlyShuffleVfx.Create))
             ?? throw new MissingMethodException(nameof(NCardFlyShuffleVfx), nameof(NCardFlyShuffleVfx.Create));
         PatchSafety.RequireFingerprint(_create, CreateFingerprint);
-        PatchSafety.RequireFingerprint(AccessTools.Method(typeof(NCardFlyShuffleVfx), "_Ready")
+        PatchSafety.RequireFingerprint(Reflect.Method(typeof(NCardFlyShuffleVfx), "_Ready")
             ?? throw new MissingMethodException(nameof(NCardFlyShuffleVfx), "_Ready"), ReadyFingerprint);
-        PatchSafety.RequireFingerprint(AccessTools.AsyncMoveNext(AccessTools.Method(typeof(NCardFlyShuffleVfx), "PlayAnim"))
+        PatchSafety.RequireFingerprint(Reflect.AsyncMoveNext(Reflect.Method(typeof(NCardFlyShuffleVfx), "PlayAnim"))
             ?? throw new MissingMethodException(nameof(NCardFlyShuffleVfx), "PlayAnim"), PlayAnimFingerprint);
-        var addCard = AccessTools.Method(typeof(NCombatCardPile), "AddCard") ?? throw new MissingMethodException(nameof(NCombatCardPile), "AddCard");
+        var addCard = Reflect.Method(typeof(NCombatCardPile), "AddCard") ?? throw new MissingMethodException(nameof(NCombatCardPile), "AddCard");
         PatchSafety.RequireFingerprint(addCard, AddCardFingerprint);
-        _currentCount = AccessTools.FieldRefAccess<NCombatCardPile, int>("_currentCount");
+        _currentCount = Reflect.FieldRefAccess<NCombatCardPile, int>("_currentCount");
         _addCard = addCard;
-        _cardAddFinished = AccessTools.FieldRefAccess<CardPile, Action?>("CardAddFinished");
-        System.Reflection.MethodInfo ready = AccessTools.Method(typeof(NCardFlyShuffleVfx), "_Ready")!;
-        System.Reflection.MethodInfo playAnim = AccessTools.Method(typeof(NCardFlyShuffleVfx), "PlayAnim")!;
+        _cardAddFinished = Reflect.FieldRefAccess<CardPile, Action?>("CardAddFinished");
+        System.Reflection.MethodInfo ready = Reflect.Method(typeof(NCardFlyShuffleVfx), "_Ready")!;
+        System.Reflection.MethodInfo playAnim = Reflect.Method(typeof(NCardFlyShuffleVfx), "PlayAnim")!;
         _skipped = new System.Reflection.MethodBase?[]
         {
-            playAnim, AccessTools.AsyncMoveNext(playAnim),
-            AccessTools.Method(typeof(MegaCrit.Sts2.Core.Commands.SfxCmd), "PlayCardSwooshSfx"),
-            AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Vfx.NCardTrailVfx), "Create"),
+            playAnim, Reflect.AsyncMoveNext(playAnim),
+            Reflect.Method(typeof(MegaCrit.Sts2.Core.Commands.SfxCmd), "PlayCardSwooshSfx"),
+            Reflect.Method(typeof(MegaCrit.Sts2.Core.Nodes.Vfx.NCardTrailVfx), "Create"),
         };
         _readyMethod = ready;
         _mainThread = Thread.CurrentThread.ManagedThreadId;

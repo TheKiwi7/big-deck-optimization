@@ -10,6 +10,7 @@
   "why.baselib": "Indisponível: uma atualização do BaseLib mudou o que esta otimização acelera. Ela fica desligada (jogo normal) até o mod ser atualizado.",
   "why.fault": "Desligada nesta sessão após um erro (jogo normal no lugar, detalhes no log). Volta na próxima vez que você iniciar o jogo.",
   "why.started_off": "Inativa: o mod estava desligado quando o jogo foi iniciado, então nada dele foi carregado além da verificação do co-op (todos os jogadores precisam tê-lo no mesmo estado). Ligue o mod e reinicie o jogo.",
+  "why.rewritten": "Inativa: outro mod carregou uma cópia modificada do código deste mod, então nada dele é aplicado nesta sessão além da verificação do co-op. Remova ou atualize o mod que reescreve outros mods e reinicie o jogo.",
   "why.coop_run": "Bloqueado durante uma partida co-op: todos os jogadores precisam ter o mod no mesmo estado, e com o mod desligado seus combates começam bem depois dos combates dos jogadores que o têm ligado. Para desligá-lo mesmo assim (só se todos os outros jogadores o tiverem desligado), digite bdopt off yes no console.",
   "why.coop_run_on": "Bloqueado durante uma partida co-op: todos os jogadores precisam ter o mod no mesmo estado, e com o mod ligado seus combates começam em outro ritmo que os dos jogadores que o têm desligado. Para ligá-lo mesmo assim (só se todos os outros jogadores o tiverem ligado), digite bdopt on yes no console.",
   "parts_off": "Parcialmente inativa: parte desta otimização se desativou ou não se aplica aqui (jogo normal nessa parte, detalhes no log).",

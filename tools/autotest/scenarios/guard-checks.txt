@@ -1,7 +1,8 @@
 # PatchGuard (v0.6.1): an Apply failing halfway leaves nothing installed; a patch whose code throws into the game is
-# turned off and removed, then the game method runs unmodified. FAULTPROBE line: both checks OK. Then a fight with
+# turned off and removed, then the game method runs unmodified; so is one whose exception another mod's finalizer
+# (registered first) swallows: the guard runs first of the finalizers. FAULTPROBE line: the three checks OK. Then a fight with
 # every optimization on (each patched method has the guard finalizer): no "turned off and removed" line, bdopt all on.
-expect FaultProbe(\.Apply could not be applied| ?: error inside the game's code)
+expect FaultProbe(\.Apply could not be applied|(\.Swallowed)? ?: error inside the game's code)
 timeout 300
 faultprobe
 newrun NECROBINDER

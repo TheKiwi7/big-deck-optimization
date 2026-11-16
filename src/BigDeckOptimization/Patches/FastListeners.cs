@@ -116,6 +116,10 @@ public static class FastListeners
         internal const int Relics = 0, Potions = 1, Orbs = 2, Count = 3;
         private static readonly Type[] _bases = { typeof(RelicModel), typeof(PotionModel), typeof(OrbModel) };
         private static List<Type>[]? _types;
+        /// <summary>Every type the last scan listed (any kind), for <see cref="Meet"/>.</summary>
+        private static volatile HashSet<Type>? _known;
+        /// <summary>Types met where a relic, potion or orb joins that no scan listed (emitted at run time, or in an assembly the scan can't read).</summary>
+        private static readonly List<Type> _met = new();
         private static int _stamp;
         /// <summary>Set when an assembly loads: types are then looked for again. Asking for the assembly list at each walk allocated it each time.</summary>
         private static volatile bool _stale = true;
@@ -261,9 +265,15 @@ public static class FastListeners
                     // Types it couldn't load can't be instantiated either.
                     types = e.Types;
                 }
-                catch
+                catch (Exception e)
                 {
-                    continue;
+                    // An assembly that may hold model types but can't list them: no kind is known not to react (see Any)
+                    // until an assembly loads and the scan runs again. Leaving it out could skip a reacting relic's hook.
+                    _types = null;
+                    _known = null;
+                    _stamp++;
+                    Log.Warn($"[{ModEntry.Id}] {Name}: types of {assembly.GetName().Name} unreadable ({e.GetType().Name}): no kind of listener left out of walks");
+                    return;
                 }
                 foreach (Type? type in types)
                 {
@@ -280,9 +290,52 @@ public static class FastListeners
                     }
                 }
             }
+            // Types met at an add that no assembly listed (emitted at run time: dynamic assemblies aren't scanned).
+            lock (_met)
+            {
+                foreach (Type type in _met)
+                {
+                    for (int i = 0; i < Count; i++)
+                    {
+                        if (type.IsSubclassOf(_bases[i]) && !found[i].Contains(type))
+                        {
+                            found[i].Add(type);
+                        }
+                    }
+                }
+            }
             // Published before the stamp: a filter seeing the new stamp asks the new types.
+            _known = new HashSet<Type>(found.SelectMany(types => types));
             _types = found;
             _stamp++;
+        }
+
+        /// <summary>
+        /// A relic, potion or orb joins a player (<c>Player.AddRelicInternal</c>, <c>AddPotionInternal</c>, <c>OrbQueue.TryEnqueue</c>
+        /// and <c>Insert</c>): its type, if no scan listed it (emitted at run time, or from an assembly the scan skipped), joins the
+        /// kinds before the next walk, so a kind isn't left out of a walk while one of its objects reacts. One hash lookup per add.
+        /// </summary>
+        internal static void Meet(object? model)
+        {
+            if (model == null || _known is not { } known)
+            {
+                return; // Nothing scanned yet: the first walk scans, and no kind is left out before that.
+            }
+            Type type = model.GetType();
+            if (known.Contains(type))
+            {
+                return;
+            }
+            lock (_met)
+            {
+                if (_met.Contains(type))
+                {
+                    return;
+                }
+                _met.Add(type);
+            }
+            _stale = true;
+            Log.Info($"[{ModEntry.Id}] {Name}: listener type {type.FullName} ({(type.Assembly.IsDynamic ? "emitted at run time" : type.Assembly.GetName().Name)}) not found by the type scan: added before the next walk");
         }
 
         /// <summary>Whether some type of this kind reacts; true while the types aren't known (a failed scan, or another
@@ -945,7 +998,7 @@ public static class FastListeners
         /// </summary>
         internal bool Skips(int kind)
         {
-            if (_keepSubscribed || !KindSkipEnabled)
+            if (_keepSubscribed || !KindSkipEnabled || !_kindsWatched)
             {
                 return false;
             }
@@ -1090,7 +1143,7 @@ public static class FastListeners
         /// <summary>Types overriding any of these <see cref="AbstractModel"/> virtuals.</summary>
         public static PileFilter Overriding(bool keepSubscribed, params string[] methods)
         {
-            MethodInfo[] bases = methods.Select(m => AccessTools.Method(typeof(AbstractModel), m)
+            MethodInfo[] bases = methods.Select(m => Reflect.Method(typeof(AbstractModel), m)
                 ?? throw new MissingMethodException(nameof(AbstractModel), m)).ToArray();
             return new PileFilter(type => bases.Any(b => OverridesForFilter(type, b)), keepSubscribed) { BaseMethods = bases };
         }
@@ -1977,9 +2030,9 @@ public static class FastListeners
 
     public static void Apply(Harmony harmony)
     {
-        _executionFinished = AccessTools.FieldRefAccess<AbstractModel, Action<AbstractModel>?>("ExecutionFinished");
-        _relicListVersion = AccessTools.Field(typeof(List<RelicModel>), "_version")?.FieldType == typeof(int)
-            ? AccessTools.FieldRefAccess<List<RelicModel>, int>("_version") : null;
+        _executionFinished = Reflect.FieldRefAccess<AbstractModel, Action<AbstractModel>?>("ExecutionFinished");
+        _relicListVersion = Reflect.Field(typeof(List<RelicModel>), "_version")?.FieldType == typeof(int)
+            ? Reflect.FieldRefAccess<List<RelicModel>, int>("_version") : null;
         _mainThread = Thread.CurrentThread.ManagedThreadId;
         try
         {
@@ -1991,7 +2044,60 @@ public static class FastListeners
             Log.Info($"[{ModEntry.Id}] {Name}: pile entries read at each walk, left vanilla: {e.Message}");
         }
         ApplyWalks(harmony);
+        try
+        {
+            ApplyKindWatch(harmony);
+        }
+        catch (Exception e)
+        {
+            _kindsWatched = false;
+            Log.Info($"[{ModEntry.Id}] {Name}: listeners joining not watched, no kind of listener left out of walks: {e.Message}");
+        }
         Applied = true;
+    }
+
+    /// <summary>Relics, potions and orbs joining are watched (<see cref="ListenerKinds.Meet"/>): only then is a whole kind left out of a walk.</summary>
+    private static bool _kindsWatched;
+
+    /// <summary>
+    /// Finalizers on the methods adding a relic, a potion or an orb (the writers of those lists besides constructors and
+    /// removals, which ListenerCache's load check pins; not scanned again here, a safety net for types the scan can't see):
+    /// the type of what joins is checked against the scanned types. Finalizers: they run whatever the method does, and only
+    /// read their argument.
+    /// </summary>
+    private static void ApplyKindWatch(Harmony harmony)
+    {
+        var first = new HarmonyMethod(typeof(FastListeners), nameof(MeetFirst));
+        PatchGuard.Patch(harmony, Reflect.Method(typeof(Player), nameof(Player.AddRelicInternal)) ?? throw new MissingMethodException(nameof(Player), nameof(Player.AddRelicInternal)), finalizer: first);
+        PatchGuard.Patch(harmony, Reflect.Method(typeof(Player), nameof(Player.AddPotionInternal)) ?? throw new MissingMethodException(nameof(Player), nameof(Player.AddPotionInternal)), finalizer: first);
+        PatchGuard.Patch(harmony, Reflect.Method(typeof(MegaCrit.Sts2.Core.Entities.Orbs.OrbQueue), nameof(MegaCrit.Sts2.Core.Entities.Orbs.OrbQueue.TryEnqueue)) ?? throw new MissingMethodException(nameof(MegaCrit.Sts2.Core.Entities.Orbs.OrbQueue), nameof(MegaCrit.Sts2.Core.Entities.Orbs.OrbQueue.TryEnqueue)), finalizer: first);
+        PatchGuard.Patch(harmony, Reflect.Method(typeof(MegaCrit.Sts2.Core.Entities.Orbs.OrbQueue), nameof(MegaCrit.Sts2.Core.Entities.Orbs.OrbQueue.Insert)) ?? throw new MissingMethodException(nameof(MegaCrit.Sts2.Core.Entities.Orbs.OrbQueue), nameof(MegaCrit.Sts2.Core.Entities.Orbs.OrbQueue.Insert)),
+            finalizer: new HarmonyMethod(typeof(FastListeners), nameof(MeetSecond)));
+        _kindsWatched = true;
+    }
+
+    private static void MeetFirst(object? __0)
+    {
+        try
+        {
+            ListenerKinds.Meet(__0);
+        }
+        catch (Exception)
+        {
+            _kindsWatched = false; // Can't tell any more: no kind left out.
+        }
+    }
+
+    private static void MeetSecond(object? __1)
+    {
+        try
+        {
+            ListenerKinds.Meet(__1);
+        }
+        catch (Exception)
+        {
+            _kindsWatched = false;
+        }
     }
 
     /// <summary>
@@ -2007,16 +2113,16 @@ public static class FastListeners
         PatchSafety.RequireFieldWriters(typeof(CardPile), "_cards", PatchSafety.CardListWriters);
         _trackedCode = new MethodBase[]
         {
-            AccessTools.PropertyGetter(typeof(CardPile), nameof(CardPile.Cards)) ?? throw new MissingMethodException(nameof(CardPile), "get_Cards"),
-            AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.Enchantment)) ?? throw new MissingMethodException(nameof(CardModel), "get_Enchantment"),
-            AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.Affliction)) ?? throw new MissingMethodException(nameof(CardModel), "get_Affliction"),
+            Reflect.PropertyGetter(typeof(CardPile), nameof(CardPile.Cards)) ?? throw new MissingMethodException(nameof(CardPile), "get_Cards"),
+            Reflect.PropertyGetter(typeof(CardModel), nameof(CardModel.Enchantment)) ?? throw new MissingMethodException(nameof(CardModel), "get_Enchantment"),
+            Reflect.PropertyGetter(typeof(CardModel), nameof(CardModel.Affliction)) ?? throw new MissingMethodException(nameof(CardModel), "get_Affliction"),
             // Their tracking prefixes take the card or the new affliction: Harmony skips such a prefix once an earlier
             // prefix returned false, which may then change the list or field itself, unseen until our finalizer.
-            AccessTools.Method(typeof(CardPile), nameof(CardPile.AddInternal)) ?? throw new MissingMethodException(nameof(CardPile), nameof(CardPile.AddInternal)),
-            AccessTools.Method(typeof(CardPile), nameof(CardPile.RemoveInternal)) ?? throw new MissingMethodException(nameof(CardPile), nameof(CardPile.RemoveInternal)),
-            AccessTools.Method(typeof(CardPile), nameof(CardPile.MoveToBottomInternal)) ?? throw new MissingMethodException(nameof(CardPile), nameof(CardPile.MoveToBottomInternal)),
-            AccessTools.Method(typeof(CardPile), nameof(CardPile.MoveToTopInternal)) ?? throw new MissingMethodException(nameof(CardPile), nameof(CardPile.MoveToTopInternal)),
-            AccessTools.PropertySetter(typeof(CardModel), nameof(CardModel.Affliction)) ?? throw new MissingMethodException(nameof(CardModel), "set_Affliction"),
+            Reflect.Method(typeof(CardPile), nameof(CardPile.AddInternal)) ?? throw new MissingMethodException(nameof(CardPile), nameof(CardPile.AddInternal)),
+            Reflect.Method(typeof(CardPile), nameof(CardPile.RemoveInternal)) ?? throw new MissingMethodException(nameof(CardPile), nameof(CardPile.RemoveInternal)),
+            Reflect.Method(typeof(CardPile), nameof(CardPile.MoveToBottomInternal)) ?? throw new MissingMethodException(nameof(CardPile), nameof(CardPile.MoveToBottomInternal)),
+            Reflect.Method(typeof(CardPile), nameof(CardPile.MoveToTopInternal)) ?? throw new MissingMethodException(nameof(CardPile), nameof(CardPile.MoveToTopInternal)),
+            Reflect.PropertySetter(typeof(CardModel), nameof(CardModel.Affliction)) ?? throw new MissingMethodException(nameof(CardModel), "set_Affliction"),
         };
         _trackedTolerant = _trackedCode.Select(m => TrackedTolerance(m) != PatchTolerance.None).ToArray();
         foreach (string property in new[] { nameof(CardModel.Enchantment), nameof(CardModel.Affliction) })
@@ -2029,7 +2135,7 @@ public static class FastListeners
         var bumpAfter = new HarmonyMethod(typeof(FastListeners), nameof(BumpPileVersionFinally));
         foreach ((string method, string fingerprint) in PileMethods)
         {
-            MethodInfo target = AccessTools.Method(typeof(CardPile), method) ?? throw new MissingMethodException(nameof(CardPile), method);
+            MethodInfo target = Reflect.Method(typeof(CardPile), method) ?? throw new MissingMethodException(nameof(CardPile), method);
             string actual = MethodFingerprint.Of(target);
             if (!PatchSafety.FingerprintMatches(actual, fingerprint))
             {
@@ -2067,12 +2173,12 @@ public static class FastListeners
                 PatchGuard.Patch(harmony, target, prefix: bumpBefore, finalizer: bumpAfter);
             }
         }
-        PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), "RandomizeOrderInternal"),
+        PatchGuard.Patch(harmony, Reflect.Method(typeof(CardPile), "RandomizeOrderInternal"),
             prefix: new HarmonyMethod(typeof(FastListeners), nameof(EnterShuffle)), finalizer: new HarmonyMethod(typeof(FastListeners), nameof(ExitShuffle)));
         foreach (string property in new[] { nameof(CardModel.Enchantment), nameof(CardModel.Affliction) })
         {
             bool affliction = property == nameof(CardModel.Affliction);
-            PatchGuard.Patch(harmony, AccessTools.PropertySetter(typeof(CardModel), property) ?? throw new MissingMethodException(nameof(CardModel), property),
+            PatchGuard.Patch(harmony, Reflect.PropertySetter(typeof(CardModel), property) ?? throw new MissingMethodException(nameof(CardModel), property),
                 prefix: new HarmonyMethod(typeof(FastListeners), affliction ? nameof(BeforeAfflictionSet) : nameof(BumpIfPiled)),
                 finalizer: new HarmonyMethod(typeof(FastListeners), affliction ? nameof(AfterAfflictionSet) : nameof(BumpIfPiledFinally)));
         }
@@ -2082,12 +2188,12 @@ public static class FastListeners
             PatchSafety.RequireFieldWriters(typeof(AbstractModel), "ExecutionFinished", "AfterCloned", "add_ExecutionFinished", "remove_ExecutionFinished");
             foreach ((string method, string fingerprint) in SubscriptionMethods)
             {
-                PatchSafety.RequireFingerprint(AccessTools.Method(typeof(AbstractModel), method)
+                PatchSafety.RequireFingerprint(Reflect.Method(typeof(AbstractModel), method)
                     ?? throw new MissingMethodException(nameof(AbstractModel), method), fingerprint);
             }
             foreach (string accessor in new[] { "add_ExecutionFinished", "remove_ExecutionFinished" })
             {
-                PatchGuard.Patch(harmony, AccessTools.Method(typeof(AbstractModel), accessor),
+                PatchGuard.Patch(harmony, Reflect.Method(typeof(AbstractModel), accessor),
                     prefix: new HarmonyMethod(typeof(FastListeners), nameof(BumpSubscriptions)),
                     finalizer: new HarmonyMethod(typeof(FastListeners), nameof(BumpSubscriptionsFinally)));
             }
@@ -2095,7 +2201,7 @@ public static class FastListeners
             // the JIT did with the accessors there.
             foreach (string method in new[] { "AfterCardsSelected", "OnSelectModeSourceFinished" })
             {
-                PatchGuard.Patch(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand), method)
+                PatchGuard.Patch(harmony, Reflect.Method(typeof(MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand), method)
                         ?? throw new MissingMethodException("NPlayerHand", method),
                     prefix: new HarmonyMethod(typeof(FastListeners), nameof(BumpSubscriptions)),
                     finalizer: new HarmonyMethod(typeof(FastListeners), nameof(BumpSubscriptionsFinally)));
@@ -2109,7 +2215,7 @@ public static class FastListeners
         try
         {
             // Without it the last moves of a left run stay referenced until the next run's first shuffle (memory only).
-            PatchGuard.Patch(harmony, AccessTools.Method(typeof(RunManager), nameof(RunManager.CleanUp)) ?? throw new MissingMethodException(nameof(RunManager), nameof(RunManager.CleanUp)),
+            PatchGuard.Patch(harmony, Reflect.Method(typeof(RunManager), nameof(RunManager.CleanUp)) ?? throw new MissingMethodException(nameof(RunManager), nameof(RunManager.CleanUp)),
                 postfix: new HarmonyMethod(typeof(FastListeners), nameof(ReleaseMoves)));
         }
         catch (Exception e)
@@ -2136,10 +2242,10 @@ public static class FastListeners
     {
         try
         {
-            MethodInfo combatIterate = AccessTools.Method(typeof(CombatState), nameof(CombatState.IterateHookListeners))
+            MethodInfo combatIterate = Reflect.Method(typeof(CombatState), nameof(CombatState.IterateHookListeners))
                 ?? throw new MissingMethodException("CombatState.IterateHookListeners");
-            _combatBody = AccessTools.EnumeratorMoveNext(combatIterate);
-            _combatContains = AccessTools.Method(typeof(CombatState), "Contains");
+            _combatBody = Reflect.EnumeratorMoveNext(combatIterate);
+            _combatContains = Reflect.Method(typeof(CombatState), "Contains");
             bool v113 = WalkVersion(_combatBody, _combatContains, CombatIterateFingerprint, CombatContainsFingerprint, CombatIterateFingerprintV113, CombatContainsFingerprintV113);
             _combatAlwaysContained = AlwaysContainedTypes(v113);
             if (v113)
@@ -2153,8 +2259,8 @@ public static class FastListeners
                 _combatScaling = Getter<CombatState, AbstractModel?>("MultiplayerScalingModel");
                 _combatTail = CombatScalingTail;
             }
-            _allies = AccessTools.FieldRefAccess<CombatState, List<Creature>>("_allies");
-            _enemies = AccessTools.FieldRefAccess<CombatState, List<Creature>>("_enemies");
+            _allies = Reflect.FieldRefAccess<CombatState, List<Creature>>("_allies");
+            _enemies = Reflect.FieldRefAccess<CombatState, List<Creature>>("_enemies");
             ApplySubscribers();
             _combatIterate = combatIterate;
             // After ListenerCache: inside its scopes it answers from its cache and this does nothing.
@@ -2175,10 +2281,10 @@ public static class FastListeners
         }
         try
         {
-            MethodInfo runIterate = AccessTools.Method(typeof(RunState), nameof(RunState.IterateHookListeners), new[] { typeof(ICombatState) })
+            MethodInfo runIterate = Reflect.Method(typeof(RunState), nameof(RunState.IterateHookListeners), new[] { typeof(ICombatState) })
                 ?? throw new MissingMethodException("RunState.IterateHookListeners");
-            _runBody = AccessTools.EnumeratorMoveNext(runIterate);
-            _runContains = AccessTools.Method(typeof(RunState), "Contains");
+            _runBody = Reflect.EnumeratorMoveNext(runIterate);
+            _runContains = Reflect.Method(typeof(RunState), "Contains");
             bool v113 = WalkVersion(_runBody, _runContains, RunIterateFingerprint, RunContainsFingerprint, RunIterateFingerprintV113, RunContainsFingerprintV113);
             _runAlwaysContained = AlwaysContainedTypes(v113);
             if (v113)
@@ -2232,7 +2338,7 @@ public static class FastListeners
         string[] names = v113
             ? new[] { "MegaCrit.Sts2.Core.Models.RunModel", "MegaCrit.Sts2.Core.Models.Dread.DominionModel", "MegaCrit.Sts2.Core.Models.AchievementModel", "MegaCrit.Sts2.Core.Models.BadgeModel", "MegaCrit.Sts2.Core.Models.ModifierModel" }
             : new[] { "MegaCrit.Sts2.Core.Models.AchievementModel", "MegaCrit.Sts2.Core.Models.BadgeModel", "MegaCrit.Sts2.Core.Models.ModifierModel", "MegaCrit.Sts2.Core.Models.Singleton.MultiplayerScalingModel" };
-        return names.Select(n => AccessTools.TypeByName(n) is { } t && typeof(AbstractModel).IsAssignableFrom(t) ? t : throw new TypeLoadException(n)).ToArray();
+        return names.Select(n => Reflect.TypeByName(n) is { } t && typeof(AbstractModel).IsAssignableFrom(t) ? t : throw new TypeLoadException(n)).ToArray();
     }
 
     /// <summary>
@@ -2242,7 +2348,7 @@ public static class FastListeners
     /// </summary>
     private static Func<TOwner, TResult> Getter<TOwner, TResult>(string property)
     {
-        PropertyInfo info = AccessTools.Property(typeof(TOwner), property) ?? throw new MissingMemberException(typeof(TOwner).Name, property);
+        PropertyInfo info = Reflect.Property(typeof(TOwner), property) ?? throw new MissingMemberException(typeof(TOwner).Name, property);
         if (info.GetGetMethod(true) is { IsStatic: false } getter && !info.PropertyType.IsValueType && typeof(TResult).IsAssignableFrom(info.PropertyType)
             && Delegate.CreateDelegate(typeof(Func<TOwner, TResult>), getter, throwOnBindFailure: false) is Func<TOwner, TResult> bound)
         {
@@ -2315,23 +2421,23 @@ public static class FastListeners
     {
         try
         {
-            _subscribersMethod = AccessTools.Method(typeof(ModHelper), nameof(ModHelper.IterateAllCombatStateSubscribers));
-            _subscribersBody = AccessTools.EnumeratorMoveNext(_subscribersMethod);
+            _subscribersMethod = Reflect.Method(typeof(ModHelper), nameof(ModHelper.IterateAllCombatStateSubscribers));
+            _subscribersBody = Reflect.EnumeratorMoveNext(_subscribersMethod);
             PatchSafety.RequireFingerprint(_subscribersBody, SubscribersFingerprint);
             // The copy of the subscriber list is taken again only when its count changes: the list must only ever grow. Its
             // only writers are the static constructor and SubscribeForCombatStateHooks (add, then sort by id), pinned.
             PatchSafety.RequireFieldWriters(typeof(ModHelper), "_combatHookSubscribers", ".cctor", nameof(ModHelper.SubscribeForCombatStateHooks));
-            _subscribeMethod = AccessTools.Method(typeof(ModHelper), nameof(ModHelper.SubscribeForCombatStateHooks))
+            _subscribeMethod = Reflect.Method(typeof(ModHelper), nameof(ModHelper.SubscribeForCombatStateHooks))
                 ?? throw new MissingMethodException(nameof(ModHelper), nameof(ModHelper.SubscribeForCombatStateHooks));
             PatchSafety.RequireFingerprint(_subscribeMethod, SubscribeFingerprint);
             // Everything resolved and typed before use: AccessTools returns null for a renamed member, which would only
             // fail later, inside every walk.
-            var subscribers = AccessTools.Field(typeof(ModHelper), "_combatHookSubscribers")?.GetValue(null) as System.Collections.IList
+            var subscribers = Reflect.Field(typeof(ModHelper), "_combatHookSubscribers")?.GetValue(null) as System.Collections.IList
                 ?? throw new MissingFieldException(nameof(ModHelper), "_combatHookSubscribers");
-            Type subscriber = AccessTools.Inner(typeof(ModHelper), "ModCombatHookSubscriber") ?? throw new TypeLoadException("ModHelper.ModCombatHookSubscriber");
-            FieldInfo id = AccessTools.Field(subscriber, "id") is { FieldType: var idType } f1 && idType == typeof(string) ? f1
+            Type subscriber = Reflect.Inner(typeof(ModHelper), "ModCombatHookSubscriber") ?? throw new TypeLoadException("ModHelper.ModCombatHookSubscriber");
+            FieldInfo id = Reflect.Field(subscriber, "id") is { FieldType: var idType } f1 && idType == typeof(string) ? f1
                 : throw new MissingFieldException("ModCombatHookSubscriber", "id");
-            FieldInfo del = AccessTools.Field(subscriber, "del") is { FieldType: var delType } f2 && delType == typeof(CombatHookSubscriptionDelegate) ? f2
+            FieldInfo del = Reflect.Field(subscriber, "del") is { FieldType: var delType } f2 && delType == typeof(CombatHookSubscriptionDelegate) ? f2
                 : throw new MissingFieldException("ModCombatHookSubscriber", "del");
             // A mod loading later may define CardModifier types: check just that assembly (dynamic ones, e.g. Harmony's,
             // and assemblies not referencing BaseLib can't). Runs inside that assembly's load: never throws.
@@ -2379,14 +2485,14 @@ public static class FastListeners
         var found = new List<MethodBase>();
         Func<MethodBase?>[] lookups =
         {
-            () => AccessTools.EnumeratorMoveNext(AccessTools.Method(typeof(CombatState), nameof(CombatState.IterateHookListeners))),
-            () => AccessTools.Method(typeof(CombatState), "Contains"),
-            () => AccessTools.EnumeratorMoveNext(AccessTools.Method(typeof(RunState), nameof(RunState.IterateHookListeners), new[] { typeof(ICombatState) })),
-            () => AccessTools.Method(typeof(RunState), "Contains"),
-            () => AccessTools.Method(typeof(ModHelper), nameof(ModHelper.IterateAllCombatStateSubscribers)),
-            () => AccessTools.EnumeratorMoveNext(AccessTools.Method(typeof(ModHelper), nameof(ModHelper.IterateAllCombatStateSubscribers))),
-            () => AccessTools.Method(typeof(ModHelper), nameof(ModHelper.IterateAllRunStateSubscribers)),
-            () => AccessTools.EnumeratorMoveNext(AccessTools.Method(typeof(ModHelper), nameof(ModHelper.IterateAllRunStateSubscribers))),
+            () => Reflect.EnumeratorMoveNext(Reflect.Method(typeof(CombatState), nameof(CombatState.IterateHookListeners))),
+            () => Reflect.Method(typeof(CombatState), "Contains"),
+            () => Reflect.EnumeratorMoveNext(Reflect.Method(typeof(RunState), nameof(RunState.IterateHookListeners), new[] { typeof(ICombatState) })),
+            () => Reflect.Method(typeof(RunState), "Contains"),
+            () => Reflect.Method(typeof(ModHelper), nameof(ModHelper.IterateAllCombatStateSubscribers)),
+            () => Reflect.EnumeratorMoveNext(Reflect.Method(typeof(ModHelper), nameof(ModHelper.IterateAllCombatStateSubscribers))),
+            () => Reflect.Method(typeof(ModHelper), nameof(ModHelper.IterateAllRunStateSubscribers)),
+            () => Reflect.EnumeratorMoveNext(Reflect.Method(typeof(ModHelper), nameof(ModHelper.IterateAllRunStateSubscribers))),
         };
         foreach (Func<MethodBase?> lookup in lookups)
         {

@@ -175,15 +175,15 @@ public static class PileIndex
         {
             throw new PatchSkippedException("a run already exists: its cards aren't indexed");
         }
-        _addMethod = AccessTools.Method(typeof(CardPile), nameof(CardPile.AddInternal));
-        _removeMethod = AccessTools.Method(typeof(CardPile), nameof(CardPile.RemoveInternal));
-        _getter = AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.Pile)) ?? throw new MissingMethodException("CardModel.Pile");
-        _playerPiles = AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Entities.Players.Player), "Piles") ?? throw new MissingMethodException("Player.Piles");
-        _cardsGetter = AccessTools.PropertyGetter(typeof(CardPile), nameof(CardPile.Cards)) ?? throw new MissingMethodException("CardPile.Cards");
+        _addMethod = Reflect.Method(typeof(CardPile), nameof(CardPile.AddInternal));
+        _removeMethod = Reflect.Method(typeof(CardPile), nameof(CardPile.RemoveInternal));
+        _getter = Reflect.PropertyGetter(typeof(CardModel), nameof(CardModel.Pile)) ?? throw new MissingMethodException("CardModel.Pile");
+        _playerPiles = Reflect.PropertyGetter(typeof(MegaCrit.Sts2.Core.Entities.Players.Player), "Piles") ?? throw new MissingMethodException("Player.Piles");
+        _cardsGetter = Reflect.PropertyGetter(typeof(CardPile), nameof(CardPile.Cards)) ?? throw new MissingMethodException("CardPile.Cards");
         PatchSafety.RequireFingerprint(_getter, GetterFingerprint);
         foreach ((string method, string fingerprint) in Fingerprints)
         {
-            string actual = MethodFingerprint.Of(AccessTools.Method(typeof(CardPile), method) ?? throw new MissingMethodException("CardPile." + method));
+            string actual = MethodFingerprint.Of(Reflect.Method(typeof(CardPile), method) ?? throw new MissingMethodException("CardPile." + method));
             if (!PatchSafety.FingerprintMatches(actual, fingerprint))
             {
                 _selfCheck = true;
@@ -192,13 +192,13 @@ public static class PileIndex
         }
         // No other code changes the pile lists.
         PatchSafety.RequireFieldWriters(typeof(CardPile), "_cards", PatchSafety.CardListWriters);
-        _owner = AccessTools.FieldRefAccess<CardModel, Player?>("_owner");
+        _owner = Reflect.FieldRefAccess<CardModel, Player?>("_owner");
         try
         {
             // Player.Piles builds a Concat iterator on every call: read the same piles without it while its code is known.
-            PatchSafety.RequireFingerprint(AccessTools.PropertyGetter(typeof(Player), nameof(Player.Piles))
+            PatchSafety.RequireFingerprint(Reflect.PropertyGetter(typeof(Player), nameof(Player.Piles))
                 ?? throw new MissingMethodException("Player.Piles"), PlayerPilesFingerprint);
-            _runPiles = AccessTools.FieldRefAccess<Player, CardPile[]?>("_runPiles");
+            _runPiles = Reflect.FieldRefAccess<Player, CardPile[]?>("_runPiles");
         }
         catch (Exception e)
         {
@@ -214,24 +214,24 @@ public static class PileIndex
         // Harmony doesn't call a prefix taking the card once an earlier prefix returned false, so the pile's count is also
         // taken by a first prefix that always runs (only __instance and __state): an add or remove another mod's earlier
         // prefix skipped is judged from it (same __state, shared by this class's patches on a method).
-        PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), nameof(CardPile.AddInternal)),
+        PatchGuard.Patch(harmony, Reflect.Method(typeof(CardPile), nameof(CardPile.AddInternal)),
             prefix: new HarmonyMethod(typeof(PileIndex), nameof(WatchAdd)) { priority = Priority.First });
-        PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), nameof(CardPile.AddInternal)),
+        PatchGuard.Patch(harmony, Reflect.Method(typeof(CardPile), nameof(CardPile.AddInternal)),
             prefix: new HarmonyMethod(typeof(PileIndex), nameof(BeforeAdd)) { priority = Priority.Last },
             finalizer: Method(nameof(AfterAdd)));
-        PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), nameof(CardPile.RemoveInternal)),
+        PatchGuard.Patch(harmony, Reflect.Method(typeof(CardPile), nameof(CardPile.RemoveInternal)),
             prefix: new HarmonyMethod(typeof(PileIndex), nameof(WatchRemove)) { priority = Priority.First });
-        PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), nameof(CardPile.RemoveInternal)),
+        PatchGuard.Patch(harmony, Reflect.Method(typeof(CardPile), nameof(CardPile.RemoveInternal)),
             prefix: new HarmonyMethod(typeof(PileIndex), nameof(BeforeRemove)) { priority = Priority.Last },
             finalizer: Method(nameof(AfterRemove)));
-        PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), nameof(CardPile.Clear)), prefix: Method(nameof(BeforeClear)), finalizer: Method(nameof(ClearFinalizer)));
+        PatchGuard.Patch(harmony, Reflect.Method(typeof(CardPile), nameof(CardPile.Clear)), prefix: Method(nameof(BeforeClear)), finalizer: Method(nameof(ClearFinalizer)));
         // Always: another mod patching a reorder (or a changed one) must not change the count unseen.
         foreach (string reorder in new[] { nameof(CardPile.MoveToBottomInternal), nameof(CardPile.MoveToTopInternal) })
         {
-            PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), reorder), prefix: Method(nameof(BeforeReorder)), finalizer: Method(nameof(AfterReorder)));
+            PatchGuard.Patch(harmony, Reflect.Method(typeof(CardPile), reorder), prefix: Method(nameof(BeforeReorder)), finalizer: Method(nameof(AfterReorder)));
         }
-        _listMethods = Fingerprints.Select(f => (MethodBase?)AccessTools.Method(typeof(CardPile), f.Method)).ToArray();
-        PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), nameof(CardPile.RandomizeOrderInternal)),
+        _listMethods = Fingerprints.Select(f => (MethodBase?)Reflect.Method(typeof(CardPile), f.Method)).ToArray();
+        PatchGuard.Patch(harmony, Reflect.Method(typeof(CardPile), nameof(CardPile.RandomizeOrderInternal)),
             prefix: Method(nameof(BeforeRandomize)), finalizer: Method(nameof(AfterRandomize)));
         PatchGuard.Patch(harmony, _getter, prefix: Method(nameof(PilePrefix)));
         Applied = true;
@@ -241,7 +241,7 @@ public static class PileIndex
         PatchSafety.Watch(Name, new[] { _getter, _playerPiles, _cardsGetter });
         try
         {
-            MethodInfo addInternal = AccessTools.Method(typeof(CardPile), nameof(CardPile.AddInternal))!;
+            MethodInfo addInternal = Reflect.Method(typeof(CardPile), nameof(CardPile.AddInternal))!;
             PatchGuard.Patch(harmony, addInternal, transpiler: Method(nameof(AddInternalTranspiler)));
             Log.Info($"[{ModEntry.Id}] {Name}: AddInternal duplicate check {(_duplicateCheckPatched ? "patched" : "left vanilla (call not found)")}");
         }
@@ -251,9 +251,9 @@ public static class PileIndex
         }
         try
         {
-            _containsCard = AccessTools.Method(typeof(RunState), nameof(RunState.ContainsCard)) ?? throw new MissingMethodException("RunState.ContainsCard");
+            _containsCard = Reflect.Method(typeof(RunState), nameof(RunState.ContainsCard)) ?? throw new MissingMethodException("RunState.ContainsCard");
             PatchSafety.RequireFingerprint(_containsCard, ContainsCardFingerprint);
-            _allCards = AccessTools.FieldRefAccess<RunState, List<CardModel>>("_allCards");
+            _allCards = Reflect.FieldRefAccess<RunState, List<CardModel>>("_allCards");
             PatchGuard.Patch(harmony, _containsCard, prefix: Method(nameof(ContainsCardPrefix)));
             PatchSafety.Watch(Name, _containsCard); // What ContainsCardPrefix asks about (display only).
         }
@@ -329,7 +329,7 @@ public static class PileIndex
             {
                 replaced = true;
                 _duplicateCheckPatched = true;
-                yield return new CodeInstruction(OpCodes.Call, AccessTools.Method(typeof(PileIndex), nameof(ContainsBeingAdded)))
+                yield return new CodeInstruction(OpCodes.Call, Reflect.Method(typeof(PileIndex), nameof(ContainsBeingAdded)))
                     .WithLabels(instruction.labels).WithBlocks(instruction.blocks);
                 continue;
             }
@@ -932,13 +932,16 @@ public static class PileIndex
 
     private static int _getterCheckCalls;
     private static bool _getterPatched;
+    private static int _getterEpoch;
 
     /// <summary>Another mod's patch on the getter this replaces. Read millions of times a turn: rechecked every 1,024 calls, no clock read per call.</summary>
     private static bool GetterPatched()
     {
-        if (--_getterCheckCalls < 0)
+        // Also at once after any Patch or Unpatch (HarmonyWatch.Epoch: one int read), not up to 1,024 calls later.
+        if (--_getterCheckCalls < 0 || _getterEpoch != HarmonyWatch.Epoch)
         {
             _getterCheckCalls = 1023;
+            _getterEpoch = HarmonyWatch.Epoch;
             // Also Player.Piles, which the answer reads the piles of directly (a mod adding a pile there), and CardPile.Cards,
             // through which the game's scan reads each pile (a mod answering another list there).
             // No tolerance: getters answered from the index or read around (a postfix there could answer otherwise).

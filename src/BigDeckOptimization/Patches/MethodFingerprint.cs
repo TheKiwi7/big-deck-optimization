@@ -33,6 +33,13 @@ public static class MethodFingerprint
     /// <summary>First 16 hex digits of the SHA-256 of <see cref="Describe"/>.</summary>
     public static string Of(MethodBase method)
     {
+        // A stand-in object another mod's reflection answered with (not the runtime's own method, or a body from another
+        // module than its type's) has no code of its own to compare: a fingerprint no method matches, so what relies on it
+        // stays vanilla.
+        if (method.GetType().Assembly != typeof(object).Assembly || (method.DeclaringType != null && method.Module != method.DeclaringType.Module))
+        {
+            return ForeignMember;
+        }
 #if BENCH
         long start = System.Diagnostics.Stopwatch.GetTimestamp();
 #endif
@@ -42,6 +49,9 @@ public static class MethodFingerprint
 #endif
         return Convert.ToHexString(hash)[..16];
     }
+
+    /// <summary>The fingerprint of a method that isn't the runtime's own (not hex: never equal to a real one).</summary>
+    public const string ForeignMember = "foreign-member!!";
 
 #if BENCH
     /// <summary>Load time spent in: fingerprints, field writer scans, load checks of patch classes, Harmony patching.</summary>

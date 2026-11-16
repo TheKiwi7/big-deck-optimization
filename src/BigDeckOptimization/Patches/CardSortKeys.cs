@@ -176,7 +176,7 @@ public static class CardSortKeys
 
     public static void Apply(Harmony harmony)
     {
-        MethodInfo compareTo = AccessTools.DeclaredMethod(typeof(CardModel), nameof(CardModel.CompareTo), new[] { typeof(AbstractModel) })
+        MethodInfo compareTo = Reflect.DeclaredMethod(typeof(CardModel), nameof(CardModel.CompareTo), new[] { typeof(AbstractModel) })
             ?? throw new MissingMethodException(nameof(CardModel), nameof(CardModel.CompareTo));
         if (MethodFingerprint.Of(compareTo) == CheapCompareToFingerprint)
         {
@@ -184,21 +184,21 @@ public static class CardSortKeys
             throw new PatchSkippedException("not needed: CardModel.CompareTo compares only the id and upgrade level on this game version");
         }
         PatchSafety.RequireFingerprint(compareTo, CompareToFingerprint);
-        MethodInfo baseCompareTo = Require(AccessTools.DeclaredMethod(typeof(AbstractModel), nameof(AbstractModel.CompareTo), new[] { typeof(AbstractModel) }), BaseCompareToFingerprint, "AbstractModel.CompareTo");
-        MethodInfo modelIdCompare = Require(AccessTools.DeclaredMethod(typeof(ModelId), "Compare", new[] { typeof(ModelId), typeof(ModelId) }), ModelIdCompareFingerprint, "ModelId.Compare");
-        MethodInfo shuffle = Require(AccessTools.DeclaredMethod(typeof(ListExtensions), nameof(ListExtensions.StableShuffle)), StableShuffleFingerprint, "ListExtensions.StableShuffle");
-        MethodInfo getResolved = Require(AccessTools.DeclaredMethod(typeof(CardEnergyCost), nameof(CardEnergyCost.GetResolved)), GetResolvedFingerprint, "CardEnergyCost.GetResolved");
-        MethodInfo withModifiers = Require(AccessTools.DeclaredMethod(typeof(CardEnergyCost), nameof(CardEnergyCost.GetWithModifiers)), GetWithModifiersFingerprint, "CardEnergyCost.GetWithModifiers");
-        MethodInfo localModify = Require(AccessTools.DeclaredMethod(typeof(LocalCostModifier), nameof(LocalCostModifier.Modify)), LocalModifyFingerprint, "LocalCostModifier.Modify");
-        MethodInfo costHook = Require(AccessTools.DeclaredMethod(typeof(Hook), nameof(Hook.ModifyEnergyCostInCombat)), ModifyEnergyCostFingerprint, "Hook.ModifyEnergyCostInCombat");
-        MethodInfo costDefault = Require(AccessTools.DeclaredMethod(typeof(AbstractModel), CostHooks[0]), CostHookDefaultFingerprint, "AbstractModel." + CostHooks[0]);
-        MethodInfo costLateDefault = Require(AccessTools.DeclaredMethod(typeof(AbstractModel), CostHooks[1]), CostHookDefaultFingerprint, "AbstractModel." + CostHooks[1]);
-        MethodInfo energyCost = Require(AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.EnergyCost)), EnergyCostGetterFingerprint, "CardModel.EnergyCost");
-        MethodInfo dynamicVars = Require(AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.DynamicVars)), DynamicVarsGetterFingerprint, "CardModel.DynamicVars");
-        MethodInfo keys = Require(AccessTools.PropertyGetter(typeof(DynamicVarSet), nameof(DynamicVarSet.Keys)), KeysGetterFingerprint, "DynamicVarSet.Keys");
-        MethodInfo pile = Require(AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.Pile)), PileGetterFingerprint, "CardModel.Pile");
+        MethodInfo baseCompareTo = Require(Reflect.DeclaredMethod(typeof(AbstractModel), nameof(AbstractModel.CompareTo), new[] { typeof(AbstractModel) }), BaseCompareToFingerprint, "AbstractModel.CompareTo");
+        MethodInfo modelIdCompare = Require(Reflect.DeclaredMethod(typeof(ModelId), "Compare", new[] { typeof(ModelId), typeof(ModelId) }), ModelIdCompareFingerprint, "ModelId.Compare");
+        MethodInfo shuffle = Require(Reflect.DeclaredMethod(typeof(ListExtensions), nameof(ListExtensions.StableShuffle)), StableShuffleFingerprint, "ListExtensions.StableShuffle");
+        MethodInfo getResolved = Require(Reflect.DeclaredMethod(typeof(CardEnergyCost), nameof(CardEnergyCost.GetResolved)), GetResolvedFingerprint, "CardEnergyCost.GetResolved");
+        MethodInfo withModifiers = Require(Reflect.DeclaredMethod(typeof(CardEnergyCost), nameof(CardEnergyCost.GetWithModifiers)), GetWithModifiersFingerprint, "CardEnergyCost.GetWithModifiers");
+        MethodInfo localModify = Require(Reflect.DeclaredMethod(typeof(LocalCostModifier), nameof(LocalCostModifier.Modify)), LocalModifyFingerprint, "LocalCostModifier.Modify");
+        MethodInfo costHook = Require(Reflect.DeclaredMethod(typeof(Hook), nameof(Hook.ModifyEnergyCostInCombat)), ModifyEnergyCostFingerprint, "Hook.ModifyEnergyCostInCombat");
+        MethodInfo costDefault = Require(Reflect.DeclaredMethod(typeof(AbstractModel), CostHooks[0]), CostHookDefaultFingerprint, "AbstractModel." + CostHooks[0]);
+        MethodInfo costLateDefault = Require(Reflect.DeclaredMethod(typeof(AbstractModel), CostHooks[1]), CostHookDefaultFingerprint, "AbstractModel." + CostHooks[1]);
+        MethodInfo energyCost = Require(Reflect.PropertyGetter(typeof(CardModel), nameof(CardModel.EnergyCost)), EnergyCostGetterFingerprint, "CardModel.EnergyCost");
+        MethodInfo dynamicVars = Require(Reflect.PropertyGetter(typeof(CardModel), nameof(CardModel.DynamicVars)), DynamicVarsGetterFingerprint, "CardModel.DynamicVars");
+        MethodInfo keys = Require(Reflect.PropertyGetter(typeof(DynamicVarSet), nameof(DynamicVarSet.Keys)), KeysGetterFingerprint, "DynamicVarSet.Keys");
+        MethodInfo pile = Require(Reflect.PropertyGetter(typeof(CardModel), nameof(CardModel.Pile)), PileGetterFingerprint, "CardModel.Pile");
         _modelIdCompare = (Func<ModelId?, ModelId?, int>)Delegate.CreateDelegate(typeof(Func<ModelId?, ModelId?, int>), modelIdCompare);
-        _inScope = AccessTools.Method(typeof(CardSortKeys), nameof(StableShuffleInScope));
+        _inScope = Reflect.Method(typeof(CardSortKeys), nameof(StableShuffleInScope));
         _watched = new MethodBase?[]
         {
             compareTo, baseCompareTo, modelIdCompare, shuffle, shuffle.MakeGenericMethod(typeof(CardModel)), getResolved, withModifiers,
@@ -210,10 +210,10 @@ public static class CardSortKeys
             // Only what a sort with a keyword-reading cost listener relies on: a change leaves those sorts alone to the game.
             _keywordWatched = new MethodBase?[]
             {
-                Require(AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.Keywords)), KeywordsGetterFingerprint, "CardModel.Keywords"),
-                Require(AccessTools.DeclaredMethod(typeof(CardModel), "GetKeywordsWithSources"), KeywordsWithSourcesFingerprint, "CardModel.GetKeywordsWithSources"),
-                Require(AccessTools.DeclaredMethod(typeof(Hook), nameof(Hook.ModifyKeywordsInCombat)), ModifyKeywordsFingerprint, "Hook.ModifyKeywordsInCombat"),
-                Require(AccessTools.DeclaredMethod(typeof(AbstractModel), KeywordHook), KeywordHookDefaultFingerprint, "AbstractModel." + KeywordHook),
+                Require(Reflect.PropertyGetter(typeof(CardModel), nameof(CardModel.Keywords)), KeywordsGetterFingerprint, "CardModel.Keywords"),
+                Require(Reflect.DeclaredMethod(typeof(CardModel), "GetKeywordsWithSources"), KeywordsWithSourcesFingerprint, "CardModel.GetKeywordsWithSources"),
+                Require(Reflect.DeclaredMethod(typeof(Hook), nameof(Hook.ModifyKeywordsInCombat)), ModifyKeywordsFingerprint, "Hook.ModifyKeywordsInCombat"),
+                Require(Reflect.DeclaredMethod(typeof(AbstractModel), KeywordHook), KeywordHookDefaultFingerprint, "AbstractModel." + KeywordHook),
             };
             _keywordsKnown = true;
         }

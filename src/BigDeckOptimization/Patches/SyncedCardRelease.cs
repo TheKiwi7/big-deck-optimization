@@ -39,7 +39,7 @@ public static class SyncedCardRelease
 
     public static void Apply(Harmony harmony)
     {
-        var sync = AccessTools.Method(typeof(Player), nameof(Player.SyncWithSerializedPlayer))
+        var sync = Reflect.Method(typeof(Player), nameof(Player.SyncWithSerializedPlayer))
             ?? throw new MissingMethodException(nameof(Player), nameof(Player.SyncWithSerializedPlayer));
         PatchSafety.RequireFingerprint(sync, SyncFingerprint);
         string[] unknown = MethodFingerprint.FieldUsers(typeof(RunState), "_allCards").Where(user => !ListUsers.Contains(user)).ToArray();
@@ -47,7 +47,7 @@ public static class SyncedCardRelease
         {
             throw new PatchSkippedException($"RunState._allCards also used by {string.Join(", ", unknown)}: left vanilla");
         }
-        _allCards = AccessTools.FieldRefAccess<RunState, List<CardModel>>("_allCards");
+        _allCards = Reflect.FieldRefAccess<RunState, List<CardModel>>("_allCards");
         PatchGuard.Patch(harmony, sync, prefix: new HarmonyMethod(typeof(SyncedCardRelease), nameof(Before)), postfix: new HarmonyMethod(typeof(SyncedCardRelease), nameof(After)));
         Applied = true;
     }

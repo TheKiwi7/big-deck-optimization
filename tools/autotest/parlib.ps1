@@ -295,8 +295,14 @@ function Get-SlotPort([int]$slot) { 34000 + $slot }
 
 # The launch arguments a scenario asks for: --bdoff when it has a 'launchoff' line (the whole mod off for the session from its
 # launch, before the main menu's --fastmp lobby builds the co-op join lists; the line fails without it). Every launcher adds them.
+#  Also --bdforeign <shape> for each 'launchforeign <shape>' line: another mod's patches that must be in before this mod applies
+# (Bench/ForeignLaunch.cs; the line fails without it).
 function Get-ScenarioLaunchArgs([string]$script) {
-    if ((Test-Path $script) -and (Select-String -Path $script -Pattern '^\s*launchoff\s*$' -Quiet)) { @("--bdoff") } else { @() }
+    if (-not (Test-Path $script)) { return @() }
+    $launch = @()
+    if (Select-String -Path $script -Pattern '^\s*launchoff\s*$' -Quiet) { $launch += "--bdoff" }
+    foreach ($m in (Select-String -Path $script -Pattern '^\s*launchforeign\s+(\S+)\s*$')) { $launch += @("--bdforeign", $m.Matches[0].Groups[1].Value) }
+    $launch
 }
 
 # Mirrors the user data into a slot: the caller holds the slot's lock (Lock-Slot) until its session ends.

@@ -321,9 +321,9 @@ public static class SnapshotCardReuse
         {
             throw new PatchSkippedException("needs LimitlessReserialize's comparison (BaseLib and Limitless; applies with it if Limitless loads later)");
         }
-        _toSerializable = AccessTools.Method(typeof(CardModel), nameof(CardModel.ToSerializable), Type.EmptyTypes)
+        _toSerializable = Reflect.Method(typeof(CardModel), nameof(CardModel.ToSerializable), Type.EmptyTypes)
             ?? throw new MissingMethodException(nameof(CardModel), nameof(CardModel.ToSerializable));
-        MethodInfo from = AccessTools.Method(typeof(NetFullCombatState.CardState), nameof(NetFullCombatState.CardState.From), new[] { typeof(CardModel) })
+        MethodInfo from = Reflect.Method(typeof(NetFullCombatState.CardState), nameof(NetFullCombatState.CardState.From), new[] { typeof(CardModel) })
             ?? throw new MissingMethodException("NetFullCombatState.CardState", "From");
         // Only that call is replaced: the rest of From (affliction, keywords, cost) stays the game's whatever it becomes.
         int calls = 0;
@@ -347,7 +347,7 @@ public static class SnapshotCardReuse
         bool pilesApplied = false;
         try
         {
-            _pileFrom = AccessTools.Method(typeof(NetFullCombatState.CombatPileState), nameof(NetFullCombatState.CombatPileState.From), new[] { typeof(CardPile) })
+            _pileFrom = Reflect.Method(typeof(NetFullCombatState.CombatPileState), nameof(NetFullCombatState.CombatPileState.From), new[] { typeof(CardPile) })
                 ?? throw new MissingMethodException("NetFullCombatState.CombatPileState", "From");
             PatchSafety.RequirePartResolvable(typeof(SnapshotCardReuse), "piles");
             PatchSafety.RequireFingerprint(from, CardFromFingerprint);
@@ -355,11 +355,11 @@ public static class SnapshotCardReuse
             _cardFrom = from;
             _keywordValues = Enum.GetValues<CardKeyword>();
             _keywordValuesDistinct = _keywordValues.Distinct().Count() == _keywordValues.Length;
-            _storedVersion = AccessTools.FieldRefAccess<List<SerializableCard>, int>("_version");
+            _storedVersion = Reflect.FieldRefAccess<List<SerializableCard>, int>("_version");
             ApplyFastReads();
             // The release first: a pile prefix in place is then the pile part applied (the flag below, what the preflight
             // shows); a release without it finds no pile entries. ApplyBits and ApplyTrust catch their own errors.
-            PatchGuard.Patch(harmony, AccessTools.Method(typeof(Player), nameof(Player.AfterCombatEnd)), postfix: new HarmonyMethod(typeof(SnapshotCardReuse), nameof(ReleaseCombat)));
+            PatchGuard.Patch(harmony, Reflect.Method(typeof(Player), nameof(Player.AfterCombatEnd)), postfix: new HarmonyMethod(typeof(SnapshotCardReuse), nameof(ReleaseCombat)));
             PatchGuard.Patch(harmony, _pileFrom, prefix: new HarmonyMethod(typeof(SnapshotCardReuse), nameof(PilePrefix)));
             pilesApplied = true;
             ApplyBits(harmony);
@@ -423,15 +423,15 @@ public static class SnapshotCardReuse
     {
         try
         {
-            _keywordsMethod = AccessTools.Method(typeof(CardModel), nameof(CardModel.GetKeywordsWithSources)) ?? throw new MissingMethodException(nameof(CardModel), nameof(CardModel.GetKeywordsWithSources));
-            MethodInfo local = AccessTools.PropertyGetter(typeof(CardModel), "LocalKeywords") ?? throw new MissingMethodException(nameof(CardModel), "LocalKeywords");
-            _withModifiers = AccessTools.Method(typeof(CardEnergyCost), nameof(CardEnergyCost.GetWithModifiers)) ?? throw new MissingMethodException(nameof(CardEnergyCost), nameof(CardEnergyCost.GetWithModifiers));
+            _keywordsMethod = Reflect.Method(typeof(CardModel), nameof(CardModel.GetKeywordsWithSources)) ?? throw new MissingMethodException(nameof(CardModel), nameof(CardModel.GetKeywordsWithSources));
+            MethodInfo local = Reflect.PropertyGetter(typeof(CardModel), "LocalKeywords") ?? throw new MissingMethodException(nameof(CardModel), "LocalKeywords");
+            _withModifiers = Reflect.Method(typeof(CardEnergyCost), nameof(CardEnergyCost.GetWithModifiers)) ?? throw new MissingMethodException(nameof(CardEnergyCost), nameof(CardEnergyCost.GetWithModifiers));
             PatchSafety.RequireFingerprint(_keywordsMethod, KeywordsFingerprint);
             PatchSafety.RequireFingerprint(local, LocalKeywordsFingerprint);
             PatchSafety.RequireFingerprint(_withModifiers, WithModifiersFingerprint);
             _localKeywords = AccessTools.MethodDelegate<Func<CardModel, HashSet<CardKeyword>>>(local);
-            _costBase = AccessTools.FieldRefAccess<CardEnergyCost, int>("_base");
-            _costLocal = AccessTools.FieldRefAccess<CardEnergyCost, List<LocalCostModifier>>("_localModifiers");
+            _costBase = Reflect.FieldRefAccess<CardEnergyCost, int>("_base");
+            _costLocal = Reflect.FieldRefAccess<CardEnergyCost, List<LocalCostModifier>>("_localModifiers");
             _fastReads = true;
         }
         catch (Exception e)
@@ -453,7 +453,7 @@ public static class SnapshotCardReuse
             {
                 throw new PatchSkippedException("patched methods can't be kept from being inlined on this runtime: a write could go unseen");
             }
-            Type multi = AccessTools.TypeByName(LimitlessReserialize.MultiEnchantmentType) ?? throw new TypeLoadException(LimitlessReserialize.MultiEnchantmentType);
+            Type multi = Reflect.TypeByName(LimitlessReserialize.MultiEnchantmentType) ?? throw new TypeLoadException(LimitlessReserialize.MultiEnchantmentType);
             PatchSafety.RequireFieldWriters(multi, "<SerializableEnchantmentsOnCards>k__BackingField", ".ctor", "set_SerializableEnchantmentsOnCards");
             PatchSafety.RequireFieldWriters(typeof(EnchantmentModel), "_amount", "set_Amount");
             PatchSafety.RequireFieldWriters(typeof(AfflictionModel), "_amount", "set_Amount");
@@ -465,8 +465,8 @@ public static class SnapshotCardReuse
             // Both getters hand out the collection itself: code changing it through them never touches the field, so the field check above
             // can't see it. Their users are the known ones (v0.107.1 to v0.113.1, Limitless 1.2.1): the writers are AddKeyword, RemoveKeyword
             // (counted below) and the setter, the others only read.
-            RequireCallers(typeof(CardModel), AccessTools.PropertyGetter(typeof(CardModel), "LocalKeywords"), "GetKeywordsWithSources", "AddKeyword", "RemoveKeyword");
-            RequireCallers(multi, AccessTools.PropertyGetter(multi, "SerializableEnchantmentsOnCards"), "get_EnchantmentsOnCards", "DeepCloneFields");
+            RequireCallers(typeof(CardModel), Reflect.PropertyGetter(typeof(CardModel), "LocalKeywords"), "GetKeywordsWithSources", "AddKeyword", "RemoveKeyword");
+            RequireCallers(multi, Reflect.PropertyGetter(multi, "SerializableEnchantmentsOnCards"), "get_EnchantmentsOnCards", "DeepCloneFields");
             PatchSafety.RequireFieldWriters(typeof(CardModel), "_energyCost", "DeepCloneFields", "MockSetEnergyCost", "get_EnergyCost");
             string[] costWriters = { ".ctor", "AddThisCombat", "AddThisTurn", "AddThisTurnOrUntilPlayed", "AddUntilPlayed", "AfterCardPlayedCleanup", "Clone", "EndOfTurnCleanup", "SetThisCombat", "SetThisTurn", "SetThisTurnOrUntilPlayed", "SetUntilPlayed" };
             PatchSafety.RequireFieldWriters(typeof(CardEnergyCost), "_localModifiers", costWriters);
@@ -480,13 +480,13 @@ public static class SnapshotCardReuse
             {
                 throw new PatchSkippedException($"CardEnergyCost._localModifiers is now also used by {string.Join(", ", newCostUsers)} (update?): left vanilla");
             }
-            MethodInfo? modifierAmount = AccessTools.PropertySetter(typeof(LocalCostModifier), nameof(LocalCostModifier.Amount));
+            MethodInfo? modifierAmount = Reflect.PropertySetter(typeof(LocalCostModifier), nameof(LocalCostModifier.Amount));
             RequireCallers(typeof(CardEnergyCost), modifierAmount, "UpgradeBy");
             RequireCallers(typeof(LocalCostModifier), modifierAmount, ".ctor");
             PatchSafety.RequireFieldWriters(typeof(LocalCostModifier), "<Amount>k__BackingField", "set_Amount");
             // The pure listeners read the card's type: CardModel's own getter returns what the constructor set (see Note for overrides).
             PatchSafety.RequireFieldWriters(typeof(CardModel), "<Type>k__BackingField", ".ctor");
-            MethodInfo typeGetter = AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.Type)) ?? throw new MissingMethodException(nameof(CardModel), "get_Type");
+            MethodInfo typeGetter = Reflect.PropertyGetter(typeof(CardModel), nameof(CardModel.Type)) ?? throw new MissingMethodException(nameof(CardModel), "get_Type");
             // The auto-property's getter (returns that field), v0.107.1 to v0.113.1.
             PatchSafety.RequireFingerprint(typeGetter, TypeGetterFingerprint);
             _typeGetter = typeGetter;
@@ -509,11 +509,11 @@ public static class SnapshotCardReuse
                 Getter(typeof(CardModel), nameof(CardModel.Owner)),
                 Getter(typeof(CardModel), nameof(CardModel.Pile)),
             };
-            _pileCards = AccessTools.FieldRefAccess<CardPile, List<CardModel>>("_cards");
-            _listVersion = AccessTools.FieldRefAccess<List<CardModel>, int>("_version");
-            _costCard = AccessTools.FieldRefAccess<CardEnergyCost, CardModel>("_card");
-            _enchantmentCard = AccessTools.FieldRefAccess<EnchantmentModel, CardModel?>("_card");
-            _afflictionCard = AccessTools.FieldRefAccess<AfflictionModel, CardModel?>("_card");
+            _pileCards = Reflect.FieldRefAccess<CardPile, List<CardModel>>("_cards");
+            _listVersion = Reflect.FieldRefAccess<List<CardModel>, int>("_version");
+            _costCard = Reflect.FieldRefAccess<CardEnergyCost, CardModel>("_card");
+            _enchantmentCard = Reflect.FieldRefAccess<EnchantmentModel, CardModel?>("_card");
+            _afflictionCard = Reflect.FieldRefAccess<AfflictionModel, CardModel?>("_card");
             void Mark(Type type, string method, string prefix)
             {
 #if BENCH
@@ -523,7 +523,7 @@ public static class SnapshotCardReuse
                     prefix += "Counted";
                 }
 #endif
-                PatchGuard.Patch(harmony, AccessTools.Method(type, method) ?? throw new MissingMethodException(type.Name, method),
+                PatchGuard.Patch(harmony, Reflect.Method(type, method) ?? throw new MissingMethodException(type.Name, method),
                     prefix: new HarmonyMethod(typeof(SnapshotCardReuse), prefix));
             }
             foreach (string writer in costWriters.Concat(new[] { "ResetForDowngrade", "SetCustomBaseCost", "UpgradeBy" }))
@@ -589,7 +589,7 @@ public static class SnapshotCardReuse
     }
 
     private static MethodBase Getter(Type type, string property) =>
-        AccessTools.PropertyGetter(type, property) ?? throw new MissingMethodException(type.Name, "get_" + property);
+        Reflect.PropertyGetter(type, property) ?? throw new MissingMethodException(type.Name, "get_" + property);
 
     private static MethodBase[]? _skippedGetters;
 
@@ -758,14 +758,14 @@ public static class SnapshotCardReuse
         try
         {
             PatchSafety.RequirePartResolvable(typeof(SnapshotCardReuse), "bits");
-            _cardSerialize = AccessTools.Method(typeof(NetFullCombatState.CardState), nameof(NetFullCombatState.CardState.Serialize), new[] { typeof(PacketWriter) })
+            _cardSerialize = Reflect.Method(typeof(NetFullCombatState.CardState), nameof(NetFullCombatState.CardState.Serialize), new[] { typeof(PacketWriter) })
                 ?? throw new MissingMethodException("NetFullCombatState.CardState", "Serialize");
-            Type util = AccessTools.TypeByName("MegaCrit.Sts2.Core.Multiplayer.Serialization.BitSerializationUtil") ?? throw new TypeLoadException("BitSerializationUtil");
-            PatchSafety.RequireFingerprint(AccessTools.Method(util, "WriteBytes") ?? throw new MissingMethodException("BitSerializationUtil", "WriteBytes"), WriteBytesFingerprint);
-            MethodInfo resize = AccessTools.Method(typeof(PacketWriter), "ResizeBufferIfNecessary") ?? throw new MissingMethodException(nameof(PacketWriter), "ResizeBufferIfNecessary");
+            Type util = Reflect.TypeByName("MegaCrit.Sts2.Core.Multiplayer.Serialization.BitSerializationUtil") ?? throw new TypeLoadException("BitSerializationUtil");
+            PatchSafety.RequireFingerprint(Reflect.Method(util, "WriteBytes") ?? throw new MissingMethodException("BitSerializationUtil", "WriteBytes"), WriteBytesFingerprint);
+            MethodInfo resize = Reflect.Method(typeof(PacketWriter), "ResizeBufferIfNecessary") ?? throw new MissingMethodException(nameof(PacketWriter), "ResizeBufferIfNecessary");
             PatchSafety.RequireFingerprint(resize, ResizeFingerprint);
             _reserveBits = AccessTools.MethodDelegate<Action<PacketWriter, int>>(resize);
-            _setBitPosition = AccessTools.MethodDelegate<Action<PacketWriter, int>>(AccessTools.PropertySetter(typeof(PacketWriter), nameof(PacketWriter.BitPosition))
+            _setBitPosition = AccessTools.MethodDelegate<Action<PacketWriter, int>>(Reflect.PropertySetter(typeof(PacketWriter), nameof(PacketWriter.BitPosition))
                 ?? throw new MissingMethodException(nameof(PacketWriter), "set_BitPosition"));
             ResolveSerializers();
             PatchGuard.Patch(harmony, _cardSerialize, prefix: new HarmonyMethod(typeof(SnapshotCardReuse), nameof(CardSerializePrefix)));
@@ -785,7 +785,7 @@ public static class SnapshotCardReuse
         }
         try
         {
-            _pileSerialize = AccessTools.Method(typeof(NetFullCombatState.CombatPileState), nameof(NetFullCombatState.CombatPileState.Serialize), new[] { typeof(PacketWriter) })
+            _pileSerialize = Reflect.Method(typeof(NetFullCombatState.CombatPileState), nameof(NetFullCombatState.CombatPileState.Serialize), new[] { typeof(PacketWriter) })
                 ?? throw new MissingMethodException("NetFullCombatState.CombatPileState", "Serialize");
             // From the caller: once its callers reach tier 1 the JIT inlines this small method, and a patch on it no longer runs.
             MethodInfo writeList = AccessTools.FirstMethod(typeof(PacketWriter), m => m.Name == nameof(PacketWriter.WriteList) && m.IsGenericMethodDefinition && m.GetParameters().Length == 2)
@@ -793,7 +793,7 @@ public static class SnapshotCardReuse
             PatchSafety.RequireFingerprint(writeList, WriteListFingerprint);
             // A pile's bits are its type (WriteInt, 32 bits), then WriteList(cards): the count, then each card's bits. Compose builds them that way.
             PatchSafety.RequireFingerprint(_pileSerialize, CombatPileSerializeFingerprint);
-            PatchSafety.RequireFingerprint(AccessTools.Method(typeof(PacketWriter), nameof(PacketWriter.WriteInt))
+            PatchSafety.RequireFingerprint(Reflect.Method(typeof(PacketWriter), nameof(PacketWriter.WriteInt))
                 ?? throw new MissingMethodException(nameof(PacketWriter), nameof(PacketWriter.WriteInt)), WriteIntFingerprint);
             // A closed instantiation can be patched apart from the definition (Unlimited does it for some list types): WritePiles stands
             // for one, Compose for the other.
@@ -803,7 +803,7 @@ public static class SnapshotCardReuse
                 writeList.MakeGenericMethod(typeof(NetFullCombatState.CardState)),
                 writeList.MakeGenericMethod(typeof(NetFullCombatState.CombatPileState)),
             };
-            MethodInfo playerSerialize = AccessTools.Method(typeof(NetFullCombatState.PlayerState), nameof(NetFullCombatState.PlayerState.Serialize), new[] { typeof(PacketWriter) })
+            MethodInfo playerSerialize = Reflect.Method(typeof(NetFullCombatState.PlayerState), nameof(NetFullCombatState.PlayerState.Serialize), new[] { typeof(PacketWriter) })
                 ?? throw new MissingMethodException("NetFullCombatState.PlayerState", "Serialize");
             // One call writes the piles (v0.107.1 to v0.113.1): another layout would leave pile bits applied but never used.
             int pileLists = PatchProcessor.GetOriginalInstructions(playerSerialize).Count(instruction => IsPilesWrite(instruction));
@@ -861,13 +861,13 @@ public static class SnapshotCardReuse
 
     private static void ResolveSerializers()
     {
-        MethodInfo serializableCard = AccessTools.Method(typeof(SerializableCard), nameof(SerializableCard.Serialize))
+        MethodInfo serializableCard = Reflect.Method(typeof(SerializableCard), nameof(SerializableCard.Serialize))
             ?? throw new MissingMethodException(nameof(SerializableCard), nameof(SerializableCard.Serialize));
-        MethodInfo serializableEnchantment = AccessTools.Method(typeof(SerializableEnchantment), nameof(SerializableEnchantment.Serialize))
+        MethodInfo serializableEnchantment = Reflect.Method(typeof(SerializableEnchantment), nameof(SerializableEnchantment.Serialize))
             ?? throw new MissingMethodException(nameof(SerializableEnchantment), nameof(SerializableEnchantment.Serialize));
-        MethodInfo savedProperties = AccessTools.Method(typeof(SavedProperties), nameof(SavedProperties.Serialize))
+        MethodInfo savedProperties = Reflect.Method(typeof(SavedProperties), nameof(SavedProperties.Serialize))
             ?? throw new MissingMethodException(nameof(SavedProperties), nameof(SavedProperties.Serialize));
-        MethodInfo propertyName = AccessTools.Method(typeof(SavedProperties), "WritePropertyName")
+        MethodInfo propertyName = Reflect.Method(typeof(SavedProperties), "WritePropertyName")
             ?? throw new MissingMethodException(nameof(SavedProperties), "WritePropertyName");
         PatchSafety.RequireFingerprint(_cardSerialize!, CardStateSerializeFingerprint);
         PatchSafety.RequireFingerprint(serializableCard, SerializableCardSerializeFingerprint);
@@ -880,37 +880,37 @@ public static class SnapshotCardReuse
         }
         // And the two writers whose layout PatchUpgradeBits writes into (the level's 8 bits right after the entry id): another mod's patch
         // on them could move it. Not WriteBool, WriteEnum or Write<T>: used everywhere, their patches are better left to the sampled checks.
-        MethodInfo writeModelEntry = AccessTools.Method(typeof(PacketWriterExtensions), nameof(PacketWriterExtensions.WriteModelEntry))
+        MethodInfo writeModelEntry = Reflect.Method(typeof(PacketWriterExtensions), nameof(PacketWriterExtensions.WriteModelEntry))
             ?? throw new MissingMethodException(nameof(PacketWriterExtensions), nameof(PacketWriterExtensions.WriteModelEntry));
-        MethodInfo writeInt = AccessTools.Method(typeof(PacketWriter), nameof(PacketWriter.WriteInt))
+        MethodInfo writeInt = Reflect.Method(typeof(PacketWriter), nameof(PacketWriter.WriteInt))
             ?? throw new MissingMethodException(nameof(PacketWriter), nameof(PacketWriter.WriteInt));
         _cardSerializers = new MethodBase[] { _cardSerialize!, serializableCard, serializableEnchantment, savedProperties, propertyName, writeModelEntry, writeInt };
 
         // What the kept bits were written with: ids are written on widths fixed when the caches are built (a mod adding a type to the
         // saved-property cache later, as BaseLib can, may widen the property ids: Limitless's Patch_SavedPropertyNetIdWidth).
         Type cache = typeof(ModelIdSerializationCache);
-        _idHash = AccessTools.MethodDelegate<Func<uint>>(AccessTools.PropertyGetter(cache, nameof(ModelIdSerializationCache.Hash))
+        _idHash = AccessTools.MethodDelegate<Func<uint>>(Reflect.PropertyGetter(cache, nameof(ModelIdSerializationCache.Hash))
             ?? throw new MissingMethodException(cache.Name, "get_Hash"));
-        _entryIdWidth = AccessTools.MethodDelegate<Func<int>>(AccessTools.PropertyGetter(cache, nameof(ModelIdSerializationCache.EntryIdBitSize))
+        _entryIdWidth = AccessTools.MethodDelegate<Func<int>>(Reflect.PropertyGetter(cache, nameof(ModelIdSerializationCache.EntryIdBitSize))
             ?? throw new MissingMethodException(cache.Name, "get_EntryIdBitSize"));
-        _categoryIdWidth = AccessTools.MethodDelegate<Func<int>>(AccessTools.PropertyGetter(cache, nameof(ModelIdSerializationCache.CategoryIdBitSize))
+        _categoryIdWidth = AccessTools.MethodDelegate<Func<int>>(Reflect.PropertyGetter(cache, nameof(ModelIdSerializationCache.CategoryIdBitSize))
             ?? throw new MissingMethodException(cache.Name, "get_CategoryIdBitSize"));
         // v0.111+: ModelIdSerializationCache.PropertyIdBitSize; v0.107.1: SavedPropertiesTypeCache.NetIdBitSize.
-        MethodInfo propertyWidth = AccessTools.PropertyGetter(cache, "PropertyIdBitSize")
-            ?? (AccessTools.TypeByName("MegaCrit.Sts2.Core.Saves.Runs.SavedPropertiesTypeCache") is { } legacy ? AccessTools.PropertyGetter(legacy, "NetIdBitSize") : null)
+        MethodInfo propertyWidth = Reflect.PropertyGetter(cache, "PropertyIdBitSize")
+            ?? (Reflect.TypeByName("MegaCrit.Sts2.Core.Saves.Runs.SavedPropertiesTypeCache") is { } legacy ? Reflect.PropertyGetter(legacy, "NetIdBitSize") : null)
             ?? throw new MissingMethodException(cache.Name, "the saved-property id width");
         _propertyIdWidth = AccessTools.MethodDelegate<Func<int>>(propertyWidth);
 
         // BaseLib is loaded (LimitlessReserialize's comparison needs it): its postfixes are allowed only with their known code.
-        MethodInfo cardWrite = AccessTools.Method(BaseLibCardWrite) ?? throw new PatchSkippedException("BaseLib has no " + BaseLibCardWrite);
-        MethodInfo enchantmentWrite = AccessTools.Method(BaseLibEnchantmentWrite) ?? throw new PatchSkippedException("BaseLib has no " + BaseLibEnchantmentWrite);
-        Type handlers = AccessTools.TypeByName(BaseLibHandlersType) ?? throw new PatchSkippedException("BaseLib has no " + BaseLibHandlersType);
-        MethodInfo canModify = (AccessTools.TypeByName("BaseLib.Patches.PostModInitPatch") is { } postModInit ? AccessTools.PropertyGetter(postModInit, "CanModifyGameplay") : null)
+        MethodInfo cardWrite = Reflect.Method(BaseLibCardWrite) ?? throw new PatchSkippedException("BaseLib has no " + BaseLibCardWrite);
+        MethodInfo enchantmentWrite = Reflect.Method(BaseLibEnchantmentWrite) ?? throw new PatchSkippedException("BaseLib has no " + BaseLibEnchantmentWrite);
+        Type handlers = Reflect.TypeByName(BaseLibHandlersType) ?? throw new PatchSkippedException("BaseLib has no " + BaseLibHandlersType);
+        MethodInfo canModify = (Reflect.TypeByName("BaseLib.Patches.PostModInitPatch") is { } postModInit ? Reflect.PropertyGetter(postModInit, "CanModifyGameplay") : null)
             ?? throw new PatchSkippedException("BaseLib has no PostModInitPatch.CanModifyGameplay");
         _baseLibGameplay = AccessTools.MethodDelegate<Func<bool>>(canModify);
         if (PatchSafety.FingerprintMatches(MethodFingerprint.Of(cardWrite), BaseLibCardWriteFingerprint)
             && PatchSafety.FingerprintMatches(MethodFingerprint.Of(enchantmentWrite), BaseLibEnchantmentWriteFingerprint)
-            && AccessTools.Method(handlers, "Write") is { } write && PatchSafety.FingerprintMatches(MethodFingerprint.Of(write), BaseLibHandlersWriteFingerprint))
+            && Reflect.Method(handlers, "Write") is { } write && PatchSafety.FingerprintMatches(MethodFingerprint.Of(write), BaseLibHandlersWriteFingerprint))
         {
             _baseLibWrites = new[] { cardWrite, enchantmentWrite };
         }
@@ -1730,7 +1730,7 @@ public static class SnapshotCardReuse
     }
 
     private static HashSet<CardKeyword>? _keywordScratch;
-    private static readonly MethodInfo? _keywordsGetter = AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.Keywords));
+    private static readonly MethodInfo? _keywordsGetter = Reflect.PropertyGetter(typeof(CardModel), nameof(CardModel.Keywords));
 
     /// <summary>Another mod patches what <c>card.Keywords</c> runs (the snapshot then reads it as the game does).</summary>
     // No tolerance: keyword reads answered from kept state, not called.
@@ -1876,7 +1876,7 @@ public static class SnapshotCardReuse
             {
                 replaced++;
                 // Same stack: (writer, list, lengthBits).
-                yield return new CodeInstruction(OpCodes.Call, AccessTools.Method(typeof(SnapshotCardReuse), nameof(WritePiles)))
+                yield return new CodeInstruction(OpCodes.Call, Reflect.Method(typeof(SnapshotCardReuse), nameof(WritePiles)))
                     .WithLabels(instruction.labels).WithBlocks(instruction.blocks);
                 continue;
             }
@@ -2315,11 +2315,11 @@ public static class SnapshotCardReuse
     /// <summary><c>CardState.Serialize</c> and <c>SerializableCard.Serialize</c>: fingerprinted with the card bits (<see cref="ResolveSerializers"/>).</summary>
     private static void ApplyUpgradeBits()
     {
-        PatchSafety.RequireFingerprint(AccessTools.Method(typeof(PacketWriterExtensions), nameof(PacketWriterExtensions.WriteModelEntry))
+        PatchSafety.RequireFingerprint(Reflect.Method(typeof(PacketWriterExtensions), nameof(PacketWriterExtensions.WriteModelEntry))
             ?? throw new MissingMethodException(nameof(PacketWriterExtensions), nameof(PacketWriterExtensions.WriteModelEntry)), WriteModelEntryFingerprint);
-        PatchSafety.RequireFingerprint(AccessTools.Method(typeof(PacketWriter), nameof(PacketWriter.WriteInt))
+        PatchSafety.RequireFingerprint(Reflect.Method(typeof(PacketWriter), nameof(PacketWriter.WriteInt))
             ?? throw new MissingMethodException(nameof(PacketWriter), nameof(PacketWriter.WriteInt)), WriteIntFingerprint);
-        _entryIdBits = AccessTools.MethodDelegate<Func<int>>(AccessTools.PropertyGetter(typeof(ModelIdSerializationCache), nameof(ModelIdSerializationCache.EntryIdBitSize))
+        _entryIdBits = AccessTools.MethodDelegate<Func<int>>(Reflect.PropertyGetter(typeof(ModelIdSerializationCache), nameof(ModelIdSerializationCache.EntryIdBitSize))
             ?? throw new MissingMethodException(nameof(ModelIdSerializationCache), "get_EntryIdBitSize"));
     }
 
@@ -2598,7 +2598,7 @@ public static class SnapshotCardReuse
             {
                 replaced = true;
                 _replaced = true;
-                yield return new CodeInstruction(OpCodes.Call, AccessTools.Method(typeof(SnapshotCardReuse), nameof(ToSerializable)))
+                yield return new CodeInstruction(OpCodes.Call, Reflect.Method(typeof(SnapshotCardReuse), nameof(ToSerializable)))
                     .WithLabels(instruction.labels).WithBlocks(instruction.blocks);
                 continue;
             }

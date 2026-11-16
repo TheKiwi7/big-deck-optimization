@@ -47,7 +47,9 @@ namespace BigDeckOptimization.Bench;
 /// in a class with a static constructor).</item>
 /// </list>
 /// Arguments: <c>foreignpatch &lt;shape&gt; &lt;Namespace.Type:Method&gt; [gate] [priority N]</c>; <c>foreignpatch remove</c> takes every
-/// one away; <c>foreignpatch report [label]</c>; <c>foreignpatch require tolerated</c> fails unless a check let a patch stand.
+/// one away; <c>foreignpatch report [label]</c>; <c>foreignpatch require tolerated</c> fails unless a check let a patch stand;
+/// <c>foreignpatch modname &lt;assembly&gt;</c> prints the mod name back-off lines give that assembly. Shapes needed before this mod
+/// applies (Harmony's own lookups intercepted): <see cref="ForeignLaunch"/>.
 /// </summary>
 public static class ForeignPatches
 {
@@ -102,6 +104,11 @@ public static class ForeignPatches
             case "classify" when parts.Length > 1:
                 MethodBase classified = Target(parts[1]);
                 return Classification(classified);
+            case "modname" when parts.Length > 1:
+                // The name back-off lines give a loaded assembly's mod, and whether the game's own mod entry gave it.
+                Assembly? named = PatchSafety.LoadedAssembly(parts[1]);
+                return new[] { $"FOREIGN modname {parts[1]}: " + (named == null ? "not loaded"
+                    : $"{PatchSafety.ModNameOf(named) ?? "none"} ({(PatchSafety.ModEntryNameOf(named) != null ? "mod entry" : "no mod entry")})") };
         }
         if (!Shapes.Contains(parts[0]) || parts.Length < 2)
         {

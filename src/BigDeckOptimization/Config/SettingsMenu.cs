@@ -59,6 +59,11 @@ public static class SettingsMenu
             // Same load context as this mod and BaseLib, so the menu DLL resolves both.
             AssemblyLoadContext context = AssemblyLoadContext.GetLoadContext(main) ?? AssemblyLoadContext.Default;
             Assembly menu = context.LoadFromAssemblyPath(path);
+            // Another mod may answer this load with a rewritten copy (OwnIntegrity): no menu then (bdopt still works).
+            if (Patches.OwnIntegrity.WhyRewritten(menu, path, "BaseLib") is { } rewritten)
+            {
+                throw new InvalidOperationException("the menu DLL was not loaded as shipped: " + rewritten);
+            }
             Type settings = menu.GetType(MenuType, throwOnError: true)!;
             // Its code runs inside BaseLib's settings screen: a BaseLib update that removed or changed a member it uses
             // would only fail there, when the page opens. Checked now: the menu is then left out (bdopt still works).

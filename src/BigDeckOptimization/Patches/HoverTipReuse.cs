@@ -102,15 +102,15 @@ public static class HoverTipReuse
 
     public static void Apply(Harmony harmony)
     {
-        var handler = AccessTools.Method(typeof(NCreature), "ShowCreatureHoverTips")
+        var handler = Reflect.Method(typeof(NCreature), "ShowCreatureHoverTips")
             ?? throw new MissingMethodException("NCreature.ShowCreatureHoverTips");
         PatchSafety.RequireFingerprint(handler, HandlerFingerprint);
-        PatchSafety.RequireFingerprint(AccessTools.Method(typeof(NCreature), nameof(NCreature.ShowHoverTips)), ShowFingerprint);
-        PatchSafety.RequireFingerprint(AccessTools.Method(typeof(NCreature), nameof(NCreature.HideHoverTips)), HideFingerprint);
-        PatchSafety.RequireFingerprint(AccessTools.Method(typeof(NHoverTipSet), "Init"), InitFingerprint);
+        PatchSafety.RequireFingerprint(Reflect.Method(typeof(NCreature), nameof(NCreature.ShowHoverTips)), ShowFingerprint);
+        PatchSafety.RequireFingerprint(Reflect.Method(typeof(NCreature), nameof(NCreature.HideHoverTips)), HideFingerprint);
+        PatchSafety.RequireFingerprint(Reflect.Method(typeof(NHoverTipSet), "Init"), InitFingerprint);
         foreach ((string name, Type[] parameters, bool onlySome, string[] fingerprints) in Pinned)
         {
-            MethodInfo? method = AccessTools.DeclaredMethod(typeof(NHoverTipSet), name, parameters);
+            MethodInfo? method = Reflect.DeclaredMethod(typeof(NHoverTipSet), name, parameters);
             if (method == null)
             {
                 if (onlySome)
@@ -129,13 +129,13 @@ public static class HoverTipReuse
         // What a reuse skips calling: another mod's patch there (e.g. adding content to the tips, or placing them) keeps the rebuilds.
         _skipped = new MethodBase[]
             {
-                AccessTools.Method(typeof(NCreature), nameof(NCreature.ShowHoverTips))!,
-                AccessTools.Method(typeof(NCreature), nameof(NCreature.HideHoverTips))!,
+                Reflect.Method(typeof(NCreature), nameof(NCreature.ShowHoverTips))!,
+                Reflect.Method(typeof(NCreature), nameof(NCreature.HideHoverTips))!,
             }
             .Concat(typeof(NHoverTipSet).GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly)
                 .Where(m => SkippedNames.Contains(m.Name)))
             .ToArray();
-        var field = AccessTools.Field(typeof(NHoverTipSet), "_activeHoverTips") ?? throw new MissingFieldException("NHoverTipSet._activeHoverTips");
+        var field = Reflect.Field(typeof(NHoverTipSet), "_activeHoverTips") ?? throw new MissingFieldException("NHoverTipSet._activeHoverTips");
         var active = (Dictionary<Control, NHoverTipSet>)field.GetValue(null)!;
         _activeHoverTips = () => active;
         PatchGuard.Patch(harmony, handler, prefix: new HarmonyMethod(typeof(HoverTipReuse), nameof(Prefix)));

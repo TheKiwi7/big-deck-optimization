@@ -113,21 +113,21 @@ public static class LimitlessRecalcSkip
         {
             throw new PatchSkippedException("needs LimitlessReserialize (applies with it if Limitless loads later)");
         }
-        Type multi = AccessTools.TypeByName(LimitlessReserialize.MultiEnchantmentType)
+        Type multi = Reflect.TypeByName(LimitlessReserialize.MultiEnchantmentType)
             ?? throw new PatchSkippedException("Limitless has no " + LimitlessReserialize.MultiEnchantmentType);
-        MethodInfo original = AccessTools.Method(multi, "RecalculateValues", Type.EmptyTypes)
+        MethodInfo original = Reflect.Method(multi, "RecalculateValues", Type.EmptyTypes)
             ?? throw new MissingMethodException(LimitlessReserialize.MultiEnchantmentType, "RecalculateValues");
         PatchSafety.RequireFingerprint(original, RecalculateValuesFingerprint);
-        _getter = AccessTools.PropertyGetter(multi, "EnchantmentsOnCards")
+        _getter = Reflect.PropertyGetter(multi, "EnchantmentsOnCards")
             ?? throw new MissingMethodException(LimitlessReserialize.MultiEnchantmentType, "get_EnchantmentsOnCards");
         PatchSafety.RequireFingerprint(_getter, EnchantmentsOnCardsFingerprint);
-        MethodInfo defaultRecalculate = AccessTools.Method(typeof(EnchantmentModel), nameof(EnchantmentModel.RecalculateValues), Type.EmptyTypes)
+        MethodInfo defaultRecalculate = Reflect.Method(typeof(EnchantmentModel), nameof(EnchantmentModel.RecalculateValues), Type.EmptyTypes)
             ?? throw new MissingMethodException(nameof(EnchantmentModel), nameof(EnchantmentModel.RecalculateValues));
         PatchSafety.RequireFingerprint(defaultRecalculate, DefaultRecalculateFingerprint);
-        _innerCards = AccessTools.FieldRefAccess<List<CardModel>?>(multi, "_enchantmentsOnCards");
+        _innerCards = Reflect.FieldRefAccess<List<CardModel>?>(multi, "_enchantmentsOnCards");
         // List<T>'s mutation counter: bumped by every change to the list (Add, Remove, indexer set...).
-        _cardsVersion = AccessTools.FieldRefAccess<List<CardModel>, int>("_version");
-        _storedVersion = AccessTools.FieldRefAccess<List<SerializableCard>, int>("_version");
+        _cardsVersion = Reflect.FieldRefAccess<List<CardModel>, int>("_version");
+        _storedVersion = Reflect.FieldRefAccess<List<SerializableCard>, int>("_version");
         (_cardData, _enchantmentData) = LimitlessReserialize.Data();
         _original = original;
         _defaultRecalculate = defaultRecalculate;
@@ -150,13 +150,13 @@ public static class LimitlessRecalcSkip
 
     private static void ApplyPasses(Harmony harmony, Type multi)
     {
-        _pass = AccessTools.Method(typeof(PlayerCombatState), nameof(PlayerCombatState.RecalculateCardValues)) ?? throw new MissingMethodException(nameof(PlayerCombatState), nameof(PlayerCombatState.RecalculateCardValues));
+        _pass = Reflect.Method(typeof(PlayerCombatState), nameof(PlayerCombatState.RecalculateCardValues)) ?? throw new MissingMethodException(nameof(PlayerCombatState), nameof(PlayerCombatState.RecalculateCardValues));
         PatchSafety.RequireFingerprint(_pass, RecalculateCardValuesFingerprint);
-        _allCards = AccessTools.PropertyGetter(typeof(PlayerCombatState), nameof(PlayerCombatState.AllCards)) ?? throw new MissingMethodException(nameof(PlayerCombatState), "AllCards");
+        _allCards = Reflect.PropertyGetter(typeof(PlayerCombatState), nameof(PlayerCombatState.AllCards)) ?? throw new MissingMethodException(nameof(PlayerCombatState), "AllCards");
         PatchSafety.RequireFingerprint(_allCards, AllCardsFingerprint);
-        MethodInfo deepClone = AccessTools.Method(multi, "DeepCloneFields") ?? throw new MissingMethodException(LimitlessReserialize.MultiEnchantmentType, "DeepCloneFields");
+        MethodInfo deepClone = Reflect.Method(multi, "DeepCloneFields") ?? throw new MissingMethodException(LimitlessReserialize.MultiEnchantmentType, "DeepCloneFields");
         PatchSafety.RequireFingerprint(deepClone, DeepCloneFieldsFingerprint);
-        _storageCard = AccessTools.TypeByName("Limitless.LimitlessCode.UncappedEnchantments.EnchantmentStorageCard")
+        _storageCard = Reflect.TypeByName("Limitless.LimitlessCode.UncappedEnchantments.EnchantmentStorageCard")
             ?? AccessTools.AllTypes().FirstOrDefault(t => t.Name == "EnchantmentStorageCard") ?? throw new TypeLoadException("EnchantmentStorageCard");
         // What the memos read changes through these only; the saved list through its setter only (bumped below).
         LimitlessReserialize.RequireKnownSavedListUsers(multi);
@@ -169,18 +169,18 @@ public static class LimitlessRecalcSkip
         LimitlessHookSkip.RequireKnownInnerListWriters(multi);
         var bump = new HarmonyMethod(typeof(LimitlessRecalcSkip), nameof(BumpQuiet));
         var bumpCard = new HarmonyMethod(typeof(LimitlessRecalcSkip), nameof(BumpQuietIfStorage));
-        MethodInfo Setter(Type type, string property) => AccessTools.PropertySetter(type, property) ?? throw new MissingMethodException(type.Name, "set_" + property);
+        MethodInfo Setter(Type type, string property) => Reflect.PropertySetter(type, property) ?? throw new MissingMethodException(type.Name, "set_" + property);
         PatchGuard.Patch(harmony, Setter(typeof(EnchantmentModel), nameof(EnchantmentModel.Amount)), prefix: bump);
         PatchGuard.Patch(harmony, Setter(typeof(CardModel), nameof(CardModel.CurrentUpgradeLevel)), prefix: bumpCard);
         PatchGuard.Patch(harmony, Setter(typeof(CardModel), nameof(CardModel.FloorAddedToDeck)), prefix: bumpCard);
         PatchGuard.Patch(harmony, Setter(typeof(CardModel), nameof(CardModel.Enchantment)), prefix: bump);
         PatchGuard.Patch(harmony, Setter(multi, "SerializableEnchantmentsOnCards"), prefix: bump);
-        PatchGuard.Patch(harmony, AccessTools.Method(multi, "AddEnchantment") ?? throw new MissingMethodException(LimitlessReserialize.MultiEnchantmentType, "AddEnchantment"), prefix: bump, postfix: bump);
+        PatchGuard.Patch(harmony, Reflect.Method(multi, "AddEnchantment") ?? throw new MissingMethodException(LimitlessReserialize.MultiEnchantmentType, "AddEnchantment"), prefix: bump, postfix: bump);
         PatchGuard.Patch(harmony, deepClone, prefix: bump);
         // A card only enters a pile through this method (no other code changes the pile lists).
         PatchSafety.RequireFieldWriters(typeof(CardPile), "_cards", PatchSafety.CardListWriters);
         // A finalizer: AddInternal raises its events after the list changed, and a handler throwing there leaves the card in.
-        PatchGuard.Patch(harmony, AccessTools.Method(typeof(CardPile), nameof(CardPile.AddInternal)) ?? throw new MissingMethodException(nameof(CardPile), nameof(CardPile.AddInternal)),
+        PatchGuard.Patch(harmony, Reflect.Method(typeof(CardPile), nameof(CardPile.AddInternal)) ?? throw new MissingMethodException(nameof(CardPile), nameof(CardPile.AddInternal)),
             finalizer: new HarmonyMethod(typeof(LimitlessRecalcSkip), nameof(CardEntered)));
         PatchGuard.Patch(harmony, _pass, prefix: new HarmonyMethod(typeof(LimitlessRecalcSkip), nameof(PassPrefix)),
             finalizer: new HarmonyMethod(typeof(LimitlessRecalcSkip), nameof(PassFinalizer)));
@@ -360,7 +360,7 @@ public static class LimitlessRecalcSkip
 
     /// <summary>Whether the type keeps the game's empty RecalculateValues (any thread: card moves may happen off the main one).</summary>
     private static bool KeepsDefault(Type type) => _defaultRecalculates.GetOrAdd(type, static t =>
-        AccessTools.Method(t, nameof(EnchantmentModel.RecalculateValues), Type.EmptyTypes)?.DeclaringType == typeof(EnchantmentModel));
+        Reflect.Method(t, nameof(EnchantmentModel.RecalculateValues), Type.EmptyTypes)?.DeclaringType == typeof(EnchantmentModel));
 
     /// <summary>What the last comparison that kept a MultiEnchantment's list read, to tell when it would keep it again.</summary>
     private sealed class Memo
@@ -430,7 +430,7 @@ public static class LimitlessRecalcSkip
         if (!_plainTypes.TryGetValue(type, out bool plain))
         {
             plain = LimitlessReserialize.SavesNoProperty(type) && (!enchantment
-                || AccessTools.Method(type, nameof(EnchantmentModel.RecalculateValues), Type.EmptyTypes)?.DeclaringType == typeof(EnchantmentModel));
+                || Reflect.Method(type, nameof(EnchantmentModel.RecalculateValues), Type.EmptyTypes)?.DeclaringType == typeof(EnchantmentModel));
             _plainTypes[type] = plain;
         }
         return plain;

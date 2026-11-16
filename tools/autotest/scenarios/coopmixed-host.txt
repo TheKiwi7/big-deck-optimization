@@ -1,5 +1,5 @@
 # CoopModeTag (coop-modetag.ps1), host with the mod on: a client launched with the mod off must be refused by the game's own
-# join check (v0.107.1: the client's JoinFlow; v0.111+: the handshake), which names this mod's entry with '-off' in the client
+# join check (v0.107.1: the client's JoinFlow; v0.111+: the handshake), which names this mod's entry with '+off' in the client
 # log. The host waits for a second player who never comes: coop.ps1 -StopWhen closes both once the refusal is logged.
 timeout 150
 coopmodetag on

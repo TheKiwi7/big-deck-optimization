@@ -25,15 +25,18 @@ public static class ControllerActionSkip
     public static bool Applied { get; private set; }
     public static long Skipped { get; private set; }
 
-    private static readonly MethodInfo _pressed = AccessTools.Method(typeof(InputEvent), nameof(InputEvent.IsActionPressed));
-    private static readonly MethodInfo _released = AccessTools.Method(typeof(InputEvent), nameof(InputEvent.IsActionReleased));
+    private static readonly MethodInfo _pressed = Reflect.Method(typeof(InputEvent), nameof(InputEvent.IsActionPressed));
+    private static readonly MethodInfo _released = Reflect.Method(typeof(InputEvent), nameof(InputEvent.IsActionReleased));
     private static readonly HashSet<StringName> _known = new();
 
     public static void Apply(Harmony harmony)
     {
-        MethodInfo original = AccessTools.Method(typeof(NInputManager), "_UnhandledInput")
+        MethodInfo original = Reflect.Method(typeof(NInputManager), "_UnhandledInput")
             ?? throw new MissingMethodException(nameof(NInputManager), "_UnhandledInput");
         PatchGuard.Patch(harmony, original, transpiler: new HarmonyMethod(typeof(ControllerActionSkip), nameof(Transpiler)));
+        // The calls it skips are Godot's: another mod's patch on them would miss those (Exists' check; shown in bdopt why).
+        PatchSafety.Watch(Name, _pressed);
+        PatchSafety.Watch(Name, _released);
         Applied = true;
     }
 
@@ -45,7 +48,7 @@ public static class ControllerActionSkip
             {
                 // Same stack: (event, action, flags).
                 string helper = instruction.Calls(_pressed) ? nameof(Pressed) : nameof(Released);
-                yield return new CodeInstruction(OpCodes.Call, AccessTools.Method(typeof(ControllerActionSkip), helper))
+                yield return new CodeInstruction(OpCodes.Call, Reflect.Method(typeof(ControllerActionSkip), helper))
                     .WithLabels(instruction.labels).WithBlocks(instruction.blocks);
                 continue;
             }
@@ -54,14 +57,15 @@ public static class ControllerActionSkip
     }
 
     private static bool Pressed(InputEvent inputEvent, StringName action, bool allowEcho, bool exactMatch) =>
-        Exists(action) && inputEvent.IsActionPressed(action, allowEcho, exactMatch);
+        Exists(action, _pressed) && inputEvent.IsActionPressed(action, allowEcho, exactMatch);
 
     private static bool Released(InputEvent inputEvent, StringName action, bool exactMatch) =>
-        Exists(action) && inputEvent.IsActionReleased(action, exactMatch);
+        Exists(action, _released) && inputEvent.IsActionReleased(action, exactMatch);
 
-    private static bool Exists(StringName action)
+    private static bool Exists(StringName action, MethodInfo skipped)
     {
-        if (!Enabled)
+        // No tolerance: a skipped call skips whatever another mod's patch on it does.
+        if (!Enabled || PatchSafety.IsPatchedByOthers(skipped))
         {
             return true;
         }

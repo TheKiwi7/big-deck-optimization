@@ -84,7 +84,7 @@ public static partial class PatchSafety
         {
             return null;
         }
-        return AccessTools.Method(type, typeColonMethod.Substring(colon + 1));
+        return Reflect.Method(type, typeColonMethod.Substring(colon + 1));
     }
 
     /// <summary>
@@ -300,8 +300,8 @@ public static partial class PatchSafety
             return cached.Patched;
         }
         HarmonyLib.Patches? info = Harmony.GetPatchInfo(method);
-        string[] mods = ModNames(info == null ? Enumerable.Empty<Patch>()
-            : AllPatches(info).Where(p => !PatchGuard.IsOurs(p.owner)));
+        string[] mods = WithHidden(method, ModNames(info == null ? Enumerable.Empty<Patch>()
+            : AllPatches(info).Where(p => !PatchGuard.IsOurs(p.owner))));
         if (mods.Length == 0)
         {
             // No other mod's patch at all: no patch backs off from it any more, whichever one filled the cache.
@@ -355,9 +355,9 @@ public static partial class PatchSafety
             return cached.Patched;
         }
         HarmonyLib.Patches? info = Harmony.GetPatchInfo(method);
-        string[] mods = ModNames(info == null ? Enumerable.Empty<Patch>()
+        string[] mods = WithHidden(method, ModNames(info == null ? Enumerable.Empty<Patch>()
             : AllPatches(info)
-                .Where(p => !PatchGuard.IsOurs(p.owner) && !(PatchMethodOf(p) is { } patchMethod && allowedPatches.Any(a => a.MethodHandle == patchMethod.MethodHandle))));
+                .Where(p => !PatchGuard.IsOurs(p.owner) && !(PatchMethodOf(p) is { } patchMethod && allowedPatches.Any(a => a.MethodHandle == patchMethod.MethodHandle)))));
         RecordOnce(caller, method, mods);
         _patchedBeyondAllowed[(method, allowedKey)] = (mods.Length > 0, now, mods);
 #if BENCH
@@ -509,6 +509,10 @@ public static partial class PatchSafety
         return Keep(assembly, FolderModName(assembly));
     }
 
+    /// <summary>The display name of the mod whose game entry lists this assembly (no folder fallback), or null: for the tests.</summary>
+    internal static string? ModEntryNameOf(Assembly assembly) =>
+        MegaCrit.Sts2.Core.Modding.ModManager.Mods.Where(mod => ModAssemblies(mod).Contains(assembly)).Select(DisplayName).FirstOrDefault();
+
     /// <summary>A name found is kept (a mod's assemblies, folder and manifest don't change once loaded); none: not kept, a mod may hold it later.</summary>
     private static string? Keep(Assembly assembly, string? name)
     {
@@ -624,8 +628,8 @@ public static partial class PatchSafety
     // call: reading PatchMethod there searches every loaded assembly's modules again (AccessTools.GetMethodByModuleAndToken,
     // a Parallel.ForEach over all of them), at each recheck of each method another mod patches. Read by reflection: without
     // these fields (another Harmony), PatchMethod as before.
-    private static readonly FieldInfo? _patchToken = AccessTools.Field(typeof(Patch), "methodToken");
-    private static readonly FieldInfo? _patchModule = AccessTools.Field(typeof(Patch), "moduleGUID");
+    private static readonly FieldInfo? _patchToken = Reflect.Field(typeof(Patch), "methodToken");
+    private static readonly FieldInfo? _patchModule = Reflect.Field(typeof(Patch), "moduleGUID");
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Module, int Token), MethodInfo> _patchMethods = new();
 
     /// <summary>
@@ -686,6 +690,57 @@ public static partial class PatchSafety
         return _conflicts.Where(entry => names.Contains(entry.Key.Patch)).SelectMany(entry => entry.Value)
             .Concat(_notes.Where(entry => names.Contains(entry.Key.Patch)).SelectMany(entry => entry.Value.Mods))
             .Distinct().OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    /// <summary>
+    /// Another mod's hidden IL hooks (<see cref="HarmonyWatch"/>) may be in this method with no patch listed: their owners are
+    /// added to the mods patching it, so every check, tolerant or not, backs off there.
+    /// </summary>
+    private static string[] WithHidden(MethodBase method, string[] mods)
+    {
+        string[] hidden = HarmonyWatch.HiddenOwners(method);
+        return hidden.Length == 0 ? mods : mods.Concat(hidden).Distinct().ToArray();
+    }
+
+    /// <summary>
+    /// A Patch or Unpatch just rebuilt this method (<see cref="HarmonyWatch"/>): the cached answers about it are dropped, so the
+    /// next check asks Harmony again instead of trusting one up to <see cref="RecheckAfterMs"/> old. The same method may be keyed
+    /// through another MethodBase object (another reflected type): compared by module and token.
+    /// </summary>
+    internal static void Invalidate(MethodBase original)
+    {
+        bool Same(MethodBase method)
+        {
+            try
+            {
+                return method == original || (method.MetadataToken == original.MetadataToken && method.Module == original.Module);
+            }
+            catch (Exception)
+            {
+                return true;
+            }
+        }
+        foreach (MethodBase method in _patchedByOthers.Keys)
+        {
+            if (Same(method))
+            {
+                _patchedByOthers.TryRemove(method, out _);
+            }
+        }
+        foreach ((MethodBase Method, long Allowed) key in _patchedBeyondAllowed.Keys)
+        {
+            if (Same(key.Method))
+            {
+                _patchedBeyondAllowed.TryRemove(key, out _);
+            }
+        }
+        foreach ((MethodBase Method, long Allowed, PatchTolerance Tolerance) key in _tolerant.Keys)
+        {
+            if (Same(key.Method))
+            {
+                _tolerant.TryRemove(key, out _);
+            }
+        }
     }
 
     private const long RecheckAfterMs = 2000;

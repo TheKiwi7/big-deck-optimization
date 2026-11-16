@@ -10,6 +10,7 @@
   "why.baselib": "Niedostępne: aktualizacja BaseLib zmieniła to, co ta optymalizacja przyspiesza. Pozostaje wyłączona (zwykła gra) do czasu aktualizacji moda.",
   "why.fault": "Wyłączona na tę sesję po błędzie (zamiast niej zwykła gra, szczegóły w logu). Wróci przy następnym uruchomieniu gry.",
   "why.started_off": "Nieaktywna: mod był wyłączony przy uruchomieniu gry, więc nic z niego nie zostało wczytane poza jego sprawdzeniem w co-op (wszyscy gracze muszą mieć go w tym samym stanie). Włącz mod, a potem uruchom grę ponownie.",
+  "why.rewritten": "Nieaktywna: inny mod wczytał zmienioną kopię kodu tego moda, więc w tej sesji nic z niego nie działa poza sprawdzeniem w co-op. Usuń lub zaktualizuj mod, który przepisuje inne mody, a potem uruchom grę ponownie.",
   "why.coop_run": "Zablokowane podczas gry w co-op: wszyscy gracze muszą mieć mod w tym samym stanie, a z wyłączonym modem twoje walki zaczynają się dużo później niż walki graczy, którzy mają go włączonego. Aby mimo to go wyłączyć (tylko jeśli wszyscy pozostali gracze mają go wyłączonego), wpisz w konsoli bdopt off yes.",
   "why.coop_run_on": "Zablokowane podczas gry w co-op: wszyscy gracze muszą mieć mod w tym samym stanie, a z włączonym modem twoje walki zaczynają się w innym tempie niż walki graczy, którzy mają go wyłączonego. Aby mimo to go włączyć (tylko jeśli wszyscy pozostali gracze mają go włączonego), wpisz w konsoli bdopt on yes.",
   "parts_off": "Częściowo nieaktywna: część tej optymalizacji wyłączyła się lub nie ma tu zastosowania (dla tej części normalna gra, szczegóły w logu).",

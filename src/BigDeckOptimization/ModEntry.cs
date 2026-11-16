@@ -19,6 +19,8 @@ public static class ModEntry
     {
         // First, and even when the mod was turned off at the start: co-op players must all have the mod on, or all off.
         (CoopModeTag.Name, CoopModeTag.Apply),
+        // Next: other mods' Patch and Unpatch calls from now on are seen (caches dropped, lost detours, hidden IL hooks).
+        (HarmonyWatch.Name, HarmonyWatch.Apply),
         (ListenerCache.Name, ListenerCache.Apply),
         (HookFilter.Name, HookFilter.Apply),
         (ExtraScopes.Name, ExtraScopes.Apply),
@@ -247,8 +249,50 @@ public static class ModEntry
             StartedOff = false;
             Log.Warn($"[{Id}] Could not read the saved on/off setting (mod on): {e.Message}");
         }
+        try
+        {
+            // Another mod may have loaded a rewritten copy of this DLL (OwnIntegrity): none of it is trusted then.
+            if (OwnIntegrity.WhyRewritten(typeof(ModEntry).Assembly, OwnIntegrity.OwnFile()) is { } rewritten)
+            {
+                Rewritten = rewritten;
+                StartedOff = true;
+                Log.Warn($"[{Id}] This mod's code was not loaded as shipped ({rewritten}): another mod rewrote it. Nothing is applied this session but the co-op check (unmodified game).");
+            }
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"[{Id}] {nameof(OwnIntegrity)}: check failed ({e.Message}), mod on");
+        }
         Log.Info($"[{Id}] Initialized v{typeof(ModEntry).Assembly.GetName().Version?.ToString(3)} in {_initMs:F0} ms"
-            + (StartedOff ? ": turned off in the settings, nothing applied but the co-op check (CoopModeTag; turn it on, then restart the game)" : ""));
+            + (Rewritten != null ? ": loaded rewritten by another mod, nothing applied but the co-op check (CoopModeTag)"
+                : StartedOff ? ": turned off in the settings, nothing applied but the co-op check (CoopModeTag; turn it on, then restart the game)" : ""));
+        LogLookups();
+    }
+
+    /// <summary>
+    /// Why this mod's own code isn't the shipped one (<see cref="OwnIntegrity"/>), or null: then <see cref="StartedOff"/> is
+    /// true for the session, whatever the settings say.
+    /// </summary>
+    public static string? Rewritten { get; private set; }
+
+    /// <summary>
+    /// The game's declared version and the mods patching Harmony's reflection lookups, logged once: a cross-check for
+    /// <see cref="Reflect"/> (this mod's lookups never go through Harmony's) and for the per-version tables (HookSkip).
+    /// </summary>
+    private static void LogLookups()
+    {
+        try
+        {
+            string[] interceptors = Reflect.LookupInterceptors();
+            Log.Info($"[{Id}] Game declares {Reflect.GameVersion() ?? "no version"}"
+                + (interceptors.Length > 0
+                    ? $"; Harmony's reflection lookups are patched by {string.Join(", ", interceptors)}: this mod's own lookups go through the runtime's reflection, unaffected"
+                    : ""));
+        }
+        catch (Exception e)
+        {
+            Log.Info($"[{Id}] Game version not read: {e.Message}");
+        }
     }
 
     /// <summary>
@@ -280,7 +324,10 @@ public static class ModEntry
         try
         {
             PatchSafety.RequireResolvable(patchClass);
-            apply(harmony);
+            using (HarmonyWatch.Own())
+            {
+                apply(harmony);
+            }
             PatchGuard.Register(name, patchClass, PatchGuard.Owned(harmony));
             _applied.Add(name);
             _notApplied.Remove(name); // Skipped earlier, applied now (an optional mod that loaded after this one).

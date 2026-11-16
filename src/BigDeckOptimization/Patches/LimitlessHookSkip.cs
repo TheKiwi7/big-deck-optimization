@@ -181,7 +181,7 @@ public static class LimitlessHookSkip
         {
             throw new PatchSkippedException("Limitless not loaded (applies if it loads later)");
         }
-        Type multi = AccessTools.TypeByName(LimitlessReserialize.MultiEnchantmentType)
+        Type multi = Reflect.TypeByName(LimitlessReserialize.MultiEnchantmentType)
             ?? throw new PatchSkippedException("Limitless has no " + LimitlessReserialize.MultiEnchantmentType);
         var watched = new List<MethodBase>();
         var forwarded = new HashSet<string>();
@@ -190,8 +190,8 @@ public static class LimitlessHookSkip
             // A forwarder that changed only keeps that hook's calls: the others are still known to do nothing.
             try
             {
-                MethodInfo target = AccessTools.Method(multi, method) ?? throw new MissingMethodException(LimitlessReserialize.MultiEnchantmentType, method);
-                MethodBase body = isAsync ? AccessTools.AsyncMoveNext(target) ?? throw new MissingMethodException(method + " state machine") : target;
+                MethodInfo target = Reflect.Method(multi, method) ?? throw new MissingMethodException(LimitlessReserialize.MultiEnchantmentType, method);
+                MethodBase body = isAsync ? Reflect.AsyncMoveNext(target) ?? throw new MissingMethodException(method + " state machine") : target;
                 PatchSafety.RequireFingerprint(body, fingerprint);
                 forwarded.Add(method);
                 watched.Add(target);
@@ -207,11 +207,11 @@ public static class LimitlessHookSkip
             throw new PatchSkippedException("none of the forwarding hooks has the known code");
         }
         _forwarded = forwarded;
-        watched.Add(AccessTools.Method(multi, "SetSerializableCards", new[] { typeof(List<CardModel>) })
+        watched.Add(Reflect.Method(multi, "SetSerializableCards", new[] { typeof(List<CardModel>) })
             ?? throw new MissingMethodException(LimitlessReserialize.MultiEnchantmentType, "SetSerializableCards"));
-        MethodInfo add = AccessTools.Method(multi, "AddEnchantment") ?? throw new MissingMethodException(LimitlessReserialize.MultiEnchantmentType, "AddEnchantment");
+        MethodInfo add = Reflect.Method(multi, "AddEnchantment") ?? throw new MissingMethodException(LimitlessReserialize.MultiEnchantmentType, "AddEnchantment");
         PatchSafety.RequireFingerprint(add, AddEnchantmentFingerprint);
-        MethodInfo getter = AccessTools.PropertyGetter(multi, "EnchantmentsOnCards") ?? throw new MissingMethodException(LimitlessReserialize.MultiEnchantmentType, "get_EnchantmentsOnCards");
+        MethodInfo getter = Reflect.PropertyGetter(multi, "EnchantmentsOnCards") ?? throw new MissingMethodException(LimitlessReserialize.MultiEnchantmentType, "get_EnchantmentsOnCards");
         // Each forwarder reads the inner cards through it (building them on a clone's first call): a dropped one skips it,
         // so its code must be the known one for any drop (not only for the saved-pairs shortcut below).
         PatchSafety.RequireFingerprint(getter, InnerGetterFingerprint);
@@ -219,18 +219,18 @@ public static class LimitlessHookSkip
         _watched = watched.Distinct().ToArray();
         // Inner types are noted where AddEnchantment adds one: no other code may change the inner list.
         RequireKnownInnerListWriters(multi);
-        _storageCard = AccessTools.TypeByName("Limitless.LimitlessCode.UncappedEnchantments.EnchantmentStorageCard")
+        _storageCard = Reflect.TypeByName("Limitless.LimitlessCode.UncappedEnchantments.EnchantmentStorageCard")
             ?? throw new PatchSkippedException("Limitless has no EnchantmentStorageCard");
         ParameterExpression model = Expression.Parameter(typeof(object));
         _inner = Expression.Lambda<Func<object, List<CardModel>>>(Expression.Call(Expression.Convert(model, multi), getter), model).Compile();
         _addEnchantment = add;
         try
         {
-            PatchSafety.RequireFingerprint(AccessTools.Method(typeof(CardModel), nameof(CardModel.FromSerializable)), CardFromSerializableFingerprint);
-            PatchSafety.RequireFingerprint(AccessTools.Method(typeof(EnchantmentModel), nameof(EnchantmentModel.FromSerializable)), EnchantmentFromSerializableFingerprint);
-            _built = AccessTools.FieldRefAccess<object, List<CardModel>?>(AccessTools.Field(multi, "_enchantmentsOnCards")
+            PatchSafety.RequireFingerprint(Reflect.Method(typeof(CardModel), nameof(CardModel.FromSerializable)), CardFromSerializableFingerprint);
+            PatchSafety.RequireFingerprint(Reflect.Method(typeof(EnchantmentModel), nameof(EnchantmentModel.FromSerializable)), EnchantmentFromSerializableFingerprint);
+            _built = Reflect.FieldRefAccess<object, List<CardModel>?>(Reflect.Field(multi, "_enchantmentsOnCards")
                 ?? throw new MissingFieldException(LimitlessReserialize.MultiEnchantmentType, "_enchantmentsOnCards"));
-            _saved = AccessTools.FieldRefAccess<object, List<SerializableCard>?>(AccessTools.Field(multi, "<SerializableEnchantmentsOnCards>k__BackingField")
+            _saved = Reflect.FieldRefAccess<object, List<SerializableCard>?>(Reflect.Field(multi, "<SerializableEnchantmentsOnCards>k__BackingField")
                 ?? throw new MissingFieldException(LimitlessReserialize.MultiEnchantmentType, "SerializableEnchantmentsOnCards"));
         }
         catch (Exception e)
@@ -603,7 +603,7 @@ public static class LimitlessHookSkip
     /// </summary>
     private static void ScanAssembly(Assembly assembly, Type multi, List<string> unknown)
     {
-        MethodInfo getter = AccessTools.PropertyGetter(multi, "EnchantmentsOnCards")
+        MethodInfo getter = Reflect.PropertyGetter(multi, "EnchantmentsOnCards")
             ?? throw new MissingMethodException(LimitlessReserialize.MultiEnchantmentType, "get_EnchantmentsOnCards");
         var mutable = new HashSet<Type> { getter.ReturnType, typeof(IList<CardModel>), typeof(ICollection<CardModel>) };
         const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
@@ -706,8 +706,8 @@ public static class LimitlessHookSkip
             {
                 continue;
             }
-            hooks[i] = AccessTools.Method(multi, hook)?.GetBaseDefinition();
-            MethodInfo target = AccessTools.Method(typeof(MegaCrit.Sts2.Core.Hooks.Hook), hook)
+            hooks[i] = Reflect.Method(multi, hook)?.GetBaseDefinition();
+            MethodInfo target = Reflect.Method(typeof(MegaCrit.Sts2.Core.Hooks.Hook), hook)
                 ?? throw new MissingMethodException("Hook", hook);
             PatchGuard.Patch(harmony, target, prefix: new HarmonyMethod(typeof(LimitlessHookSkip), "Sample" + i));
         }

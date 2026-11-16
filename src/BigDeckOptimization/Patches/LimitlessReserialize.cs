@@ -130,33 +130,33 @@ public static class LimitlessReserialize
 
     private static void ApplyNow(Harmony harmony)
     {
-        _cardToSerializable = AccessTools.Method(typeof(CardModel), nameof(CardModel.ToSerializable));
-        _enchantmentToSerializable = AccessTools.Method(typeof(EnchantmentModel), nameof(EnchantmentModel.ToSerializable));
+        _cardToSerializable = Reflect.Method(typeof(CardModel), nameof(CardModel.ToSerializable));
+        _enchantmentToSerializable = Reflect.Method(typeof(EnchantmentModel), nameof(EnchantmentModel.ToSerializable));
         PatchSafety.RequireFingerprint(_cardToSerializable, CardToSerializableFingerprint);
         PatchSafety.RequireFingerprint(_enchantmentToSerializable, EnchantmentToSerializableFingerprint);
-        _savedPropertiesFrom = AccessTools.Method(typeof(SavedProperties), nameof(SavedProperties.From));
+        _savedPropertiesFrom = Reflect.Method(typeof(SavedProperties), nameof(SavedProperties.From));
         PatchSafety.RequireFingerprint(_savedPropertiesFrom, SavedPropertiesFromFingerprint);
-        _fromInternal = AccessTools.Method(typeof(SavedProperties), nameof(SavedProperties.FromInternal));
+        _fromInternal = Reflect.Method(typeof(SavedProperties), nameof(SavedProperties.FromInternal));
         PatchSafety.RequireFingerprint(_fromInternal, SavedPropertiesFromInternalFingerprint);
         // BaseLib's SavedSpireField export (its fields' targets get no shortcut: PlanOf) is the only patch expected there.
-        _allowedOnFromInternal = AccessTools.Method(RelicStateReuse.BaseLibFieldsPostfix) is { } fieldsPostfix
+        _allowedOnFromInternal = Reflect.Method(RelicStateReuse.BaseLibFieldsPostfix) is { } fieldsPostfix
             && PatchSafety.FingerprintMatches(MethodFingerprint.Of(fieldsPostfix), RelicStateReuse.BaseLibFieldsPostfixFingerprint)
             ? new[] { fieldsPostfix } : Array.Empty<MethodInfo>();
         _jsonProperties = JsonPropertiesLookup();
-        Type handlers = AccessTools.TypeByName(HandlersType) ?? throw new PatchSkippedException("BaseLib has no " + HandlersType);
+        Type handlers = Reflect.TypeByName(HandlersType) ?? throw new PatchSkippedException("BaseLib has no " + HandlersType);
         _cardData = new ExtendedData(handlers, typeof(CardModel), typeof(SerializableCard),
             "BaseLib.Patches.Saves.ExtendedSavePatches+PrepExtendedCardData:ExtendedDataForCard", ExtendedDataForCardFingerprint);
         _enchantmentData = new ExtendedData(handlers, typeof(EnchantmentModel), typeof(SerializableEnchantment),
             "BaseLib.Patches.Saves.ExtendedSavePatches+PrepExtendedEnchantmentData:ExtendedDataForEnchantment", ExtendedDataForEnchantmentFingerprint);
         ComparisonReady = true;
 
-        Type multi = AccessTools.TypeByName(MultiEnchantmentType) ?? throw new PatchSkippedException("Limitless has no " + MultiEnchantmentType);
-        MethodInfo original = AccessTools.Method(multi, "SetSerializableCards", new[] { typeof(List<CardModel>) })
+        Type multi = Reflect.TypeByName(MultiEnchantmentType) ?? throw new PatchSkippedException("Limitless has no " + MultiEnchantmentType);
+        MethodInfo original = Reflect.Method(multi, "SetSerializableCards", new[] { typeof(List<CardModel>) })
             ?? throw new MissingMethodException(MultiEnchantmentType, "SetSerializableCards");
         PatchSafety.RequireFingerprint(original, SetSerializableCardsFingerprint);
-        Stored = AccessTools.FieldRefAccess<List<SerializableCard>?>(multi, "<SerializableEnchantmentsOnCards>k__BackingField");
+        Stored = Reflect.FieldRefAccess<List<SerializableCard>?>(multi, "<SerializableEnchantmentsOnCards>k__BackingField");
         // A kept list never reaches the setter Limitless assigns the new one with: another mod's patch there is bypassed too.
-        _setter = AccessTools.PropertySetter(multi, "SerializableEnchantmentsOnCards")
+        _setter = Reflect.PropertySetter(multi, "SerializableEnchantmentsOnCards")
             ?? throw new MissingMethodException(MultiEnchantmentType, "set_SerializableEnchantmentsOnCards");
         PatchSafety.RequireFingerprint(_setter, StoredSetterFingerprint);
         _original = original;
@@ -222,7 +222,7 @@ public static class LimitlessReserialize
     internal static void RequireKnownSavedListUsers(Type multi)
     {
         PatchSafety.RequireFieldWriters(multi, "<SerializableEnchantmentsOnCards>k__BackingField", ".ctor", "set_SerializableEnchantmentsOnCards");
-        MethodInfo getter = AccessTools.PropertyGetter(multi, "SerializableEnchantmentsOnCards")
+        MethodInfo getter = Reflect.PropertyGetter(multi, "SerializableEnchantmentsOnCards")
             ?? throw new MissingMethodException(MultiEnchantmentType, "get_SerializableEnchantmentsOnCards");
         string[] known = { "get_EnchantmentsOnCards", "DeepCloneFields" };
         const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
@@ -358,9 +358,9 @@ public static class LimitlessReserialize
                 _checkedSaveMatches = false;
                 try
                 {
-                    var id = AccessTools.Property(save.GetType(), "Id")?.GetValue(save) as string;
-                    var wrapper = AccessTools.Property(save.GetType(), "Getter")?.GetValue(save) as Delegate;
-                    var getter = wrapper?.Target == null ? null : AccessTools.Field(wrapper.Target.GetType(), "getter")?.GetValue(wrapper.Target) as Delegate;
+                    var id = Reflect.Property(save.GetType(), "Id")?.GetValue(save) as string;
+                    var wrapper = Reflect.Property(save.GetType(), "Getter")?.GetValue(save) as Delegate;
+                    var getter = wrapper?.Target == null ? null : Reflect.Field(wrapper.Target.GetType(), "getter")?.GetValue(wrapper.Target) as Delegate;
                     // The wrapper is a method of a generic closure class: fingerprint its generic definition.
                     MethodInfo? wrapperDefinition = wrapper?.Method.DeclaringType is { IsGenericType: true } closure
                         ? closure.GetGenericTypeDefinition().GetMethod(wrapper.Method.Name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
@@ -392,7 +392,7 @@ public static class LimitlessReserialize
                 IList saves = _registeredSaves();
                 if (_idsFor != saves.Count)
                 {
-                    _ids = saves.Cast<object>().Select(save => (string)AccessTools.Property(save.GetType(), "Id").GetValue(save)!)
+                    _ids = saves.Cast<object>().Select(save => (string)Reflect.Property(save.GetType(), "Id").GetValue(save)!)
                         .Distinct(StringComparer.Ordinal).ToArray();
                     _idsFor = saves.Count;
                 }
@@ -408,12 +408,12 @@ public static class LimitlessReserialize
 
         public ExtendedData(Type handlersDefinition, Type model, Type serializable, string postfix, string postfixFingerprint)
         {
-            Postfix = AccessTools.Method(postfix) ?? throw new PatchSkippedException("BaseLib has no " + postfix);
+            Postfix = Reflect.Method(postfix) ?? throw new PatchSkippedException("BaseLib has no " + postfix);
             PatchSafety.RequireFingerprint(Postfix, postfixFingerprint);
             Type dataDefinition = handlersDefinition.GetNestedType("ExtendedSaveData", BindingFlags.Public | BindingFlags.NonPublic)
                 ?? throw new PatchSkippedException("BaseLib has no ExtendedSaveData");
             PatchSafety.RequireFingerprint(dataDefinition.GetConstructors().Single(c => c.GetParameters().Length == 1), ExtendedSaveDataCtorFingerprint);
-            PatchSafety.RequireFingerprint(AccessTools.Method(dataDefinition, "DictForType"), DictForTypeFingerprint);
+            PatchSafety.RequireFingerprint(Reflect.Method(dataDefinition, "DictForType"), DictForTypeFingerprint);
             Type handlers = handlersDefinition.MakeGenericType(model, serializable);
             Type data = dataDefinition.MakeGenericType(model, serializable);
 
@@ -423,7 +423,7 @@ public static class LimitlessReserialize
             _scratch = (data.GetConstructor(Type.EmptyTypes) ?? throw new MissingMethodException(data.Name, ".ctor()")).Invoke(null);
 
             // The constructor's loop: foreach (save in RegisteredSaves) save.Getter(model, data).
-            PropertyInfo registered = AccessTools.Property(handlers, "RegisteredSaves") ?? throw new MissingMemberException(handlers.Name, "RegisteredSaves");
+            PropertyInfo registered = Reflect.Property(handlers, "RegisteredSaves") ?? throw new MissingMemberException(handlers.Name, "RegisteredSaves");
             _registeredSaves = Expression.Lambda<Func<IList>>(Expression.Convert(Expression.Property(null, registered), typeof(IList))).Compile();
             ParameterExpression target = Expression.Parameter(typeof(object));
             ParameterExpression saves = Expression.Variable(registered.PropertyType);
@@ -441,9 +441,9 @@ public static class LimitlessReserialize
                     Expression.Break(done)), done)), arg, target).Compile();
 
             // ExtendedData is a NotNullSpireField whose indexer adds a default entry when missing: read its table instead.
-            object field = AccessTools.Property(handlers, "ExtendedData").GetValue(null)
+            object field = Reflect.Property(handlers, "ExtendedData").GetValue(null)
                 ?? throw new PatchSkippedException("BaseLib's ExtendedData is null");
-            object table = AccessTools.Field(field.GetType(), "_table")?.GetValue(field)
+            object table = Reflect.Field(field.GetType(), "_table")?.GetValue(field)
                 ?? throw new PatchSkippedException("BaseLib's ExtendedData has no _table");
             MethodInfo tryGet = table.GetType().GetMethod("TryGetValue") ?? throw new MissingMethodException(table.GetType().Name, "TryGetValue");
             ParameterExpression found = Expression.Variable(data);
@@ -878,7 +878,7 @@ public static class LimitlessReserialize
     {
         foreach (string type in new[] { "MegaCrit.Sts2.Core.Saves.Runs.SavedPropertiesTypeCache", "MegaCrit.Sts2.Core.Multiplayer.Serialization.ModelIdSerializationCache" })
         {
-            if (AccessTools.TypeByName(type) is { } cache && AccessTools.Method(cache, "GetJsonPropertiesForType", new[] { typeof(Type) }) is { } lookup)
+            if (Reflect.TypeByName(type) is { } cache && Reflect.Method(cache, "GetJsonPropertiesForType", new[] { typeof(Type) }) is { } lookup)
             {
                 return AccessTools.MethodDelegate<Func<Type, List<System.Reflection.PropertyInfo>?>>(lookup);
             }

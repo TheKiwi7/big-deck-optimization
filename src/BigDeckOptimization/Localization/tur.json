@@ -10,6 +10,7 @@
   "why.baselib": "Kullanılamıyor: bir BaseLib güncellemesi bu optimizasyonun hızlandırdığı şeyi değiştirdi. Mod güncellenene kadar kapalı kalır (normal oyun).",
   "why.fault": "Bir hatadan sonra bu oturum için kapatıldı (yerine normal oyun, ayrıntılar logda). Oyunu bir sonraki başlatışınızda yeniden açılır.",
   "why.started_off": "Etkin değil: oyun başlarken mod kapalıydı, bu yüzden co-op kontrolü (tüm oyuncularda mod aynı durumda olmalı) dışında hiçbir parçası yüklenmedi. Modu açın, ardından oyunu yeniden başlatın.",
+  "why.rewritten": "Etkin değil: başka bir mod bu modun kodunun değiştirilmiş bir kopyasını yükledi, bu yüzden bu oturumda co-op kontrolü dışında hiçbir parçası uygulanmıyor. Diğer modları yeniden yazan modu kaldırın veya güncelleyin, ardından oyunu yeniden başlatın.",
   "why.coop_run": "Co-op oyun sırasında kilitli: tüm oyuncuların modu aynı durumda tutması gerekir ve mod kapalıyken savaşlarınız modu açık olan oyunculardan çok daha geç başlar. Yine de kapatmak için (yalnızca diğer tüm oyuncularda kapalıysa) konsola bdopt off yes yazın.",
   "why.coop_run_on": "Co-op oyun sırasında kilitli: tüm oyuncuların modu aynı durumda tutması gerekir ve mod açıkken savaşlarınız modu kapalı olan oyunculardan farklı bir hızda başlar. Yine de açmak için (yalnızca diğer tüm oyuncularda açıksa) konsola bdopt on yes yazın.",
   "parts_off": "Kısmen devre dışı: bu optimizasyonun bir bölümü kendini kapattı veya burada geçerli değil (o bölüm için normal oyun, ayrıntılar günlükte).",

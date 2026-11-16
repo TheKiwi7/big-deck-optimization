@@ -75,7 +75,7 @@ public static class RelicStateReuse
     /// (data attached when it was made, as BaseLib's extended data is) would write a reused object's old data: the game's call.
     /// </summary>
     private static MethodInfo? _propertiesSerialize, _relicStateSerialize;
-    private static readonly MethodInfo _savedPropertiesFrom = AccessTools.Method(typeof(SavedProperties), nameof(SavedProperties.From));
+    private static readonly MethodInfo _savedPropertiesFrom = Reflect.Method(typeof(SavedProperties), nameof(SavedProperties.From));
     private static MethodInfo[] _allowedOnToSerializable = Array.Empty<MethodInfo>();
     private static MethodInfo[] _allowedOnSerialize = Array.Empty<MethodInfo>();
     private static MethodInfo[] _allowedUnlimitedOnly = Array.Empty<MethodInfo>();
@@ -89,17 +89,17 @@ public static class RelicStateReuse
 
     public static void Apply(Harmony harmony)
     {
-        _toSerializable = AccessTools.Method(typeof(RelicModel), nameof(RelicModel.ToSerializable), Type.EmptyTypes)
+        _toSerializable = Reflect.Method(typeof(RelicModel), nameof(RelicModel.ToSerializable), Type.EmptyTypes)
             ?? throw new MissingMethodException(nameof(RelicModel), nameof(RelicModel.ToSerializable));
-        _serialize = AccessTools.Method(typeof(SerializableRelic), nameof(SerializableRelic.Serialize))
+        _serialize = Reflect.Method(typeof(SerializableRelic), nameof(SerializableRelic.Serialize))
             ?? throw new MissingMethodException(nameof(SerializableRelic), nameof(SerializableRelic.Serialize));
         PatchSafety.RequireFingerprint(_toSerializable, ToSerializableFingerprint);
         PatchSafety.RequireFingerprint(_serialize, SerializeFingerprint);
-        MethodInfo fromRun = AccessTools.Method(typeof(NetFullCombatState), nameof(NetFullCombatState.FromRun))
+        MethodInfo fromRun = Reflect.Method(typeof(NetFullCombatState), nameof(NetFullCombatState.FromRun))
             ?? throw new MissingMethodException(nameof(NetFullCombatState), nameof(NetFullCombatState.FromRun));
-        _propertiesSerialize = AccessTools.Method(typeof(SavedProperties), nameof(SavedProperties.Serialize), new[] { typeof(PacketWriter) })
+        _propertiesSerialize = Reflect.Method(typeof(SavedProperties), nameof(SavedProperties.Serialize), new[] { typeof(PacketWriter) })
             ?? throw new MissingMethodException(nameof(SavedProperties), nameof(SavedProperties.Serialize));
-        _relicStateSerialize = AccessTools.Method(typeof(NetFullCombatState.RelicState), nameof(NetFullCombatState.RelicState.Serialize), new[] { typeof(PacketWriter) })
+        _relicStateSerialize = Reflect.Method(typeof(NetFullCombatState.RelicState), nameof(NetFullCombatState.RelicState.Serialize), new[] { typeof(PacketWriter) })
             ?? throw new MissingMethodException(nameof(NetFullCombatState.RelicState), nameof(NetFullCombatState.RelicState.Serialize));
         _mainThread = Environment.CurrentManagedThreadId;
         string[] loaded = AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetName().Name ?? "").ToArray();
@@ -198,13 +198,13 @@ public static class RelicStateReuse
 
     private static void ApplyScalar()
     {
-        _fromInternal = AccessTools.Method(typeof(SavedProperties), nameof(SavedProperties.FromInternal))
+        _fromInternal = Reflect.Method(typeof(SavedProperties), nameof(SavedProperties.FromInternal))
             ?? throw new MissingMethodException(nameof(SavedProperties), nameof(SavedProperties.FromInternal));
         PatchSafety.RequireFingerprint(_fromInternal, FromInternalFingerprint);
-        _shouldSerialize = AccessTools.Method(typeof(SerializationConditionExtensions), nameof(SerializationConditionExtensions.ShouldSerialize))
+        _shouldSerialize = Reflect.Method(typeof(SerializationConditionExtensions), nameof(SerializationConditionExtensions.ShouldSerialize))
             ?? throw new MissingMethodException(nameof(SerializationConditionExtensions), nameof(SerializationConditionExtensions.ShouldSerialize));
         PatchSafety.RequireFingerprint(_shouldSerialize, ShouldSerializeFingerprint);
-        PatchSafety.RequireFingerprint(AccessTools.Method(typeof(SerializationConditionExtensions), "GetTypeDefaultValue")
+        PatchSafety.RequireFingerprint(Reflect.Method(typeof(SerializationConditionExtensions), "GetTypeDefaultValue")
             ?? throw new MissingMethodException(nameof(SerializationConditionExtensions), "GetTypeDefaultValue"), TypeDefaultFingerprint);
         _jsonProperties = LimitlessReserialize.JsonPropertiesLookup();
         ScalarApplied = true;
@@ -462,9 +462,9 @@ public static class RelicStateReuse
             try
             {
                 AppDomain.CurrentDomain.AssemblyLoad -= OnLoad;
-                MethodInfo transpiler = AccessTools.Method(UnlimitedTranspiler) ?? throw new PatchSkippedException("Unlimited has no " + UnlimitedTranspiler);
+                MethodInfo transpiler = Reflect.Method(UnlimitedTranspiler) ?? throw new PatchSkippedException("Unlimited has no " + UnlimitedTranspiler);
                 PatchSafety.RequireFingerprint(transpiler, UnlimitedTranspilerFingerprint);
-                PatchSafety.RequireFingerprint(AccessTools.Method(transpiler.DeclaringType, "IsVanillaListBitsConstant")
+                PatchSafety.RequireFingerprint(Reflect.Method(transpiler.DeclaringType, "IsVanillaListBitsConstant")
                     ?? throw new MissingMethodException("PacketSizePatch", "IsVanillaListBitsConstant"), UnlimitedConstantFingerprint);
                 Transpiler = transpiler;
                 AllowOnSerialize();
@@ -494,14 +494,14 @@ public static class RelicStateReuse
     /// <summary>BaseLib's relic postfixes, accepted only with their known code; its relic saves, read at each use.</summary>
     private static void ResolveBaseLib()
     {
-        MethodInfo postfix = AccessTools.Method(BaseLibPostfix) ?? throw new PatchSkippedException("BaseLib has no " + BaseLibPostfix);
-        MethodInfo write = AccessTools.Method(BaseLibWrite) ?? throw new PatchSkippedException("BaseLib has no " + BaseLibWrite);
+        MethodInfo postfix = Reflect.Method(BaseLibPostfix) ?? throw new PatchSkippedException("BaseLib has no " + BaseLibPostfix);
+        MethodInfo write = Reflect.Method(BaseLibWrite) ?? throw new PatchSkippedException("BaseLib has no " + BaseLibWrite);
         PatchSafety.RequireFingerprint(postfix, BaseLibPostfixFingerprint);
         PatchSafety.RequireFingerprint(write, BaseLibWriteFingerprint);
-        Type definition = AccessTools.TypeByName(HandlersType) ?? throw new PatchSkippedException("BaseLib has no " + HandlersType);
-        PatchSafety.RequireFingerprint(AccessTools.Method(definition, "Write") ?? throw new MissingMethodException(HandlersType, "Write"), HandlersWriteFingerprint);
+        Type definition = Reflect.TypeByName(HandlersType) ?? throw new PatchSkippedException("BaseLib has no " + HandlersType);
+        PatchSafety.RequireFingerprint(Reflect.Method(definition, "Write") ?? throw new MissingMethodException(HandlersType, "Write"), HandlersWriteFingerprint);
         Type handlers = definition.MakeGenericType(typeof(RelicModel), typeof(SerializableRelic));
-        PropertyInfo registered = AccessTools.Property(handlers, "RegisteredSaves") ?? throw new MissingMemberException(handlers.Name, "RegisteredSaves");
+        PropertyInfo registered = Reflect.Property(handlers, "RegisteredSaves") ?? throw new MissingMemberException(handlers.Name, "RegisteredSaves");
         _registeredSaves = Expression.Lambda<Func<IList>>(Expression.Convert(Expression.Property(null, registered), typeof(IList))).Compile();
         _baseLibPostfix = AccessTools.MethodDelegate<Action<RelicModel, SerializableRelic>>(postfix);
         _allowedOnToSerializable = new[] { postfix };
@@ -535,11 +535,11 @@ public static class RelicStateReuse
 
     private static void ResolveBaseLibFields()
     {
-        MethodInfo postfix = AccessTools.Method(BaseLibFieldsPostfix) ?? throw new PatchSkippedException("BaseLib has no " + BaseLibFieldsPostfix);
+        MethodInfo postfix = Reflect.Method(BaseLibFieldsPostfix) ?? throw new PatchSkippedException("BaseLib has no " + BaseLibFieldsPostfix);
         PatchSafety.RequireFingerprint(postfix, BaseLibFieldsPostfixFingerprint);
-        PatchSafety.RequireFingerprint(AccessTools.Method(postfix.DeclaringType, "GetFieldsForModel")
+        PatchSafety.RequireFingerprint(Reflect.Method(postfix.DeclaringType, "GetFieldsForModel")
             ?? throw new MissingMethodException(postfix.DeclaringType!.Name, "GetFieldsForModel"), BaseLibFieldsTargetsFingerprint);
-        FieldInfo fields = AccessTools.Field(postfix.DeclaringType, "RegisteredFields") ?? throw new MissingFieldException(postfix.DeclaringType!.Name, "RegisteredFields");
+        FieldInfo fields = Reflect.Field(postfix.DeclaringType, "RegisteredFields") ?? throw new MissingFieldException(postfix.DeclaringType!.Name, "RegisteredFields");
         _baseLibFields = Expression.Lambda<Func<IList>>(Expression.Convert(Expression.Field(null, fields), typeof(IList))).Compile();
         _allowedOnFromInternal = new[] { postfix };
     }
@@ -598,7 +598,7 @@ public static class RelicStateReuse
     /// </summary>
     private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions, ILGenerator generator)
     {
-        MethodInfo reuse = AccessTools.Method(typeof(RelicStateReuse), nameof(Serialize));
+        MethodInfo reuse = Reflect.Method(typeof(RelicStateReuse), nameof(Serialize));
         LocalBuilder? kept = null;
         foreach (CodeInstruction instruction in instructions)
         {

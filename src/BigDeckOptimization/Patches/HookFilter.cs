@@ -212,17 +212,17 @@ public static class HookFilter
     /// <summary>The walk's methods and whether they are the code mirrored (once; may throw: callers handle it).</summary>
     private static void LookUpCombatHookWalk()
     {
-        MethodInfo? walk = AccessTools.Method(typeof(Hook), "IterateCombatHookListeners");
-        MethodBase? body = walk == null ? null : AccessTools.EnumeratorMoveNext(walk);
+        MethodInfo? walk = Reflect.Method(typeof(Hook), "IterateCombatHookListeners");
+        MethodBase? body = walk == null ? null : Reflect.EnumeratorMoveNext(walk);
         _combatHookWalkKnown = body != null && PatchSafety.FingerprintMatches(MethodFingerprint.Of(body), CombatHookWalkFingerprint);
         if (_combatHookWalkKnown != true)
         {
             Log.Info($"[{ModEntry.Id}] {Name}: Hook.IterateCombatHookListeners changed: combat hooks left vanilla");
         }
         var parts = new List<MethodBase?> { walk, body,
-            AccessTools.PropertyGetter(typeof(CombatManager), nameof(CombatManager.IsOverOrEnding)),
-            AccessTools.PropertyGetter(typeof(CombatManager), nameof(CombatManager.IsStarting)) };
-        if (AccessTools.PropertyGetter(typeof(CombatManager), "ShouldSkipCombatEffect") is { } skip)
+            Reflect.PropertyGetter(typeof(CombatManager), nameof(CombatManager.IsOverOrEnding)),
+            Reflect.PropertyGetter(typeof(CombatManager), nameof(CombatManager.IsStarting)) };
+        if (Reflect.PropertyGetter(typeof(CombatManager), "ShouldSkipCombatEffect") is { } skip)
         {
             parts.Add(skip);
             if (_combatHookWalkKnown == true && MethodFingerprint.Of(skip) != ShouldSkipCombatEffectFingerprint)
@@ -326,8 +326,8 @@ public static class HookFilter
         MethodInfo? damageHook = Find(typeof(Hook), "ModifyDamageInternal");
         MethodInfo? hittingHook = Find(typeof(Hook), nameof(Hook.ShouldAllowHitting));
         // Optional: a missing or changed cost color helper only leaves that helper vanilla.
-        MethodInfo? energyColor = AccessTools.Method(typeof(MegaCrit.Sts2.Core.Helpers.Models.CardCostHelper), "TryModifyEnergyCostWithHooks");
-        MethodInfo? starColor = AccessTools.Method(typeof(MegaCrit.Sts2.Core.Helpers.Models.CardCostHelper), "TryModifyStarCostWithHooks");
+        MethodInfo? energyColor = Reflect.Method(typeof(MegaCrit.Sts2.Core.Helpers.Models.CardCostHelper), "TryModifyEnergyCostWithHooks");
+        MethodInfo? starColor = Reflect.Method(typeof(MegaCrit.Sts2.Core.Helpers.Models.CardCostHelper), "TryModifyStarCostWithHooks");
         // combatWalk: the game's hook walks IterateCombatHookListeners (energy cost, ShouldPlay, hitting). Keywords, the cost
         // color helpers and the damage hook walk the state's listeners directly: a mod patching that walk or the combat
         // getters it reads doesn't change them. The energy cost lists also serve the energy cost color helper (direct walk)
@@ -454,7 +454,7 @@ public static class HookFilter
     {
         try
         {
-            return AccessTools.Method(type, name);
+            return Reflect.Method(type, name);
         }
         catch (AmbiguousMatchException)
         {
@@ -783,26 +783,26 @@ internal static class HookFilterDamage
     {
         Type[] value = { typeof(Creature), typeof(decimal), typeof(ValueProp), typeof(Creature), typeof(CardModel) };
         Type[] cap = { typeof(Creature), typeof(ValueProp), typeof(Creature), typeof(CardModel) };
-        MethodInfo? additive = AccessTools.Method(typeof(AbstractModel), nameof(AbstractModel.ModifyDamageAdditive), value.Append(typeof(CardPlay)).ToArray());
+        MethodInfo? additive = Reflect.Method(typeof(AbstractModel), nameof(AbstractModel.ModifyDamageAdditive), value.Append(typeof(CardPlay)).ToArray());
         if (additive != null)
         {
             _additivePlay = Make<Func<AbstractModel, Creature?, decimal, ValueProp, Creature?, CardModel?, CardPlay?, decimal>>(additive);
             _multiplicativePlay = Make<Func<AbstractModel, Creature?, decimal, ValueProp, Creature?, CardModel?, CardPlay?, decimal>>(
-                AccessTools.Method(typeof(AbstractModel), nameof(AbstractModel.ModifyDamageMultiplicative), value.Append(typeof(CardPlay)).ToArray()));
+                Reflect.Method(typeof(AbstractModel), nameof(AbstractModel.ModifyDamageMultiplicative), value.Append(typeof(CardPlay)).ToArray()));
             _capPlay = Make<Func<AbstractModel, Creature?, ValueProp, Creature?, CardModel?, CardPlay?, decimal>>(
-                AccessTools.Method(typeof(AbstractModel), nameof(AbstractModel.ModifyDamageCap), cap.Append(typeof(CardPlay)).ToArray()));
-            if (AccessTools.Method(typeof(AbstractModel), "ModifyDamageMultiplicativeLate", value.Append(typeof(CardPlay)).ToArray()) is { } late)
+                Reflect.Method(typeof(AbstractModel), nameof(AbstractModel.ModifyDamageCap), cap.Append(typeof(CardPlay)).ToArray()));
+            if (Reflect.Method(typeof(AbstractModel), "ModifyDamageMultiplicativeLate", value.Append(typeof(CardPlay)).ToArray()) is { } late)
             {
                 _multiplicativeLatePlay = Make<Func<AbstractModel, Creature?, decimal, ValueProp, Creature?, CardModel?, CardPlay?, decimal>>(late);
             }
             return true;
         }
         _additive = Make<Func<AbstractModel, Creature?, decimal, ValueProp, Creature?, CardModel?, decimal>>(
-            AccessTools.Method(typeof(AbstractModel), nameof(AbstractModel.ModifyDamageAdditive), value));
+            Reflect.Method(typeof(AbstractModel), nameof(AbstractModel.ModifyDamageAdditive), value));
         _multiplicative = Make<Func<AbstractModel, Creature?, decimal, ValueProp, Creature?, CardModel?, decimal>>(
-            AccessTools.Method(typeof(AbstractModel), nameof(AbstractModel.ModifyDamageMultiplicative), value));
+            Reflect.Method(typeof(AbstractModel), nameof(AbstractModel.ModifyDamageMultiplicative), value));
         _cap = Make<Func<AbstractModel, Creature?, ValueProp, Creature?, CardModel?, decimal>>(
-            AccessTools.Method(typeof(AbstractModel), nameof(AbstractModel.ModifyDamageCap), cap));
+            Reflect.Method(typeof(AbstractModel), nameof(AbstractModel.ModifyDamageCap), cap));
         return false;
     }
 

@@ -285,7 +285,7 @@ public static partial class PatchSafety
                 }
             }
         }
-        string[] all = ModNames(others.Select(o => o.Patch));
+        string[] all = WithHidden(method, ModNames(others.Select(o => o.Patch)));
         if (all.Length == 0)
         {
             Forget(method);
@@ -310,7 +310,7 @@ public static partial class PatchSafety
                 remaining.Add(patch);
             }
         }
-        string[] mods = ModNames(remaining);
+        string[] mods = WithHidden(method, ModNames(remaining));
         string[] toleratedMods = ModNames(tolerated);
         Type[] gateTypes = mods.Length > 0 ? Type.EmptyTypes : gateList.Distinct().ToArray();
         RecordOnce(caller, method, mods, tolerance);
@@ -385,7 +385,7 @@ public static partial class PatchSafety
             return cached.Patched;
         }
         HarmonyLib.Patches? info = Harmony.GetPatchInfo(method);
-        string[] mods = ModNames(info == null ? Enumerable.Empty<Patch>() : AllPatches(info).Where(p => !PatchGuard.IsOurs(p.owner)));
+        string[] mods = WithHidden(method, ModNames(info == null ? Enumerable.Empty<Patch>() : AllPatches(info).Where(p => !PatchGuard.IsOurs(p.owner))));
         if (mods.Length == 0)
         {
             Forget(method);

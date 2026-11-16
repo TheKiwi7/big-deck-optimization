@@ -1,0 +1,19 @@
+# Another mod intercepting Harmony's reflection lookups for every caller (a cross-version compatibility mod's way): from the launch
+# (launchforeign: --bdforeign, Bench/ForeignLaunch.cs, in before this mod applies anything), AccessTools.Method answers a hook of
+# the other game version's name with this version's (BeforeTurnEnd and BeforeSideTurnEnd, AfterTurnEnd and AfterSideTurnEnd), and
+# AccessTools.Field answers the Mod field this version lacks (assembly or assemblies) with a stand-in giving every mod the core
+# library. This mod's lookups go through the runtime (Reflect): every classified hook of this version is filtered, none left
+# vanilla by a substituted hook, the substitutions logged apart; mods keep their names from the game's own Mod entry.
+# Run on v0.113.1 (154 hooks) and v0.107.1 (147).
+timeout 300
+launchforeign reflection-intercept
+expect LAUNCHFOREIGN reflection-intercept: Harmony answers \w*TurnEnd -> \w*TurnEnd.*stand-in in place
+expect HookSkip: (154|147) hooks filtered, 0 left vanilla \(\d+ classified hooks not in this game version, [1-9]\d* lookups answered by another member, ignored\)
+expect HookSkip: (Before|After)(Side)?TurnEnd: Harmony's lookup answered by another member
+expect Harmony's reflection lookups are patched by bdtest\.foreign\.reflection-intercept
+expect HookSkip: the game declares v[\d.]+; its code matches the tables of v[\d.]+
+expect FOREIGN modname BaseLib: .+ \(mod entry\)
+wait 5
+foreignpatch modname BaseLib
+cmd bdopt why
+quit

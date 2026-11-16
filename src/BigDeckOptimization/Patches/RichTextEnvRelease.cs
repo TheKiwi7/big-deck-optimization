@@ -55,7 +55,7 @@ public static class RichTextEnvRelease
         ("RichTextScramble", "9AE255C80AF67670", true),
     };
 
-    private static readonly MethodInfo _env = AccessTools.PropertyGetter(typeof(CharFXTransform), nameof(CharFXTransform.Env));
+    private static readonly MethodInfo _env = Reflect.PropertyGetter(typeof(CharFXTransform), nameof(CharFXTransform.Env));
     private static readonly List<MethodBase> _patched = new();
     [ThreadStatic] private static List<Dictionary>? _taken;
     [ThreadStatic] private static bool _reading;
@@ -68,12 +68,12 @@ public static class RichTextEnvRelease
         List<string> left = new();
         foreach ((string type, string fingerprint, bool later) in Effects)
         {
-            System.Type? effect = AccessTools.TypeByName("MegaCrit.Sts2.Core.RichTextTags." + type);
+            System.Type? effect = Reflect.TypeByName("MegaCrit.Sts2.Core.RichTextTags." + type);
             if (effect == null && later)
             {
                 continue;
             }
-            MethodInfo? method = effect == null ? null : AccessTools.DeclaredMethod(effect, "_ProcessCustomFX", new[] { typeof(CharFXTransform) });
+            MethodInfo? method = effect == null ? null : Reflect.DeclaredMethod(effect, "_ProcessCustomFX", new[] { typeof(CharFXTransform) });
             if (method == null || !PatchSafety.FingerprintMatches(MethodFingerprint.Of(method), fingerprint))
             {
                 left.Add(type);
@@ -94,9 +94,9 @@ public static class RichTextEnvRelease
         MethodInfo? register = null;
         try
         {
-            register = AccessTools.Method(AccessTools.TypeByName("Godot.DisposablesTracker"), "RegisterDisposable")
+            register = Reflect.Method(Reflect.TypeByName("Godot.DisposablesTracker"), "RegisterDisposable")
                 ?? throw new MissingMethodException("DisposablesTracker", "RegisterDisposable");
-            MethodInfo dispose = AccessTools.Method(typeof(Dictionary), nameof(Dictionary.Dispose), new[] { typeof(bool) })
+            MethodInfo dispose = Reflect.Method(typeof(Dictionary), nameof(Dictionary.Dispose), new[] { typeof(bool) })
                 ?? throw new MissingMethodException(nameof(Dictionary), nameof(Dictionary.Dispose));
             PatchSafety.RequireFingerprint(register, RegisterFingerprint);
             PatchSafety.RequireFingerprint(dispose, DisposeFingerprint);
@@ -159,7 +159,7 @@ public static class RichTextEnvRelease
             if (instruction.Calls(_env))
             {
                 // Same stack: (charFx) -> env.
-                yield return new CodeInstruction(OpCodes.Call, AccessTools.Method(typeof(RichTextEnvRelease), nameof(Env)))
+                yield return new CodeInstruction(OpCodes.Call, Reflect.Method(typeof(RichTextEnvRelease), nameof(Env)))
                     .WithLabels(instruction.labels).WithBlocks(instruction.blocks);
                 continue;
             }

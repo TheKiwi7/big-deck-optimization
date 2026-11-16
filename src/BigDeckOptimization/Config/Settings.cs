@@ -127,7 +127,12 @@ public static class Settings
     public const string StartedOffText =
         "Inactive: the mod was turned off when the game started, so none of it is loaded but its co-op check (every player must have it in the same state). Turn the mod on, then restart the game.";
 
-    public static string StartedOffWhy(string? language) => Translations.Get(language, "why.started_off", StartedOffText);
+    public static string StartedOffWhy(string? language) => ModEntry.Rewritten != null
+        ? Translations.Get(language, "why.rewritten", RewrittenText)
+        : Translations.Get(language, "why.started_off", StartedOffText);
+
+    public const string RewrittenText =
+        "Inactive: another mod loaded a modified copy of this mod's code, so none of it is applied this session but its co-op check. Remove or update the mod that rewrites other mods, then restart the game.";
 
     // Neutral about who has what: a player switching back after a mistaken switch is told the same as one switching first.
     public const string CoopRunText =
@@ -212,10 +217,12 @@ public static class Settings
     {
         // The parts that run now: a back-off of an option switched off, faulted or not applied changes nothing there.
         IReadOnlyList<PatchSafety.BackOff> backOffs = PatchSafety.BackOffs().Where(b => !Master || Running(b.Patch)).ToList();
+        // Other mods' Harmony activity this mod can't judge patch by patch (hidden IL hooks, its own code patched, lost detours).
+        string harmony = string.Concat(HarmonyWatch.Report().Select(line => "\n" + line));
         if (backOffs.Count == 0)
         {
             return "BigDeckOptimization: no other mod keeps any part of the optimizations on the normal game"
-                + (ModEntry.StartedOff ? " (the mod is inactive this session)." : !Master ? " (the mod is off: everything runs the normal game now)." : ".");
+                + (ModEntry.StartedOff ? " (the mod is inactive this session)." : !Master ? " (the mod is off: everything runs the normal game now)." : ".") + harmony;
         }
         var sb = new StringBuilder(!Master
             ? "BigDeckOptimization: the mod is off, everything runs the normal game now. Once on, these parts would still run the normal game because of other mods:\n"
@@ -245,7 +252,7 @@ public static class Settings
                 sb.Append(char.ToUpperInvariant(words[0])).Append(words, 1, words.Length - 1).Append(" now: ").Append(string.Join(", ", labels)).Append('\n');
             }
         }
-        return sb.ToString().TrimEnd();
+        return sb.ToString().TrimEnd() + harmony;
     }
 
     /// <summary>
@@ -626,7 +633,25 @@ public static class Settings
     /// player's combats start at another pace than theirs. bdopt asks for a confirmation then (bdopt off yes, bdopt on yes).
     /// The menu needs no lobby check: BaseLib's mod configuration can't be opened from a lobby.
     /// </summary>
-    public static bool InCoopGame => InCoopRun || (!RunInProgress() && InCoopLobby());
+    public static bool InCoopGame => InCoopRun || NetSessionConnected() || (!RunInProgress() && InCoopLobby());
+
+    /// <summary>
+    /// The run manager's net service is connected as host or client, whatever the run and lobby objects are: a mod reloading a
+    /// co-op save or returning to a lobby mid-run (a quick-load, an auto-rejoin) keeps the session connected while no run and no
+    /// lobby screen exists. Asking for a confirmation then costs nothing; missing it would let a co-op player switch alone.
+    /// </summary>
+    private static bool NetSessionConnected()
+    {
+        try
+        {
+            return MegaCrit.Sts2.Core.Runs.RunManager.Instance.NetService is { IsConnected: true } net
+                && net.Type is MegaCrit.Sts2.Core.Multiplayer.Game.NetGameType.Host or MegaCrit.Sts2.Core.Multiplayer.Game.NetGameType.Client;
+        }
+        catch
+        {
+            return false; // Can't tell: the run and lobby checks still answer.
+        }
+    }
 
     /// <summary>A run exists (solo or co-op): no lobby screen can be open then (the main menu is freed when a run starts), no walk needed.</summary>
     private static bool RunInProgress()
@@ -858,6 +883,11 @@ public static class Settings
     {
         if (ModEntry.StartedOff)
         {
+            if (ModEntry.Rewritten != null)
+            {
+                return $"BigDeckOptimization: inactive this session (another mod loaded a rewritten copy of its code: {ModEntry.Rewritten}; nothing applied but the co-op check: unmodified game). "
+                    + CoopOffOnlyNow;
+            }
             return $"BigDeckOptimization: inactive this session (turned off when the game started, nothing applied but the co-op check: unmodified game). "
                 + (Master ? "Turned on: takes effect when you restart the game." : "To use it: bdopt on, then restart the game.")
                 + " " + CoopOffOnlyNow;

@@ -174,6 +174,10 @@ public static class InlineGuard
         Dictionary<MethodBase, Reach> reaches = new();
         foreach (MethodBase patched in Harmony.GetAllPatchedMethods().ToList())
         {
+            if (patched.DeclaringType?.Assembly == typeof(Harmony).Assembly)
+            {
+                continue; // Harmony's own code (HarmonyWatch's finalizer, other mods' hooks there): no game caller inlines it.
+            }
             long start = System.Diagnostics.Stopwatch.GetTimestamp();
             try
             {

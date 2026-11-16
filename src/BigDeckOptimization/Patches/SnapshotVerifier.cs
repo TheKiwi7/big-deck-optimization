@@ -88,13 +88,13 @@ public static class SnapshotVerifier
     public static void Apply(Harmony harmony)
     {
         PatchGuard.Patch(harmony,
-            AccessTools.Method(typeof(NetFullCombatState), nameof(NetFullCombatState.FromRun)),
+            Reflect.Method(typeof(NetFullCombatState), nameof(NetFullCombatState.FromRun)),
             prefix: new HarmonyMethod(typeof(SnapshotVerifier), nameof(FromRunPrefix)),
             postfix: new HarmonyMethod(typeof(SnapshotVerifier), nameof(FromRunPostfix)));
         try
         {
             PatchGuard.Patch(harmony,
-                AccessTools.Method(typeof(ChecksumTracker), nameof(ChecksumTracker.GenerateChecksum), new[] { typeof(NetFullCombatState) }),
+                Reflect.Method(typeof(ChecksumTracker), nameof(ChecksumTracker.GenerateChecksum), new[] { typeof(NetFullCombatState) }),
                 prefix: new HarmonyMethod(typeof(SnapshotVerifier), nameof(ChecksumPrefix)),
                 postfix: new HarmonyMethod(typeof(SnapshotVerifier), nameof(ChecksumPostfix)));
         }

@@ -44,9 +44,9 @@ public static class IdleButtonInput
 
     public static void Apply(Harmony harmony)
     {
-        _input = AccessTools.DeclaredMethod(typeof(NButton), "_Input", new[] { typeof(InputEvent) })
+        _input = Reflect.DeclaredMethod(typeof(NButton), "_Input", new[] { typeof(InputEvent) })
             ?? throw new MissingMethodException(nameof(NButton), "_Input");
-        _dragCheck = AccessTools.Method(typeof(NClickableControl), "CheckMouseDragThreshold")
+        _dragCheck = Reflect.Method(typeof(NClickableControl), "CheckMouseDragThreshold")
             ?? throw new MissingMethodException(nameof(NClickableControl), "CheckMouseDragThreshold");
         PatchSafety.RequireFingerprint(_input, InputFingerprint);
         PatchSafety.RequireFingerprint(_dragCheck, DragCheckFingerprint);
@@ -54,18 +54,18 @@ public static class IdleButtonInput
         // OnPressHandler) would leave it muted while pressed, its drag cancel never run. The Godot-generated property methods
         // (Get/Set/Save/Restore, ldflda counts as a write) run only for editor-style property access and hot reload.
         PatchSafety.RequireFieldWriters(typeof(NClickableControl), "_isPressed", PressedWriters);
-        _isPressed = AccessTools.FieldRefAccess<NClickableControl, bool>("_isPressed");
-        _isEnabled = AccessTools.FieldRefAccess<NClickableControl, bool>("_isEnabled");
-        PatchGuard.Patch(harmony, AccessTools.Method(typeof(Node), nameof(Node.SetProcessInput)),
+        _isPressed = Reflect.FieldRefAccess<NClickableControl, bool>("_isPressed");
+        _isEnabled = Reflect.FieldRefAccess<NClickableControl, bool>("_isEnabled");
+        PatchGuard.Patch(harmony, Reflect.Method(typeof(Node), nameof(Node.SetProcessInput)),
             prefix: new HarmonyMethod(typeof(IdleButtonInput), nameof(SetProcessInputPrefix)));
         // Subclasses never call base._Ready() but always reach NClickableControl.ConnectSignals() from it.
-        PatchGuard.Patch(harmony, AccessTools.DeclaredMethod(typeof(NClickableControl), "ConnectSignals"),
+        PatchGuard.Patch(harmony, Reflect.DeclaredMethod(typeof(NClickableControl), "ConnectSignals"),
             postfix: new HarmonyMethod(typeof(IdleButtonInput), nameof(SyncPostfix)));
-        PatchGuard.Patch(harmony, AccessTools.Method(typeof(NClickableControl), "OnPressHandler"),
+        PatchGuard.Patch(harmony, Reflect.Method(typeof(NClickableControl), "OnPressHandler"),
             postfix: new HarmonyMethod(typeof(IdleButtonInput), nameof(SyncPostfix)));
-        PatchGuard.Patch(harmony, AccessTools.Method(typeof(NClickableControl), "OnReleaseHandler"),
+        PatchGuard.Patch(harmony, Reflect.Method(typeof(NClickableControl), "OnReleaseHandler"),
             postfix: new HarmonyMethod(typeof(IdleButtonInput), nameof(SyncPostfix)));
-        PatchGuard.Patch(harmony, AccessTools.Method(typeof(NClickableControl), "CheckMouseDragThreshold"),
+        PatchGuard.Patch(harmony, Reflect.Method(typeof(NClickableControl), "CheckMouseDragThreshold"),
             postfix: new HarmonyMethod(typeof(IdleButtonInput), nameof(SyncPostfix)));
         // What Active asks about (display only).
         PatchSafety.Watch(Name, _input);

@@ -14,6 +14,9 @@ public static partial class HookSkip
         new() { ["MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext::.ctor(AbstractModel,UInt64,ICombatState,GameActionType)"] = "56940726071BFEB1", ["MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext::AssignTaskAndWaitForPauseOrCompletion(Task)"] = "773D0A3451DE5745", ["MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext::ExecuteTaskThenInvokeExecutionFinished(Task)"] = "3F514ED17E6F7D88", ["MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext::GetOwner(AbstractModel,ICombatState)"] = "96FEEFEB3F35658C", ["MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext::WaitForCompletion()"] = "563E11E58E2F0BFB", ["MegaCrit.Sts2.Core.GameActions.Multiplayer.PlayerChoiceContext::PopModel(AbstractModel)"] = "36AB6C738D279F41", ["MegaCrit.Sts2.Core.GameActions.Multiplayer.PlayerChoiceContext::PushModel(AbstractModel)"] = "E8909CD36B23A229", ["MegaCrit.Sts2.Core.Helpers.TaskHelper::WhenAny(Task[])"] = "4934FF2422DEC6E8", ["MegaCrit.Sts2.Core.Models.AbstractModel::InvokeExecutionFinished()"] = "E9AAC6CC1141D434" },
     };
 
+    /// <summary>The game version each helper profile was classified on (checked against the version the game declares).</summary>
+    private static readonly string[] HelperProfileVersions = { "v0.107.1", "v0.113.1" };
+
     /// <summary>
     /// Hooks whose listener loops only do no-ops for a listener keeping the defaults of these methods, per classified
     /// version: hook code fingerprint, ExecutionFinished kept, helper profile (-1: none used), "Method=default fingerprint".

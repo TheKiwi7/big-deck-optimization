@@ -42,13 +42,13 @@ public static class PileCounterBatch
 
     public static void Apply(Harmony harmony)
     {
-        var removeCard = AccessTools.Method(typeof(NCombatCardPile), "RemoveCard") ?? throw new MissingMethodException("NCombatCardPile.RemoveCard");
+        var removeCard = Reflect.Method(typeof(NCombatCardPile), "RemoveCard") ?? throw new MissingMethodException("NCombatCardPile.RemoveCard");
         PatchSafety.RequireFingerprint(removeCard, RemoveCardFingerprint);
         _removeCard = removeCard;
-        _pile = AccessTools.FieldRefAccess<NCombatCardPile, CardPile?>("_pile");
-        _currentCount = AccessTools.FieldRefAccess<NCombatCardPile, int>("_currentCount");
-        _countLabel = AccessTools.FieldRefAccess<NCombatCardPile, MegaCrit.Sts2.addons.mega_text.MegaLabel>("_countLabel");
-        var clear = AccessTools.Method(typeof(CardPile), nameof(CardPile.Clear)) ?? throw new MissingMethodException("CardPile.Clear");
+        _pile = Reflect.FieldRefAccess<NCombatCardPile, CardPile?>("_pile");
+        _currentCount = Reflect.FieldRefAccess<NCombatCardPile, int>("_currentCount");
+        _countLabel = Reflect.FieldRefAccess<NCombatCardPile, MegaCrit.Sts2.addons.mega_text.MegaLabel>("_countLabel");
+        var clear = Reflect.Method(typeof(CardPile), nameof(CardPile.Clear)) ?? throw new MissingMethodException("CardPile.Clear");
         PatchGuard.Patch(harmony, clear,
             prefix: new HarmonyMethod(typeof(PileCounterBatch), nameof(ClearPrefix)),
             finalizer: new HarmonyMethod(typeof(PileCounterBatch), nameof(ClearFinalizer)));

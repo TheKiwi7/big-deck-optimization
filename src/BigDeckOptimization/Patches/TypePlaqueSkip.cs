@@ -66,12 +66,12 @@ public static class TypePlaqueSkip
 
     private static void ApplyNow(Harmony harmony)
     {
-        Type patch = AccessTools.TypeByName(PatchType) ?? throw new PatchSkippedException("BaseLib has no " + PatchType);
-        MethodInfo original = AccessTools.Method(patch, "TryModifyPlaqueText", new[] { typeof(LocString), typeof(CardModel) })
+        Type patch = Reflect.TypeByName(PatchType) ?? throw new PatchSkippedException("BaseLib has no " + PatchType);
+        MethodInfo original = Reflect.Method(patch, "TryModifyPlaqueText", new[] { typeof(LocString), typeof(CardModel) })
             ?? throw new PatchSkippedException("BaseLib has no TryModifyPlaqueText");
         PatchSafety.RequireFingerprint(original, Fingerprint);
-        _customText = AccessTools.TypeByName(CustomTextInterface) ?? throw new PatchSkippedException("BaseLib has no " + CustomTextInterface);
-        if (AccessTools.TypeByName(ModifierInterface) == null)
+        _customText = Reflect.TypeByName(CustomTextInterface) ?? throw new PatchSkippedException("BaseLib has no " + CustomTextInterface);
+        if (Reflect.TypeByName(ModifierInterface) == null)
         {
             throw new PatchSkippedException("BaseLib has no " + ModifierInterface);
         }

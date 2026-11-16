@@ -28,7 +28,7 @@ public static class ThemeColorSkip
     public static long Skipped { get; private set; }
     public static long Set { get; private set; }
 
-    private static readonly MethodInfo _add = AccessTools.Method(typeof(Control), nameof(Control.AddThemeColorOverride));
+    private static readonly MethodInfo _add = Reflect.Method(typeof(Control), nameof(Control.AddThemeColorOverride));
 
     public static void Apply(Harmony harmony)
     {
@@ -46,7 +46,7 @@ public static class ThemeColorSkip
             (typeof(NEnergyCounter), "RefreshLabel"), (typeof(NStarCounter), "SetStarCountText"), (typeof(NPower), "RefreshAmount"),
         })
         {
-            if (AccessTools.DeclaredMethod(type, method) is { } original)
+            if (Reflect.DeclaredMethod(type, method) is { } original)
             {
                 PatchGuard.Patch(harmony, original, transpiler: transpiler);
                 patched++;
@@ -60,6 +60,9 @@ public static class ThemeColorSkip
         {
             throw new PatchSkippedException("none of its methods exists any more");
         }
+        // The calls it skips are calls of Godot's method: another mod's patch there (counting or reacting to every color
+        // set) would miss them, so those calls are all made then (AddIfChanged's check; shown in bdopt why).
+        PatchSafety.Watch(Name, _add);
         Applied = true;
     }
 
@@ -70,7 +73,7 @@ public static class ThemeColorSkip
             if (instruction.Calls(_add))
             {
                 // Same stack: (control, name, color).
-                yield return new CodeInstruction(OpCodes.Call, AccessTools.Method(typeof(ThemeColorSkip), nameof(AddIfChanged)))
+                yield return new CodeInstruction(OpCodes.Call, Reflect.Method(typeof(ThemeColorSkip), nameof(AddIfChanged)))
                     .WithLabels(instruction.labels).WithBlocks(instruction.blocks);
                 continue;
             }
@@ -81,7 +84,8 @@ public static class ThemeColorSkip
     private static void AddIfChanged(Control control, StringName name, Color color)
     {
         // A null or freed label: the game's own call below throws as it would have, without turning this off.
-        if (Enabled && GodotObject.IsInstanceValid(control))
+        // No tolerance: skipping the call skips whatever another mod's patch on it does.
+        if (Enabled && GodotObject.IsInstanceValid(control) && !PatchSafety.IsPatchedByOthers(_add))
         {
             try
             {

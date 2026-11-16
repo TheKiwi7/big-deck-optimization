@@ -43,11 +43,11 @@ public static class PooledCardRelease
         {
             throw new PatchSkippedException("no scene tree");
         }
-        _modelChanged = AccessTools.FieldRefAccess<NCard, Action<CardModel?>?>("ModelChanged");
-        _model = AccessTools.FieldRefAccess<NCard, CardModel?>("_model");
-        _previewTarget = AccessTools.FieldRefAccess<NCard, Creature?>("_previewTarget");
-        _subscribedEnchantment = AccessTools.FieldRefAccess<NCard, EnchantmentModel?>("_subscribedEnchantment");
-        var setCard = AccessTools.Method(typeof(NHandCardHolder), "SetCard")
+        _modelChanged = Reflect.FieldRefAccess<NCard, Action<CardModel?>?>("ModelChanged");
+        _model = Reflect.FieldRefAccess<NCard, CardModel?>("_model");
+        _previewTarget = Reflect.FieldRefAccess<NCard, Creature?>("_previewTarget");
+        _subscribedEnchantment = Reflect.FieldRefAccess<NCard, EnchantmentModel?>("_subscribedEnchantment");
+        var setCard = Reflect.Method(typeof(NHandCardHolder), "SetCard")
             ?? throw new MissingMethodException(nameof(NHandCardHolder), "SetCard");
         PatchGuard.Patch(harmony, setCard, postfix: new HarmonyMethod(typeof(PooledCardRelease), nameof(Noted)));
         tree.ProcessFrame += Tick;

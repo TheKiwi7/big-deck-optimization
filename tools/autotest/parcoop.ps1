@@ -31,7 +31,7 @@ $waiting = [Collections.Generic.Queue[object]]::new()
 # A scenario's mod-off twin: each peer launched with the mod off ('launchoff': Start-Peer adds --bdoff, which turns it off for
 # the session before the main menu's --fastmp lobby exists; a script line comes too late there: the lobby is already open, so
 # 'bdopt off' would ask for 'bdopt off yes', and v0.111+ would have built its join list with the mod on). Then 'coopmodetag
-# off' after the lobby: the join list the game compares says "-off" on both peers, which joined. The run's creation is the
+# off' after the lobby: the join list the game compares says "+off" on both peers, which joined. The run's creation is the
 # game's own too; without the lines that only make sense with the mod on (bdperf comparisons, option switches, counters, effects and their
 # checks, positive controls, the mod's own probes: button input checks, tip rebuilds, a fake conflicting patch, a fault probe, a
 # rebuild check). The synthetic foreign patches stay (they stand for another mod every side has), only 'foreignpatch require'

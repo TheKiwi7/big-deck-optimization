@@ -83,29 +83,29 @@ public static class EnchantmentTabReuse
 
     private static void ApplyNow(Harmony harmony)
     {
-        Type extensions = AccessTools.TypeByName(CardExtensionsType)
+        Type extensions = Reflect.TypeByName(CardExtensionsType)
             ?? throw new PatchSkippedException("Limitless has no " + CardExtensionsType);
-        MethodInfo original = AccessTools.Method(extensions, "UpdateEnchantmentVisuals", new[] { typeof(NCard) });
+        MethodInfo original = Reflect.Method(extensions, "UpdateEnchantmentVisuals", new[] { typeof(NCard) });
         PatchSafety.RequireFingerprint(original, MirroredFingerprint);
 
-        _multiEnchantment = AccessTools.TypeByName("Limitless.LimitlessCode.UncappedEnchantments.MultiEnchantment");
-        _innerEnchantments = AccessTools.Method(_multiEnchantment, "InnerEnchantments")
+        _multiEnchantment = Reflect.TypeByName("Limitless.LimitlessCode.UncappedEnchantments.MultiEnchantment");
+        _innerEnchantments = Reflect.Method(_multiEnchantment, "InnerEnchantments")
             .CreateDelegate<Func<EnchantmentModel?, IReadOnlyList<EnchantmentModel>>>();
-        MethodInfo ensureAttached = AccessTools.Method("Limitless.LimitlessCode.UncappedEnchantments.UI.EnchantmentTabHost:EnsureAttached");
-        MethodInfo tabStride = AccessTools.Method(extensions, "TabStride");
-        MethodInfo setEnchantmentStatus = AccessTools.Method(extensions, "SetEnchantmentStatus");
+        MethodInfo ensureAttached = Reflect.Method("Limitless.LimitlessCode.UncappedEnchantments.UI.EnchantmentTabHost:EnsureAttached");
+        MethodInfo tabStride = Reflect.Method(extensions, "TabStride");
+        MethodInfo setEnchantmentStatus = Reflect.Method(extensions, "SetEnchantmentStatus");
         PatchSafety.RequireFingerprint(ensureAttached, EnsureAttachedFingerprint);
         PatchSafety.RequireFingerprint(tabStride, TabStrideFingerprint);
         PatchSafety.RequireFingerprint(setEnchantmentStatus, SetEnchantmentStatusFingerprint);
         _ensureAttached = ensureAttached.CreateDelegate<Func<NCard, Control?>>();
         _tabStride = tabStride.CreateDelegate<Func<Control, Vector2>>();
         _setEnchantmentStatus = setEnchantmentStatus.CreateDelegate<Action<NCard, EnchantmentStatus, Control, TextureRect, MegaLabel>>();
-        object hideForAnim = AccessTools.Field(
-            AccessTools.TypeByName("Limitless.LimitlessCode.UncappedEnchantments.EnchantmentModelPatches.SpireFields_EnchantmentModel"),
+        object hideForAnim = Reflect.Field(
+            Reflect.TypeByName("Limitless.LimitlessCode.UncappedEnchantments.EnchantmentModelPatches.SpireFields_EnchantmentModel"),
             "HideForAnim").GetValue(null)!;
         _hideForAnim = hideForAnim.GetType().GetMethod("Get")!.CreateDelegate<Func<EnchantmentModel, bool>>(hideForAnim);
-        _enchantmentTab = AccessTools.FieldRefAccess<NCard, Control>("_enchantmentTab");
-        _defaultEnchantmentPosition = AccessTools.FieldRefAccess<NCard, Vector2>("_defaultEnchantmentPosition");
+        _enchantmentTab = Reflect.FieldRefAccess<NCard, Control>("_enchantmentTab");
+        _defaultEnchantmentPosition = Reflect.FieldRefAccess<NCard, Vector2>("_defaultEnchantmentPosition");
 
         _original = original;
         PatchGuard.Patch(harmony, original, prefix: new HarmonyMethod(typeof(EnchantmentTabReuse), nameof(Prefix)));

@@ -71,15 +71,15 @@ public static class PoolSignalScan
 
         public PoolAccess(Type poolType)
         {
-            Used = AccessTools.Field(poolType, "_usedObjects");
-            Free = AccessTools.Field(poolType, "_freeObjects");
+            Used = Reflect.Field(poolType, "_usedObjects");
+            Free = Reflect.Field(poolType, "_freeObjects");
             UsedContains = Used.FieldType.GetMethod("Contains")!;
             UsedRemove = Used.FieldType.GetMethod("Remove")!;
             FreeAdd = Free.FieldType.GetMethod("Add")!;
             Mirrored = new[]
             {
-                AccessTools.Method(poolType, "DisconnectIncomingAndOutgoingSignals"),
-                AccessTools.Method(poolType, "DisconnectSignal"),
+                Reflect.Method(poolType, "DisconnectIncomingAndOutgoingSignals"),
+                Reflect.Method(poolType, "DisconnectSignal"),
                 PublicFree(poolType),
                 ExplicitFree(poolType),
             };
@@ -88,12 +88,12 @@ public static class PoolSignalScan
 
     public static void Apply(Harmony harmony)
     {
-        _staticFree = AccessTools.Method(typeof(NodePool), nameof(NodePool.Free), new[] { typeof(IPoolable) });
+        _staticFree = Reflect.Method(typeof(NodePool), nameof(NodePool.Free), new[] { typeof(IPoolable) });
         PatchSafety.RequireFingerprint(_staticFree, StaticFreeFingerprint);
         PatchSafety.RequireFingerprint(PublicFree(typeof(NodePool<>)), PoolFreeFingerprint);
-        PatchSafety.RequireFingerprint(AccessTools.Method(typeof(NodePool<>), "DisconnectIncomingAndOutgoingSignals"), WalkFingerprint);
+        PatchSafety.RequireFingerprint(Reflect.Method(typeof(NodePool<>), "DisconnectIncomingAndOutgoingSignals"), WalkFingerprint);
         PatchSafety.RequireFingerprint(ExplicitFree(typeof(NodePool<>)), ExplicitFreeFingerprint);
-        _pools = AccessTools.StaticFieldRefAccess<Dictionary<Type, INodePool>>(AccessTools.Field(typeof(NodePool), "_pools"));
+        _pools = AccessTools.StaticFieldRefAccess<Dictionary<Type, INodePool>>(Reflect.Field(typeof(NodePool), "_pools"));
         PatchGuard.Patch(harmony, _staticFree, prefix: new HarmonyMethod(typeof(PoolSignalScan), nameof(Prefix)));
         Applied = true;
         // What Prefix and AnyPoolPatched ask about (display only): the pools that exist at each preflight.
@@ -145,7 +145,7 @@ public static class PoolSignalScan
                 return true; // Vanilla logs the double free / foreign object.
             }
             Action<Callable, Signal> disconnect = _disconnect.GetValue(pool, p =>
-                AccessTools.Method(p.GetType(), "DisconnectSignal").CreateDelegate<Action<Callable, Signal>>(p));
+                Reflect.Method(p.GetType(), "DisconnectSignal").CreateDelegate<Action<Callable, Signal>>(p));
             Walk(node, disconnect);
         }
         catch (Exception e)

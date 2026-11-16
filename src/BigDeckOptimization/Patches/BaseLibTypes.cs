@@ -61,7 +61,7 @@ internal static class BaseLibTypes
     {
         try
         {
-            return AccessTools.TypeByName(baseTypeName) == null
+            return Reflect.TypeByName(baseTypeName) == null
                 || AppDomain.CurrentDomain.GetAssemblies().Any(a => MayDefine(a) && Defines(a, baseTypeName));
         }
         catch
@@ -149,7 +149,7 @@ internal static class BaseLibTypes
         }
         try
         {
-            FieldInfo field = AccessTools.Field(AccessTools.TypeByName("BaseLib.Patches.Utils.SavedSpireFieldPatch"), "RegisteredFields")
+            FieldInfo field = Reflect.Field(Reflect.TypeByName("BaseLib.Patches.Utils.SavedSpireFieldPatch"), "RegisteredFields")
                 ?? throw new MissingFieldException("SavedSpireFieldPatch", "RegisteredFields");
             _spireFields = System.Linq.Expressions.Expression.Lambda<Func<System.Collections.IList>>(
                 System.Linq.Expressions.Expression.Convert(System.Linq.Expressions.Expression.Field(null, field), typeof(System.Collections.IList))).Compile();
@@ -365,7 +365,7 @@ internal static class BaseLibTypes
                 }
                 allCards |= all;
                 names.Add(field.GetType().GetProperty("Name")?.GetValue(field) as string ?? target.Name);
-                Assembly? from = PatchSafety.DelegateAssembly(AccessTools.Field(field.GetType(), "_defaultVal")?.GetValue(field) as Delegate, baseLib);
+                Assembly? from = PatchSafety.DelegateAssembly(Reflect.Field(field.GetType(), "_defaultVal")?.GetValue(field) as Delegate, baseLib);
                 assemblies.Add(from != null && from != baseLib ? from : target.Assembly);
             }
             _spireNotes = (names.ToArray(), PatchSafety.ModNamesOf(assemblies), allCards);
@@ -411,13 +411,13 @@ internal static class BaseLibTypes
             {
                 continue;
             }
-            string id = AccessTools.Property(save.GetType(), "Id")?.GetValue(save) as string ?? "?";
+            string id = Reflect.Property(save.GetType(), "Id")?.GetValue(save) as string ?? "?";
             if (id == exceptId)
             {
                 continue;
             }
             ids.Add(id);
-            var wrapper = AccessTools.Property(save.GetType(), "Getter")?.GetValue(save) as Delegate;
+            var wrapper = Reflect.Property(save.GetType(), "Getter")?.GetValue(save) as Delegate;
             assemblies.Add(PatchSafety.DelegateAssembly(wrapper, baseLib));
         }
         return (ids.Distinct().ToArray(), PatchSafety.ModNamesOf(assemblies));
@@ -427,7 +427,7 @@ internal static class BaseLibTypes
     {
         try
         {
-            Type? baseType = AccessTools.TypeByName(baseTypeName);
+            Type? baseType = Reflect.TypeByName(baseTypeName);
             if (baseType == null)
             {
                 return true;

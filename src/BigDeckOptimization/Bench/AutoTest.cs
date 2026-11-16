@@ -86,6 +86,8 @@ public static partial class AutoTest
         PatchGuard.Patch(harmony, AccessTools.Method(typeof(NCharacterSelectScreen), nameof(NCharacterSelectScreen.InitializeMultiplayerAsClient)),
             postfix: new HarmonyMethod(typeof(AutoTest), nameof(LobbyScreenPostfix)));
         string[] launchArgs = OS.GetCmdlineArgs().Concat(OS.GetCmdlineUserArgs()).ToArray();
+        // --bdforeign <shape> (a script's 'launchforeign' line): another mod's patches that must be in before this mod applies.
+        ForeignLaunch.FromLaunch(launchArgs);
         int portArg = Array.IndexOf(launchArgs, "--bdport");
         if (portArg >= 0 && portArg + 1 < launchArgs.Length && ushort.TryParse(launchArgs[portArg + 1], out _port))
         {
@@ -1366,6 +1368,9 @@ public static partial class AutoTest
                     break;
                 case "launchoff":
                     RequireLaunchedOff();
+                    break;
+                case "launchforeign":
+                    Say("  " + ForeignLaunch.Require(arg));
                     break;
                 case "coopmodetag":
                     CheckCoopModeTag(arg);

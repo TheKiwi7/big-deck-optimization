@@ -31,7 +31,14 @@ public static class PatchGuard
 
     public readonly record struct Installed(MethodBase Original, MethodInfo Patch);
 
-    private static readonly MethodInfo _guard = AccessTools.Method(typeof(PatchGuard), nameof(Guard));
+    private static readonly MethodInfo _guard = Reflect.Method(typeof(PatchGuard), nameof(Guard));
+
+    /// <summary>
+    /// The guard, first of the method's finalizers (Priority.First): Harmony gives each finalizer the exception the ones before
+    /// it left, and another mod's finalizer returning null would hide a fault of this mod's patch from a guard running after it.
+    /// Void and read-only, it changes nothing for the finalizers after it.
+    /// </summary>
+    private static HarmonyMethod Guarding() => new(_guard) { priority = Priority.First };
 
     private static readonly object _lock = new();
 
@@ -126,7 +133,7 @@ public static class PatchGuard
         }
         if (guard && finalizer == null)
         {
-            processor.AddFinalizer(new HarmonyMethod(_guard));
+            processor.AddFinalizer(Guarding());
         }
         lock (_lock)
         {
@@ -144,7 +151,7 @@ public static class PatchGuard
             MethodInfo replacement = HarmonyRebuild.Run(original, "patching it", processor.Patch);
             if (guard && finalizer != null)
             {
-                replacement = HarmonyRebuild.Run(original, "adding the guard", () => harmony.CreateProcessor(original).AddFinalizer(new HarmonyMethod(_guard)).Patch());
+                replacement = HarmonyRebuild.Run(original, "adding the guard", () => harmony.CreateProcessor(original).AddFinalizer(Guarding()).Patch());
             }
 #if BENCH
             CheckInstalled(original, prefix, postfix, transpiler, finalizer);
@@ -237,7 +244,7 @@ public static class PatchGuard
         }
         try
         {
-            HarmonyRebuild.Run(original, "adding the guard", () => ModEntry.Harmony.Patch(original, finalizer: new HarmonyMethod(_guard)));
+            HarmonyRebuild.Run(original, "adding the guard", () => ModEntry.Harmony.Patch(original, finalizer: Guarding()));
         }
         catch (Exception e)
         {

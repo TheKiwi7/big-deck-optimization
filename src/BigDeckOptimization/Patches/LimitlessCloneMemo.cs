@@ -65,9 +65,9 @@ public static class LimitlessCloneMemo
         {
             throw new PatchSkippedException("needs LimitlessReserialize (BaseLib and Limitless)");
         }
-        Type multi = AccessTools.TypeByName(LimitlessReserialize.MultiEnchantmentType)
+        Type multi = Reflect.TypeByName(LimitlessReserialize.MultiEnchantmentType)
             ?? throw new PatchSkippedException("Limitless has no " + LimitlessReserialize.MultiEnchantmentType);
-        MethodInfo deepClone = AccessTools.Method(multi, "DeepCloneFields")
+        MethodInfo deepClone = Reflect.Method(multi, "DeepCloneFields")
             ?? throw new MissingMethodException(LimitlessReserialize.MultiEnchantmentType, "DeepCloneFields");
         PatchSafety.RequireFingerprint(deepClone, DeepCloneFieldsFingerprint);
         Type closure = multi.GetNestedType("<>c", BindingFlags.NonPublic) ?? throw new PatchSkippedException("Limitless has no lambda class");
@@ -272,7 +272,7 @@ public static class LimitlessCloneMemo
             try
             {
                 // Declared on that type (an overload added or the method moved counts as changed).
-                System.Reflection.MethodInfo? found = AccessTools.DeclaredMethod(type, method);
+                System.Reflection.MethodInfo? found = Reflect.DeclaredMethod(type, method);
                 if (found == null || !PatchSafety.FingerprintMatches(MethodFingerprint.Of(found), fingerprint))
                 {
                     changed.Add(type.Name + "." + method);
@@ -563,7 +563,7 @@ public static class LimitlessCloneMemo
 
     /// <summary>The patch method when its code is the one checked, else null (not allowed).</summary>
     private static System.Reflection.MethodInfo? Allowed(string patch, string fingerprint) =>
-        AccessTools.Method(patch) is { } method && PatchSafety.FingerprintMatches(MethodFingerprint.Of(method), fingerprint) ? method : null;
+        Reflect.Method(patch) is { } method && PatchSafety.FingerprintMatches(MethodFingerprint.Of(method), fingerprint) ? method : null;
 
     private static Func<bool>? _uncappedEnchantments, _uncappedUpgrades;
 
@@ -572,10 +572,10 @@ public static class LimitlessCloneMemo
     {
         if (_uncappedEnchantments == null)
         {
-            Type context = AccessTools.TypeByName("Limitless.LimitlessCode.Config.ContextManager") ?? throw new MissingMemberException("Limitless ContextManager");
-            _uncappedEnchantments = AccessTools.MethodDelegate<Func<bool>>(AccessTools.PropertyGetter(context, "UncappedEnchantmentsEnabled")
+            Type context = Reflect.TypeByName("Limitless.LimitlessCode.Config.ContextManager") ?? throw new MissingMemberException("Limitless ContextManager");
+            _uncappedEnchantments = AccessTools.MethodDelegate<Func<bool>>(Reflect.PropertyGetter(context, "UncappedEnchantmentsEnabled")
                 ?? throw new MissingMemberException("ContextManager", "UncappedEnchantmentsEnabled"));
-            _uncappedUpgrades = AccessTools.MethodDelegate<Func<bool>>(AccessTools.PropertyGetter(context, "UncappedUpgradesEnabled")
+            _uncappedUpgrades = AccessTools.MethodDelegate<Func<bool>>(Reflect.PropertyGetter(context, "UncappedUpgradesEnabled")
                 ?? throw new MissingMemberException("ContextManager", "UncappedUpgradesEnabled"));
         }
         return (_uncappedEnchantments() ? 1L : 0L) << 61 | (_uncappedUpgrades!() ? 1L : 0L) << 60;

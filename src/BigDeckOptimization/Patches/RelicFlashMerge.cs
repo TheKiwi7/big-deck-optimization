@@ -50,12 +50,12 @@ public static class RelicFlashMerge
 
     public static void Apply(Harmony harmony)
     {
-        _holderFlash = AccessTools.Method(typeof(NRelicInventoryHolder), "OnRelicFlashed")
+        _holderFlash = Reflect.Method(typeof(NRelicInventoryHolder), "OnRelicFlashed")
             ?? throw new MissingMethodException(nameof(NRelicInventoryHolder), "OnRelicFlashed");
-        _playerFlash = AccessTools.Method(typeof(Player), "OnRelicFlashed")
+        _playerFlash = Reflect.Method(typeof(Player), "OnRelicFlashed")
             ?? throw new MissingMethodException(nameof(Player), "OnRelicFlashed");
         _mainThread = Thread.CurrentThread.ManagedThreadId;
-        System.Reflection.MethodInfo? doFlash = AccessTools.Method(typeof(NRelicInventoryHolder), "DoFlash");
+        System.Reflection.MethodInfo? doFlash = Reflect.Method(typeof(NRelicInventoryHolder), "DoFlash");
         bool holder = doFlash != null && Known(_holderFlash, HolderFlashFingerprint) && Known(doFlash, HolderDoFlashFingerprint);
         bool player = Known(_playerFlash, PlayerFlashFingerprint);
         if (!holder && !player)
@@ -67,8 +67,8 @@ public static class RelicFlashMerge
         _playerSkipped = new System.Reflection.MethodBase?[]
         {
             _playerFlash,
-            AccessTools.Method(typeof(MegaCrit.Sts2.Core.Commands.SfxCmd), nameof(MegaCrit.Sts2.Core.Commands.SfxCmd.Play), new[] { typeof(string), typeof(float) }),
-            AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Vfx.NRelicFlashVfx), nameof(MegaCrit.Sts2.Core.Nodes.Vfx.NRelicFlashVfx.Create), new[] { typeof(RelicModel), typeof(Creature) }),
+            Reflect.Method(typeof(MegaCrit.Sts2.Core.Commands.SfxCmd), nameof(MegaCrit.Sts2.Core.Commands.SfxCmd.Play), new[] { typeof(string), typeof(float) }),
+            Reflect.Method(typeof(MegaCrit.Sts2.Core.Nodes.Vfx.NRelicFlashVfx), nameof(MegaCrit.Sts2.Core.Nodes.Vfx.NRelicFlashVfx.Create), new[] { typeof(RelicModel), typeof(Creature) }),
         };
         if (holder)
         {
