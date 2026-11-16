@@ -1,8 +1,6 @@
 # Changelog
 
-## Unreleased
-
-<!-- Not released yet: every item waits for the in-game checks in DESIGN ("Audit of 2026-11-15, fourth pass" and its re-audit). The two items marked pending have their own checks (DESIGN roadmap, "Foreign patches by shape"; both depend on `PatchSafety.ShapeRules`): a release before they pass sets it to false and drops both items (docs/RELEASE.md). -->
+## v1.1.0
 
 - Co-op: every player must now have the mod on, or every player off: a player with it off can't join a game where it's on, and the other way round (the game says the mods don't match). In a co-op game (a run, its lobby, or the lobby of a saved co-op run), turning the whole mod off or on with `bdopt` shows a warning and only happens after `bdopt off yes` or `bdopt on yes`. With the mod off while the others have it on, your combats would start much later than theirs, and the game could then lose their actions; the same the other way round. After such a switch, a player who disconnects can only rejoin once every player has the same setting again. A game started with the mod off takes part in this check too.
 - The settings menu's minimum-relics slider for the fast combat start is now greyed out, with the reason on hover, whenever the fast combat start can't run.
@@ -21,8 +19,8 @@
 - With a mod that reloads a co-op run or brings everyone back to the lobby, `bdopt off` and `bdopt on` still ask for confirmation.
 - When a player has the mod off, the "mods don't match" message (and mod sync tools) now show this mod with a version ending in "+off", instead of an unknown mod.
 - Smoother with mods that preview cards (Random Foreseer): their previews no longer make the mod rebuild its lists.
-- *(Pending: held back until tested in game.)* Works better alongside big mod packs (RitsuLib, Spire Synergies, Zone the Spire, Ascended Expansion...): when another mod only adds its own effects around the game code the mod speeds up, or only reacts to its own cards and relics, that optimization now keeps running instead of falling back to the normal game. Other changes still leave that part to the game, as before.
-- *(Pending: held back until tested in game.)* Works better alongside mod libraries and content mods that add their own effect sources to the game's lists (RitsuLib and the mods built on it, multi-enchantment mods), give cards their own extra hand or card piles (RitsuLib), adjust a value before the game computes it (ARAM: Mayhem's shop prices) or only read what the game computed (Who Carried?): the checksum, screen refresh and card-location optimizations keep running there instead of falling back to the normal game.
+- Works better alongside big mod packs (RitsuLib, Spire Synergies, Zone the Spire, Ascended Expansion...): when another mod only adds its own effects around the game code the mod speeds up, or only reacts to its own cards and relics, that optimization now keeps running instead of falling back to the normal game. Other changes still leave that part to the game, as before.
+- Works better alongside mod libraries and content mods that add their own effect sources to the game's lists (RitsuLib and the mods built on it, multi-enchantment mods), give cards their own extra hand or card piles (RitsuLib), adjust a value before the game computes it (ARAM: Mayhem's shop prices) or only read what the game computed (Who Carried?): the checksum, screen refresh and card-location optimizations keep running there instead of falling back to the normal game.
 - The settings page and `bdopt why` now show the effect-list filter as not running when another mod changes the game's effect lists (it was shown as working while it waited), and name the cards or relics of other mods that keep the beta's shuffle sort on the normal game.
 - The check of which other mods keep part of the optimizations off now runs during the game's loading where it can, and opening the settings (or `bdopt`) right after the main menu appears finishes it first, so they never show an incomplete list.
 
