@@ -1,4 +1,5 @@
 # Audit: co-op, each peer flipping its own switches in the middle of the combat (the menu's note says they can change freely): no divergence expected. Other side: audit-cooptoggle-client.txt.
+# After each whole-mod switch ('bdopt off|on yes'), 'coopmodetag' reads back the join list the game compares (v0.111+: the net service's handshake list, kept from the lobby and retagged in place by CoopModeTag.Refresh; v0.107.1: the list built now).
 timeout 2400
 mplobby NECROBINDER 2
 waitfor run 240
@@ -27,10 +28,12 @@ waitfor turn 300
 cmd bdopt coop_checksum on
 state t3
 cmd bdopt off yes
+coopmodetag off
 play 5
 endturn
 waitfor turn 300
 cmd bdopt on yes
+coopmodetag on
 state t4
 play 5
 endturn

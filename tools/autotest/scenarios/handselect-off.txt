@@ -1,0 +1,50 @@
+# ListenerCache's suspension, A/B (off; compare with handselect-on: CHECKSUM and STATE lines must match line for line). A hand
+# selection (Dual Wield: attacks and powers) is played through the game's own hand choice and held open (handselect: nothing
+# answers it) while the combat state changes, each CombatStateChanged dispatch running NPlayerHand.RevalidateSelectionAfterStateChange;
+# then its valid cards leave the combat and the game's revalidation ends it with no card (TrySetResult): the card's play goes on
+# inline, inside the dispatch, where ListenerCache suspends its listener lists (SuspendPrefix). The on side asserts the suspension ran.
+timeout 1200
+cmd bdopt off
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+state start
+emptyhand
+cmd card DUAL_WIELD hand
+cmd card PERFECTED_STRIKE hand
+cmd card PERFECTED_STRIKE hand
+cmd card DEFEND_NECROBINDER hand
+handselect DUAL_WIELD hold 2 free
+checksum held t1
+state held t1
+play 2
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t2 start
+state t2 start
+cmd card DUAL_WIELD hand
+cmd card PERFECTED_STRIKE hand
+cmd card PERFECTED_STRIKE hand
+handselect DUAL_WIELD hold 0.5 free
+checksum held t2
+state held t2
+play 3
+waitfor idle 120
+endturn
+waitfor idle 300
+checksum t3
+state t3
+cmd kill all
+waitfor nocombat 300
+wait 2
+cmd bdopt on
+quit

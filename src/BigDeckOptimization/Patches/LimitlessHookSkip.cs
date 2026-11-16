@@ -113,6 +113,10 @@ public static class LimitlessHookSkip
     /// Another mod's patch on what a dropped MultiEnchantment would have run: its hooks, the list it rebuilds. Asked per
     /// stacked enchantment: rechecked every 2 s, as <see cref="PatchSafety.IsPatchedByOthers(MethodBase?, string)"/> caches it.
     /// </summary>
+    /// <summary>The storage card's overrides on the clone's way (preflight source), none when unknown.</summary>
+    private static IEnumerable<MethodBase?> StorageOverrides() =>
+        _storageCard != null && LimitlessCloneMemo.OnTheWay(_storageCard) is { } storage ? storage : Array.Empty<MethodInfo>();
+
     private static bool PatchedByOthers()
     {
         long now = Environment.TickCount64;
@@ -128,8 +132,9 @@ public static class LimitlessHookSkip
             // skips that build, the same chain LimitlessCloneMemo skips (its known patches allowed there too), down to the
             // overrides of the inner card's type and of every inner enchantment type seen (types with a mod's code there are
             // never dropped: AnyKnown, AnyInner).
-            patched = patched || LimitlessCloneMemo.ChainPatched()
-                || _storageCard == null || LimitlessCloneMemo.OnTheWay(_storageCard) is not { } storage || LimitlessCloneMemo.AnyPatched(storage);
+            // The chain's card methods with patches gated on the card's type count when the storage card is of a gate type.
+            patched = patched || _storageCard == null || LimitlessCloneMemo.ChainPatchedFor(_storageCard)
+                || LimitlessCloneMemo.OnTheWay(_storageCard) is not { } storage || LimitlessCloneMemo.AnyPatched(storage);
             foreach (Type type in _knownRead)
             {
                 patched = patched || (LimitlessCloneMemo.OnTheWay(type) is { } overrides && LimitlessCloneMemo.AnyPatched(overrides));
@@ -241,10 +246,15 @@ public static class LimitlessHookSkip
         Multi = multi;
         Applied = true;
         // What PatchedByOthers asks about (display only): its own methods, and the clone chain and storage card overrides
-        // under LimitlessCloneMemo's name (whose code asks them, so its runtime check records them there).
+        // under LimitlessCloneMemo's name (whose code asks them, so its runtime check records them there), and under this
+        // one's too: with LimitlessCloneMemo skipped or faulted, bdopt why and the menu leave its name out, while this part
+        // still backs off on them.
         PatchSafety.Watch(Name, _watched);
-        LimitlessCloneMemo.WatchChain();
-        PatchSafety.WatchAll(LimitlessCloneMemo.Name, () => _storageCard != null && LimitlessCloneMemo.OnTheWay(_storageCard) is { } storage ? storage : Array.Empty<MethodInfo>());
+        foreach (string patch in new[] { LimitlessCloneMemo.Name, Name })
+        {
+            LimitlessCloneMemo.WatchChain(patch);
+            PatchSafety.WatchAll(patch, StorageOverrides);
+        }
         try
         {
             ApplySamples(harmony, multi);

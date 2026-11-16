@@ -147,8 +147,10 @@ public static class InlineGuard
     /// each patched method whose replacement calls a protected one (directly or through callees the JIT may inline) gets its
     /// replacement built again by Harmony, the same patches in the same order: now compiled with the flags set. The replacement
     /// is the code after every transpiler plus every mod's prefixes, postfixes, finalizers and inner patches, each of which the
-    /// JIT may inline into it (<see cref="ReplacementReaches"/>). One step per patched method: ~300 ms
-    /// in all, spread over frames by <see cref="ModEntry"/> (only what a run does needs it done).
+    /// JIT may inline into it (<see cref="ReplacementReaches"/>). One step per patched method, spread over frames by
+    /// <see cref="ModEntry"/> (only what a run does needs it done): ~300 ms in all for 115-144 methods measured at a callee
+    /// depth of 2; at <see cref="CalleeDepth"/> 4 (and with the methods recorded without <see cref="Available"/>) the count and
+    /// time are in the "compiled again" log line, still to be measured (bounded by the patched methods: each rebuilt at most once).
     ///
     /// A rebuild can fail, and a failed one used to leave the method with no patches of any mod (v1.0.0: BaseLib's postfix
     /// on <c>NGlobalUi._Ready</c> gone, see <see cref="HarmonyRebuild"/>): each goes through <see cref="HarmonyRebuild.Run{T}"/>,

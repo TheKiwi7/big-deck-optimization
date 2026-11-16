@@ -1,4 +1,5 @@
 # Audit: co-op, each peer flipping its own switches in the middle of the combat (the menu's note says they can change freely): no divergence expected. Other side: audit-cooptoggle-host.txt.
+# After each whole-mod switch ('bdopt off|on yes'), 'coopmodetag' reads back the join list the game compares (v0.111+: the net service's handshake list, kept from the lobby and retagged in place by CoopModeTag.Refresh; v0.107.1: the list built now).
 timeout 2400
 mplobby IRONCLAD 2
 waitfor run 240
@@ -36,10 +37,12 @@ cmd bdopt pile_lookup on
 cmd bdopt listeners on
 state t4
 cmd bdopt off yes
+coopmodetag off
 play 3
 endturn
 waitfor turn 300
 cmd bdopt on yes
+coopmodetag on
 state t5
 play 3
 endturn
@@ -70,10 +73,12 @@ cmd bdopt coop_checksum on
 cmd bdopt listeners on
 state f2t3
 cmd bdopt off yes
+coopmodetag off
 play 3
 endturn
 waitfor turn 300
 cmd bdopt on yes
+coopmodetag on
 state f2t4
 play 3
 endturn

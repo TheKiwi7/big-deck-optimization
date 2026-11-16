@@ -293,53 +293,129 @@ public static class LimitlessCloneMemo
         return result;
     }
 
-    private static (System.Reflection.MethodBase Method, System.Reflection.MethodInfo[] Allowed)[]? _chain;
-    private static long _chainCheckedAt = long.MinValue / 2;
-    private static bool _chainPatched;
+    private static (System.Reflection.MethodBase Method, System.Reflection.MethodInfo[] Allowed, bool Gated)[]? _chain;
 
     /// <summary>
-    /// Asked per stacked card: answered from a result rechecked each second. Also <see cref="LimitlessHookSkip"/>'s: a dropped
-    /// forwarder skips the same build of a clone's inner cards.
+    /// The chain's answer, published as one object (LimitlessHookSkip may ask from another thread): another mod's patch that
+    /// backs off for every card, and the card methods whose other mods' patches are all gated on the card's type, with those
+    /// types (<see cref="ChainPatchedFor"/>).
     /// </summary>
-    internal static bool ChainPatched()
+    private sealed class ChainAnswer
+    {
+        public readonly bool Patched;
+        public readonly long CheckedAt;
+        public readonly (System.Reflection.MethodBase Method, System.Reflection.MethodInfo[] Allowed, Type[] Gates)[] Gated;
+
+        public ChainAnswer(bool patched, long checkedAt, (System.Reflection.MethodBase, System.Reflection.MethodInfo[], Type[])[] gated)
+        {
+            Patched = patched;
+            CheckedAt = checkedAt;
+            Gated = gated;
+        }
+    }
+
+    private static volatile ChainAnswer _chainAnswer = new(false, long.MinValue / 2, Array.Empty<(System.Reflection.MethodBase, System.Reflection.MethodInfo[], Type[])>());
+
+    /// <summary>
+    /// The card methods one level down (<see cref="GatedChain"/>): every inner card a clone builds is the card these run on
+    /// (the enchantments' OnEnchant call <c>base.Card</c>'s, the upgrade cap is the card's own), so a patch there that provably
+    /// does nothing unless the card is of some types (<see cref="PatchTolerance.TypeGated"/>, e.g. CardAscension's
+    /// <c>AddKeyword</c> prefix gated on its own card) changes nothing for a card of another type: only a card of a gate type
+    /// loses the memo (and the drops, <see cref="LimitlessHookSkip"/>: its inner cards are Limitless's storage card).
+    /// </summary>
+    private static readonly HashSet<string> GatedChain = new(StringComparer.Ordinal) { "AddKeyword", "RemoveKeyword", "get_MaxUpgradeLevel" };
+
+    /// <summary>
+    /// Asked per stacked card: answered from a result rechecked each second, the patches no rule lets stand. Also
+    /// <see cref="LimitlessHookSkip"/>'s: a dropped forwarder skips the same build of a clone's inner cards. The gated card
+    /// methods are judged per card type (<see cref="ChainPatchedFor"/>).
+    /// </summary>
+    internal static bool ChainPatched() => CurrentChainAnswer().Patched;
+
+    /// <summary>
+    /// <see cref="ChainPatched"/>, or a gated card method's patch whose gate the inner card's type matches (then the strict check
+    /// of that method answers and records the back-off).
+    /// </summary>
+    internal static bool ChainPatchedFor(Type cardType)
+    {
+        ChainAnswer answer = CurrentChainAnswer();
+        if (answer.Patched)
+        {
+            return true;
+        }
+        foreach ((System.Reflection.MethodBase method, System.Reflection.MethodInfo[] allowed, Type[] gates) in answer.Gated)
+        {
+            foreach (Type gate in gates)
+            {
+                // No tolerance for a card the gated patch runs on: its call is skipped with the chain.
+                if (gate.IsAssignableFrom(cardType) && PatchSafety.IsPatchedByOthers(method, allowed))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static ChainAnswer CurrentChainAnswer()
     {
         long now = Environment.TickCount64;
-        if (now - _chainCheckedAt < 1000)
+        ChainAnswer answer = _chainAnswer;
+        if (now - answer.CheckedAt < 1000)
         {
-            return _chainPatched;
+            return answer;
         }
-        // Published once known: LimitlessHookSkip may ask from another thread meanwhile.
         bool patched = false;
-        foreach ((System.Reflection.MethodBase method, System.Reflection.MethodInfo[] allowed) in ChainMethods())
+        var gated = new List<(System.Reflection.MethodBase, System.Reflection.MethodInfo[], Type[])>();
+        foreach ((System.Reflection.MethodBase method, System.Reflection.MethodInfo[] allowed, bool isGated) in ChainMethods())
         {
+            if (isGated)
+            {
+                if (PatchSafety.IsPatchedByOthers(method, allowed, out Type[] gates))
+                {
+                    patched = true;
+                    break;
+                }
+                if (gates.Length > 0)
+                {
+                    gated.Add((method, allowed, gates));
+                }
+            }
             // No tolerance: the clone chain is skipped for a kept content.
-            if (PatchSafety.IsPatchedByOthers(method, allowed))
+            else if (PatchSafety.IsPatchedByOthers(method, allowed))
             {
                 patched = true;
                 break;
             }
         }
-        _chainPatched = patched;
-        _chainCheckedAt = now;
-        return patched;
+        answer = new ChainAnswer(patched, now, patched ? Array.Empty<(System.Reflection.MethodBase, System.Reflection.MethodInfo[], Type[])>() : gated.ToArray());
+        _chainAnswer = answer;
+        return answer;
     }
 
     /// <summary>
     /// Every overload of each chain method (FromSerializable, Fill) with its allowed patches, built once: any of them patched
     /// counts. The overrides the clone reaches in the saved card's own types are checked per type (OnTheWay), not every type's.
     /// </summary>
-    private static (System.Reflection.MethodBase Method, System.Reflection.MethodInfo[] Allowed)[] ChainMethods() =>
+    private static (System.Reflection.MethodBase Method, System.Reflection.MethodInfo[] Allowed, bool Gated)[] ChainMethods() =>
         _chain ??= Chain.SelectMany(c => c.Type.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly)
                 .Where(m => m.Name == c.Method)
-                .Select(m => ((System.Reflection.MethodBase)m, c.Allowed.Select(a => Allowed(a.Patch, a.Fingerprint)).OfType<System.Reflection.MethodInfo>().ToArray())))
+                .Select(m => ((System.Reflection.MethodBase)m, c.Allowed.Select(a => Allowed(a.Patch, a.Fingerprint)).OfType<System.Reflection.MethodInfo>().ToArray(),
+                    c.Type == typeof(CardModel) && !m.IsStatic && GatedChain.Contains(c.Method))))
             .ToArray();
 
     /// <summary>
     /// Registers the chain <see cref="ChainPatched"/> asks about for the back-off preflight, under this class's name (where
-    /// its runtime check records, LimitlessHookSkip's asks included); built inside the preflight. Never throws.
+    /// its runtime check records, LimitlessHookSkip's asks included) or a patch relying on it (<paramref name="patch"/>:
+    /// LimitlessHookSkip, so bdopt why and the menu show its back-offs while this one isn't running); the gated card methods
+    /// with their tolerance. Built inside the preflight. Never throws.
     /// </summary>
-    internal static void WatchChain() =>
-        PatchSafety.WatchPairs(Name, () => ChainMethods().Select(c => ((System.Reflection.MethodBase?)c.Method, (System.Reflection.MethodInfo[]?)c.Allowed)));
+    internal static void WatchChain(string patch = Name)
+    {
+        PatchSafety.WatchPairs(patch, () => ChainMethods().Where(c => !c.Gated).Select(c => ((System.Reflection.MethodBase?)c.Method, (System.Reflection.MethodInfo[]?)c.Allowed)));
+        PatchSafety.WatchPairs(patch, () => ChainMethods().Where(c => c.Gated).Select(c => ((System.Reflection.MethodBase?)c.Method, (System.Reflection.MethodInfo[]?)c.Allowed)),
+            PatchTolerance.TypeGated);
+    }
 
     /// <summary>
     /// The virtuals the chain reaches in the card's and the enchantment's own types: FromSerializable's AfterDeserialized,
@@ -451,8 +527,8 @@ public static class LimitlessCloneMemo
     /// </summary>
     private static bool KnownTypes(SerializableCard saved)
     {
-        if (saved.Id is not { } cardId || OnTheWayOf(_cardTypes, cardId, static id => MegaCrit.Sts2.Core.Saves.SaveUtil.CardOrDeprecated(id).GetType()) is not { } card
-            || AnyPatched(card))
+        if (saved.Id is not { } cardId || OnTheWayOf(_cardTypes, cardId, CardTypeOf) is not { } card
+            || AnyPatched(card) || ChainPatchedFor(_cardTypeOf[cardId]))
         {
             return false;
         }
@@ -463,6 +539,16 @@ public static class LimitlessCloneMemo
         return saved.Enchantment.Id is { } enchantmentId
             && OnTheWayOf(_enchantmentTypes, enchantmentId, static id => MegaCrit.Sts2.Core.Saves.SaveUtil.EnchantmentOrDeprecated(id).GetType()) is { } enchantment
             && !AnyPatched(enchantment);
+    }
+
+    /// <summary>The card type each saved id makes (filled by <see cref="CardTypeOf"/> before its overrides are cached). Main thread.</summary>
+    private static readonly Dictionary<ModelId, Type> _cardTypeOf = new();
+
+    private static Type CardTypeOf(ModelId id)
+    {
+        Type type = MegaCrit.Sts2.Core.Saves.SaveUtil.CardOrDeprecated(id).GetType();
+        _cardTypeOf[id] = type;
+        return type;
     }
 
     private static System.Reflection.MethodInfo[]? OnTheWayOf(Dictionary<ModelId, System.Reflection.MethodInfo[]?> byId, ModelId id, Func<ModelId, Type> type)

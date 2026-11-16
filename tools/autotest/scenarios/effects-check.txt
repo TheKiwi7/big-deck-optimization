@@ -3,7 +3,8 @@
 # Only SyncedCardRelease can't run here (co-op combat starts: effects-coop-host/-client with parcoop.ps1), nor ReplayStateSkip on
 # v0.107.1 (the game checksums a solo combat only since v0.111: RunManager enables its ChecksumTracker in co-op). ControllerActionSkip
 # through 'controllermap stale' (actions a v0.107 settings.save keeps; later versions drop such bindings themselves), the
-# snapshot of piles with pure cost/keyword listeners (SnapshotCardReuse.Hooks) through Curious. CardSortKeys (game v0.113+ only, listed
+# snapshot of piles with pure cost/keyword listeners (SnapshotCardReuse.Hooks) through Curious, ListenerCache's
+# suspension (ListenerCache.Suspended) through a hand selection held open, then ended by the game's revalidation (handselect). CardSortKeys (game v0.113+ only, listed
 # there only) through Stone Cracker at the combat starts and the reshuffle after pilemove; no bdperf comparison counts in the
 # effects (they are frozen around each bench): every effect comes from the game's own calls, or, for the snapshot effects on
 # v0.107.1, from the script's checksum lines (the game's FromRun and GenerateChecksum, as co-op runs them).
@@ -50,6 +51,12 @@ waitfor idle 120
 wait 1
 checksum plays
 state plays
+cmd card DUAL_WIELD hand
+cmd card PERFECTED_STRIKE hand
+cmd card PERFECTED_STRIKE hand
+handselect DUAL_WIELD hold 1 free
+checksum handselect
+state handselect
 pilescroll draw 30 40
 pilemove draw discard 2
 wait 1

@@ -125,6 +125,13 @@ public static class CardSortKeys
     public static long Refused { get; private set; }
     public static string? LastRefusal { get; private set; }
 
+    /// <summary>
+    /// The last refusal was a keyword listener of the combat not known to only add keywords (an unknown keyword override, or a
+    /// known adder another mod patches) while a cost hook reads keywords: left to the game by design (the bench's Veilpiercer
+    /// case tests this, not the text).
+    /// </summary>
+    public static bool LastRefusalKeywordListener { get; private set; }
+
 #if BENCH
     internal static int VerifyEvery { get; set; } = 16;
     /// <summary>Positive control (<c>bdperf sortkeys wrong</c>): answers reversed.</summary>
@@ -416,9 +423,9 @@ public static class CardSortKeys
                 }
                 foreach (ICombatState combat in combats)
                 {
-                    if (ImpureCostListener(combat, costGates) is { } impure)
+                    if (ImpureCostListener(combat, costGates, out bool keywordListener) is { } impure)
                     {
-                        return Refuse($"{impure} may change a cost");
+                        return Refuse($"{impure} may change a cost", keywordListener);
                     }
                 }
             }
@@ -433,10 +440,11 @@ public static class CardSortKeys
         }
     }
 
-    private static Scope? Refuse(string why)
+    private static Scope? Refuse(string why, bool keywordListener = false)
     {
         Refused++;
         LastRefusal = why;
+        LastRefusalKeywordListener = keywordListener;
         return null;
     }
 
@@ -493,8 +501,9 @@ public static class CardSortKeys
     /// reads <c>card.Keywords</c> (<see cref="KeywordReaders"/>), the keyword hook it runs too: every keyword listener of the
     /// combat (the same walk, <c>IterateHookListeners</c>) must only add to the set, and the keyword read must be the known code.
     /// </summary>
-    private static string? ImpureCostListener(ICombatState combat, Type[]? costGates)
+    private static string? ImpureCostListener(ICombatState combat, Type[]? costGates, out bool keywordListenerOnly)
     {
+        keywordListenerOnly = false;
         Type? lastType = null;
         bool readsKeywords = false;
         string? keywordListener = null;
@@ -550,6 +559,7 @@ public static class CardSortKeys
                 return $"a cost hook reading keywords ({method?.DeclaringType?.Name}.{method?.Name} patched)";
             }
         }
+        keywordListenerOnly = keywordListener != null;
         return keywordListener;
     }
 

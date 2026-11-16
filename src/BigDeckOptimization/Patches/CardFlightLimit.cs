@@ -163,7 +163,8 @@ public static class CardFlightLimit
         var allowed = new List<System.Reflection.MethodInfo>();
         foreach ((string name, string fingerprint) in AllowedReadyPatches)
         {
-            if (AccessTools.Method(name) is { } method && PatchSafety.FingerprintMatches(MethodFingerprint.Of(method), fingerprint))
+            // In SpeedX's assembly only: without SpeedX, no scan of every loaded type (this runs in a main-menu preflight step).
+            if (PatchSafety.MethodIn("SpeedX", name) is { } method && PatchSafety.FingerprintMatches(MethodFingerprint.Of(method), fingerprint))
             {
                 allowed.Add(method);
             }

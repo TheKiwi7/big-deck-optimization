@@ -4,9 +4,10 @@
 # -HostVisible: hands-on co-op (scenario cooptry): the host window stays on screen with sound for you to play, the
 # client (a scripted fake player) stays hidden and is closed when you close the host.
 # -TraceSec records a CPU trace of the host (results/<Name>-host.nettrace); keep the host alive until it ends.
-# Without Steam only <game>/mods and <game>/mods_STEAMTEST load. -WithMods copies the Workshop mods enabled in your
-# settings (and BDTEST_EXTRA_MODS) into a game copy's mods_STEAMTEST for the test (parlib.ps1's Add-TestMods: shared with the
-# other series on that copy, removed when the last one ends). Copies, never links, so the cleanup can't touch the Workshop folders.
+# Without Steam only <game>/mods and <game>/mods_STEAMTEST load. -WithMods copies the test mods into a game copy's
+# mods_STEAMTEST for the test (parlib.ps1's Get-TestModIds: the supported mods BaseLib, Limitless and BetterSpire2, plus
+# BDTEST_EXTRA_MODS and the Workshop mods enabled in your settings; BDTEST_MODS replaces the list, 'none' leaves only this
+# mod; Add-TestMods: shared with the other series on that copy, removed when the last one ends). Copies, never links, so the cleanup can't touch the Workshop folders.
 # -StopWhen <regex>: ends the test as soon as the client log matches it (a client without this mod never quits by itself).
 # -ClientHeadless: the client has no window at all (a client without this mod can't hide one).
 # -ClientWithout <mod id>: that mod disabled in the client's profile (coop-required.ps1: the client without this mod).

@@ -25,7 +25,8 @@ namespace BigDeckOptimization.Patches;
 ///
 /// Another mod's patch on <c>AddInternal</c> could put a card in a pile unseen (a prefix skipping the original and adding it
 /// itself, a transpiler): while one is there, and until the next combat start rebuilds the tracking from the piles, every walk
-/// is the game's. An add whose original was skipped but which changed the pile anyway also gives that pile a full walk.
+/// is the game's. Postfixes taking their arguments by value and void prefixes sorted before RecordAdd can't, and are let stand
+/// (<see cref="PatchTolerance.SurroundingOnly"/>). An add whose original was skipped but which changed the pile anyway also gives that pile a full walk.
 /// </summary>
 public static class CardDbScan
 {
@@ -82,7 +83,8 @@ public static class CardDbScan
     private static MethodInfo[]? _allowedOnId;
 
     private static MethodInfo[] AllowedOnId() => _allowedOnId ??= AllowedIdPatches
-        .Select(p => AccessTools.Method(p.Method) is { } m && PatchSafety.FingerprintMatches(MethodFingerprint.Of(m), p.Fingerprint) ? m : null)
+        // In Limitless's assembly only: without Limitless, no scan of every loaded type (a main-menu preflight step).
+        .Select(p => PatchSafety.MethodIn(LimitlessReserialize.LimitlessAssembly, p.Method) is { } m && PatchSafety.FingerprintMatches(MethodFingerprint.Of(m), p.Fingerprint) ? m : null)
         .Where(m => m != null).ToArray()!;
 
     public static void Apply(Harmony harmony)

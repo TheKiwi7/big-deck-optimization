@@ -52,6 +52,36 @@ public static partial class PatchSafety
     public static bool FingerprintMatches(string actual, string expected) =>
         actual == expected || (EquivalentFingerprints.TryGetValue(expected, out string[]? equivalent) && equivalent.Contains(actual));
 
+    /// <summary>The loaded assembly with this simple name (a mod's), or null: a scan of the loaded assemblies' names only.</summary>
+    internal static Assembly? LoadedAssembly(string name)
+    {
+        foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            if (assembly.GetName().Name == name)
+            {
+                return assembly;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Another mod's method (<c>Namespace.Type:Method</c>, nested types with <c>+</c>) looked up in that mod's assembly only, or
+    /// null when that assembly isn't loaded or has no such method. <c>AccessTools.Method(string)</c> on a type of a mod that
+    /// isn't loaded ends in Harmony's <c>TypeByName</c> fallback, <c>AllTypes()</c>: every type of every loaded assembly
+    /// listed and compared twice, tens of ms in one frame with a big mod pack.
+    /// </summary>
+    internal static MethodInfo? MethodIn(string assemblyName, string typeColonMethod)
+    {
+        int colon = typeColonMethod.LastIndexOf(':');
+        if (colon <= 0 || LoadedAssembly(assemblyName) is not { } assembly
+            || assembly.GetType(typeColonMethod.Substring(0, colon), throwOnError: false) is not { } type)
+        {
+            return null;
+        }
+        return AccessTools.Method(type, typeColonMethod.Substring(colon + 1));
+    }
+
     /// <summary>
     /// Throws <see cref="PatchSkippedException"/> unless <paramref name="method"/> still has the code a patch mirrors
     /// (see <see cref="FingerprintMatches"/>).

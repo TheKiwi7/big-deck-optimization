@@ -248,7 +248,7 @@ public static class ModEntry
             Log.Warn($"[{Id}] Could not read the saved on/off setting (mod on): {e.Message}");
         }
         Log.Info($"[{Id}] Initialized v{typeof(ModEntry).Assembly.GetName().Version?.ToString(3)} in {_initMs:F0} ms"
-            + (StartedOff ? ": turned off in the settings, nothing applied (turn it on, then restart the game)" : ""));
+            + (StartedOff ? ": turned off in the settings, nothing applied but the co-op check (CoopModeTag; turn it on, then restart the game)" : ""));
     }
 
     /// <summary>

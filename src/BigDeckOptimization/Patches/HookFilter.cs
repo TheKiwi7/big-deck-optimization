@@ -78,7 +78,9 @@ public static class HookFilter
         // the mirror as before the original without this mod). No postfix: the mirror skips the original, and Harmony then runs
         // postfixes even when a listener threw (PassOn: the game runs none then) and hands them __runOriginal false.
         // The default: no tolerance, a skipped listener skips its call to it. Callers that skip the hook call altogether
-        // (SnapshotCardReuse's fast reads) check the hook strictly themselves (HookMethodOf).
+        // (SnapshotCardReuse's fast reads) check the hook strictly themselves (HookMethodOf). HookSkip's SurroundingOnly check of
+        // these same Hook methods lets postfixes stand only because this PrefixesOnly check refuses them (the mirror then runs
+        // the original): an invariant, a change here needs one there.
         public bool IsSafe() => _defaultHolds && !PatchSafety.IsPatchedByOthers(BaseMethod) && !PatchSafety.IsPatchedByOthers(_hookMethod, PatchTolerance.PrefixesOnly)
             && (!_combatWalk || !CombatHookWalkPatched());
 

@@ -453,10 +453,84 @@ public static class PileIndex
     /// can't tell that nested move from an unseen change): conservative, the game's own scan from then on.
     /// </summary>
     [OrderFreePrefix]
-    private static void WatchAdd(CardPile __instance, out Saved __state) => __state = Saved.CountOf(__instance);
+    private static void WatchAdd(CardPile __instance, out Saved __state)
+    {
+        __state = Saved.CountOf(__instance);
+#if BENCH
+        EnterCall(__instance);
+#endif
+    }
 
     [OrderFreePrefix]
-    private static void WatchRemove(CardPile __instance, out Saved __state) => __state = Saved.CountOf(__instance);
+    private static void WatchRemove(CardPile __instance, out Saved __state)
+    {
+        __state = Saved.CountOf(__instance);
+#if BENCH
+        EnterCall(__instance);
+#endif
+    }
+
+#if BENCH
+    /// <summary>
+    /// Test builds: the adds and removes under way on this thread, outermost first, each with its pile's count when it began and
+    /// the net change the calls nested in it made to that pile. Tells the self-check's known limit apart from any other count
+    /// mismatch (<see cref="NestedMoveFaults"/>).
+    /// </summary>
+    [ThreadStatic] private static List<(CardPile Pile, int Start, int Nested)>? _calls;
+
+    /// <summary>
+    /// Self-check faults of an add or remove whose pile changed by its own card plus exactly what calls nested in it (a tolerated
+    /// postfix, a game event handler) moved into or out of that same pile: the self-check's documented limit (it expects the
+    /// call's own card only: the index faults, the game's own scan from then on), seen by the <c>pileindex-nested-limit</c> control.
+    /// </summary>
+    public static long NestedMoveFaults { get; private set; }
+
+    private static void EnterCall(CardPile pile) => (_calls ??= new()).Add((pile, pile.Cards.Count, 0));
+
+    /// <summary>
+    /// Leaves this call's entry: its pile's count when it began and the net change calls nested in it made to that pile; its own
+    /// net change is passed on to the nearest enclosing call on the same pile. An unbalanced stack (a finalizer that never ran) is
+    /// dropped: nothing is told then.
+    /// </summary>
+    private static (int Start, int Nested) LeaveCall(CardPile pile)
+    {
+        List<(CardPile Pile, int Start, int Nested)>? calls = _calls;
+        if (calls is not { Count: > 0 } || !ReferenceEquals(calls[^1].Pile, pile))
+        {
+            calls?.Clear();
+            return (-1, 0);
+        }
+        (CardPile _, int start, int nested) = calls[^1];
+        calls.RemoveAt(calls.Count - 1);
+        int change = pile.Cards.Count - start;
+        for (int i = calls.Count - 1; i >= 0; i--)
+        {
+            if (ReferenceEquals(calls[i].Pile, pile))
+            {
+                calls[i] = (pile, calls[i].Start, calls[i].Nested + change);
+                break;
+            }
+        }
+        return (start, nested);
+    }
+
+    /// <summary>A self-check fault about to be raised: counted and logged when nested calls on the same pile explain the count.</summary>
+    private static void NoteNestedLimit(CardPile pile, (int Start, int Nested) call, int own)
+    {
+        int nested = call.Nested;
+        if (nested == 0 || call.Start < 0 || pile.Cards.Count != call.Start + own + nested)
+        {
+            return;
+        }
+        NestedMoveFaults++;
+        if (NestedMoveFaults <= 3)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: self-check limit: a nested {(nested > 0 ? "add" : "remove")} of {Math.Abs(nested)} card(s) "
+                + $"{(nested > 0 ? "into" : "out of")} the {pile.Type} pile during an {(own > 0 ? "add" : "remove")} (the count expected "
+                + $"the call's own card only): faulted, the game's scan from then on (NestedMoveFaults {NestedMoveFaults})");
+        }
+    }
+#endif
 
     /// <summary>Only called while the original is still to run (Harmony skips it after another prefix returned false).</summary>
     private static void BeforeAdd(CardPile __instance, CardModel card, bool __runOriginal, ref Saved __state)
@@ -494,6 +568,9 @@ public static class PileIndex
     {
         try
         {
+#if BENCH
+            (int Start, int Nested) call = __state.Known ? LeaveCall(__instance) : (-1, 0);
+#endif
             if (__state.InFlight)
             {
                 Land(card);
@@ -504,6 +581,9 @@ public static class PileIndex
             }
             else if (SelfChecking() && __state.Set && __instance.Cards.Count != __state.PileCount + 1)
             {
+#if BENCH
+                NoteNestedLimit(__instance, call, 1);
+#endif
                 Fail($"an add left the {__instance.Type} pile with {__instance.Cards.Count} cards, it had {__state.PileCount}");
             }
         }
@@ -518,6 +598,9 @@ public static class PileIndex
     {
         try
         {
+#if BENCH
+            (int Start, int Nested) call = __state.Known ? LeaveCall(__instance) : (-1, 0);
+#endif
             if (__state.InFlight)
             {
                 Land(card);
@@ -528,6 +611,9 @@ public static class PileIndex
             }
             else if (SelfChecking() && __state.Set && __instance.Cards.Count != __state.PileCount - 1)
             {
+#if BENCH
+                NoteNestedLimit(__instance, call, -1);
+#endif
                 Fail($"a remove left the {__instance.Type} pile with {__instance.Cards.Count} cards, it had {__state.PileCount}");
             }
         }

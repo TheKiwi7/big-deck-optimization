@@ -73,6 +73,9 @@ public static class CombatStartTimer
         Patch(harmony, target, nameof(SyncPrefix), nameof(AsyncPostfix));
     }
 
+    // Order-free: it only reads the clock into statics (test builds only; Release has no prefix here), so the shape rules'
+    // prefix order judges other mods' void prefixes as a Release build would.
+    [Patches.OrderFreePrefix]
     private static void StartPrefix()
     {
         try
@@ -99,6 +102,7 @@ public static class CombatStartTimer
         }
     }
 
+    [Patches.OrderFreePrefix]
     private static void SyncPrefix(System.Reflection.MethodBase __originalMethod)
     {
         if (_running && _labels.TryGetValue(__originalMethod, out var info))

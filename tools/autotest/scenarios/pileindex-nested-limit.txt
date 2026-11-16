@@ -1,0 +1,44 @@
+# PileIndex's self-check limit, a positive control (DESIGN "Foreign patches judged by their shape", what remains). While every add
+# and remove is checked by its effect (SelfChecking: here another mod's patch on CardPile.Clear, a list method checked with no
+# tolerance), a tolerated postfix moving another card into the same pile during an add (nested-postfix: a card added to the
+# discard pile takes the draw pile's last card along) leaves that pile with one card more than the add's own: the index faults,
+# conservative, the game's own scan from then on. Expected: the fault, the test build's line telling it is this limit (a nested
+# add into the same pile explains the count: PileIndex.NestedMoveFaults), and PileIndex answering nothing afterwards.
+timeout 900
+expect PileIndex disabled, falling back to vanilla: an add left the Discard pile with
+expect PileIndex: self-check limit: a nested add of 1 card\(s\) into the Discard pile during an add
+expect nested-move self-check faults [1-9]
+expect PileIndex: CardPile\.Clear is also patched by .*bdtest\.foreign\.noop-postfix: normal game for that part
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all cards
+enemyhp 999999
+foreignpatch noop-postfix MegaCrit.Sts2.Core.Entities.Cards.CardPile:Clear
+foreignpatch nested-postfix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 2
+checksum start
+# The hand to the discard pile (CardPile.Add, one AddInternal per card): the first add takes a draw pile card along.
+emptyhand
+wait 1
+effects fault
+checksum fault
+cmd card PERFECTED_STRIKE hand
+cmd card PERFECTED_STRIKE hand
+play 2
+waitfor idle 120
+endturn
+waitfor idle 300
+play 3
+waitfor idle 120
+checksum t2
+effectcheck PileIndex same fault
+counters end
+foreignpatch report end
+cmd kill all
+waitfor nocombat 300
+wait 2
+foreignpatch remove
+quit

@@ -122,7 +122,7 @@ public static class Settings
     };
 
     public const string StartedOffText =
-        "Inactive: the mod was turned off when the game started, so none of it is loaded. Turn the mod on, then restart the game.";
+        "Inactive: the mod was turned off when the game started, so none of it is loaded but its co-op check (every player must have it in the same state). Turn the mod on, then restart the game.";
 
     public static string StartedOffWhy(string? language) => Translations.Get(language, "why.started_off", StartedOffText);
 
@@ -425,7 +425,8 @@ public static class Settings
     /// A co-op run is in progress here. Turning the whole mod off then also turns off the fast combat start this player's
     /// co-op partners keep: this player starts each combat much later (tens of seconds with many relics) and the game drops
     /// the actions reaching a player still starting a combat (desync or a stuck turn, DESIGN "Co-op with a player without
-    /// the mod"). bdopt asks for a confirmation then, and the menu's master switch can't be unticked.
+    /// the mod"); turning it on in a run everyone joined with it off makes the same mixed pair. bdopt asks for a confirmation
+    /// either way then, and the menu's master switch can't be switched either way.
     /// </summary>
     public static bool InCoopRun
     {
@@ -454,7 +455,8 @@ public static class Settings
     /// A lobby screen in the scene tree holds a connected multiplayer lobby (host or client). The game keeps no global
     /// reference to it: every screen holding one has a <c>StartRunLobby</c> field (character select, custom, daily, and later
     /// versions' other modes) or a <c>LoadRunLobby</c> one (continuing a co-op save: the run only exists once everyone is
-    /// ready), found by type. Only run when bdopt switches the whole mod: a walk of the tree costs nothing then.
+    /// ready), found by type. Only run when bdopt switches the whole mod or shows the state while it is off (Status): a walk of
+    /// the tree costs nothing measurable then; never on a hot path.
     /// </summary>
     private static bool InCoopLobby()
     {
@@ -469,32 +471,47 @@ public static class Settings
     }
 
     private static readonly Dictionary<Type, System.Reflection.FieldInfo[]> _lobbyFields = new();
+    private static bool _lobbyWalkSkipLogged;
 
+    /// <summary>
+    /// The walk tolerates what it can't read, per type, field and node: a node type of another mod with a field typed from an
+    /// assembly that isn't loaded (an optional dependency) throws on <c>FieldType</c>; that field is left out (cached), and one
+    /// node failing doesn't stop the walk of its siblings and children (logged once).
+    /// </summary>
     private static bool HoldsCoopLobby(Godot.Node node)
     {
-        Type type = node.GetType();
-        if (!_lobbyFields.TryGetValue(type, out System.Reflection.FieldInfo[]? fields))
+        try
         {
-            fields = type.GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)
-                .Where(f => f.FieldType == typeof(MegaCrit.Sts2.Core.Multiplayer.Game.Lobby.StartRunLobby)
-                    || f.FieldType == typeof(MegaCrit.Sts2.Core.Multiplayer.Game.Lobby.LoadRunLobby)).ToArray();
-            _lobbyFields[type] = fields;
-        }
-        foreach (System.Reflection.FieldInfo field in fields)
-        {
-            MegaCrit.Sts2.Core.Multiplayer.Game.INetGameService? net = field.GetValue(node) switch
+            foreach (System.Reflection.FieldInfo field in LobbyFields(node.GetType()))
             {
-                MegaCrit.Sts2.Core.Multiplayer.Game.Lobby.StartRunLobby start => start.NetService,
-                MegaCrit.Sts2.Core.Multiplayer.Game.Lobby.LoadRunLobby load => load.NetService,
-                _ => null,
-            };
-            if (net is { IsConnected: true }
-                && net.Type is MegaCrit.Sts2.Core.Multiplayer.Game.NetGameType.Host or MegaCrit.Sts2.Core.Multiplayer.Game.NetGameType.Client)
-            {
-                return true;
+                MegaCrit.Sts2.Core.Multiplayer.Game.INetGameService? net = field.GetValue(node) switch
+                {
+                    MegaCrit.Sts2.Core.Multiplayer.Game.Lobby.StartRunLobby start => start.NetService,
+                    MegaCrit.Sts2.Core.Multiplayer.Game.Lobby.LoadRunLobby load => load.NetService,
+                    _ => null,
+                };
+                if (net is { IsConnected: true }
+                    && net.Type is MegaCrit.Sts2.Core.Multiplayer.Game.NetGameType.Host or MegaCrit.Sts2.Core.Multiplayer.Game.NetGameType.Client)
+                {
+                    return true;
+                }
             }
         }
-        foreach (Godot.Node child in node.GetChildren())
+        catch (Exception e)
+        {
+            LobbyWalkSkipped(node.GetType(), e);
+        }
+        Godot.Collections.Array<Godot.Node> children;
+        try
+        {
+            children = node.GetChildren();
+        }
+        catch (Exception e)
+        {
+            LobbyWalkSkipped(node.GetType(), e);
+            return false;
+        }
+        foreach (Godot.Node child in children)
         {
             if (HoldsCoopLobby(child))
             {
@@ -502,6 +519,50 @@ public static class Settings
             }
         }
         return false;
+    }
+
+    /// <summary>A node type's lobby fields, each field's type read in its own try (cached per type, the readable ones).</summary>
+    private static System.Reflection.FieldInfo[] LobbyFields(Type type)
+    {
+        if (_lobbyFields.TryGetValue(type, out System.Reflection.FieldInfo[]? fields))
+        {
+            return fields;
+        }
+        var found = new List<System.Reflection.FieldInfo>();
+        try
+        {
+            foreach (System.Reflection.FieldInfo field in type.GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic))
+            {
+                try
+                {
+                    if (field.FieldType == typeof(MegaCrit.Sts2.Core.Multiplayer.Game.Lobby.StartRunLobby)
+                        || field.FieldType == typeof(MegaCrit.Sts2.Core.Multiplayer.Game.Lobby.LoadRunLobby))
+                    {
+                        found.Add(field);
+                    }
+                }
+                catch (Exception e)
+                {
+                    LobbyWalkSkipped(type, e);
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            LobbyWalkSkipped(type, e);
+        }
+        fields = found.ToArray();
+        _lobbyFields[type] = fields;
+        return fields;
+    }
+
+    private static void LobbyWalkSkipped(Type type, Exception e)
+    {
+        if (!_lobbyWalkSkipLogged)
+        {
+            _lobbyWalkSkipLogged = true;
+            MegaCrit.Sts2.Core.Logging.Log.Info($"[{ModEntry.Id}] Co-op lobby check: part of {type.FullName} not readable, skipped ({e.GetType().Name}: {e.Message}); the rest of the screen tree is still checked");
+        }
     }
 
     /// <summary>With the mod off, co-op games only with players who have it off too (<see cref="Patches.CoopModeTag"/>).</summary>
@@ -593,7 +654,7 @@ public static class Settings
     {
         if (ModEntry.StartedOff)
         {
-            return $"BigDeckOptimization: inactive this session (turned off when the game started, nothing applied: unmodified game). "
+            return $"BigDeckOptimization: inactive this session (turned off when the game started, nothing applied but the co-op check: unmodified game). "
                 + (Master ? "Turned on: takes effect when you restart the game." : "To use it: bdopt on, then restart the game.")
                 + " " + CoopOffOnly;
         }

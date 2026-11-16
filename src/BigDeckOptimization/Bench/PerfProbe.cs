@@ -220,6 +220,9 @@ public static class PerfProbe
         }
     }
 
+    // Order-free: it only reads the clock into its own __state (test builds only), so the shape rules' prefix order judges
+    // other mods' void prefixes on probed methods (CardPile.AddInternal, combat hooks) as a Release build would.
+    [Patches.OrderFreePrefix]
     private static void Prefix(out long __state)
     {
         __state = Enabled ? Stopwatch.GetTimestamp() : 0;

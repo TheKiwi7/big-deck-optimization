@@ -36,7 +36,7 @@ namespace BigDeckOptimization.Bench;
 /// Script lines (# comments; the switch in <see cref="Run"/> lists every command, each documented on its own method), among them:
 ///   newrun &lt;CHARACTER&gt; [seed]   mplobby &lt;CHARACTER&gt; [players] [seed]   wait &lt;s&gt;   timeout &lt;s&gt;   log &lt;text&gt;   quit   onfail continue
 ///   waitfor menu|run|combat|nocombat|idle|turn|round &lt;n&gt;|room &lt;type&gt;|event|restsite|deckcount [timeout s]   barrier &lt;label&gt; [timeout s]
-///   cmd &lt;console command&gt;   play &lt;n&gt;   playcard &lt;ID&gt;   endturn   avoid ID,ID   enemyhp &lt;hp&gt;   immortal [off | until &lt;round&gt;]
+///   cmd &lt;console command&gt;   play &lt;n&gt;   playcard &lt;ID&gt;   handselect &lt;ID&gt; [hold &lt;s&gt;] [free]   endturn   avoid ID,ID   enemyhp &lt;hp&gt;   immortal [off | until &lt;round&gt;]
 ///   state [label]   checksum [label]   runstate [label]   effects [label]   effectcheck ...   counters [label]   gcfull [label]   leakcheck [label]
 ///   autoroom ...   automap   autoslay &lt;seed&gt;   sweep ...   eventoption ...   restsite ...   fpsstat [label]   marker &lt;text&gt;   selector ui|auto|local
 ///   {hash:NAME} anywhere = hash of the shared run file NAME   speed normal|fast|instant (default fast)
@@ -513,6 +513,13 @@ public static partial class AutoTest
 
     private static IDisposable? _selector;
 
+    /// <summary>
+    /// <c>handselect</c> lines in this session's script: ListenerCache's suspension (<c>ListenerCache.Suspended</c>, hand selections
+    /// revalidated by a state change) is listed in the effects only then, the only sessions that can reach it (a held hand choice),
+    /// from the first <c>effects</c> line on (an <c>effectcheck ... grew</c> needs it before the line).
+    /// </summary>
+    private static int _handSelects;
+
     /// <summary>Each optimization's effect counter (the <c>effects</c> line), by name.</summary>
     /// Keep in step with Bench/EffectCounters.cs (the counters a bdperf bench puts back).
     private static (string Name, long Count)[] EffectCounts() => new (string, long)[]
@@ -533,7 +540,7 @@ public static partial class AutoTest
         (DeckCountMemo.Name, DeckCountMemo.Kept + DeckCountMemo.Updated), (DeckCountMemo.Name + ".Checks", DeckCountMemo.Checks), (LimitlessHookSkip.Name, LimitlessHookSkip.Dropped), (LimitlessHookSkip.Name + ".Saved", LimitlessHookSkip.NotesFromSaved), (LimitlessCloneMemo.Name, LimitlessCloneMemo.Reused), (TextPoolReuse.Name, TextPoolReuse.Served), (ThemeColorSkip.Name, ThemeColorSkip.Skipped), (ReplayStateSkip.Name, ReplayStateSkip.Skipped),
         (GcPacing.Name, GcPacing.Regions), (RelicFlashMerge.Name, RelicFlashMerge.Merged), (CardFlightLimit.Name, CardFlightLimit.Skipped), (TypePlaqueSkip.Name, TypePlaqueSkip.Skipped),
         (ControllerActionSkip.Name, ControllerActionSkip.Skipped), (RoomCollect.Name, RoomCollect.Background), (PooledCardRelease.Name, PooledCardRelease.Released), (SyncedCardRelease.Name, SyncedCardRelease.Released), (SavedPropertyLookup.Name, SavedPropertyLookup.Served), (RelicStateReuse.Name, RelicStateReuse.Reused), (RelicStateReuse.ScalarName, RelicStateReuse.ScalarReused), (RichTextEnvRelease.Name, RichTextEnvRelease.Released), (RichTextEnvRelease.Name + ".Untracked", RichTextEnvRelease.Untracked), ("InlineGuard", InlineGuard.Protected - _benchProtected),
-    }.Concat(CardSortKeys.Applied || (!CardSortKeys.NotNeeded && !ModEntry.StartedOff) ? new (string, long)[] { (CardSortKeys.Name, CardSortKeys.Sorts), (CardSortKeys.Name + ".Answers", CardSortKeys.Answered) } : Array.Empty<(string, long)>()).ToArray();
+    }.Concat(_handSelects > 0 ? new (string, long)[] { (ListenerCache.Name + ".Suspended", ListenerCache.SuspendedRevalidations) } : Array.Empty<(string, long)>()).Concat(CardSortKeys.Applied || (!CardSortKeys.NotNeeded && !ModEntry.StartedOff) ? new (string, long)[] { (CardSortKeys.Name, CardSortKeys.Sorts), (CardSortKeys.Name + ".Answers", CardSortKeys.Answered) } : Array.Empty<(string, long)>()).ToArray();
 
     /// <summary>
     /// The game starts its "Common" preload at the main menu without awaiting it. A run started meanwhile (a script's newrun 0.4 s
@@ -1243,6 +1250,7 @@ public static partial class AutoTest
         CombatManager.Instance.CombatEnded += _ => _combatOpen = false;
         string[] lines = File.ReadAllLines(_script!);
         Say($"script {_script} ({lines.Length} lines)");
+        _handSelects = lines.Count(l => l.TrimStart().StartsWith("handselect ", StringComparison.OrdinalIgnoreCase));
         await Until(tree, () => NGame.Instance?.MainMenu != null && ModEntry.Ready, 300, "menu");
         await Frames(tree, 60);
         if (!await WaitCommonPreload(tree))
@@ -1556,7 +1564,7 @@ public static partial class AutoTest
                         + $"verified {LimitlessReserialize.Verified}, verify mismatches {LimitlessReserialize.VerifyMismatches}; {LimitlessRecalcSkip.Name} passes skipped {LimitlessRecalcSkip.PassesSkipped}, run {LimitlessRecalcSkip.PassesRun}, mismatches {LimitlessRecalcSkip.PassMismatches}, skipped {LimitlessRecalcSkip.Skipped}, verified {LimitlessRecalcSkip.Verified}, mismatches {LimitlessRecalcSkip.Mismatches}; {LimitlessHookSkip.Name} samples {LimitlessHookSkip.Samples}, mismatches {LimitlessHookSkip.SampleMismatches}; {SnapshotCardReuse.Name} reused {SnapshotCardReuse.Reused}, built {SnapshotCardReuse.Built}, upgraded {SnapshotCardReuse.LightBuilt}, piles trusted {SnapshotCardReuse.PilesTrusted}, pile bits reused {SnapshotCardReuse.PileBitsReused}, composed {SnapshotCardReuse.PileBitsComposed}, pile mismatches {SnapshotCardReuse.PileMismatches}, verified {SnapshotCardReuse.Verified}, mismatches {SnapshotCardReuse.Mismatches}, piles reused {SnapshotCardReuse.PilesReused}, built {SnapshotCardReuse.PilesBuilt}, bits reused {SnapshotCardReuse.BitsReused}, captured {SnapshotCardReuse.BitsCaptured}, checked {SnapshotCardReuse.BitChecks}, game exceptions {SnapshotCardReuse.GameExceptions}; {LimitlessCloneMemo.Name} options reused {LimitlessCloneMemo.OptionsReused}; {ListenerCache.Name} suspended revalidations {ListenerCache.SuspendedRevalidations}; {FastListeners.Name} cache mismatches {FastListeners.CacheMismatches}, "
                         + $"segments rebuilt {FastListeners.SegmentRebuilds} (versions {FastListeners.RebuiltVersions}, pile version {FastListeners.PileVersion}), "
                         + $"extended {FastListeners.SegmentExtends}, kept across moves {FastListeners.SegmentMoveHits}, snapshot catch-ups {FastListeners.SnapshotCatchUps}, rebuilds {FastListeners.SnapshotRebuilds}, move checks {FastListeners.MoveChecks}, mismatches {FastListeners.MoveMismatches}, hits {FastListeners.SegmentHits}, uncached walks {FastListeners.UncachedWalks}; "
-                        + $"{HookFilter.Name} walk checks {HookFilter.WalkChecks}, mismatches {HookFilter.WalkMismatches}, cost color checks {HookFilter.CostColorChecks / 64}, mismatches {HookFilter.CostColorMismatches}; {RelicFlashMerge.Name} merged {RelicFlashMerge.Merged}; {CardFlightLimit.Name} skipped {CardFlightLimit.Skipped}; {ReplayStateSkip.Name} skipped {ReplayStateSkip.Skipped}; {ThemeColorSkip.Name} skipped {ThemeColorSkip.Skipped}, set {ThemeColorSkip.Set}; {GcPacing.Name} regions {GcPacing.Regions}, refused {GcPacing.RegionsRefused}, exhausted {GcPacing.Exhausted}, {GcPacing.RegionMs:F0} ms, collections {GcPacing.Collections} (full {GcPacing.Fulls}) in {GcPacing.CollectMs:F0} ms, worst {GcPacing.WorstCollectMs:F0} ms; {PileIndex.Name} duplicate checks fast {PileIndex.FastDuplicateChecks}, slow {PileIndex.SlowDuplicateChecks}, fast ContainsCard {PileIndex.FastContainsCards}; {HookSkip.Name} pending filters dropped {HookSkip.PendingFiltersDropped}; subscriber checks {FastListeners.SubscriberChecks} in {FastListeners.SubscriberCheckTicks * 1000.0 / Stopwatch.Frequency:F1} ms; "
+                        + $"{HookFilter.Name} walk checks {HookFilter.WalkChecks}, mismatches {HookFilter.WalkMismatches}, cost color checks {HookFilter.CostColorChecks / 64}, mismatches {HookFilter.CostColorMismatches}; {RelicFlashMerge.Name} merged {RelicFlashMerge.Merged}; {CardFlightLimit.Name} skipped {CardFlightLimit.Skipped}; {ReplayStateSkip.Name} skipped {ReplayStateSkip.Skipped}; {ThemeColorSkip.Name} skipped {ThemeColorSkip.Skipped}, set {ThemeColorSkip.Set}; {GcPacing.Name} regions {GcPacing.Regions}, refused {GcPacing.RegionsRefused}, exhausted {GcPacing.Exhausted}, {GcPacing.RegionMs:F0} ms, collections {GcPacing.Collections} (full {GcPacing.Fulls}) in {GcPacing.CollectMs:F0} ms, worst {GcPacing.WorstCollectMs:F0} ms; {PileIndex.Name} duplicate checks fast {PileIndex.FastDuplicateChecks}, slow {PileIndex.SlowDuplicateChecks}, fast ContainsCard {PileIndex.FastContainsCards}, nested-move self-check faults {PileIndex.NestedMoveFaults}; {HookSkip.Name} pending filters dropped {HookSkip.PendingFiltersDropped}; subscriber checks {FastListeners.SubscriberChecks} in {FastListeners.SubscriberCheckTicks * 1000.0 / Stopwatch.Frequency:F1} ms; "
                         + $"{CardSortKeys.Name} sorts {CardSortKeys.Sorts}, answered {CardSortKeys.Answered}, refused {CardSortKeys.Refused} (last: {CardSortKeys.LastRefusal ?? "none"}), checks {CardSortKeys.Checks}, mismatches {CardSortKeys.Mismatches}");
                     break;
                 case "effects":
@@ -1647,6 +1655,9 @@ public static partial class AutoTest
                 case "deckpages":
                     string[] pageArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                     await DeckPages(tree, pageArgs[0], int.Parse(pageArgs[1]));
+                    break;
+                case "handselect":
+                    await HandSelect(tree, arg);
                     break;
                 case "playcard":
                     List<string> playArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();

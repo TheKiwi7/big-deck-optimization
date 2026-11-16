@@ -148,8 +148,9 @@ public static class SortKeysBench
             if (CardSortKeys.Refused != refused || !opened)
             {
                 string why = CardSortKeys.LastRefusal ?? "nothing answered";
-                // An unknown keyword listener in this combat (a mod's, a card's) refuses by design: nothing to compare here.
-                return why.EndsWith("(keywords)", StringComparison.Ordinal)
+                // A keyword listener in this combat not known to only add keywords (a mod's, a card's; or a known adder another
+                // mod patches) refuses by design: nothing to compare here. Tested by its kind, not its wording.
+                return CardSortKeys.LastRefusalKeywordListener
                     ? (true, $"; Veilpiercer: left to the game ({why}), not compared")
                     : (false, $"; Veilpiercer: REFUSED ({why})");
             }

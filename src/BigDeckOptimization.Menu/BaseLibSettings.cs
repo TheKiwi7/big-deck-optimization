@@ -338,7 +338,7 @@ public sealed class BaseLibSettings : SimpleModConfig
                     // Greyed out in a co-op run (GreyOut): the reason first, as on the options' rows.
                     [$"{Prefix}-ENABLED.hover.desc"] = WithReason(CoopLocked ? Settings.CoopRunWhy(language) : null,
                         Translations.Get(language, "enabled.desc",
-                            "Turns the whole mod on or off (off = unmodified game), no restart needed. If it's off when the game starts, none of the mod is loaded: turning it back on then takes effect at the next start.")),
+                            "Turns the whole mod on or off (off = unmodified game), no restart needed. If it's off when the game starts, none of the mod is loaded but its co-op check (every player must have it in the same state): turning it back on then takes effect at the next start.")),
                     [$"{Prefix}-{Settings.FastStartRelicsKey.ToUpperInvariant()}.title"] =
                         Translations.Get(language, Settings.FastStartRelicsKey + ".title", Settings.FastStartRelicsLabel),
                     // Greyed out with the fast combat start (GreyOut): that option's reason.
@@ -351,9 +351,11 @@ public sealed class BaseLibSettings : SimpleModConfig
                     string slug = option.Key.ToUpperInvariant();
                     texts[$"{Prefix}-{slug}.title"] = Translations.Get(language, option.Key + ".title", option.Label);
                     string description = Translations.Get(language, option.Key + ".desc", option.Description);
-                    // Greyed out (Why), or still switchable but part of it doesn't run (PartlyOff) or is vanilla because of another mod (Conflict).
+                    // Greyed out (Why), or still switchable but part of it doesn't run (PartlyOff) and/or is vanilla because of another
+                    // mod (Conflict): both lines when both hold, so the mods the summary names show on their options' hover.
+                    string? partly = Settings.PartlyOff(option, language), conflict = Settings.Conflict(option, language);
                     texts[$"{Prefix}-{slug}.hover.desc"] = WithReason(
-                        Settings.Why(option, language) ?? Settings.PartlyOff(option, language) ?? Settings.Conflict(option, language), description);
+                        Settings.Why(option, language) ?? (partly != null && conflict != null ? partly + "\n" + conflict : partly ?? conflict), description);
                 }
                 table.MergeWith(texts);
             }

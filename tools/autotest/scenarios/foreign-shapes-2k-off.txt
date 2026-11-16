@@ -44,6 +44,10 @@ foreignpatch gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterPlayerTu
 # (6) a near miss in the A/B (a static write before the type test): every call counted (STATE). Taken as gated, the walk would
 # drop calls and that count differ; its hook must stay the game's.
 foreignpatch nearmiss-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterSideTurnEnd squeeze
+# (7) void prefixes at the default priority on the two hooks the test build's combat start timer also prefixes (Debug only,
+# [OrderFreePrefix]: it only reads the clock): kept, as in a Release build where that prefix doesn't exist.
+foreignpatch noop-prefix MegaCrit.Sts2.Core.Hooks.Hook:AfterRoomEntered
+foreignpatch noop-prefix MegaCrit.Sts2.Core.Hooks.Hook:BeforeCombatStart
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 1

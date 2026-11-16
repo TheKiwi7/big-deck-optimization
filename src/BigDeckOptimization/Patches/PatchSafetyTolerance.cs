@@ -18,7 +18,10 @@ public enum PatchTolerance
 
     /// <summary>
     /// Only for a call site where the original always runs and this mod's code around it keeps its effect identical (no prefix of
-    /// this mod skips it): patches that run around that code and can't change how it runs are let stand.
+    /// this mod skips it), or where every prefix of this mod that may skip it backs off from any other mod's postfix itself
+    /// (HookSkip's <c>Hook</c> methods that HookFilter also mirrors: the mirror checks the same method with
+    /// <see cref="PrefixesOnly"/>, so with a postfix there the original runs; an invariant both call sites name): patches that
+    /// run around that code and can't change how it runs are let stand.
     /// <list type="bullet">
     /// <item>A postfix whose parameters are all by value, except <c>__result</c> (the caller gets what it leaves there, as without
     /// this mod) and <c>__state</c> (its own prefix's): no other <c>ref</c>/<c>out</c> parameter (this mod's finalizers read the
@@ -57,12 +60,18 @@ public enum PatchTolerance
 }
 
 /// <summary>
-/// On a prefix of this mod: it only reads the instance into <c>__state</c> for its finalizer to judge a call whose tracking prefix
-/// didn't run (another mod's bool prefix skipped it, or a prefix before it threw). Such a prefix doesn't count for
-/// <see cref="PatchTolerance.SurroundingOnly"/>'s order rule: a void prefix let stand can't skip the tracking prefix, so what this
-/// one read is only used when such a prefix throws, where the original doesn't run either; the finalizer's judgement then is
-/// conservative (PileIndex: a pile that changed by more than the judged card, a nested move of another card included, faults the
-/// index, the game's own scan from then on).
+/// On a prefix of this mod that can't change what a call does nor what another mod's prefix sorted after it sees, so it doesn't
+/// count for <see cref="PatchTolerance.SurroundingOnly"/>'s order rule:
+/// <list type="bullet">
+/// <item>One that only reads the instance into <c>__state</c> for its finalizer to judge a call whose tracking prefix didn't run
+/// (another mod's bool prefix skipped it, or a prefix before it threw): a void prefix let stand can't skip the tracking prefix,
+/// so what this one read is only used when such a prefix throws, where the original doesn't run either; the finalizer's
+/// judgement then is conservative (PileIndex: a pile that changed by more than the judged card, a nested move of another card
+/// included, faults the index, the game's own scan from then on).</item>
+/// <item>The test tooling's read-only prefixes (Debug builds only: CombatStartTimer, PerfProbe), which only read the clock or
+/// a label into statics or <c>__state</c>: counted, a test build would back off where a Release build, without them, lets
+/// another mod's void prefix stand, and the tests would never run the shipped path.</item>
+/// </list>
 /// </summary>
 [AttributeUsage(AttributeTargets.Method)]
 internal sealed class OrderFreePrefixAttribute : Attribute
@@ -113,9 +122,15 @@ public static partial class PatchSafety
     public static bool IsPatchedByOthers(MethodBase? method, out Type[] gates, [CallerFilePath] string caller = "") =>
         CheckTolerant(method, Array.Empty<MethodInfo>(), PatchTolerance.TypeGated, caller, out gates);
 
+    /// <summary>The type-gated check with <paramref name="allowedPatches"/> also let stand (LimitlessCloneMemo's card methods).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool IsPatchedByOthers(MethodBase? method, MethodInfo[] allowedPatches, out Type[] gates, [CallerFilePath] string caller = "") =>
+        CheckTolerant(method, allowedPatches, PatchTolerance.TypeGated, caller, out gates);
+
     /// <summary>
-    /// A cached tolerant answer. <see cref="LoggedFor"/>: the call sites it was logged for (a few share one answer: PileIndex,
-    /// FastListeners and CardDbScan on CardPile.AddInternal), compared by reference on the cached path.
+    /// A cached tolerant answer. <see cref="LoggedFor"/>: the runtime call sites it was logged for (a few share one answer:
+    /// PileIndex, FastListeners and CardDbScan on CardPile.AddInternal; the preflight's patch names share it too but take no
+    /// slot), compared by reference on the cached path.
     /// </summary>
     private sealed class TolerantAnswer
     {
@@ -138,6 +153,9 @@ public static partial class PatchSafety
 
     private static readonly ConcurrentDictionary<(MethodBase Method, long Allowed, PatchTolerance Tolerance), TolerantAnswer> _tolerant = new();
 
+    /// <summary>A check from the code that runs the optimizations (a [CallerFilePath] source path), not the preflight (a patch name).</summary>
+    private static bool IsRuntimeCaller(string caller) => caller.EndsWith(".cs", StringComparison.OrdinalIgnoreCase);
+
 #if BENCH
     /// <summary>Checks answered "not patched" because every other mod's patch there was let stand (the effects check).</summary>
     public static long ToleratedChecks { get; private set; }
@@ -157,9 +175,6 @@ public static partial class PatchSafety
         long[] counts = _runtimeAnswers.GetOrAdd((caller, method, tolerance), _ => new long[2]);
         System.Threading.Interlocked.Increment(ref counts[patched ? 1 : 0]);
     }
-
-    /// <summary>A check from the code that runs the optimizations (a [CallerFilePath] source path), not the preflight (a patch name).</summary>
-    private static bool IsRuntimeCaller(string caller) => caller.EndsWith(".cs", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// The runtime checks of this patch name on this method (<c>Type.Method</c>), every tolerance and the strict checks' back-offs
@@ -197,10 +212,18 @@ public static partial class PatchSafety
         return allowedKey;
     }
 
+    /// <summary>
+    /// The shape rules' switch ("Foreign patches judged by their shape", DESIGN): false makes every tolerant check the strict
+    /// one (no gates either), as before those rules, for a release that leaves them out until their in-game proof
+    /// (docs/RELEASE.md). The rest of their commits (the tracking prefixes' late priorities, the order-free watches) changes
+    /// nothing without them.
+    /// </summary>
+    internal static readonly bool ShapeRules = true;
+
     internal static bool CheckTolerant(MethodBase? method, MethodInfo[] allowedPatches, PatchTolerance tolerance, string caller, out Type[] gates)
     {
         gates = Type.EmptyTypes;
-        if (tolerance == PatchTolerance.None)
+        if (tolerance == PatchTolerance.None || !ShapeRules)
         {
             return allowedPatches.Length == 0 ? CheckPatched(method, caller) : CheckPatched(method, allowedPatches, caller);
         }
@@ -311,10 +334,16 @@ public static partial class PatchSafety
 
     /// <summary>
     /// Whether this answer was already logged for this call site; if not, notes it (in a free slot, else over the first one:
-    /// more sites than slots only means one more <see cref="Tolerated"/> lookup, which dedupes by itself).
+    /// more sites than slots only means one more <see cref="Tolerated"/> lookup, which dedupes by itself). Only the runtime
+    /// call sites take a slot: the preflight (a patch name, rare) always goes to <see cref="Tolerated"/>, so its names never
+    /// push a hot site out of the slots.
     /// </summary>
     private static bool LoggedFor(TolerantAnswer answer, string caller)
     {
+        if (!IsRuntimeCaller(caller))
+        {
+            return false;
+        }
         string?[] sites = answer.LoggedFor;
         for (int i = 0; i < sites.Length; i++)
         {

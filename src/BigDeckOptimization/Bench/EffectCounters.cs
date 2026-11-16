@@ -18,6 +18,7 @@ internal static class EffectCounters
     private static readonly (Type Type, string Member)[] Members =
     {
         (typeof(ListenerCache), nameof(ListenerCache.Served)), (typeof(ListenerCache), nameof(ListenerCache.CreatureInvalidations)),
+        (typeof(ListenerCache), nameof(ListenerCache.SuspendedRevalidations)),
         (typeof(HookFilter), nameof(HookFilter.ListenersDropped)),
         (typeof(ExtraScopes), nameof(ExtraScopes.FirstTurnPasses)), (typeof(IdleButtonInput), nameof(IdleButtonInput.Muted)),
         (typeof(GridSortCache), nameof(GridSortCache.Sorts)), (typeof(EnchantmentTabReuse), nameof(EnchantmentTabReuse.Reused)),

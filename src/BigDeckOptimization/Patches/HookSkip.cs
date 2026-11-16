@@ -501,6 +501,13 @@ public static partial class HookSkip
             {
                 LeftVanilla++;
                 Log.Info($"[{ModEntry.Id}] {Name}: {hookName} left vanilla: {e.Message}");
+                // Registered at Apply (the preflight may run before the last batch): a hook left vanilla here shows no
+                // back-off from its own methods, which would change nothing.
+                if (_indexByBody.TryGetValue(body, out int failed))
+                {
+                    PatchSafety.Unwatch(Name, Hooks[failed].Method);
+                    PatchSafety.Unwatch(Name, body);
+                }
             }
         }
         if (_toPatch.Count == 0)
@@ -567,6 +574,9 @@ public static partial class HookSkip
             // sees what it sees without this mod (RitsuLib's lifecycle postfixes wrapping the returned task). Not on an async
             // hook's state machine: a patch there can read the machine's fields, the walk's enumerator among them, which the
             // redirect makes another object. A postfix of an async hook subscribing to ExecutionFinished: Entry.Subscribed.
+            // Invariant with HookFilter: on the hooks it mirrors (a bool prefix of this mod skipping the original), a postfix
+            // is let stand here only because FilteredHook.IsSafe checks the same method with PrefixesOnly, turning the mirror
+            // off (the original runs) whenever another mod has a postfix there: a change to either check needs the other.
             if (PatchSafety.IsPatchedByOthers(entry.Method, AllowedBodyPatches(), PatchTolerance.SurroundingOnly)
                 || (entry.Body != entry.Method && PatchSafety.IsPatchedByOthers(entry.Body, AllowedBodyPatches()))
                 || (entry.Profile >= 0 && HelpersPatched(entry.Profile)))
@@ -657,12 +667,14 @@ public static partial class HookSkip
         var allowed = new List<MethodInfo>();
         try
         {
-            MethodInfo? injector = AccessTools.Method("BaseLib.Utils.Patching.AsyncMethodCall:Create");
+            // Looked up in BaseLib's assembly only: without BaseLib (the first hook of a run, or a preflight), no scan of every
+            // loaded type (Harmony's TypeByName fallback).
+            MethodInfo? injector = PatchSafety.MethodIn("BaseLib", "BaseLib.Utils.Patching.AsyncMethodCall:Create");
             if (injector != null && PatchSafety.FingerprintMatches(MethodFingerprint.Of(injector), BaseLibAsyncInjectorFingerprint))
             {
                 AddMatching(allowed, BaseLibAwaitTranspilers);
             }
-            if (BaseLibBlockCallees.All(c => AccessTools.Method(c.Method) is { } callee && PatchSafety.FingerprintMatches(MethodFingerprint.Of(callee), c.Fingerprint)))
+            if (BaseLibBlockCallees.All(c => PatchSafety.MethodIn("BaseLib", c.Method) is { } callee && PatchSafety.FingerprintMatches(MethodFingerprint.Of(callee), c.Fingerprint)))
             {
                 AddMatching(allowed, BaseLibBlockPatches);
             }
@@ -679,7 +691,7 @@ public static partial class HookSkip
     {
         foreach ((string name, string fingerprint) in patches)
         {
-            MethodInfo? patch = AccessTools.Method(name);
+            MethodInfo? patch = PatchSafety.MethodIn("BaseLib", name);
             if (patch != null && PatchSafety.FingerprintMatches(MethodFingerprint.Of(patch), fingerprint))
             {
                 allowed.Add(patch);

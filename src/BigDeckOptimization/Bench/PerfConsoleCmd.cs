@@ -40,8 +40,8 @@ namespace BigDeckOptimization.Bench;
 ///   Changes the game's state: costwrites (the first hand card free this turn, on this peer only), and foreign with a shape
 ///   changing it (keyword-prefix, cost-postfix, nested-postfix: <see cref="ForeignPatches.ChangesState"/>): singleplayer only,
 ///   since in co-op it would only make this peer's checksum differ and the host drop it (a co-op script installs them with its
-///   'foreignpatch' line on every peer, before any combat). <c>bdperf opt off</c> in co-op warns and asks for
-///   <c>bdperf opt off yes</c>, as <c>bdopt off</c> does.
+///   'foreignpatch' line on every peer, before any combat). <c>bdperf opt on|off</c> in a co-op run warns and asks for
+///   <c>bdperf opt on|off yes</c> either way, as <c>bdopt</c> does.
 /// </summary>
 public class PerfConsoleCmd : AbstractConsoleCmd
 {
@@ -163,7 +163,7 @@ public class PerfConsoleCmd : AbstractConsoleCmd
             return new CmdResult(success: false, "bdperf " + sub + " is singleplayer only. In co-op use 'bdperf verify'.");
         }
         // Changes this peer's game state only (bdperf isn't networked): in co-op the next checksum differs and the host drops this
-        // client. No co-op use, so no confirmation either (the warning-then-yes is bdperf opt off's, as bdopt off's).
+        // client. No co-op use, so no confirmation either (the warning-then-yes is bdperf opt's, as bdopt's).
         if (sub == "costwrites" && coop)
         {
             return new CmdResult(success: false, "bdperf costwrites is singleplayer only: it changes a card's cost on your game only, "
@@ -607,9 +607,10 @@ public class PerfConsoleCmd : AbstractConsoleCmd
     /// <c>bdperf opt on|off [yes]</c>: every optimization off/on for an A/B comparison in the same session, as <c>bdopt</c> does
     /// but for this session only, never saved: BaseLib saves <see cref="Config.Settings.MasterChoice"/>, the player's choice, at any
     /// settings save and on quit (every config, on NGame.Quit), so the next game start isn't "started off"; the menu box keeps
-    /// showing the saved choice. In a co-op run
-    /// the whole mod off also turns off the fast combat start the other players keep (<see cref="Config.Settings.CoopOffWarning"/>):
-    /// then it warns and needs <c>bdperf opt off yes</c>, as <c>bdopt off</c> needs <c>bdopt off yes</c>.
+    /// showing the saved choice. In a co-op run a switch either way warns and needs <c>bdperf opt on|off yes</c>, as <c>bdopt</c>
+    /// does (the lock both ways): off turns off the fast combat start the other players keep (<see cref="Config.Settings.CoopOffWarning"/>),
+    /// on in an all-off game makes the same mixed pair (<see cref="Config.Settings.CoopOnWarning"/>). The run only (no lobby
+    /// walk); not after a start with the mod off (nothing of it runs this session).
     /// </summary>
     private static CmdResult SetOptimizations(string? value, bool confirmed)
     {
@@ -618,9 +619,10 @@ public class PerfConsoleCmd : AbstractConsoleCmd
             return new CmdResult(success: false, "Usage: bdperf opt on|off");
         }
         bool on = value == "on";
-        if (!on && !confirmed && Config.Settings.Master && Config.Settings.InCoopRun)
+        if (!confirmed && on != Config.Settings.Master && !ModEntry.StartedOff && Config.Settings.InCoopRun)
         {
-            return new CmdResult(success: false, Config.Settings.CoopOffWarning + "\nTo turn it off anyway, type: bdperf opt off yes");
+            return new CmdResult(success: false, (on ? Config.Settings.CoopOnWarning : Config.Settings.CoopOffWarning) + " " + Config.Settings.CoopRejoinNote
+                + $"\nTo turn it {value} anyway, type: bdperf opt {value} yes");
         }
         Config.Settings.SetMaster(on, notify: false, sessionOnly: true);
         return new CmdResult(success: true, $"BigDeckOptimization optimizations {(on ? "ON" : "OFF (vanilla)")} (this session only, never saved; the menu box keeps showing the saved choice).");

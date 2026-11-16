@@ -344,6 +344,7 @@ public static class SnapshotCardReuse
             throw new PatchSkippedException("CardState.From: ToSerializable call not replaced");
         }
         Applied = true;
+        bool pilesApplied = false;
         try
         {
             _pileFrom = AccessTools.Method(typeof(NetFullCombatState.CombatPileState), nameof(NetFullCombatState.CombatPileState.From), new[] { typeof(CardPile) })
@@ -360,12 +361,13 @@ public static class SnapshotCardReuse
             PatchGuard.Patch(harmony, AccessTools.Method(typeof(Player), nameof(Player.AfterCombatEnd)), postfix: new HarmonyMethod(typeof(SnapshotCardReuse), nameof(ReleaseCombat)));
             ApplyBits(harmony);
             ApplyTrust(harmony);
+            pilesApplied = true;
         }
         catch (Exception e)
         {
             Log.Info($"[{ModEntry.Id}] {Name}: pile lists left vanilla: {e.Message}");
         }
-        WatchForPreflight();
+        WatchForPreflight(pilesApplied);
     }
 
     /// <summary>
@@ -375,9 +377,13 @@ public static class SnapshotCardReuse
     /// listener overrides of the listener types met so far (who is in a combat isn't known at the menu: those of later
     /// combats show when checked). Notes: other mods' saved data this keeps no memo for.
     /// </summary>
-    private static void WatchForPreflight()
+    private static void WatchForPreflight(bool pilesApplied)
     {
-        PatchSafety.Watch(Name, _pileFrom);
+        // The pile part's method only once that part applied: left vanilla for another reason, a patch there changes nothing.
+        if (pilesApplied)
+        {
+            PatchSafety.Watch(Name, _pileFrom);
+        }
         PatchSafety.Watch(Name, _cardFrom);
         if (_fastReads)
         {

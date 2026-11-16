@@ -2949,8 +2949,9 @@ public static class FastListeners
     /// <summary>
     /// <see cref="AddCombat"/>, filtered: this mod's verdicts (kinds left out, relics, listeners judged one by one), not
     /// only the pile entry cache (<see cref="GuardedPiles"/>), run inside walks that async hooks consume, where an
-    /// exception would only fault the hook's task. On one, FastListeners turns off and this walk adds every listener,
-    /// unfiltered, as vanilla (the superset). The unfiltered walk is the mirror alone: its exceptions are the game's.
+    /// exception would only fault the hook's task. On one, this walk adds every listener, unfiltered, as vanilla (the superset),
+    /// then FastListeners turns off. The unfiltered walk is the mirror alone: its exceptions are the game's, passed on without
+    /// turning anything off.
     /// </summary>
     private static void AddCombatGuarded(List<AbstractModel> list, CombatState state, PileFilter? filter)
     {
@@ -2969,8 +2970,11 @@ public static class FastListeners
         catch (Exception e)
         {
             list.Clear();
-            Disable(e);
+            // The unfiltered walk first: if it throws too, the exception came from what both walks read (the game's or another
+            // mod's getters) and reaches the hook as vanilla's, FastListeners staying on. Only a filtered walk failing where
+            // vanilla doesn't (this mod's verdicts) turns it off.
             AddCombat(list, state, null);
+            Disable(e);
         }
     }
 
@@ -2992,8 +2996,11 @@ public static class FastListeners
         catch (Exception e)
         {
             list.Clear();
-            Disable(e);
+            // The unfiltered walk first: if it throws too, the exception came from what both walks read (the game's or another
+            // mod's getters) and reaches the hook as vanilla's, FastListeners staying on. Only a filtered walk failing where
+            // vanilla doesn't (this mod's verdicts) turns it off.
             AddRun(list, run, childCombatState, null);
+            Disable(e);
         }
     }
 
