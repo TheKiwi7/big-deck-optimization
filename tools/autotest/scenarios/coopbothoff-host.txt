@@ -1,0 +1,12 @@
+# CoopModeTag (coop-modetag.ps1), host launched with the mod off ('launchoff', before its --fastmp lobby exists): a client also
+# launched off joins (two "off" players can play together), and the join list the game compares says '-off' (v0.111+: the
+# net service's own, kept since hosting started). The client leaves first, then the host.
+timeout 300
+launchoff
+coopmodetag off
+mplobby NECROBINDER 2
+coopmodetag off
+waitfor run 240
+coopmodetag off
+wait 20
+quit

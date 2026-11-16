@@ -23,7 +23,7 @@ $port = Get-SlotPort 49
 function Start-Peer([string]$log, [string]$script, [string[]]$mode) {
     Remove-Item $log -ErrorAction SilentlyContinue
     $logs.Add($log)
-    $arguments = @("--force-steam", "off", "--bdport", $port, "--bdturnstates", "--bdmute", "--log-file", "`"$log`"", "--bdtest", "`"$script`"") + $mode
+    $arguments = @("--force-steam", "off", "--bdport", $port, "--bdturnstates", "--bdmute", "--log-file", "`"$log`"", "--bdtest", "`"$script`"") + $mode + @(Get-ScenarioLaunchArgs $script)
     if (($Rendered -and $log -like "*-host.log") -or ($RenderedClient -and $log -like "*-client1.log")) { $procs.Add((Start-HiddenGame $exe $GameDir ($arguments + @("--bdhidden", "--windowed", "--resolution", "1920x1080")))) }
     else { $procs.Add((Start-Process -FilePath $exe -WorkingDirectory $GameDir -PassThru -WindowStyle Hidden -ArgumentList (@("--headless") + $arguments))) }
 }

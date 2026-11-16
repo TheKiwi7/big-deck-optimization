@@ -35,6 +35,7 @@ namespace BigDeckOptimization.Bench;
 /// register one through PatchProcessor.AddInnerPostfix but nothing gives it its inner method, so Harmony can't build it; a
 /// synthetic <see cref="HarmonyLib.Patches"/> goes through <see cref="PatchSafety.Describe(MethodBase, HarmonyLib.Patches)"/>),
 /// <c>runoriginal-postfix</c> (reads <c>__runOriginal</c>), <c>byref-postfix</c> (<c>ref CardModel card</c>, on a CardPile method),
+/// <c>field-postfix</c> (<c>List&lt;CardModel&gt; ____cards</c>, Harmony's field injection: the pile's own list, on a CardPile method),
 /// <c>argsrename-prefix</c> (<c>[HarmonyArgument("__args")] object[]</c>), <c>factory-postfix</c> (a factory method returning the
 /// postfix), <c>dup-prefix</c> (one void prefix registered twice: priority 800, then the default priority).</item>
 /// <item>Type gates on an <c>AbstractModel</c> default (TypeGated): <c>gated-postfix</c>, <c>gated-prefix</c> (bool, true) and
@@ -61,11 +62,18 @@ public static class ForeignPatches
     {
         "noop-postfix", "noop-prefix", "count-postfix", "count-prefix", "nested-postfix", "keyword-prefix", "cost-postfix",
         "probe-prefix", "probe-postfix", "state-prefix",
-        "bool-prefix", "ref-prefix", "identity-transpiler", "inner-postfix", "runoriginal-postfix", "byref-postfix",
+        "bool-prefix", "ref-prefix", "identity-transpiler", "inner-postfix", "runoriginal-postfix", "byref-postfix", "field-postfix",
         "argsrename-prefix", "factory-postfix", "dup-prefix",
         "gated-postfix", "gated-prefix", "gated-or-postfix", "nearmiss-postfix", "renamed-gated-postfix", "gated-patched-postfix",
         "cctor-gated-postfix",
     };
+
+    /// <summary>
+    /// The shapes whose patch changes game state on the peer that installs it (Squeeze's keywords or cost, cards moved between
+    /// piles): in co-op every peer must install them, before any combat (AutoTest refuses them later; bdperf foreign refuses them).
+    /// </summary>
+    public static bool ChangesState(string arg) =>
+        arg.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() is "keyword-prefix" or "cost-postfix" or "nested-postfix";
 
     /// <summary>Runs one <c>foreignpatch</c> line; returns the lines to log.</summary>
     public static IReadOnlyList<string> Run(string arg)
@@ -175,6 +183,13 @@ public static class ForeignPatches
                     throw new ArgumentException("byref-postfix goes on a CardPile method taking a card");
                 }
                 harmony.Patch(target, postfix: Fix(nameof(ByRefCardPostfix)));
+                break;
+            case "field-postfix":
+                if (target.DeclaringType != typeof(CardPile))
+                {
+                    throw new ArgumentException("field-postfix goes on a CardPile method");
+                }
+                harmony.Patch(target, postfix: Fix(nameof(CardsFieldPostfix)));
                 break;
             case "argsrename-prefix":
                 harmony.Patch(target, prefix: Fix(nameof(RenamedArgsPrefix)));
@@ -438,6 +453,11 @@ public static class ForeignPatches
 
     /// <summary>A card argument taken by reference (the replacement's own argument slot, read by this mod's finalizers).</summary>
     private static void ByRefCardPostfix(ref CardModel card)
+    {
+    }
+
+    /// <summary>The pile's own card list through Harmony's field injection (never changed here: what the shape allows is the point).</summary>
+    private static void CardsFieldPostfix(List<CardModel> ____cards)
     {
     }
 

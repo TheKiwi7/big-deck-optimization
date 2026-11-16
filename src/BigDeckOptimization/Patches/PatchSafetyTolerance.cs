@@ -23,10 +23,13 @@ public enum PatchTolerance
     /// <item>A postfix whose parameters are all by value, except <c>__result</c> (the caller gets what it leaves there, as without
     /// this mod) and <c>__state</c> (its own prefix's): no other <c>ref</c>/<c>out</c> parameter (this mod's finalizers read the
     /// argument slots after it, a by-reference argument or instance is that very slot), no <c>__args</c> (Harmony writes the
-    /// array back into the arguments), no <c>__runOriginal</c> (it differs where a prefix of this mod skips the original).</item>
-    /// <item>A prefix returning void with the same by-value parameters (only <c>__state</c> by reference, no <c>__args</c>), that
-    /// Harmony sorts before every prefix of this mod on the method (<see cref="OrderFreePrefixAttribute"/> aside): one sorted
-    /// after them runs after this mod's tracking or replacement, or not at all once it skipped the original.</item>
+    /// array back into the arguments), no <c>__runOriginal</c> (it differs where a prefix of this mod skips the original), no
+    /// instance field of a reference type (<c>___name</c>, Harmony's field injection: the field's object itself, a pile's card
+    /// list it could change without going through the methods this mod tracks; a value-type or string field can only be read).</item>
+    /// <item>A prefix returning void with the same parameter rules (only <c>__state</c> by reference, no <c>__args</c>, no
+    /// reference-type field), except that it may read <c>__runOriginal</c> by value: Harmony sorts it before every prefix of this
+    /// mod on the method (<see cref="OrderFreePrefixAttribute"/> aside), so it sees what it would see without this mod. One
+    /// sorted after them runs after this mod's tracking or replacement, or not at all once it skipped the original.</item>
     /// </list>
     /// Not let stand: transpilers, finalizers, inner prefixes and postfixes, bool prefixes, factory patch methods (returning the
     /// patch to use), patches renaming their parameters (<c>HarmonyArgument</c>: Harmony binds the real name), a patch whose
@@ -55,8 +58,11 @@ public enum PatchTolerance
 
 /// <summary>
 /// On a prefix of this mod: it only reads the instance into <c>__state</c> for its finalizer to judge a call whose tracking prefix
-/// didn't run (another mod's bool prefix skipped it). Such a prefix doesn't count for <see cref="PatchTolerance.SurroundingOnly"/>'s
-/// order rule: a void prefix let stand can't skip the tracking prefix, so what this one read is never used then.
+/// didn't run (another mod's bool prefix skipped it, or a prefix before it threw). Such a prefix doesn't count for
+/// <see cref="PatchTolerance.SurroundingOnly"/>'s order rule: a void prefix let stand can't skip the tracking prefix, so what this
+/// one read is only used when such a prefix throws, where the original doesn't run either; the finalizer's judgement then is
+/// conservative (PileIndex: a pile that changed by more than the judged card, a nested move of another card included, faults the
+/// index, the game's own scan from then on).
 /// </summary>
 [AttributeUsage(AttributeTargets.Method)]
 internal sealed class OrderFreePrefixAttribute : Attribute
@@ -107,7 +113,10 @@ public static partial class PatchSafety
     public static bool IsPatchedByOthers(MethodBase? method, out Type[] gates, [CallerFilePath] string caller = "") =>
         CheckTolerant(method, Array.Empty<MethodInfo>(), PatchTolerance.TypeGated, caller, out gates);
 
-    /// <summary>A cached tolerant answer. <see cref="LoggedFor"/>: the last call site it was logged for (the cached path's cost).</summary>
+    /// <summary>
+    /// A cached tolerant answer. <see cref="LoggedFor"/>: the call sites it was logged for (a few share one answer: PileIndex,
+    /// FastListeners and CardDbScan on CardPile.AddInternal), compared by reference on the cached path.
+    /// </summary>
     private sealed class TolerantAnswer
     {
         public readonly bool Patched;
@@ -115,7 +124,7 @@ public static partial class PatchSafety
         public readonly string[] Mods;
         public readonly string[] ToleratedMods;
         public readonly Type[] Gates;
-        public string? LoggedFor;
+        public readonly string?[] LoggedFor = new string?[4];
 
         public TolerantAnswer(bool patched, long checkedAt, string[] mods, string[] toleratedMods, Type[] gates)
         {
@@ -141,12 +150,34 @@ public static partial class PatchSafety
 
     private static void CountRuntime(string caller, MethodBase method, PatchTolerance tolerance, bool patched)
     {
-        if (!caller.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+        if (!IsRuntimeCaller(caller))
         {
             return;
         }
         long[] counts = _runtimeAnswers.GetOrAdd((caller, method, tolerance), _ => new long[2]);
         System.Threading.Interlocked.Increment(ref counts[patched ? 1 : 0]);
+    }
+
+    /// <summary>A check from the code that runs the optimizations (a [CallerFilePath] source path), not the preflight (a patch name).</summary>
+    private static bool IsRuntimeCaller(string caller) => caller.EndsWith(".cs", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The runtime checks of this patch name on this method (<c>Type.Method</c>), every tolerance and the strict checks' back-offs
+    /// together: answers that let other mods' patches stand, and back-offs. The preflight isn't counted: what a scenario asserts
+    /// to show the runtime check itself ran (the script's <c>runtimebackoff</c>).
+    /// </summary>
+    public static (long Kept, long BackedOff) RuntimeCounts(string patch, string typeAndMethod)
+    {
+        long kept = 0, backedOff = 0;
+        foreach (KeyValuePair<(string Caller, MethodBase Method, PatchTolerance Tolerance), long[]> entry in _runtimeAnswers.ToArray())
+        {
+            if (PatchName(entry.Key.Caller) == patch && $"{entry.Key.Method.DeclaringType?.Name}.{entry.Key.Method.Name}" == typeAndMethod)
+            {
+                kept += entry.Value[0];
+                backedOff += entry.Value[1];
+            }
+        }
+        return (kept, backedOff);
     }
 
     /// <summary>One line per runtime call site, method and tolerance: "Patch Type.Method (Tolerance) kept N backed off M".</summary>
@@ -197,13 +228,15 @@ public static partial class PatchSafety
             if (!cached.Patched && cached.ToleratedMods.Length > 0)
             {
 #if BENCH
-                ToleratedChecks++;
+                if (IsRuntimeCaller(caller))
+                {
+                    ToleratedChecks++;
+                }
 #endif
-                // Logged once per call site and answer (Tolerated dedupes too): the hot path skips it while the site doesn't change.
-                if (!ReferenceEquals(cached.LoggedFor, caller))
+                // Logged once per call site and answer (Tolerated dedupes too): the hot path compares the few sites it was logged for.
+                if (!LoggedFor(cached, caller))
                 {
                     Tolerated(caller, method, tolerance, cached.ToleratedMods, cached.Gates);
-                    cached.LoggedFor = caller;
                 }
             }
 #if BENCH
@@ -258,10 +291,13 @@ public static partial class PatchSafety
         if (mods.Length == 0 && toleratedMods.Length > 0)
         {
 #if BENCH
-            ToleratedChecks++;
+            if (IsRuntimeCaller(caller))
+            {
+                ToleratedChecks++;
+            }
 #endif
             Tolerated(caller, method, tolerance, toleratedMods, gateTypes);
-            answer.LoggedFor = caller;
+            LoggedFor(answer, caller);
         }
 #if BENCH
         if (all.Length > 0)
@@ -271,6 +307,30 @@ public static partial class PatchSafety
 #endif
         gates = gateTypes;
         return mods.Length > 0;
+    }
+
+    /// <summary>
+    /// Whether this answer was already logged for this call site; if not, notes it (in a free slot, else over the first one:
+    /// more sites than slots only means one more <see cref="Tolerated"/> lookup, which dedupes by itself).
+    /// </summary>
+    private static bool LoggedFor(TolerantAnswer answer, string caller)
+    {
+        string?[] sites = answer.LoggedFor;
+        for (int i = 0; i < sites.Length; i++)
+        {
+            string? site = sites[i];
+            if (ReferenceEquals(site, caller))
+            {
+                return true;
+            }
+            if (site == null)
+            {
+                sites[i] = caller;
+                return false;
+            }
+        }
+        sites[0] = caller;
+        return false;
     }
 
     /// <summary>
@@ -335,15 +395,12 @@ public static partial class PatchSafety
                     _ => "inner postfix (patches a call inside the method)",
                 };
             }
-            if (IsFactory(method))
+            // What the patch method's own shape refuses can't change while it is loaded: worked out once per method, kind and
+            // tolerance (attributes read as data: no other mod's attribute constructor runs). Only the order of the prefixes and
+            // whether the patch method is itself patched are looked at again at each recheck.
+            if (_shapes.GetOrAdd((method.MethodHandle, kind, tolerance), static (key, m) => ShapeRefusal(m, key.Kind, key.Tolerance), method) is { } refused)
             {
-                return "factory patch method (Harmony runs the method it returns)";
-            }
-            // Harmony binds each parameter by its real name: a HarmonyArgument on it, its method or its class can turn a harmless
-            // looking one into __args, __state, __instance or an argument by reference (InjectedParameter.CalculateRealName).
-            if (RenamesParameters(method))
-            {
-                return "patch renaming its parameters (HarmonyArgument)";
+                return refused;
             }
             if (tolerance == PatchTolerance.TypeGated)
             {
@@ -365,51 +422,94 @@ public static partial class PatchSafety
                 gates?.AddRange(types);
                 return null;
             }
-            if (kind == PatchKind.Postfix)
-            {
-                if (tolerance == PatchTolerance.PrefixesOnly)
-                {
-                    return "postfix (a prefix of this mod skips the original here: Harmony runs postfixes where the game may not)";
-                }
-                foreach (ParameterInfo parameter in method.GetParameters())
-                {
-                    if (parameter.Name == "__args")
-                    {
-                        return "postfix taking __args (Harmony writes it back into the arguments)";
-                    }
-                    if (parameter.Name == "__runOriginal")
-                    {
-                        return "postfix reading __runOriginal";
-                    }
-                    if ((parameter.ParameterType.IsByRef || parameter.IsOut) && parameter.Name is not ("__state" or "__result"))
-                    {
-                        return $"postfix taking {parameter.Name} by reference";
-                    }
-                }
-                return null;
-            }
-            if (method.ReturnType != typeof(void))
-            {
-                return $"prefix returning {method.ReturnType.Name} (may skip the original)";
-            }
-            foreach (ParameterInfo parameter in method.GetParameters())
-            {
-                if (parameter.Name == "__args")
-                {
-                    return "prefix taking __args (Harmony writes it back into the arguments)";
-                }
-                if ((parameter.ParameterType.IsByRef || parameter.IsOut) && parameter.Name != "__state")
-                {
-                    return $"prefix taking {parameter.Name} by reference";
-                }
-            }
-            return PrecedenceRefusal(original, info, method);
+            return kind == PatchKind.Postfix ? null : PrecedenceRefusal(original, info, method);
         }
         catch (Exception e)
         {
             return "not classified: " + e.Message;
         }
     }
+
+    /// <summary>Per patch method, kind and tolerance: what its own shape refuses (<see cref="ShapeRefusal"/>), null when nothing.</summary>
+    private static readonly ConcurrentDictionary<(RuntimeMethodHandle Method, PatchKind Kind, PatchTolerance Tolerance), string?> _shapes = new();
+
+    /// <summary>
+    /// The part of <see cref="Intolerable"/> a loaded patch method's own code decides (factory, renamed parameters, return type,
+    /// parameters), or null. Throws when it can't be read (Intolerable then refuses, and asks again at the next recheck).
+    /// </summary>
+    private static string? ShapeRefusal(MethodInfo method, PatchKind kind, PatchTolerance tolerance)
+    {
+        if (IsFactory(method))
+        {
+            return "factory patch method (Harmony runs the method it returns)";
+        }
+        // Harmony binds each parameter by its real name: a HarmonyArgument on it, its method or its class can turn a harmless
+        // looking one into __args, __state, __instance or an argument by reference (InjectedParameter.CalculateRealName).
+        if (RenamesParameters(method))
+        {
+            return "patch renaming its parameters (HarmonyArgument)";
+        }
+        if (tolerance == PatchTolerance.TypeGated)
+        {
+            return null; // The gate's IL decides (TypeGates), with the order and own-patch checks at each recheck.
+        }
+        if (kind == PatchKind.Postfix)
+        {
+            if (tolerance == PatchTolerance.PrefixesOnly)
+            {
+                return "postfix (a prefix of this mod skips the original here: Harmony runs postfixes where the game may not)";
+            }
+            foreach (ParameterInfo parameter in method.GetParameters())
+            {
+                if (parameter.Name == "__args")
+                {
+                    return "postfix taking __args (Harmony writes it back into the arguments)";
+                }
+                if (parameter.Name == "__runOriginal")
+                {
+                    return "postfix reading __runOriginal";
+                }
+                if ((parameter.ParameterType.IsByRef || parameter.IsOut) && parameter.Name is not ("__state" or "__result"))
+                {
+                    return $"postfix taking {parameter.Name} by reference";
+                }
+                if (InjectsObjectField(parameter))
+                {
+                    return $"postfix taking the instance's field {parameter.Name!.Substring(3)} (Harmony's ___ injection: the object itself)";
+                }
+            }
+            return null;
+        }
+        if (method.ReturnType != typeof(void))
+        {
+            return $"prefix returning {method.ReturnType.Name} (may skip the original)";
+        }
+        foreach (ParameterInfo parameter in method.GetParameters())
+        {
+            if (parameter.Name == "__args")
+            {
+                return "prefix taking __args (Harmony writes it back into the arguments)";
+            }
+            if ((parameter.ParameterType.IsByRef || parameter.IsOut) && parameter.Name != "__state")
+            {
+                return $"prefix taking {parameter.Name} by reference";
+            }
+            if (InjectsObjectField(parameter))
+            {
+                return $"prefix taking the instance's field {parameter.Name!.Substring(3)} (Harmony's ___ injection: the object itself)";
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// A by-value parameter Harmony fills with an instance field (its name starts with three underscores) of a reference type
+    /// other than string: the field's object itself, which the patch could change behind the methods this mod tracks (a pile's
+    /// card list). A value-type or string field can only be read; a by-reference one is refused as any other.
+    /// </summary>
+    private static bool InjectsObjectField(ParameterInfo parameter) =>
+        parameter.Name is { } name && name.StartsWith("___", StringComparison.Ordinal) && !parameter.ParameterType.IsByRef
+        && !parameter.ParameterType.IsValueType && parameter.ParameterType != typeof(string);
 
     private static string KindText(PatchKind kind, MethodInfo method) =>
         kind == PatchKind.Postfix ? "postfix" : method.ReturnType == typeof(bool) ? "bool prefix" : "void prefix";
@@ -419,14 +519,25 @@ public static partial class PatchSafety
         (method.ReturnType == typeof(MethodInfo) || method.ReturnType == typeof(DynamicMethod)) && method.IsStatic && method.GetParameters().Length == 1;
 
     /// <summary>
-    /// Any <c>HarmonyArgument</c> (matched by type name, as Harmony does: any copy of it) on the method, its parameters or its
-    /// declaring type (inherited ones included, as Harmony reads them).
+    /// Any <c>HarmonyArgument</c> (matched by type name, as Harmony does: any copy of it) on the method, its parameters, its
+    /// declaring type or any base of it (Harmony reads the class's inherited ones; every base counted, a little stricter). Read
+    /// as attribute data: no attribute is built, so no other mod's attribute constructor runs.
     /// </summary>
     private static bool RenamesParameters(MethodInfo method)
     {
-        static bool Any(object[] attributes) => attributes.Any(a => a.GetType().Name == "HarmonyArgument");
-        return Any(method.GetCustomAttributes(true)) || (method.DeclaringType != null && Any(method.DeclaringType.GetCustomAttributes(true)))
-            || method.GetParameters().Any(p => Any(p.GetCustomAttributes(true)));
+        static bool Any(IEnumerable<CustomAttributeData> attributes) => attributes.Any(a => a.AttributeType.Name == "HarmonyArgument");
+        if (Any(method.GetCustomAttributesData()) || method.GetParameters().Any(p => Any(p.GetCustomAttributesData())))
+        {
+            return true;
+        }
+        for (Type? type = method.DeclaringType; type != null; type = type.BaseType)
+        {
+            if (Any(type.GetCustomAttributesData()))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>

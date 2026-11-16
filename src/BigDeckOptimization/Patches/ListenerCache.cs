@@ -191,8 +191,12 @@ public static class ListenerCache
         // Read-only refresh passes: they only read game state and update visuals/display values.
         TryScope(harmony, AccessTools.Method(typeof(PlayerCombatState), nameof(PlayerCombatState.RecalculateCardValues)), nameof(EnterRefreshPatch), nameof(ExitRefresh));
         // One scope around the whole CombatStateChanged dispatch (hand, end turn button, intents, creature state,
-        // energy, orbs...): the listener lists are built and filtered once per refresh instead of once per handler.
-        TryDispatchScope(harmony);
+        // energy, orbs...): the listener lists are built and filtered once per refresh instead of once per handler. Only
+        // while the game code that resumes game logic inside it is the one SuspendPrefix covers (DispatchResumesKnown).
+        if (DispatchResumesKnown())
+        {
+            TryDispatchScope(harmony);
+        }
         TryScope(harmony, AccessTools.Method(typeof(NHandCardHolder), nameof(NHandCardHolder.UpdateCard)), nameof(EnterDisplayRefresh), nameof(ExitRefresh));
         TryScope(harmony, AccessTools.Method(typeof(NCard), nameof(NCard.UpdateVisuals)), nameof(EnterDisplayRefresh), nameof(ExitRefresh));
 
@@ -240,13 +244,52 @@ public static class ListenerCache
 #endif
     }
 
-    /// <summary>Restores what the prefix found; 0: the prefix never ran (another mod's prefix returned false first).</summary>
+    /// <summary>
+    /// Restores what the prefix found; 0: the prefix never ran (an earlier prefix threw: Harmony runs the finalizers with the
+    /// default state). A prefix returning false doesn't stop this one: it returns void and takes only <c>__state</c>.
+    /// </summary>
     private static void ResumeFinalizer(int __state)
     {
         if (__state != 0)
         {
             _suspended = __state == 2;
         }
+    }
+
+    /// <summary>
+    /// The code the dispatch scope's suspension relies on (SuspendPrefix): the hand's CombatStateChanged handler, which calls
+    /// <c>RevalidateSelectionAfterStateChange</c>, that method, which ends a selection no hand card fits any more
+    /// (<c>TrySetResult</c>), and <c>SelectCards</c>, which makes that task without <c>RunContinuationsAsynchronously</c> (the
+    /// card's play then goes on inline). Same on v0.107.1, v0.111.0, v0.113.0 and v0.113.1 but SelectCards' body (v0.107.1 vs
+    /// v0.111+: the task made the same way in both).
+    /// </summary>
+    private static readonly (string Method, bool Body, string[] Fingerprints)[] DispatchResumeCode =
+    {
+        ("OnCombatStateChanged", false, new[] { "B1E8150FD5A853F6" }),
+        ("RevalidateSelectionAfterStateChange", false, new[] { "92DB756795D6C546" }),
+        ("SelectCards", true, new[] { "ED039D9684E57FC5", "D189372D06A00A80" }),
+    };
+
+    /// <summary>
+    /// Whether the game code that can resume game logic inside the CombatStateChanged dispatch is still the one SuspendPrefix
+    /// covers. Changed, another place may end a selection (or a new handler resume a play) inside the scope, unsuspended: the
+    /// whole dispatch scope stays vanilla then (logged), not only the suspension.
+    /// </summary>
+    private static bool DispatchResumesKnown()
+    {
+        foreach ((string name, bool body, string[] fingerprints) in DispatchResumeCode)
+        {
+            MethodInfo? method = AccessTools.Method(typeof(NPlayerHand), name);
+            MethodBase? code = method == null ? null : body ? AccessTools.AsyncMoveNext(method) : method;
+            string actual = code == null ? "missing" : MethodFingerprint.Of(code);
+            if (!fingerprints.Any(f => PatchSafety.FingerprintMatches(actual, f)))
+            {
+                Log.Info($"[{ModEntry.Id}] {Name}: NPlayerHand.{name} changed (fingerprint {actual}, expected {string.Join(" or ", fingerprints)}): "
+                    + "the CombatStateChanged dispatch scope stays vanilla (game logic may resume inside it)");
+                return false;
+            }
+        }
+        return true;
     }
 
     /// <summary>A method the cache must watch to stay up to date: missing, the whole patch is skipped (named in the log).</summary>

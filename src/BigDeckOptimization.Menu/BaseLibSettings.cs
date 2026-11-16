@@ -96,10 +96,11 @@ public sealed class BaseLibSettings : SimpleModConfig
     {
         if (property == nameof(Enabled))
         {
-            if (!on && !_loading && Settings.Master && Settings.InCoopRun)
+            if (!_loading && CoopLocked && on != Settings.Master)
             {
-                // The box is greyed out then (GreyOut): only the console turns the mod off in a co-op run, after a warning.
-                Log.Warn($"[{ModEntry.Id}] {Name}: the mod stays on during a co-op run; to turn it off anyway: bdopt off yes. {Settings.CoopOffWarning}");
+                // The box is greyed out then (GreyOut): only the console switches the whole mod in a co-op run, after a warning.
+                Log.Warn($"[{ModEntry.Id}] {Name}: the mod stays {(Settings.Master ? "on" : "off")} during a co-op run; to turn it {(on ? "on" : "off")} anyway: bdopt {(on ? "on" : "off")} yes. "
+                    + (on ? Settings.CoopOnWarning : Settings.CoopOffWarning));
                 return;
             }
             Settings.SetMaster(on, notify: false);
@@ -180,7 +181,7 @@ public sealed class BaseLibSettings : SimpleModConfig
     }
 
     public const string CoopNote =
-        "Co-op: every player needs this mod, same version. The fast combat start is always on there, so everyone starts each combat at the same pace; the other switches can be changed freely (same results either way, no desync). During a co-op run the whole mod can only be turned off from the console (bdopt off yes): your combats would then start far later than the others'. With the mod off, you can only play co-op with players who also have it off.";
+        "Co-op: every player needs this mod, same version. The fast combat start is always on there, so everyone starts each combat at the same pace; the other switches can be changed freely (same results either way, no desync). During a co-op run the whole mod can only be turned off or on from the console (bdopt off yes, bdopt on yes): every player must have it in the same state, and with it off your combats would start far later than the others'. With the mod off, you can only play co-op with players who also have it off.";
 
     /// <summary>A short note above the options, in the game's language: what co-op requires and forces.</summary>
     private static void AddCoopNote(Control optionContainer)
@@ -223,6 +224,12 @@ public sealed class BaseLibSettings : SimpleModConfig
         optionContainer.MoveChild(margin, optionContainer.GetNodeOrNull("CoopNoteMargin") is Node note ? note.GetIndex() + 1 : 0);
     }
 
+    /// <summary>
+    /// The master switch can't be switched from the menu: a co-op run, whose players joined with the same state (all on or all
+    /// off). Not after a start with the mod off: nothing of it runs this session, the box only says what the next start does.
+    /// </summary>
+    private static bool CoopLocked => !ModEntry.StartedOff && Settings.InCoopRun;
+
     private static void GreyOut(Node node)
     {
         foreach (Node child in node.GetChildren())
@@ -230,8 +237,8 @@ public sealed class BaseLibSettings : SimpleModConfig
             if (child is NConfigOptionRow row)
             {
                 string name = row.Name.ToString();
-                // In a co-op run the whole mod goes off only through the console, after a warning (bdopt off yes).
-                bool coopMaster = name == nameof(Enabled) && Settings.Master && Settings.InCoopRun;
+                // In a co-op run the whole mod is switched only through the console, after a warning (bdopt off yes, bdopt on yes).
+                bool coopMaster = name == nameof(Enabled) && CoopLocked;
                 // The relic threshold slider belongs to the fast combat start: greyed out with it.
                 string key = name == nameof(FastCombatStartRelics) ? "fast_combat_start" : Key(name);
                 if (coopMaster || (Settings.Find(key) is { } option && Settings.Why(option, language: null) != null))
@@ -329,7 +336,7 @@ public sealed class BaseLibSettings : SimpleModConfig
                     [$"{Prefix}-OPTIMIZATIONS.title"] = Translations.Get(language, "optimizations", "Optimizations"),
                     [$"{Prefix}-ENABLED.title"] = Translations.Get(language, "enabled.title", "Optimizations enabled"),
                     // Greyed out in a co-op run (GreyOut): the reason first, as on the options' rows.
-                    [$"{Prefix}-ENABLED.hover.desc"] = WithReason(Settings.Master && Settings.InCoopRun ? Settings.CoopRunWhy(language) : null,
+                    [$"{Prefix}-ENABLED.hover.desc"] = WithReason(CoopLocked ? Settings.CoopRunWhy(language) : null,
                         Translations.Get(language, "enabled.desc",
                             "Turns the whole mod on or off (off = unmodified game), no restart needed. If it's off when the game starts, none of the mod is loaded: turning it back on then takes effect at the next start.")),
                     [$"{Prefix}-{Settings.FastStartRelicsKey.ToUpperInvariant()}.title"] =

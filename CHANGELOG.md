@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-- Co-op: every player must now have the mod on, or every player off: a player with it off can't join a game where it's on (the game says the mods don't match). During a co-op run, `bdopt off` now shows a warning and only turns the mod off after `bdopt off yes`, and the main switch in the settings menu can't be unticked (hover it to see why). With the mod off, your combats would start much later than the other players', and the game could then lose their actions.
+<!-- Not released yet: every item waits for the in-game checks in DESIGN ("Audit of 2026-11-15, fourth pass" and its re-audit). The item marked pending has its own checks (DESIGN roadmap, "Foreign patches by shape") and stays out of a release until they pass. -->
+
+- Co-op: every player must now have the mod on, or every player off: a player with it off can't join a game where it's on, and the other way round (the game says the mods don't match). In a co-op game (a run, its lobby, or the lobby of a saved co-op run), turning the whole mod off or on with `bdopt` shows a warning and only happens after `bdopt off yes` or `bdopt on yes`, and the main switch in the settings menu can't be changed during a co-op run (hover it to see why). With the mod off while the others have it on, your combats would start much later than theirs, and the game could then lose their actions; the same the other way round. After such a switch, a player who disconnects can only rejoin once every player has the same setting again.
 - The settings menu's minimum-relics slider for the fast combat start is now greyed out, with the reason on hover, whenever the fast combat start can't run.
 - Fixed: a creature's tooltip could stay on screen over an open potion menu when the combat changed in co-op.
 - On the game's beta (v0.113), using `bdopt` no longer marks your run as one where a debug command was used.
@@ -12,7 +14,7 @@
 - The "Co-op state check" description now says it also speeds up solo games on the game's beta.
 - The settings and the `bdopt` command now show, from the main menu, which other mods keep part of the optimizations off, and why (`bdopt why`).
 - Safer with other mods and future game updates: more of the game and mod code the optimizations rely on is checked, and a change there leaves only that part to the game.
-- Works better alongside big mod packs (RitsuLib, Spire Synergies, Zone the Spire, Ascended Expansion...): when another mod only adds its own effects around the game code the mod speeds up, or only reacts to its own cards and relics, that optimization now keeps running instead of falling back to the normal game. Other changes still leave that part to the game, as before.
+- *(Pending: held back until tested in game.)* Works better alongside big mod packs (RitsuLib, Spire Synergies, Zone the Spire, Ascended Expansion...): when another mod only adds its own effects around the game code the mod speeds up, or only reacts to its own cards and relics, that optimization now keeps running instead of falling back to the normal game. Other changes still leave that part to the game, as before.
 - Less work for cross-version loaders on the game's beta: the mod no longer refers to a game value that the beta removed.
 
 ## v1.0.3

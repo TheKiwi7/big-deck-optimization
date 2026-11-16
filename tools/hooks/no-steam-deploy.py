@@ -2,7 +2,8 @@
 
 The csproj deploys to the default game folder unless told otherwise, and a local copy there overrides the user's Workshop
 version. Tests deploy to a game copy (-p:ModDeployDir=<copy>\\mods\\BigDeckOptimization, or -p:GameDir=<copy>), other builds
-use -p:DeployToGame=false. tools/autotest/try.ps1, which deploys there on purpose, needs -SteamInstall. Also refused: a build
+use -p:DeployToGame=false. A property given twice counts by its last value, as MSBuild takes it; -p:AllowSteamDeploy=true (which
+lifts the csproj's own refusal) is refused. tools/autotest/try.ps1, which deploys there on purpose, needs -SteamInstall. Also refused: a build
 naming no project from inside the mod's folder (the hook's cwd, or a cd earlier in the command), and a ModDeployDir or GameDir
 given through a variable ($GameDir, %VAR%), and a project given through one ($p, %P%, @args): it may be the mod's.
 
@@ -100,10 +101,11 @@ def try_refusal(segment, name, args):
 
 
 def property_value(segment, prop):
-    """The literal value of -p:<prop>=... / -property:<prop>=... in one command, or None."""
-    target = re.search(rf'("?)[-/]p(?:roperty)?:(?:[^\s"\';]*;)*{prop}=("?)', segment, re.I)
-    if not target:
+    """The literal value of -p:<prop>=... / -property:<prop>=... in one command, or None: the last one given, as MSBuild takes."""
+    found = list(re.finditer(rf'("?)[-/]p(?:roperty)?:(?:[^\s"\';]*;)*{prop}=("?)', segment, re.I))
+    if not found:
         return None
+    target = found[-1]
     rest = segment[target.end():]
     if target.group(1) or target.group(2):
         return rest.split('"')[0]
@@ -136,7 +138,12 @@ def build_refusal(segment, name, args, in_mod_folder):
     is_mod = unknown or (any(MOD_PROJECT.search(p) for p in projects) if projects else in_mod_folder)
     if not is_mod:
         return None
-    if NO_DEPLOY.search(segment):
+    # The csproj's own guard against a deploy into the Steam install is lifted by this: only try.ps1 -SteamInstall passes it.
+    if (property_value(segment, 'AllowSteamDeploy') or '').lower() == 'true':
+        return ('-p:AllowSteamDeploy=true lifts the csproj\'s refusal to deploy into the Steam install: only tools/autotest/try.ps1 '
+                '-SteamInstall passes it (when the user asked for that demo).')
+    # Off only when its last value is false (MSBuild takes the last of a repeated property).
+    if NO_DEPLOY.search(segment) and (property_value(segment, 'DeployToGame') or '').lower() == 'false':
         return None
     for prop in ('ModDeployDir', 'GameDir'):
         value = property_value(segment, prop)

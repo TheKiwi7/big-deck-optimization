@@ -804,11 +804,13 @@ public static class SnapshotCardReuse
                 throw new PatchSkippedException($"PlayerState.Serialize writes the piles {pileLists} times (expected once)");
             }
             PatchGuard.Patch(harmony, playerSerialize, transpiler: new HarmonyMethod(typeof(SnapshotCardReuse), nameof(PlayerSerializeTranspiler)));
-            // Another mod's transpiler that ran first may have changed that call.
+            // Another mod's transpiler that ran first may have changed that call. The transpiler stays (Harmony would rebuild the
+            // method for its removal): the calls it made write the game's way unless this passed (WritePiles, PileBitsActive).
             if (_pilesReplaced != 1)
             {
                 throw new PatchSkippedException($"PlayerState.Serialize: {_pilesReplaced} pile list writes replaced (expected one)");
             }
+            _pileBitsChecked = true;
         }
         catch (Exception e)
         {
@@ -1847,6 +1849,16 @@ public static class SnapshotCardReuse
     /// <summary>The <c>WriteList&lt;CombatPileState&gt;</c> calls the last run of <see cref="PlayerSerializeTranspiler"/> replaced.</summary>
     private static int _pilesReplaced;
 
+    /// <summary>The check after the transpiler's install passed (one pile list write replaced).</summary>
+    private static bool _pileBitsChecked;
+
+    /// <summary>
+    /// Pile bits run: the install's check passed, and the transpiler's last run (Harmony runs it again at each re-patch of the
+    /// method, another mod patching it later) still replaced exactly one call. Otherwise every replaced call writes the game's way,
+    /// as the log says ("pile bits not reused").
+    /// </summary>
+    private static bool PileBitsActive => _pileBitsChecked && _pilesReplaced == 1;
+
     private static IEnumerable<CodeInstruction> PlayerSerializeTranspiler(IEnumerable<CodeInstruction> instructions)
     {
         int replaced = 0; // Harmony runs transpilers again each time the method is re-patched.
@@ -1876,7 +1888,7 @@ public static class SnapshotCardReuse
     {
         // Another mod's patch on WriteList<CombatPileState> (or on what pile bits stand for) runs only through the game's call; so does
         // the vanilla reference SnapshotVerifier serializes.
-        if (!Enabled || ListenerCache.IsSuspended || PileBitsBlocked())
+        if (!Enabled || !PileBitsActive || ListenerCache.IsSuspended || PileBitsBlocked())
         {
             writer.WriteList(piles, lengthBits);
             return;

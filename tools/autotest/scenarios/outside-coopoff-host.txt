@@ -4,8 +4,9 @@
 # deck. Barriers keep both peers in the same room until both are done. Pass: both peers log the same STATE lines (every player's
 # gold, HP, potions, relics and deck), no divergence. The off pair (outside-coopoff-*) has the mod off on both: same STATE lines.
 timeout 3000
-cmd bdopt off
+launchoff
 mplobby NECROBINDER 2
+coopmodetag off
 waitfor run 240
 wait 8
 cmd bigdeck import ref all all {hash:ref}
@@ -85,5 +86,4 @@ runstate wood carvings
 barrier read11
 barrier end
 wait 20
-cmd bdopt on
 quit

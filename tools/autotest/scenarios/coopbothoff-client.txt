@@ -1,0 +1,8 @@
+# CoopModeTag (coop-modetag.ps1), client launched with the mod off: joins the host launched off (see coopbothoff-host.txt).
+timeout 300
+launchoff
+mplobby IRONCLAD 2
+coopmodetag off
+waitfor run 240
+wait 5
+quit

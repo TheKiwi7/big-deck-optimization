@@ -34,8 +34,11 @@ listeners were all dropped keeps a null stack where vanilla leaves an empty one.
 tells them apart and nothing reads it (game, decompiled mods); a new reader would change no pinned fingerprint.
 
 Every game version the DLL has code paths for is classified on its own code (the table is rewritten from the versions
-given: one left out loses its rows, and its hooks then run the game's code there; since 2026-11-16 only the public version
-and the latest beta are given, v0.111.0, the former beta, no longer): an entry is kept for a version only when that version's hook passes, and carries what it relies on in that version: the hook's code fingerprint, the fingerprint of each
+given: one left out loses its own rows; since 2026-11-16 only the public version and the latest beta are given, v0.111.0,
+the former beta, no longer). HookSkip matches a hook against every row of its name whatever the version, so a version left
+out keeps the filtering for each hook whose code, defaults and helpers equal a kept version's row (v0.111.0: all but
+AfterDeath, AfterTakingExtraTurn and ModifyDamageInternal, untested there since 2026-11-16) and runs the game's code for the
+others: an entry is kept for a version only when that version's hook passes, and carries what it relies on in that version: the hook's code fingerprint, the fingerprint of each
 AbstractModel default it calls ("Name=FP"), and, for hooks using choice contexts / PushModel / ExecutionFinished, the
 helpers' fingerprints of that version (HelperProfiles, reviewed by hand: tools/fpdiff review flags them when they change).
 HookSkip turns a hook on only when all of these match the running game.

@@ -35,5 +35,5 @@ state f2t2
 cmd bdperf verify
 waitfor nocombat 900
 wait 25
-cmd bdopt on
+cmd bdopt on yes
 quit

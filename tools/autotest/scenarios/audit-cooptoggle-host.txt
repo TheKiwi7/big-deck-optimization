@@ -30,7 +30,7 @@ cmd bdopt off yes
 play 5
 endturn
 waitfor turn 300
-cmd bdopt on
+cmd bdopt on yes
 state t4
 play 5
 endturn

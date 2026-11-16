@@ -55,6 +55,7 @@ Everything is on by default, except **Instant combat animations** (off: purely v
 - `bdopt` shows what is on.
 - `bdopt off` / `bdopt on` turns the whole mod off or back on, without restarting.
 - `bdopt fast_combat_start off` turns off just the faster combat start. In co-op it stays on for everyone, so all players start each combat at the same pace (`bdopt` lists the other names).
+- `bdopt why` lists which other mods keep part of the mod on the normal game, and why.
 
 A switch is greyed out when its optimization can't run: Limitless isn't installed (for the Limitless ones), a game, Limitless or BaseLib update changed what it speeds up, or it turned itself off after an error. Hover it to see why. The game then runs normally for that part. If another mod changes the same part of the game, the switch stays available and its tooltip names that mod (that part runs normally).
 
@@ -65,7 +66,7 @@ Check whether the bug still happens with the mod turned off, then switch it back
 - With BaseLib: in **Mod Configuration → Big Deck Optimization**, untick **Optimizations enabled**.
 - With or without BaseLib: open the console and type `bdopt off` (`bdopt on` to switch it back on).
 
-In co-op, every player turns it off (and back on) together, for the same reason: a player with the mod off falls far behind the others. A player with it off can't join a game where it's on, and the other way round (the game says the mods don't match); turn it off before hosting or joining. During a co-op run the menu switch is locked and the console asks for `bdopt off yes`.
+In co-op, every player turns it off (and back on) together, for the same reason: a player with the mod off falls far behind the others. A player with it off can't join a game where it's on, and the other way round (the game says the mods don't match); turn it off before hosting or joining. In a co-op game (a run or its lobby) the console asks for `bdopt off yes` (and `bdopt on yes` to switch it back on), and during a co-op run the menu switch is locked. A player who disconnects after such a switch can only rejoin once everyone has the same setting again.
 
 If the problem is still there with the mod off, it doesn't come from this mod. Otherwise, please open an issue saying whether it happens with the mod on, off, or both. Feedback is very welcome!
 

@@ -2,7 +2,7 @@ Removes the lag of huge decks in Slay the Spire 2: thousands of cards, hundreds 
 
 [b]Playing with Limitless or BaseLib?[/b] The mod also speeds up a large part of their work during combat, with the same results.
 
-[b]In co-op, every player needs this mod.[/b] The game won't let a player without it join.
+[b]In co-op, every player needs this mod, and every player must have it on (or every player off).[/b] The game won't let a player without it, or with it turned off while the others have it on, join (it says the mods don't match).
 Why: with a huge deck, the mod speeds the game up so much that a player without it falls far behind. For example, with about 8,000 cards and a few hundred relics, starting a combat takes about 4 seconds with the mod and over 30 seconds without it. The game can't handle players that far apart: the cards played in the meantime get lost, and the run desyncs or freezes.
 
 [b]Want a settings menu?[/b] Install [url=https://steamcommunity.com/sharedfiles/filedetails/?id=3737335127]BaseLib[/url] (optional) to turn each improvement on or off from the game's settings.
@@ -51,6 +51,7 @@ You can also use the console ([b]`[/b] key, [b]*[/b] or [b]^[/b] on AZERTY; with
 [*][b]bdopt[/b] shows what is on.
 [*][b]bdopt off[/b] / [b]bdopt on[/b] turns the whole mod off or back on, without restarting.
 [*][b]bdopt fast_combat_start off[/b] turns off just the faster combat start. In co-op it stays on for everyone, so all players start each combat at the same pace.
+[*][b]bdopt why[/b] lists which other mods keep part of the mod on the normal game.
 [/list]
 
 Source code (MIT): https://github.com/TheKiwi7/big-deck-optimization
@@ -61,6 +62,6 @@ Check whether the bug still happens with the mod turned off, then switch it back
 [*]With BaseLib: in [b]Mod Configuration → Big Deck Optimization[/b], untick [b]Optimizations enabled[/b].
 [*]With or without BaseLib: open the console and type [b]bdopt off[/b] ([b]bdopt on[/b] to switch it back on).
 [/list]
-In co-op, every player turns it off (and back on) together, for the same reason: a player with the mod off falls far behind the others. During a co-op run the menu switch is locked and the console asks for [b]bdopt off yes[/b].
+In co-op, every player turns it off (and back on) together, for the same reason: a player with the mod off falls far behind the others. A player with it off can't join a game where it's on, and the other way round: turn it off before hosting or joining. In a co-op game the console asks for [b]bdopt off yes[/b] (and [b]bdopt on yes[/b]), and during a co-op run the menu switch is locked.
 
 Then report it in the discussion below.

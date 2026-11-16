@@ -380,10 +380,15 @@ public static partial class HookSkip
 
     /// <summary>
     /// <see cref="AllowedBodyPatches"/> for the preflight: it keeps its first answer, so it is only built once BaseLib is
-    /// loaded (as <see cref="Finished"/> does); without BaseLib, no BaseLib patch to allow, nothing kept.
+    /// loaded (as <see cref="Finished"/> does); without BaseLib, no BaseLib patch to allow, nothing kept. Whether BaseLib is
+    /// loaded is asked once: the preflight runs after every patch applied, every mod loaded (the game loads them all before its
+    /// first frame), and it asks per watched hook, a few hundred times.
     /// </summary>
     private static MethodInfo[] AllowedForPreflight() =>
-        _allowedBodyPatches ?? (AppDomain.CurrentDomain.GetAssemblies().Any(a => a.GetName().Name == "BaseLib") ? AllowedBodyPatches() : Array.Empty<MethodInfo>());
+        _allowedBodyPatches ?? ((_baseLibLoaded ??= AppDomain.CurrentDomain.GetAssemblies().Any(a => a.GetName().Name == "BaseLib"))
+            ? AllowedBodyPatches() : Array.Empty<MethodInfo>());
+
+    private static bool? _baseLibLoaded;
 
     /// <summary>Some hook's walk call to Hook.IterateCombatHookListeners was redirected (<see cref="Transpiler"/>).</summary>
     private static bool _redirectsCombatHookWalk;

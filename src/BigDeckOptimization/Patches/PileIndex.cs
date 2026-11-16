@@ -116,11 +116,16 @@ public static class PileIndex
         foreach (MethodBase? method in _listMethods)
         {
             // AddInternal and RemoveInternal: postfixes (arguments by value: the finalizer reads card and pile from those slots)
-            // and void prefixes Harmony runs before BeforeAdd/BeforeRemove are let stand. They can't skip the original nor change
-            // its arguments, so the index is updated by this class's own prefix and finalizer as without them; a card they move
-            // goes through these methods again, counted there; one they throw is judged by the pile's list (Judge). Not seen: a
-            // patch writing CardPile._cards directly (no rule tells it from its shape; DESIGN). The other list methods (clear,
-            // moves, shuffle): no tolerance.
+            // and void prefixes Harmony sorts before every prefix of this mod on the method (FastListeners' and CardDbScan's at
+            // Priority.Last+1, this class's BeforeAdd/BeforeRemove at Priority.Last; the Watch* count prefixes are order-free)
+            // are let stand. They can't skip the original nor change its arguments, so the index is updated by this class's own
+            // prefix and finalizer as without them; a card they move goes through these methods again, counted there. While
+            // every call is checked by its effect (SelfChecking: a list method below patched or changed), an add or remove
+            // expects the pile to change by its own card only: a card such a patch (or a game event handler) moves into that
+            // same pile during the call faults the index, the game's own scan from then on (safe, not exact). One they throw is
+            // judged by the pile's list (Judge). Not seen: a patch writing CardPile._cards through __instance.Cards cast to its
+            // list, reflection or code outside a patch (a ___cards field parameter is refused; DESIGN). The other list methods
+            // (clear, moves, shuffle): no tolerance.
             others |= method == _addMethod || method == _removeMethod
                 ? PatchSafety.IsPatchedByOthers(method, PatchTolerance.SurroundingOnly)
                 : PatchSafety.IsPatchedByOthers(method);
@@ -442,7 +447,10 @@ public static class PileIndex
 
     /// <summary>
     /// First prefix, always run (it takes neither the card nor a ref): the pile's count before anything else. Order-free for
-    /// another mod's void prefix let stand: its count is only read when <see cref="BeforeAdd"/> didn't run (Judge, !Set).
+    /// another mod's void prefix let stand: its count is only read when <see cref="BeforeAdd"/> didn't run (Judge, !Set):
+    /// another mod's prefix returned false, or a prefix before BeforeAdd threw (the original didn't run either). A void prefix
+    /// let stand sorts between the two: one that moved another card into this pile and then threw faults the index (Judge
+    /// can't tell that nested move from an unseen change): conservative, the game's own scan from then on.
     /// </summary>
     [OrderFreePrefix]
     private static void WatchAdd(CardPile __instance, out Saved __state) => __state = Saved.CountOf(__instance);
@@ -534,9 +542,10 @@ public static class PileIndex
     /// really entered (left) the pile, undone otherwise, decided by the pile's own list and whether the card was in it before
     /// (<see cref="Saved.WasIn"/>), not by the pile's count (a handler may have moved other cards of that pile before throwing).
     /// Another update of that card's entry meanwhile (a handler moving the card, then throwing) can't be undone apart from
-    /// this one: the index stops being trusted. Not counted (a prefix before <see cref="BeforeAdd"/> skipped the original,
-    /// so Harmony never called it): the pile must be as it was, or have changed by that card through these methods (a nested
-    /// call, counted there); anything else changed the pile unseen.
+    /// this one: the index stops being trusted. Not counted (a prefix before <see cref="BeforeAdd"/> skipped the original or
+    /// threw, so Harmony never called it): the pile must be as it was, or have changed by that card through these methods (a
+    /// nested call, counted there); anything else changed the pile unseen, or by a nested move of another card this can't tell
+    /// apart from it (a fault: kept strict).
     /// </summary>
     private static void Judge(CardPile pile, CardModel card, Saved state, bool add, bool threw)
     {
@@ -573,7 +582,8 @@ public static class PileIndex
         {
             return;
         }
-        Fail($"the {pile.Type} pile went from {state.PileCount} to {count} cards while another mod's prefix skipped CardPile.{(add ? "AddInternal" : "RemoveInternal")}");
+        Fail($"the {pile.Type} pile went from {state.PileCount} to {count} cards while "
+            + (threw ? "a prefix before this mod's threw in" : "another mod's prefix skipped") + $" CardPile.{(add ? "AddInternal" : "RemoveInternal")}");
     }
 
     /// <summary>Whether the pile's list holds this very card (by reference, as the game's Contains: CardModel keeps object equality).</summary>

@@ -1,7 +1,8 @@
 # Co-op memory over several combats, client: see coopleak-host.txt.
 timeout 1500
-cmd bdopt off
+launchoff
 mplobby IRONCLAD 2
+coopmodetag off
 waitfor run 240
 wait 8
 cmd bigdeck import ref all all {hash:ref}

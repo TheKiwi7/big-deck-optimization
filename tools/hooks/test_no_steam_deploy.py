@@ -48,6 +48,13 @@ cases = [
     (False, 'cmd /c "cd tools/fpdiff && dotnet build -c Release"', ''),
     (False, r'git pull; if ($?) { .\tools\autotest\try.ps1 -SteamInstall }', ''),
     (False, 'git commit -m "(fix try.ps1 docs)"', ''),
+    # MSBuild takes the last value of a repeated property; AllowSteamDeploy=true is try.ps1 -SteamInstall's alone.
+    (True, rf'dotnet build {P} -p:ModDeployDir=C:\Games\x "-p:ModDeployDir=C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2\mods\BigDeckOptimization"', ''),
+    (True, f'dotnet build {P} -p:DeployToGame=false -p:DeployToGame=true', ''),
+    (True, rf'dotnet build {P} -p:ModDeployDir=C:\Games\x -p:AllowSteamDeploy=true', ''),
+    (True, f'dotnet build {P} -p:DeployToGame=false -p:AllowSteamDeploy=true', ''),
+    (False, f'dotnet build {P} -p:DeployToGame=true -p:DeployToGame=false', ''),
+    (False, rf'dotnet build {P} "-p:ModDeployDir=C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2\mods\BigDeckOptimization" -p:ModDeployDir=C:\Games\x', ''),
     (False, f'dotnet build {P} -c Release -p:DeployToGame=false', ''),
     (False, f'dotnet build {P} -c Release -property:DeployToGame=false', ''),
     (False, f'dotnet build {P} "-p:Foo=1;DeployToGame=false"', ''),

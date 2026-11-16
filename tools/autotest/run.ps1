@@ -86,7 +86,7 @@ try {
     # extra arguments on (a -GameDir copy has that file and is launched directly).
     # The game window goes off-screen and hands the focus back (AutoTest --bdhidden), unless -Visible; the game is
     # muted (--bdmute, volume settings untouched), unless -Sound.
-    $launch = @("--bdtest", "`"$script`"")
+    $launch = @("--bdtest", "`"$script`"") + @(Get-ScenarioLaunchArgs $script)
     # -Show: fullscreen on screen $Screen instead, to watch the session.
     if ($noSteam) {
         Restore-AsideMenu $copyDir

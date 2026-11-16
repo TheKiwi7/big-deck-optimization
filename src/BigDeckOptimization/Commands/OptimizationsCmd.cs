@@ -10,16 +10,18 @@ namespace BigDeckOptimization.Commands;
 /// (or one) on/off at runtime or sets the fast combat start's relic threshold, e.g. to check
 /// whether an issue comes from this mod, or shows their state; bdopt why lists the parts other mods keep on the normal game
 /// (<see cref="Settings.WhyReport"/>). Local only. Each option gives the same results on or off,
-/// so peers may differ, with one exception: the whole mod off during a co-op run also turns off the fast combat start
-/// the other players keep (see <see cref="Settings.InCoopGame"/>: a co-op run or lobby), so <c>bdopt off</c> then warns and needs
-/// <c>bdopt off yes</c>. Saved in BaseLib's mod configuration when BaseLib is installed. Part of the public build,
-/// unlike the test tooling in Bench.
+/// so peers may differ, with one exception: the whole mod, which every co-op player must have in the same state (all on or
+/// all off, <see cref="Patches.CoopModeTag"/>). Switched in a co-op game (<see cref="Settings.InCoopGame"/>: a run, a start
+/// lobby or a co-op save's load lobby), one player's combats would start at another pace than the others' (the fast combat
+/// start), so <c>bdopt off</c> and <c>bdopt on</c> then warn and need <c>bdopt off yes</c> / <c>bdopt on yes</c>. Not when the
+/// mod was turned off at the start (<see cref="ModEntry.StartedOff"/>: nothing of it runs this session either way).
+/// Saved in BaseLib's mod configuration when BaseLib is installed. Part of the public build, unlike the test tooling in Bench.
 /// </summary>
 public class OptimizationsCmd : AbstractConsoleCmd
 {
     public override string CmdName => "bdopt";
 
-    public override string Args => "[on|off] | off yes (in a co-op run) | <option> on|off | fast_combat_start_relics <0-100, step 10> | why";
+    public override string Args => "[on|off] | off yes / on yes (in a co-op run or lobby) | <option> on|off | fast_combat_start_relics <0-100, step 10> | why";
 
     public override string Description => "[BigDeckOptimization] Turns the mod's optimizations on/off (vanilla behavior when off), or shows their state; why: which other mods keep part of them on the normal game.";
 
@@ -44,14 +46,17 @@ public class OptimizationsCmd : AbstractConsoleCmd
         {
             return new CmdResult(success: true, Settings.WhyReport());
         }
-        bool confirmed = args.Length == 2 && first == "off" && args[1].ToLowerInvariant() == "yes";
+        bool confirmed = args.Length == 2 && first is "on" or "off" && args[1].ToLowerInvariant() == "yes";
         if (first is "on" or "off" && (args.Length == 1 || confirmed))
         {
-            if (first == "off" && !confirmed && Settings.Master && Settings.InCoopGame)
+            bool on = first == "on";
+            // A switch of the whole mod that changes what runs (not after a start with the mod off: nothing of it runs then).
+            if (!confirmed && on != Settings.Master && !ModEntry.StartedOff && Settings.InCoopGame)
             {
-                return new CmdResult(success: false, Settings.CoopOffWarning + "\nTo turn it off anyway, type: bdopt off yes");
+                return new CmdResult(success: false, (on ? Settings.CoopOnWarning : Settings.CoopOffWarning) + " " + Settings.CoopRejoinNote
+                    + $"\nTo turn it {first} anyway, type: bdopt {first} yes");
             }
-            Settings.SetMaster(first == "on");
+            Settings.SetMaster(on);
             return new CmdResult(success: true, Settings.Status());
         }
         string? value = args.Length == 2 ? args[1].ToLowerInvariant() : null;

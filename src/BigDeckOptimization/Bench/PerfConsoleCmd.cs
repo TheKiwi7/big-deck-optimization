@@ -37,9 +37,11 @@ namespace BigDeckOptimization.Bench;
 ///   only, never saved: <see cref="Config.Settings.MasterChoice"/>),
 ///   checks, blocks, upgradebits, envrelease, gcmin, release, purehooks, dirtyreads, snapmoved, segments, relicreuse, fault,
 ///   sortkeys wrong, deckcount wrong, snapgameerror.
-///   Changes the game's state: costwrites (the first hand card free this turn, on this peer only): singleplayer only, since
-///   in co-op it would only make this peer's checksum differ and the host drop it. <c>bdperf opt off</c> in co-op warns and
-///   asks for <c>bdperf opt off yes</c>, as <c>bdopt off</c> does.
+///   Changes the game's state: costwrites (the first hand card free this turn, on this peer only), and foreign with a shape
+///   changing it (keyword-prefix, cost-postfix, nested-postfix: <see cref="ForeignPatches.ChangesState"/>): singleplayer only,
+///   since in co-op it would only make this peer's checksum differ and the host drop it (a co-op script installs them with its
+///   'foreignpatch' line on every peer, before any combat). <c>bdperf opt off</c> in co-op warns and asks for
+///   <c>bdperf opt off yes</c>, as <c>bdopt off</c> does.
 /// </summary>
 public class PerfConsoleCmd : AbstractConsoleCmd
 {
@@ -182,6 +184,11 @@ public class PerfConsoleCmd : AbstractConsoleCmd
                     + "\nRuntime (other mods' patches, per call site):" + string.Concat(PatchSafety.RuntimeReport().Select(t => "\n  " + t)));
             case "foreign":
                 // ForeignPatches: synthetic patches of each shape under a foreign Harmony id (same arguments as the script's foreignpatch).
+                if (coop && ForeignPatches.ChangesState(string.Join(" ", args.Skip(1))))
+                {
+                    return new CmdResult(success: false, "bdperf foreign with this shape is singleplayer only: it changes the game's state on your game "
+                        + "only, the other players' games don't see it and the host would disconnect you (a co-op script's 'foreignpatch' line installs it on every peer).");
+                }
                 try
                 {
                     return new CmdResult(success: true, string.Join('\n', ForeignPatches.Run(string.Join(" ", args.Skip(1)))));

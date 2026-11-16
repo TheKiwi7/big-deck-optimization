@@ -293,6 +293,12 @@ function Unlock-Slot([int]$slot) {
 # one. 34000 + slot: apart from the game's fixed 33771 (coop.ps1, a single pair on slot 70, keeps it).
 function Get-SlotPort([int]$slot) { 34000 + $slot }
 
+# The launch arguments a scenario asks for: --bdoff when it has a 'launchoff' line (the whole mod off for the session from its
+# launch, before the main menu's --fastmp lobby builds the co-op join lists; the line fails without it). Every launcher adds them.
+function Get-ScenarioLaunchArgs([string]$script) {
+    if ((Test-Path $script) -and (Select-String -Path $script -Pattern '^\s*launchoff\s*$' -Quiet)) { @("--bdoff") } else { @() }
+}
+
 # Mirrors the user data into a slot: the caller holds the slot's lock (Lock-Slot) until its session ends.
 function Sync-Slot([int]$slot, [switch]$Coop) {
     if (-not $global:BdSlotLocks.ContainsKey($slot)) { throw "Sync-Slot ${slot}: take its lock first (Lock-Slot)" }
@@ -560,7 +566,7 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                 $env:APPDATA = Sync-Slot $slot
                 # A job may name its own game folder (mutations.ps1).
                 $jobDir = if ($job.PSObject.Properties["GameDir"]) { $job.GameDir } else { $GameDir }
-                $launch = @("--force-steam", "off", "--log-file", "`"$($job.Log)`"", "--bdtest", "`"$($job.Script)`"", "--bdmute") + $launchMode
+                $launch = @("--force-steam", "off", "--log-file", "`"$($job.Log)`"", "--bdtest", "`"$($job.Script)`"", "--bdmute") + $launchMode + @(Get-ScenarioLaunchArgs $job.Script)
                 $jobExe = Join-Path $jobDir "SlayTheSpire2.exe"
                 $p = if ($Rendered) { Start-HiddenGame $jobExe $jobDir $launch } else { Start-Process -FilePath $jobExe -WorkingDirectory $jobDir -PassThru -WindowStyle Hidden -ArgumentList $launch }
                 $env:APPDATA = $realAppData

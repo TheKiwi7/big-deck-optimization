@@ -11,8 +11,8 @@ expect IdleButtonInput: NButton\._Input is also patched by bdtest\.fakeconflict
 expect LimitlessReserialize: SavedProperties\.FromInternal is also patched by bdtest\.fakeconflict
 expect RelicStateReuse: SavedProperties\.FromInternal is also patched by bdtest\.fakeconflict
 expect PileIndex: Player\.get_Piles is also patched by bdtest\.fakeconflict
-expect \[limitless_saves\]: on \(partly vanilla: also patched by bdtest\.fakeconflict\)
-expect \[relic_input\]: on \(partly vanilla: also patched by bdtest\.fakeconflict\)
+expect \[limitless_saves\]: on \(partly vanilla because of bdtest\.fakeconflict\)
+expect \[relic_input\]: on \(partly vanilla because of bdtest\.fakeconflict\)
 newrun NECROBINDER
 waitfor run 120
 wait 2
@@ -102,6 +102,15 @@ wait 3
 checksum after combat
 state after combat
 effects end
+# The back-offs' log lines and bdopt's 'partly vanilla' lines above also come from the preflight bdopt and the menu run (the
+# same check, the same text): these lines count the optimizations' own runtime checks only (PatchSafety.RuntimeCounts).
+runtimebackoff CardDbScan NetCombatCardDb.IdCardIfNecessary
+runtimebackoff HookFilter Hook.IterateCombatHookListeners
+runtimebackoff HookSkip Hook.IterateCombatHookListeners
+runtimebackoff IdleButtonInput NButton._Input
+runtimebackoff LimitlessReserialize SavedProperties.FromInternal
+runtimebackoff RelicStateReuse SavedProperties.FromInternal
+runtimebackoff PileIndex Player.get_Piles
 cmd bdopt
 counters end
 quit

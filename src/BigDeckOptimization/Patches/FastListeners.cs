@@ -2235,10 +2235,19 @@ public static class FastListeners
         return names.Select(n => AccessTools.TypeByName(n) is { } t && typeof(AbstractModel).IsAssignableFrom(t) ? t : throw new TypeLoadException(n)).ToArray();
     }
 
-    /// <summary>A compiled getter of a property this build can't name (another game version's), typed as <typeparamref name="TResult"/>.</summary>
+    /// <summary>
+    /// A getter of a property this build can't name (another game version's), typed as <typeparamref name="TResult"/>: a delegate
+    /// bound to the property's getter (no expression compiled at load: a reference-type property's value is its result as is,
+    /// the covariant return CreateDelegate allows), an expression with a conversion only when that binding is refused.
+    /// </summary>
     private static Func<TOwner, TResult> Getter<TOwner, TResult>(string property)
     {
         PropertyInfo info = AccessTools.Property(typeof(TOwner), property) ?? throw new MissingMemberException(typeof(TOwner).Name, property);
+        if (info.GetGetMethod(true) is { IsStatic: false } getter && !info.PropertyType.IsValueType && typeof(TResult).IsAssignableFrom(info.PropertyType)
+            && Delegate.CreateDelegate(typeof(Func<TOwner, TResult>), getter, throwOnBindFailure: false) is Func<TOwner, TResult> bound)
+        {
+            return bound;
+        }
         var owner = System.Linq.Expressions.Expression.Parameter(typeof(TOwner));
         return System.Linq.Expressions.Expression.Lambda<Func<TOwner, TResult>>(
             System.Linq.Expressions.Expression.Convert(System.Linq.Expressions.Expression.Property(owner, info), typeof(TResult)), owner).Compile();

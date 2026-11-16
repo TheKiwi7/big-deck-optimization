@@ -102,6 +102,12 @@ public static class CardFlightLimit
     {
         try
         {
+            // A lost flush (below) is queued again by the next soul made, kept or skipped: a reshuffle ending with kept souls
+            // doesn't wait for a later skip. Cards left pending only (nothing pending: one count read).
+            if (_pending.Count > 0 && Thread.CurrentThread.ManagedThreadId == _mainThread)
+            {
+                QueueFlush(lost: true);
+            }
             // A null pile (v0.107.1 reads card.Pile when the tween fires): the game's code, whatever it does with it.
             if (!Enabled || targetPile == null || targetPile.Type is not (PileType.Draw or PileType.Discard)
                 // No tolerance: a skipped soul skips the method (and the calls it would make).
@@ -165,16 +171,26 @@ public static class CardFlightLimit
         return allowed.ToArray();
     }
 
-    private static void Count(CardPile pile)
+    /// <summary>
+    /// A flush queued in a frame runs at its end (or the next one's, queued late); cards still pending two frames later mean it
+    /// never ran (Godot drops a deferred call when its message queue is full): queued again then, by the next soul made
+    /// (<see cref="CreatePrefix"/>) or skipped. Two flushes at worst: the second finds nothing (each takes what is pending and
+    /// clears it). With no soul made at all afterwards, a pile button's count stays short until the next card leaves that pile
+    /// (its RemoveCard takes the pile's own count back).
+    /// </summary>
+    private static void QueueFlush(bool lost)
     {
-        // A flush queued in a frame runs at its end (or the next one's, queued late); cards still pending two frames later mean
-        // it never ran. Two flushes at worst: the second finds nothing (each takes what is pending and clears it).
         ulong frame = Engine.GetProcessFrames();
-        if (_pending.Count == 0 || frame > _flushFrame + 1)
+        if ((!lost && _pending.Count == 0) || frame > _flushFrame + 1)
         {
             _flushFrame = frame;
             Callable.From(Flush).CallDeferred();
         }
+    }
+
+    private static void Count(CardPile pile)
+    {
+        QueueFlush(lost: false);
         for (int i = 0; i < _pending.Count; i++)
         {
             if (ReferenceEquals(_pending[i].Pile, pile))

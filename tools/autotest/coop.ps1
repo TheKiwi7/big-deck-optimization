@@ -75,7 +75,7 @@ try {
     $hostLog = Join-Path $Results "$Name-host.log"; $clientLog = Join-Path $Results "$Name-client.log"
     Remove-Item $hostLog, $clientLog -ErrorAction SilentlyContinue
     $env:APPDATA = $slot
-    $hostArgs = @("--force-steam", "off", "--fastmp", "host_standard", "--log-file", "`"$hostLog`"", "--bdtest", "`"$hostScript`"") + $(if ($HostVisible) { @() } else { $extra })
+    $hostArgs = @("--force-steam", "off", "--fastmp", "host_standard", "--log-file", "`"$hostLog`"", "--bdtest", "`"$hostScript`"") + $(if ($HostVisible) { @() } else { $extra }) + @(Get-ScenarioLaunchArgs $hostScript)
     $h = if ($Visible -or $HostVisible) { Start-Process -FilePath $GameExe -WorkingDirectory $GameDir -PassThru -ArgumentList $hostArgs } else { Start-HiddenGame $GameExe $GameDir $hostArgs }
     $trace = $null
     if ($TraceSec -gt 0) {
@@ -88,7 +88,7 @@ try {
         } else { Start-Process -FilePath "dotnet-trace" -PassThru -WindowStyle Hidden -ArgumentList ($traceArgs + "`"$Results\$Name-host.nettrace`"") }
     }
     Start-Sleep 12
-    $clientArgs = @("--force-steam", "off", "--fastmp", "join", "--clientId", "1001", "--log-file", "`"$clientLog`"", "--bdtest", "`"$clientScript`"") + $extra
+    $clientArgs = @("--force-steam", "off", "--fastmp", "join", "--clientId", "1001", "--log-file", "`"$clientLog`"", "--bdtest", "`"$clientScript`"") + $extra + @(Get-ScenarioLaunchArgs $clientScript)
     if ($ClientHeadless) { $clientArgs = @("--headless") + $clientArgs }
     $c = if ($Visible) { Start-Process -FilePath $GameExe -WorkingDirectory $GameDir -PassThru -ArgumentList $clientArgs } else { Start-HiddenGame $GameExe $GameDir $clientArgs }
     $env:APPDATA = $realAppData

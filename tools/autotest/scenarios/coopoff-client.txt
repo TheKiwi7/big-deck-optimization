@@ -1,8 +1,9 @@
 # Local co-op control, both peers with the mod off (client): see coopoff-host.txt (one combat, as coop-client.txt).
 # Every machine needs the same bigdeck/ref.run.
 timeout 2400
-cmd bdopt off
+launchoff
 mplobby IRONCLAD 2
+coopmodetag off
 waitfor run 240
 cmd bdperf checks off
 wait 14
@@ -25,5 +26,4 @@ state t3
 cmd bdperf verify
 waitfor nocombat 900
 wait 25
-cmd bdopt on
 quit

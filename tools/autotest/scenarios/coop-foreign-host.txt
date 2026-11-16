@@ -1,6 +1,7 @@
 # Co-op with foreign patches (host), coop-host otherwise: the shape rules (DESIGN "Foreign patches judged by their shape")
-# with peers of the same mods. Run with parcoop -OnOff: each peer against its mod-off twin, and the game's own checksums between
-# peers. Every machine needs the same bigdeck/ref.run.
+# with peers of the same mods. Run with parcoop -OnOff: each peer against its mod-off twin (turn states, run states and the
+# synthetic patches' counts, 'STATE foreign'), and the game's own checksums between the peers. Every machine needs the same
+# bigdeck/ref.run.
 timeout 2400
 expect FOREIGN runtime HookFilter Hook\.ModifyKeywordsInCombat \(PrefixesOnly\) kept [1-9]
 expect FOREIGN runtime PileIndex CardPile\.AddInternal \(SurroundingOnly\) kept [1-9]
@@ -8,15 +9,12 @@ expect FOREIGN runtime HookSkip AbstractModel\.AfterCardPlayed \(TypeGated\) kep
 mplobby NECROBINDER 2
 waitfor run 240
 cmd bdperf checks off
-wait 8
-cmd bigdeck import ref all all {hash:ref}
-cmd bigdeck import ref all cards {hash:ref}
-cmd bigdeck import ref all cards {hash:ref}
-cmd bigdeck import ref all cards {hash:ref}
-enemyhp 999999
-# The same synthetic patches of "another mod" on every peer (Bench/ForeignPatches.cs), tolerated ones with effects the checksums
-# and states see: a void prefix before HookFilter's mirror, Squeeze's Retain (void prefix) and +1 cost (postfix on the result),
+# The same synthetic patches of "another mod" on every peer (Bench/ForeignPatches.cs), tolerated ones with effects the turn
+# states (hand, piles, energy) and the counts compared with the twin ('STATE foreign', foreignpatch report) see: a void prefix before HookFilter's mirror, Squeeze's Retain (void prefix) and +1 cost (postfix on the result),
 # cost reads around each card add, counted and type-gated patches, a near miss. The mod-off twins (parcoop -OnOff) keep them.
+# Installed before the imports and before any combat (a networked import runs later, on every peer: one installed after
+# some of them would count a share that depends on timing), then a barrier: every peer counts the same calls, its
+# mod-off twin too, and no peer changes its own state once a combat is set up (AutoTest refuses that too).
 foreignpatch noop-prefix MegaCrit.Sts2.Core.Hooks.Hook:ShouldPlay priority 800
 foreignpatch count-postfix MegaCrit.Sts2.Core.Hooks.Hook:AfterCardPlayed
 foreignpatch count-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal
@@ -28,6 +26,13 @@ foreignpatch gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardPlay
 foreignpatch gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardPlayedLate relic
 foreignpatch gated-or-postfix MegaCrit.Sts2.Core.Models.AbstractModel:BeforeCardPlayed squeeze-relic
 foreignpatch nearmiss-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterSideTurnEnd squeeze
+barrier foreign-installed
+wait 8
+cmd bigdeck import ref all all {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+cmd bigdeck import ref all cards {hash:ref}
+enemyhp 999999
 wait 25
 cmd fight CULTISTS_NORMAL
 waitfor idle 900
@@ -42,6 +47,7 @@ endturn
 waitfor idle 900
 state t3
 cmd bdperf verify
+barrier foreign-report
 foreignpatch report end
 foreignpatch require tolerated
 cmd kill all

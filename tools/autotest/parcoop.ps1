@@ -7,10 +7,11 @@
 # Mod on vs mod off: peers agreeing says nothing of what the game would have done (both run the same code). Each scenario
 # <x> whose mod-off twin <x>off or <x>-off is in -Names too is compared with it, peer by peer (host with host, client with
 # client): the states at each turn start (--bdturnstates), the runstate lines and the checksums taken where both peers are
-# settled (a 'checksum' line right after a 'barrier' or 'waitfor nocombat', 'wait' lines between allowed), over what both ran (a
-# shorter control compares its own length). -OnOff: every scenario also runs as its own mod-off twin (<x>-autooff: 'cmd bdopt
-# off' before its 'mplobby', so the run's creation is the game's own too, without its bdperf, bdopt, counters, effects and expect
-# lines), compared the same way.
+# settled (a 'checksum' line right after a 'barrier' or 'waitfor nocombat', 'wait' lines between allowed) and the synthetic foreign
+# patches' counts ('STATE foreign', foreignpatch report), over what both ran (a shorter control compares its own length). -OnOff:
+# every scenario also runs as its own mod-off twin (<x>-autooff: launched with the mod off, 'launchoff', so the co-op join lists
+# and the run's creation are the game's own too, without its bdperf, bdopt, counters, effects and expect lines), compared the same
+# way.
 param([Parameter(Mandatory)][string[]]$Names, [string]$GameDir = "", [int]$Jobs = 6, [int]$TimeoutSec = 900, [int]$StallSec = 240, [switch]$Plain, [switch]$Instant, [switch]$OnOff)
 $Names = @($Names | ForEach-Object { $_ -split "," } | Where-Object { $_ })
 $copy = $GameDir
@@ -27,22 +28,30 @@ else { Add-TestMods $GameDir }
 $folder = Join-Path $out "coop-scripts"
 New-Item -ItemType Directory -Force $folder | Out-Null
 $waiting = [Collections.Generic.Queue[object]]::new()
-# A scenario's mod-off twin: 'cmd bdopt off' before the lobby, at the main menu (each peer turns its own mod off: bdopt isn't a
-# networked command and needs no run; at the menu no co-op run asks for 'bdopt off yes'), so the run's creation is the game's own
-# too; without the lines that only make sense with the mod on (bdperf comparisons, option switches, counters, effects and their
+# A scenario's mod-off twin: each peer launched with the mod off ('launchoff': Start-Peer adds --bdoff, which turns it off for
+# the session before the main menu's --fastmp lobby exists; a script line comes too late there: the lobby is already open, so
+# 'bdopt off' would ask for 'bdopt off yes', and v0.111+ would have built its join list with the mod on). Then 'coopmodetag
+# off' after the lobby: the join list the game compares says "-off" on both peers, which joined. The run's creation is the
+# game's own too; without the lines that only make sense with the mod on (bdperf comparisons, option switches, counters, effects and their
 # checks, positive controls, the mod's own probes: button input checks, tip rebuilds, a fake conflicting patch, a fault probe, a
 # rebuild check). The synthetic foreign patches stay (they stand for another mod every side has), only 'foreignpatch require'
 # (a check of this mod's tolerance) goes.
-$ModOnlyLine = '^\s*(cmd bdperf |cmd bdopt\b|counters\b|effects\b|effectcheck\b|expect\b|buttoninput\s+expect|tipsrebuilt\b|checktips\b|fakeconflict\b|foreignpatch\s+require\b|faultprobe\b|rebuildcheck\b)'
+$ModOnlyLine = '^\s*(cmd bdperf |cmd bdopt\b|counters\b|effects\b|effectcheck\b|expect\b|buttoninput\s+expect|tipsrebuilt\b|checktips\b|fakeconflict\b|foreignpatch\s+require\b|faultprobe\b|rebuildcheck\b|runtimebackoff\b|coopmodetag\b|launchoff\b)'
 function New-OffTwin([string]$source, [string]$target) {
     $lines = [Collections.Generic.List[string]]::new()
     $placed = $false
     foreach ($line in Get-Content $source) {
         if ($line -match $ModOnlyLine) { continue }
-        if (-not $placed -and $line -match '^\s*(mplobby|newrun)\b') { $lines.Add("cmd bdopt off"); $placed = $true }
+        if (-not $placed -and $line -match '^\s*(mplobby|newrun)\b') {
+            $lines.Add("launchoff")
+            $lines.Add($line)
+            if ($line -match '^\s*mplobby\b') { $lines.Add("coopmodetag off") }
+            $placed = $true
+            continue
+        }
         $lines.Add($line)
     }
-    if (-not $placed) { throw "$source has no 'mplobby' line: no place for its mod-off twin's 'cmd bdopt off'" }
+    if (-not $placed) { throw "$source has no 'mplobby' line: no place for its mod-off twin's 'launchoff'" }
     [IO.File]::WriteAllText($target, ($lines -join "`n") + "`n")
 }
 $groups = @(foreach ($name in $Names) {
@@ -78,7 +87,8 @@ $pairs = @(foreach ($group in $groups) {
 function Start-Peer($group, [string]$role, [string[]]$mode) {
     $log = if ($role -eq "host") { $group.HostLog } else { $group.ClientLog }
     Remove-Item $log -ErrorAction SilentlyContinue
-    $arguments = @("--headless", "--force-steam", "off", "--bdport", $group.Port, "--bdturnstates", "--bdmute", "--log-file", "`"$log`"", "--bdtest", "`"$($group.Scripts[$role])`"") + $mode
+    # --bdoff for a script with a 'launchoff' line (the -autooff twins, the mod-off controls).
+    $arguments = @("--headless", "--force-steam", "off", "--bdport", $group.Port, "--bdturnstates", "--bdmute", "--log-file", "`"$log`"", "--bdtest", "`"$($group.Scripts[$role])`"") + $mode + @(Get-ScenarioLaunchArgs $group.Scripts[$role])
     Start-Process -FilePath $exe -WorkingDirectory $GameDir -PassThru -WindowStyle Hidden -ArgumentList $arguments
 }
 $started = Get-Date
@@ -150,8 +160,8 @@ foreach ($entry in $done) {
     foreach ($log in $entry.Group.HostLog, $entry.Group.ClientLog) {
         $role = if ($log -eq $entry.Group.HostLog) { "host" } else { "client" }
         # judge.py: not ended, a failed line, an error or a difference this mod found itself, a positive control that saw nothing...
-        # A mod-off side (-autooff twin, *off / *van pair): the host's 'bdopt off' at the menu is saved in the slot both peers
-        # share, so the client may start with the mod off, the game's own code: no problem there.
+        # A mod-off side (-autooff twin, *off / *van pair): launched off ('launchoff', never saved), or a hand-run 'bdopt off' saved
+        # in the slot both peers share, so a peer may start with the mod off, the game's own code: no problem there.
         $modOff = $entry.Group.Name -match '(-autooff|off|van|vanilla)$'
         Invoke-Judge @($log) -ModOff:$modOff | Select-Object -First 3 | ForEach-Object { $problems += "$role`: " + ($_ -replace '^PROBLEM [^:]+: ', '') }
         Select-String -Path $log -CaseSensitive -Pattern "State divergence" -ErrorAction SilentlyContinue | Select-Object -First 1 | ForEach-Object { $problems += "$role`: state divergence" }
@@ -185,10 +195,12 @@ function Get-SettledChecksums([string]$script) {
     $labels
 }
 
-# Mod on vs mod off, peer by peer: what each peer saw at each turn start (its player, its piles, the enemies), the run states and
-# the settled checksums (the whole combat state: what counts, HP and powers don't show). Checksums without their timing.
+# Mod on vs mod off, peer by peer: what each peer saw at each turn start (its player, its piles, the enemies), the run states,
+# the settled checksums (the whole combat state: what counts, HP and powers don't show) and the synthetic foreign patches'
+# counts ('STATE foreign <label> <key> <n>', foreignpatch report: a call this mod drops changes only that count; coop-foreign
+# installs them before its imports and reports after a barrier, so both sides count the same calls). Checksums without their timing.
 function Get-PairLines([string]$log, [string[]]$checksums) {
-    $pattern = "STATE floor \d+ round |STATE (?![^:]*\(local\))[^:]+: (floor \d+, act |\S+ gold )"
+    $pattern = "STATE floor \d+ round |STATE (?![^:]*\(local\))[^:]+: (floor \d+, act |\S+ gold )|STATE foreign "
     if ($checksums.Count) { $pattern += "|CHECKSUM (" + (($checksums | ForEach-Object { [regex]::Escape($_) }) -join "|") + "): " }
     @(Select-String -Path $log -Pattern $pattern -ErrorAction SilentlyContinue | ForEach-Object { ($_.Line -replace '^.*?((STATE|CHECKSUM) )', '$1') -replace '^(CHECKSUM [^:]+: \w+).*$', '$1' })
 }

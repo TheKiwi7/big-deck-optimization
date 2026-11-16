@@ -1,12 +1,13 @@
-# Control run: coopclone with this mod off on both sides (bdopt off), same scenario, to tell the game's own behavior apart.
+# Control run: coopclone with this mod off on both sides (launched off: launchoff), same scenario, to tell the game's own behavior apart.
 # Co-op check of v0.5.0 (with coopclone-client.txt, coop.ps1 -WithMods): host Necrobinder with the reference run
 # imported once (945 cards, Clone-enchanted cards, 2 Bing Bongs), client Ironclad with the reference cards. A combat
 # (plays, end of turns), Reflections' Shatter for both at Instant speed, then a campfire clone (host). Sizes keep
 # every single action well under the network timeout (a longer freeze disconnects the other player, as in vanilla).
 # Pass: the same CHECKSUM lines on both, bdperf verify mismatches 0, no divergence.
 timeout 2400
-cmd bdopt off
+launchoff
 mplobby NECROBINDER 2
+coopmodetag off
 waitfor run 240
 cmd bdperf checks off
 speed instant

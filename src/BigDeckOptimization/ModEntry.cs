@@ -238,8 +238,9 @@ public static class ModEntry
         _decided = true;
         try
         {
-            // The menu set the master switch from the saved file when it registered (nothing else can have changed it yet).
-            StartedOff = Config.SettingsMenu.Registered && !Config.Settings.Master;
+            // The menu set the master switch from the saved file when it registered: the saved choice, not a session-only switch
+            // (the test tooling's --bdoff, bdperf opt), which leaves every patch applied as bdopt off does.
+            StartedOff = Config.SettingsMenu.Registered && !Config.Settings.MasterChoice;
         }
         catch (Exception e)
         {

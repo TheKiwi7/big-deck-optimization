@@ -1,7 +1,8 @@
 # Outside combat in co-op with the mod off on both peers, client (with outside-coopoff-host.txt): see the host's scenario.
 timeout 3000
-cmd bdopt off
+launchoff
 mplobby IRONCLAD 2
+coopmodetag off
 waitfor run 240
 wait 8
 cmd bigdeck import ref all all {hash:ref}
@@ -74,5 +75,4 @@ runstate wood carvings
 barrier read11
 barrier end
 wait 20
-cmd bdopt on
 quit

@@ -1,0 +1,8 @@
+# CoopModeTag (coop-modetag.ps1), client launched with the mod off ('launchoff': --bdoff turns it off before the main menu's
+# --fastmp join builds its join list): the join to the host (mod on) must be refused, the game's mismatch naming
+# BigDeckOptimization-v...-off. Closed by coop.ps1 -StopWhen once the refusal is logged.
+timeout 150
+launchoff
+coopmodetag off
+wait 120
+quit

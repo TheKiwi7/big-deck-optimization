@@ -9,11 +9,11 @@ expect PileCounterBatch: NCombatCardPile\.RemoveCard is also patched by bdtest\.
 expect FastListeners: CombatState\.IterateHookListeners is also patched by bdtest\.fakeconflict
 expect FastListeners: RunState\.IterateHookListeners is also patched by bdtest\.fakeconflict
 expect ListenerCache: CombatState\.IterateHookListeners is also patched by bdtest\.fakeconflict
-expect \[hook_skip\]: on \(partly vanilla: also patched by bdtest\.fakeconflict\)
-expect \[pile_lookup\]: on \(partly vanilla: also patched by bdtest\.fakeconflict\)
-expect \[card_ids\]: on \(partly vanilla: also patched by bdtest\.fakeconflict\)
-expect \[pile_counters\]: on \(partly vanilla: also patched by bdtest\.fakeconflict\)
-expect \[listeners\]: on \(partly vanilla: also patched by bdtest\.fakeconflict\)
+expect \[hook_skip\]: on \(partly vanilla because of bdtest\.fakeconflict\)
+expect \[pile_lookup\]: on \(partly vanilla because of bdtest\.fakeconflict\)
+expect \[card_ids\]: on \(partly vanilla because of bdtest\.fakeconflict\)
+expect \[pile_counters\]: on \(partly vanilla because of bdtest\.fakeconflict\)
+expect \[listeners\]: on \(partly vanilla because of bdtest\.fakeconflict\)
 newrun NECROBINDER
 waitfor run 120
 wait 2
@@ -109,6 +109,14 @@ effectcheck PileCounterBatch zero
 effectcheck FastListeners.Cache zero
 effectcheck FastListeners.CombatWalk zero
 effectcheck FastListeners.RunWalk zero
+# The back-offs' log lines and bdopt's 'partly vanilla' lines above also come from the preflight bdopt and the menu run (the
+# same check, the same text): these lines count the optimizations' own runtime checks only (PatchSafety.RuntimeCounts).
+runtimebackoff PileIndex CardModel.get_Pile
+runtimebackoff CardDbScan NetCombatCardDb.OnPileContentsChanged
+runtimebackoff PileCounterBatch NCombatCardPile.RemoveCard
+runtimebackoff FastListeners CombatState.IterateHookListeners
+runtimebackoff FastListeners RunState.IterateHookListeners
+runtimebackoff ListenerCache CombatState.IterateHookListeners
 cmd bdopt
 counters end
 quit

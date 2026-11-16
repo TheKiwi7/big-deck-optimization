@@ -3,8 +3,9 @@
 # off first; 'parcoop.ps1 -OnOff -Names coop' makes the same twin itself. The full reference deck with the mod off: its combat
 # start may freeze the host past the network timeout (v0.113), as for coop's own -OnOff twin.
 timeout 2400
-cmd bdopt off
+launchoff
 mplobby NECROBINDER 2
+coopmodetag off
 waitfor run 240
 cmd bdperf checks off
 wait 8
@@ -30,5 +31,4 @@ cmd bdperf verify
 cmd kill all
 waitfor nocombat 600
 wait 20
-cmd bdopt on
 quit

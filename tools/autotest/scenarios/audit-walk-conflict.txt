@@ -3,7 +3,7 @@
 # run walk, which has no conflict here (DESIGN "Other mods on the walks").
 timeout 600
 expect FastListeners: CombatState\.IterateHookListeners is also patched by bdtest\.fakeconflict
-expect \[hook_skip\]: on \(partly vanilla: also patched by bdtest\.fakeconflict\)
+expect \[hook_skip\]: on \(partly vanilla because of bdtest\.fakeconflict\)
 newrun NECROBINDER 1234
 waitfor run 120
 wait 2
@@ -24,5 +24,8 @@ effects end
 # The combat walk backs off whole (FastListeners' own and HookSkip's filtered walks): it never ran. The run walk, not
 # conflicted here, keeps using the cache (FastListeners.Cache grows by design).
 effectcheck FastListeners.CombatWalk zero
+# The back-offs' log lines and bdopt's 'partly vanilla' lines above also come from the preflight bdopt and the menu run (the
+# same check, the same text): these lines count the optimizations' own runtime checks only (PatchSafety.RuntimeCounts).
+runtimebackoff FastListeners CombatState.IterateHookListeners
 cmd bdopt
 quit

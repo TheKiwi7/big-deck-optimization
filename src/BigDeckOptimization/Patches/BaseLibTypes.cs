@@ -354,8 +354,10 @@ internal static class BaseLibTypes
                     continue;
                 }
                 bool all = target.IsAssignableFrom(typeof(MegaCrit.Sts2.Core.Models.CardModel));
+                // An interface key (TKey only needs to be a class: BaseLib applies the field to every model implementing it, as
+                // SpireFieldTargets does) may be on some cards or enchantments: counted, unless no card or enchantment can be one.
                 bool some = typeof(MegaCrit.Sts2.Core.Models.CardModel).IsAssignableFrom(target) || typeof(MegaCrit.Sts2.Core.Models.EnchantmentModel).IsAssignableFrom(target)
-                    || target.IsAssignableFrom(typeof(MegaCrit.Sts2.Core.Models.EnchantmentModel));
+                    || target.IsAssignableFrom(typeof(MegaCrit.Sts2.Core.Models.EnchantmentModel)) || MayBeOnCards(target);
                 if (!all && !some)
                 {
                     continue;
@@ -370,6 +372,12 @@ internal static class BaseLibTypes
             return _spireNotes;
         }
     }
+
+    /// <summary>
+    /// An interface key: a card or enchantment type may implement it (counted without looking for one: the note is display
+    /// only, and the runtime's own test, <see cref="SpireFieldTargets"/>, is per type).
+    /// </summary>
+    private static bool MayBeOnCards(Type target) => target.IsInterface;
 
     /// <summary>
     /// Records (or clears) the note of a patch whose shortcut skips cards and enchantments a SavedSpireField targets

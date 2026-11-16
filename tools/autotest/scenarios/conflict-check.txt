@@ -1,11 +1,11 @@
 # Another mod patching a method an optimization mirrors: the optimization backs off there and says which mod.
 # fakeconflict puts a prefix returning true (Harmony id bdtest.fakeconflict) on the energy cost color helper HookFilter
-# mirrors (only a void prefix sorted before the mirror is let stand there, foreign-shapes-2k-on); after a few plays, bdopt shows "partly vanilla: also patched by bdtest.fakeconflict" on hook_filter and
+# mirrors (only a void prefix sorted before the mirror is let stand there, foreign-shapes-2k-on); after a few plays, bdopt shows "partly vanilla because of bdtest.fakeconflict" on hook_filter and
 # its menu tooltip starts with the translated "Partly inactive" sentence. The combat checksum stays the same.
 timeout 300
 expect HookFilter: CardCostHelper\.TryModifyEnergyCostWithHooks is also patched by bdtest\.fakeconflict \(void prefixes not enough\)
-expect \[hook_filter\]: on \(partly vanilla: also patched by bdtest\.fakeconflict\)
-expect MENUTEXT HOOK_FILTER: .*Partly inactive: bdtest\.fakeconflict
+expect \[hook_filter\]: on \(partly vanilla because of bdtest\.fakeconflict\)
+expect MENUTEXT HOOK_FILTER: .*Partly inactive: .*bdtest\.fakeconflict
 newrun NECROBINDER
 waitfor run 120
 wait 2
@@ -17,6 +17,9 @@ waitfor idle 60
 wait 3
 play 1
 waitfor idle 60
+# The back-offs' log lines and bdopt's 'partly vanilla' lines above also come from the preflight bdopt and the menu run (the
+# same check, the same text): these lines count the optimizations' own runtime checks only (PatchSafety.RuntimeCounts).
+runtimebackoff HookFilter CardCostHelper.TryModifyEnergyCostWithHooks
 cmd bdopt
 language fra
 menutext HOOK_FILTER

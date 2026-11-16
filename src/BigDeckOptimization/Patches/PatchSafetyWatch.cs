@@ -285,10 +285,19 @@ public static partial class PatchSafety
             .Concat(_notes.Select(entry => new BackOff(entry.Key.Patch, entry.Value.Text, entry.Value.Mods, true)))
             .OrderBy(b => b.Patch, StringComparer.Ordinal).ThenBy(b => b.IsNote).ThenBy(b => b.What, StringComparer.Ordinal).ToList();
 
-    /// <summary>Per mod, how many back-offs and notes name it, most first.</summary>
-    public static IReadOnlyList<(string Mod, int Count)> BackOffsPerMod() =>
-        BackOffs().SelectMany(b => b.Mods).GroupBy(m => m, StringComparer.OrdinalIgnoreCase)
+    /// <summary>
+    /// Per mod, how many methods it keeps vanilla and notes name it, most first: a method several patches watch (the combat
+    /// hook walk under HookFilter, HookSkip and CardSortKeys), or one checked with and without a tolerance, counts once.
+    /// <paramref name="includePatch"/>: only the back-offs of these patch names (those that run now).
+    /// </summary>
+    public static IReadOnlyList<(string Mod, int Count)> BackOffsPerMod(Func<string, bool>? includePatch = null) =>
+        BackOffs().Where(b => includePatch == null || includePatch(b.Patch))
+            .SelectMany(b => b.Mods.Select(mod => (Mod: mod, What: b.IsNote ? "note: " + b.What : MethodOf(b.What))))
+            .Distinct().GroupBy(e => e.Mod, StringComparer.OrdinalIgnoreCase)
             .Select(g => (g.Key, g.Count())).OrderByDescending(e => e.Item2).ThenBy(e => e.Key, StringComparer.OrdinalIgnoreCase).ToList();
+
+    /// <summary>A back-off's <c>Type.Method</c> without its tolerance's " (beyond ...)".</summary>
+    private static string MethodOf(string what) => what.IndexOf(" (beyond ", StringComparison.Ordinal) is var at and >= 0 ? what.Substring(0, at) : what;
 
     /// <summary>Notes recorded for these patches without a mod name (shown as "other mods").</summary>
     public static bool HasUnnamedNotes(IEnumerable<string> patches)
@@ -450,12 +459,22 @@ public static partial class PatchSafety
                 await tree.ToSignal(tree, Godot.SceneTree.SignalName.ProcessFrame);
             }
             bool more = true;
+            // A step can't be split (a note's scan of every BaseLib-dependent assembly is one): the longest is logged, the frame
+            // it may have stretched beyond the budget.
+            double longest = 0;
             while (more)
             {
                 double budget = tree == null || RunInProgress() ? double.MaxValue : PreflightBudgetMs;
                 long start = Stopwatch.GetTimestamp();
-                while ((more = steps.MoveNext()) && Stopwatch.GetElapsedTime(start).TotalMilliseconds < budget)
+                while (true)
                 {
+                    long step = Stopwatch.GetTimestamp();
+                    more = steps.MoveNext();
+                    longest = Math.Max(longest, Stopwatch.GetElapsedTime(step).TotalMilliseconds);
+                    if (!more || Stopwatch.GetElapsedTime(start).TotalMilliseconds >= budget)
+                    {
+                        break;
+                    }
                 }
                 spent += Stopwatch.GetElapsedTime(start).TotalMilliseconds;
                 if (more)
@@ -469,7 +488,7 @@ public static partial class PatchSafety
             PreflightRuns++;
 #endif
             int backOffs = _conflicts.Count, notes = _notes.Count;
-            Log.Info($"[{ModEntry.Id}] Preflight: {checks.Value} methods and notes checked in {spent:F1} ms over {frames + 1} frames "
+            Log.Info($"[{ModEntry.Id}] Preflight: {checks.Value} methods and notes checked in {spent:F1} ms over {frames + 1} frames, longest step {longest:F1} ms "
                 + $"({Stopwatch.GetElapsedTime(started).TotalMilliseconds:F0} ms after the main menu): {backOffs} back-offs, {notes} notes"
                 + (backOffs + notes > 0 ? $" ({string.Join(", ", BackOffsPerMod().Select(m => $"{m.Mod} {m.Count}"))}; bdopt why lists them)" : ""));
         }

@@ -6,8 +6,9 @@ parcoop.ps1, coop4.ps1, coop.ps1, run.ps1, release-incopy.ps1, compare.py, sweep
         JUDGED line must count the logs as failed (this script crashed or never ran).
     --no-end: the session isn't expected to end by itself (release-incopy.ps1 closes the game once the patches are applied).
     --mod-off: a mod-off side (parcoop.ps1's -autooff twins and *off pairs): the mod found off when the game started is no
-        problem there. A co-op host's `cmd bdopt off` at the menu is saved in the slot both peers share, so the client often
-        starts with the mod off (nothing applied: the game's own code, as that side wants).
+        problem there. The twins are launched off (`launchoff`, --bdoff: session only, never saved); a co-op `cmd bdopt off`
+        run by hand at the menu is saved in the slot both peers share, so the other peer may start with the mod off (nothing
+        applied: the game's own code, as that side wants).
 
 A problem:
 - the log is missing, or the session didn't reach its end (`script finished`, `> quit`, `handoff`, or the game's auto player
@@ -61,7 +62,7 @@ MOD_PROBLEM = re.compile(r'\[BigDeckOptimization\].*(MISMATCH|mismatches [1-9]|\
 # until it is listed here: never missed silently. A scenario expecting one says `expect <regex>`.
 MOD_WARN = re.compile(r'^\[WARN\].*\[BigDeckOptimization\]')
 MOD_WARN_OK = re.compile(r'\[BigDeckOptimization\] (SettingsMenu: (settings menu unavailable|the saved "off" can\'t be changed)'
-                         r'|menu texts for \S+ unreadable|BaseLibSettings: the mod stays on during a co-op run'
+                         r'|menu texts for \S+ unreadable|BaseLibSettings: the mod stays (on|off) during a co-op run'
                          r'|PatchGuard: faulted patches not removed yet|HookFilter: a mirrored hook threw \(passed on'
                          r'|SnapshotCardReuse: the game.s own code threw while a pile.s snapshot was read'
                          r'|PerfProbe: |CombatStartTimer: )')

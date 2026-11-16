@@ -129,8 +129,16 @@ public static class Settings
     public const string CoopRunText =
         "Locked during a co-op run: with the mod off, your combats would start far later than the other players'. To turn it off anyway, type bdopt off yes in the console.";
 
-    /// <summary>Why the menu's master switch is greyed out during a co-op run (<see cref="InCoopRun"/>).</summary>
-    public static string CoopRunWhy(string? language) => Translations.Get(language, "why.coop_run", CoopRunText);
+    public const string CoopRunOnText =
+        "Locked during a co-op run: every player must have the mod in the same state, and the others joined with it off, as you did. To turn it on anyway (only if every player does), type bdopt on yes in the console.";
+
+    /// <summary>
+    /// Why the menu's master switch is greyed out during a co-op run (<see cref="InCoopRun"/>), whichever way it is: the
+    /// players there joined with the same state (<see cref="Patches.CoopModeTag"/>), and switching it makes them differ.
+    /// </summary>
+    public static string CoopRunWhy(string? language) => Master
+        ? Translations.Get(language, "why.coop_run", CoopRunText)
+        : Translations.Get(language, "why.coop_run_on", CoopRunOnText);
 
     /// <summary>The patch names whose back-offs and notes belong to this option (its main patches and its parts).</summary>
     private static IEnumerable<string> PatchNames(Option option) => option.Faults.Concat(option.Parts.Select(part => part.Name));
@@ -152,10 +160,12 @@ public static class Settings
         {
             mods.Add(Translations.Get(language, "other_mods", OtherModsText));
         }
+        // A sentence whose verb agrees with no list (one mod, several, or "other mods"): passive in every language.
         return mods.Count == 0 ? null
-            : Translations.Get(language, "conflict",
-                "Partly inactive: {mods} also changes what this optimization speeds up (normal game for that part).").Replace("{mods}", string.Join(", ", mods));
+            : Translations.Get(language, "conflict", ConflictText).Replace("{mods}", string.Join(", ", mods));
     }
+
+    public const string ConflictText = "Partly inactive: what this optimization speeds up is also changed by {mods} (normal game for that part).";
 
     public const string ConflictSummaryText =
         "With your other mods, part of these optimizations runs the normal game: {mods}. Hover an option for details; bdopt why in the console lists them.";
@@ -166,8 +176,12 @@ public static class Settings
     /// </summary>
     public static string? ConflictSummary(string? language)
     {
-        IReadOnlyList<(string Mod, int Count)> perMod = PatchSafety.BackOffsPerMod();
-        bool unnamed = PatchSafety.BackOffs().Any(b => b.Mods.Length == 0);
+        if (!Master || ModEntry.StartedOff)
+        {
+            return null; // Nothing of the mod runs: no part of it is kept vanilla by another mod.
+        }
+        IReadOnlyList<(string Mod, int Count)> perMod = PatchSafety.BackOffsPerMod(Running);
+        bool unnamed = PatchSafety.BackOffs().Any(b => b.Mods.Length == 0 && Running(b.Patch));
         if (perMod.Count == 0 && !unnamed)
         {
             return null;
@@ -192,13 +206,16 @@ public static class Settings
     /// </summary>
     public static string WhyReport()
     {
-        IReadOnlyList<PatchSafety.BackOff> backOffs = PatchSafety.BackOffs();
+        // The parts that run now: a back-off of an option switched off, faulted or not applied changes nothing there.
+        IReadOnlyList<PatchSafety.BackOff> backOffs = PatchSafety.BackOffs().Where(b => !Master || Running(b.Patch)).ToList();
         if (backOffs.Count == 0)
         {
             return "BigDeckOptimization: no other mod keeps any part of the optimizations on the normal game"
-                + (ModEntry.StartedOff ? " (the mod is inactive this session)." : ".");
+                + (ModEntry.StartedOff ? " (the mod is inactive this session)." : !Master ? " (the mod is off: everything runs the normal game now)." : ".");
         }
-        var sb = new StringBuilder("BigDeckOptimization: parts running the normal game because of other mods (the rest of each optimization still runs):\n");
+        var sb = new StringBuilder(!Master
+            ? "BigDeckOptimization: the mod is off, everything runs the normal game now. Once on, these parts would still run the normal game because of other mods:\n"
+            : "BigDeckOptimization: parts running the normal game because of other mods (the rest of each optimization still runs):\n");
         foreach (IGrouping<string, PatchSafety.BackOff> group in backOffs.GroupBy(b => OptionLabels(b.Patch)).OrderBy(g => g.Key, StringComparer.Ordinal))
         {
             sb.Append(group.Key).Append(":\n");
@@ -207,12 +224,34 @@ public static class Settings
                 sb.Append($"  {backOff.Patch}: {backOff.What} <- {(backOff.Mods.Length > 0 ? string.Join(", ", backOff.Mods) : OtherModsText)}\n");
             }
         }
-        IReadOnlyList<(string Mod, int Count)> perMod = PatchSafety.BackOffsPerMod();
+        IReadOnlyList<(string Mod, int Count)> perMod = PatchSafety.BackOffsPerMod(patch => !Master || Running(patch));
         if (perMod.Count > 0)
         {
-            sb.Append("Per mod: ").Append(string.Join(", ", perMod.Select(m => $"{m.Mod} {m.Count}")));
+            sb.Append("Per mod (methods and notes): ").Append(string.Join(", ", perMod.Select(m => $"{m.Mod} {m.Count}")));
         }
         return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>
+    /// A patch name whose back-offs say something now: it belongs to no option (shown as "Other"), or to one switched on that
+    /// applied, and it hasn't turned itself off after an error. The whole mod's switch is the callers' to check.
+    /// </summary>
+    private static bool Running(string patch)
+    {
+        bool owned = false;
+        foreach (Option option in Options)
+        {
+            if (!PatchNames(option).Contains(patch))
+            {
+                continue;
+            }
+            owned = true;
+            if (option.Wanted && option.Unavailable() == null && !PatchSafety.IsFaulted(patch) && !ModEntry.NotApplied(patch))
+            {
+                return true;
+            }
+        }
+        return !owned;
     }
 
     /// <summary>The labels of the options a patch name belongs to ("Other" when none).</summary>
@@ -404,16 +443,18 @@ public static class Settings
     }
 
     /// <summary>
-    /// In a co-op run, or in a co-op lobby: the players there were let in with the mod on (<see cref="Patches.CoopModeTag"/>
-    /// checks only at the join), so turning it off now makes this player the one starting combats late. bdopt asks for a
-    /// confirmation then. The menu needs no lobby check: BaseLib's mod configuration can't be opened from a lobby.
+    /// In a co-op run, or in a co-op lobby: the players there were let in with the same state as this player, all on or all off
+    /// (<see cref="Patches.CoopModeTag"/> compares it at the join only), so switching the whole mod now, either way, makes this
+    /// player's combats start at another pace than theirs. bdopt asks for a confirmation then (bdopt off yes, bdopt on yes).
+    /// The menu needs no lobby check: BaseLib's mod configuration can't be opened from a lobby.
     /// </summary>
     public static bool InCoopGame => InCoopRun || InCoopLobby();
 
     /// <summary>
     /// A lobby screen in the scene tree holds a connected multiplayer lobby (host or client). The game keeps no global
     /// reference to it: every screen holding one has a <c>StartRunLobby</c> field (character select, custom, daily, and later
-    /// versions' other modes), found by type. Only run when bdopt turns the mod off: a walk of the tree costs nothing then.
+    /// versions' other modes) or a <c>LoadRunLobby</c> one (continuing a co-op save: the run only exists once everyone is
+    /// ready), found by type. Only run when bdopt switches the whole mod: a walk of the tree costs nothing then.
     /// </summary>
     private static bool InCoopLobby()
     {
@@ -435,12 +476,19 @@ public static class Settings
         if (!_lobbyFields.TryGetValue(type, out System.Reflection.FieldInfo[]? fields))
         {
             fields = type.GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)
-                .Where(f => f.FieldType == typeof(MegaCrit.Sts2.Core.Multiplayer.Game.Lobby.StartRunLobby)).ToArray();
+                .Where(f => f.FieldType == typeof(MegaCrit.Sts2.Core.Multiplayer.Game.Lobby.StartRunLobby)
+                    || f.FieldType == typeof(MegaCrit.Sts2.Core.Multiplayer.Game.Lobby.LoadRunLobby)).ToArray();
             _lobbyFields[type] = fields;
         }
         foreach (System.Reflection.FieldInfo field in fields)
         {
-            if (field.GetValue(node) is MegaCrit.Sts2.Core.Multiplayer.Game.Lobby.StartRunLobby { NetService: { IsConnected: true } net }
+            MegaCrit.Sts2.Core.Multiplayer.Game.INetGameService? net = field.GetValue(node) switch
+            {
+                MegaCrit.Sts2.Core.Multiplayer.Game.Lobby.StartRunLobby start => start.NetService,
+                MegaCrit.Sts2.Core.Multiplayer.Game.Lobby.LoadRunLobby load => load.NetService,
+                _ => null,
+            };
+            if (net is { IsConnected: true }
                 && net.Type is MegaCrit.Sts2.Core.Multiplayer.Game.NetGameType.Host or MegaCrit.Sts2.Core.Multiplayer.Game.NetGameType.Client)
             {
                 return true;
@@ -465,6 +513,19 @@ public static class Settings
         + "players' start fast: with many relics you start each combat far later than them, and the game can then drop their "
         + "actions (desync or a stuck turn).";
 
+    public const string CoopOnWarning =
+        "WARNING: this is a co-op game, and every player must have the mod in the same state: you joined with it off, as the "
+        + "others did. Turned on by you alone, your combats start fast while theirs start at the unmodified game's pace, and the "
+        + "game can then drop actions (desync or a stuck turn). Turn it on only if every player does.";
+
+    /// <summary>After a switch of the whole mod in a co-op game: what it costs a player who disconnects (the game's join check).</summary>
+    public const string CoopRejoinNote =
+        "A player who disconnects can only rejoin once every player has the same state again (the game reports a mod mismatch otherwise).";
+
+    /// <summary><c>bdopt</c> in a co-op game with the mod off: neutral, the others may have it off too (an all-off game).</summary>
+    public const string CoopOffStatus =
+        "Co-op game: every player must have the mod in the same state (all on or all off). Turn it on (bdopt on yes) only if every other player has it on.";
+
     /// <summary>The master switch; <paramref name="sessionOnly"/> (test tooling) leaves <see cref="MasterChoice"/>, what is saved, as it is.</summary>
     public static void SetMaster(bool on, bool notify = true, bool sessionOnly = false)
     {
@@ -474,6 +535,8 @@ public static class Settings
         {
             MasterChoice = on;
         }
+        // The co-op join lists already handed out (v0.111+ keeps one from when hosting or joining started) say the new state.
+        CoopModeTag.Refresh();
         ApplyAll();
         if (changed && notify)
         {
@@ -537,7 +600,7 @@ public static class Settings
         StringBuilder sb = new($"BigDeckOptimization: {(Master ? "on" : "OFF (vanilla)")}\n");
         if (!Master && InCoopGame)
         {
-            sb.Append(CoopOffWarning).Append(" bdopt on turns it back on.\n");
+            sb.Append(CoopOffStatus).Append('\n');
         }
         else if (!Master)
         {
@@ -552,7 +615,8 @@ public static class Settings
             if (ConflictingMods(option).Concat(PatchSafety.HasUnnamedNotes(PatchNames(option)) ? new[] { OtherModsText } : Array.Empty<string>()).ToList() is { Count: > 0 } mods
                 && option.Unavailable() == null && option.Fault == null)
             {
-                state += $" (partly vanilla: also patched by {string.Join(", ", mods)})";
+                // Patches, or (notes) another mod's types or data.
+                state += $" (partly vanilla because of {string.Join(", ", mods)})";
             }
             if (option.Unavailable() == null && option.Fault == null && option.PartsOff().ToList() is { Count: > 0 } off)
             {
@@ -564,7 +628,7 @@ public static class Settings
                 sb.Append($"  {FastStartRelicsLabel} [{FastStartRelicsKey}]: {FastStartRelics} (solo; co-op: always)\n");
             }
         }
-        if (PatchSafety.BackOffs().Count > 0)
+        if (Master && PatchSafety.BackOffs().Any(b => Running(b.Patch)))
         {
             sb.Append("Other mods keep part of the optimizations on the normal game: bdopt why lists what and why.\n");
         }

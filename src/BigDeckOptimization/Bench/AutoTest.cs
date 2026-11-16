@@ -94,6 +94,14 @@ public static partial class AutoTest
             PatchGuard.Patch(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Multiplayer.NetHostGameService), "StartENetHost"), prefix: usePort);
             PatchGuard.Patch(harmony, typeof(MegaCrit.Sts2.Core.Multiplayer.Connection.ENetClientConnectionInitializer).GetConstructors()[0], prefix: usePort);
         }
+        if (launchArgs.Contains("--bdoff"))
+        {
+            // --bdoff (a script with a 'launchoff' line): the whole mod off for the session, before the main menu's --fastmp
+            // lobby builds the co-op join lists (v0.111+ keeps the one from when hosting or joining started).
+            _launchedOff = true;
+            PatchGuard.Patch(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Screens.MainMenu.NMainMenu), "CheckCommandLineArgs"),
+                prefix: new HarmonyMethod(typeof(AutoTest), nameof(LaunchOffPrefix)));
+        }
         int show = Array.IndexOf(launchArgs, "--bdshow");
         if (show >= 0 && show + 1 < launchArgs.Length && int.TryParse(launchArgs[show + 1], out int showScreen))
         {
@@ -915,6 +923,103 @@ public static partial class AutoTest
 
     private static void UseTestPort(ref ushort port) => port = _port;
 
+    /// <summary>Launched with <c>--bdoff</c>; <see cref="_launchOffDone"/>: the mod was turned off by it.</summary>
+    private static bool _launchedOff, _launchOffDone;
+
+    /// <summary>
+    /// The main menu reads its <c>--fastmp</c> argument (hosting or joining at once): the whole mod goes off first, for this
+    /// session only (never saved: BaseLib saves the player's choice, <see cref="Config.Settings.MasterChoice"/>), as a script's
+    /// <c>cmd bdopt off</c> would but before any co-op lobby exists. Every patch still applies (not a start with the mod off,
+    /// <see cref="ModEntry.StartedOff"/>, which applies none): the same mod-off state as <c>bdopt off</c>.
+    /// </summary>
+    private static void LaunchOffPrefix()
+    {
+        if (_launchOffDone)
+        {
+            return;
+        }
+        _launchOffDone = true;
+        Config.Settings.SetMaster(false, notify: false, sessionOnly: true);
+        Say("  mod off from the launch (--bdoff), before the main menu's co-op lobby");
+    }
+
+    /// <summary>
+    /// Script <c>launchoff</c>: this scenario needs the mod off from its launch (the launch scripts add <c>--bdoff</c> when the
+    /// scenario has this line): fails unless it is, so a mod-off control never runs with the mod on.
+    /// </summary>
+    private static void RequireLaunchedOff()
+    {
+        if (!_launchedOff || !_launchOffDone)
+        {
+            throw new InvalidOperationException(_launchedOff
+                ? "launched with --bdoff, but the main menu never read its arguments: the mod wasn't turned off"
+                : "this scenario must be launched with --bdoff (parcoop.ps1, coop.ps1, coop4.ps1 and par.ps1 add it for a 'launchoff' line)");
+        }
+        if (Config.Settings.Master)
+        {
+            throw new InvalidOperationException("launched with --bdoff, but the mod is on (a script line turned it back on?)");
+        }
+        Say("  LAUNCHOFF the mod is off since the launch");
+    }
+
+    /// <summary>
+    /// Script <c>coopmodetag on|off</c>: this mod's entry in the co-op join list the game uses now (v0.111+: the lobby's net
+    /// service's own, kept since hosting or joining started; v0.107.1: the game's list as built at each connection) must say
+    /// that state ("-off" or not). Logs it with <see cref="CoopModeTag.Tagged"/>.
+    /// </summary>
+    private static void CheckCoopModeTag(string arg)
+    {
+        string wanted = arg.Trim();
+        if (wanted is not ("on" or "off"))
+        {
+            throw new ArgumentException("coopmodetag on|off");
+        }
+        List<string>? list = null;
+        string source = "the game's list now";
+        // The run's net service once it exists (the lobby's own, kept), else the lobby screen's.
+        object? net = RunManager.Instance.IsInProgress ? RunManager.Instance.NetService : _lobbyScreen?.Lobby?.NetService;
+        if (net != null && AccessTools.Property(net.GetType(), "LocalVersion") is { } localVersion)
+        {
+            object? info = localVersion.GetValue(net);
+            list = info == null ? null : AccessTools.Field(info.GetType(), "gameplayAffectingMods")?.GetValue(info) as List<string>;
+            source = "the net service's handshake list";
+        }
+        list ??= MegaCrit.Sts2.Core.Modding.ModManager.GetGameplayRelevantModNameList();
+        string? entry = list?.FirstOrDefault(e => e != null && e.StartsWith(ModEntry.Id + "-", StringComparison.Ordinal));
+        Say($"  COOPMODETAG {entry ?? "(no entry)"} in {source}, tagged {CoopModeTag.Tagged} times");
+        if (entry == null)
+        {
+            throw new InvalidOperationException($"no {ModEntry.Id} entry in {source}");
+        }
+        bool tagged = entry.EndsWith(CoopModeTag.OffSuffix, StringComparison.Ordinal);
+        if (tagged != (wanted == "off"))
+        {
+            throw new InvalidOperationException($"{source} says {(tagged ? "off" : "on")}, expected {wanted}: {entry}");
+        }
+    }
+
+    /// <summary>
+    /// Script <c>runtimebackoff &lt;Patch&gt; &lt;Type.Method&gt; [none]</c>: the optimization's own runtime check backed off from that
+    /// method (another mod's patch there), counted apart from the preflight bdopt and the menu run
+    /// (<see cref="PatchSafety.RuntimeCounts"/>); with <c>none</c>, that it never did (a preflight-only session).
+    /// </summary>
+    private static void CheckRuntimeBackOff(string arg)
+    {
+        string[] args = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (args.Length is < 2 or > 3 || (args.Length == 3 && args[2] != "none"))
+        {
+            throw new ArgumentException("runtimebackoff <Patch> <Type.Method> [none]");
+        }
+        (long kept, long backedOff) = PatchSafety.RuntimeCounts(args[0], args[1]);
+        Say($"  RUNTIMEBACKOFF {args[0]} {args[1]}: backed off {backedOff}, kept {kept}");
+        if (args.Length == 3 ? backedOff != 0 : backedOff == 0)
+        {
+            throw new InvalidOperationException(args.Length == 3
+                ? $"{args[0]}'s runtime check backed off from {args[1]} {backedOff} times, expected none"
+                : $"{args[0]}'s runtime check never backed off from {args[1]} (only the preflight may have reported it)");
+        }
+    }
+
     /// <summary>
     /// The combat's state as each turn starts: the same point of the run whatever the session's speed, on both co-op peers too. A
     /// script's <c>state</c> line comes when that session gets there, maybe after the other peer's plays of the turn.
@@ -1241,10 +1346,24 @@ public static partial class AutoTest
                     break;
                 case "foreignpatch":
                     // Synthetic patches of each shape under a foreign Harmony id, and PatchSafety's verdict on them (ForeignPatches).
+                    // One changing this peer's game state, once its combat is set up in co-op, would make the peers differ.
+                    if (ForeignPatches.ChangesState(arg))
+                    {
+                        RequireNoCombatYetInCoop(line);
+                    }
                     foreach (string foreignLine in ForeignPatches.Run(arg))
                     {
                         Say(foreignLine.StartsWith("STATE ", StringComparison.Ordinal) ? foreignLine : "  " + foreignLine);
                     }
+                    break;
+                case "launchoff":
+                    RequireLaunchedOff();
+                    break;
+                case "coopmodetag":
+                    CheckCoopModeTag(arg);
+                    break;
+                case "runtimebackoff":
+                    CheckRuntimeBackOff(arg);
                     break;
                 case "selector" when arg.Trim() is "ui" or "auto":
                     // ui: no automatic selector, the game opens its card choice screens (deck grids) and autoroom's handlers answer them.

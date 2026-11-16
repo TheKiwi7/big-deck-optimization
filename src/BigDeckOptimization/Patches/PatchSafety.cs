@@ -256,6 +256,12 @@ public static partial class PatchSafety
                 // Another patch may have filled the cache: this one's back-off (or its end) is recorded too (menu, bdopt).
                 RecordOnce(caller, method, cached.Mods);
             }
+#if BENCH
+            if (cached.Patched)
+            {
+                CountRuntime(caller, method, PatchTolerance.None, true);
+            }
+#endif
             return cached.Patched;
         }
         HarmonyLib.Patches? info = Harmony.GetPatchInfo(method);
@@ -268,6 +274,13 @@ public static partial class PatchSafety
         }
         RecordOnce(caller, method, mods);
         _patchedByOthers[method] = (mods.Length > 0, now, mods);
+#if BENCH
+        // The runtime's own back-offs (the preflight's aren't counted): what the positive controls assert (runtimebackoff).
+        if (mods.Length > 0)
+        {
+            CountRuntime(caller, method, PatchTolerance.None, true);
+        }
+#endif
         return mods.Length > 0;
     }
 
@@ -298,6 +311,12 @@ public static partial class PatchSafety
             {
                 RecordOnce(caller, method, cached.Mods);
             }
+#if BENCH
+            if (cached.Patched)
+            {
+                CountRuntime(caller, method, PatchTolerance.None, true);
+            }
+#endif
             return cached.Patched;
         }
         HarmonyLib.Patches? info = Harmony.GetPatchInfo(method);
@@ -306,6 +325,12 @@ public static partial class PatchSafety
                 .Where(p => !PatchGuard.IsOurs(p.owner) && !(PatchMethodOf(p) is { } patchMethod && allowedPatches.Any(a => a.MethodHandle == patchMethod.MethodHandle))));
         RecordOnce(caller, method, mods);
         _patchedBeyondAllowed[(method, allowedKey)] = (mods.Length > 0, now, mods);
+#if BENCH
+        if (mods.Length > 0)
+        {
+            CountRuntime(caller, method, PatchTolerance.None, true);
+        }
+#endif
         return mods.Length > 0;
     }
 

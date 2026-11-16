@@ -29,5 +29,5 @@ state t3
 cmd kill all
 waitfor nocombat 900
 wait 20
-cmd bdopt on
+cmd bdopt on yes
 quit
