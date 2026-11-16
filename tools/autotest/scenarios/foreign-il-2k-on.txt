@@ -1,0 +1,90 @@
+# Foreign transpilers judged by their IL (A/B, mod on; DESIGN "Foreign transpilers judged by IL (2026-11-16)"): synthetic
+# transpilers of "another mod" (Harmony ids bdtest.foreign.il-*, Bench/IlJudgeShapes.cs) on the Hook methods HookSkip filters, the
+# same as foreign-il-2k-off; CHECKSUM and STATE lines must match line for line. Accepted (HookSkip keeps filtering, FOREIGN judged
+# walks > 0): Minty Spire 2's insertion point with a call gated on Squeeze (a card reacting to no hook: its iterations kept, the
+# gated calls counted the same as the mod off), a counting call before each walk (async and plain hook). Refused (the hook stays
+# vanilla, its counts the mod off's): the same insertion point with an ungated call, a store to a local, a call into the game, a
+# jump, and an identity transpiler Harmony sorts after this mod's (priority 0, registered later). The judge's self-test (the game's
+# own code of three hooks with each shape and its near misses: reorder, changed branch, handler, entry observer, stale listener,
+# static constructor, Minty's GetCurrentMethod) and its sweep over every hook run too.
+timeout 2400
+expect FOREIGN iljudge selftest: [0-9]+ cases as expected
+expect FOREIGN iljudge sweep: [0-9]+ of [0-9]+ hooks with a walk accept both shapes
+expect FOREIGN iljudge Hook\.BeforeCardPlayed: accepted \([0-9]+ insertion\(s\), gates Squeeze\)
+expect FOREIGN iljudge Hook\.AfterEnergySpent: accepted \([0-9]+ insertion\(s\)\)
+expect FOREIGN iljudge Hook\.ModifyHpLost: accepted \([0-9]+ insertion\(s\)\)
+expect FOREIGN iljudge Hook\.AfterCardDrawn: refused \(.*isn't provably gated on its type
+expect FOREIGN iljudge Hook\.AfterCardDiscarded: refused \(stloc\.0 inserted
+expect FOREIGN iljudge Hook\.AfterPlayerTurnStart: refused \(.*a call into the game's code
+expect FOREIGN iljudge Hook\.BeforeHandDraw: refused \(br inserted
+expect HookSkip: Hook\.BeforeCardPlayed: other mods' transpilers judged by their IL \(bdtest\.foreign\.il-gated-observer-squeeze\): [0-9]+ insertion\(s\) .*gated on Squeeze \(kept\): kept
+expect HookSkip: Hook\.ModifyDamageInternal: other mods' transpilers judged by their IL \(bdtest\.foreign\.identity-transpiler\): refused \(another mod's transpiler runs after this mod's
+expect HookSkip: <AfterCardDrawn>d__[0-9]+\.MoveNext is also patched by bdtest\.foreign\.il-ungated-observer: normal game for that part
+expect HookSkip: <AfterPlayerTurnStart>d__[0-9]+\.MoveNext is also patched by bdtest\.foreign\.il-game-call: normal game for that part
+expect HookSkip: Hook\.ModifyDamageInternal is also patched by bdtest\.foreign\.identity-transpiler
+expect FOREIGN judged walks Hook\.BeforeCardPlayed [1-9]
+expect FOREIGN judged walks Hook\.AfterEnergySpent [1-9]
+expect FOREIGN judged walks Hook\.ModifyHpLost [1-9]
+expect FOREIGN runtime HookSkip <AfterCardDrawn>d__[0-9]+\.MoveNext \(None\) kept 0 backed off [1-9]
+expect FOREIGN iljudge BeforeCardPlayed accepted
+expect STATE foreign end il-gated-observer squeeze calls [1-9]
+expect STATE foreign end il-prewalk-observer AfterEnergySpent walk 0 [1-9]
+expect STATE foreign end il-prewalk-observer ModifyHpLost walk 0 [1-9]
+expect STATE foreign end il-ungated-observer every listener [1-9]
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+enemyhp 999999
+# The judge on instruction lists built from the game's code (nothing patched), and over every hook of this game.
+foreignpatch iljudge selftest
+foreignpatch iljudge sweep
+# (1) accepted: a call gated on Squeeze before each InvokeExecutionFinished (Minty's point), a counting call before each walk.
+foreignpatch il-gated-observer MegaCrit.Sts2.Core.Hooks.Hook:BeforeCardPlayed squeeze
+foreignpatch il-prewalk-observer MegaCrit.Sts2.Core.Hooks.Hook:AfterEnergySpent
+foreignpatch il-prewalk-observer MegaCrit.Sts2.Core.Hooks.Hook:ModifyHpLost
+# (2) refused: an ungated call there, a store, a call into the game, a jump, an identity transpiler sorted after this mod's.
+foreignpatch il-ungated-observer MegaCrit.Sts2.Core.Hooks.Hook:AfterCardDrawn
+foreignpatch il-store-local MegaCrit.Sts2.Core.Hooks.Hook:AfterCardDiscarded
+foreignpatch il-game-call MegaCrit.Sts2.Core.Hooks.Hook:AfterPlayerTurnStart
+foreignpatch il-branch MegaCrit.Sts2.Core.Hooks.Hook:BeforeHandDraw
+foreignpatch identity-transpiler MegaCrit.Sts2.Core.Hooks.Hook:ModifyDamageInternal priority 0
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+effects start
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+play 4
+waitfor idle 120
+checksum t3 plays
+endturn
+waitfor idle 300
+checksum t3 end
+state t3
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+foreignpatch report end
+effects end
+effectcheck HookSkip grew start
+cmd bdopt why
+counters end
+foreignpatch remove
+quit

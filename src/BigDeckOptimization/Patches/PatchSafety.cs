@@ -373,7 +373,7 @@ public static partial class PatchSafety
     /// Every patch on the method, Harmony 2.4's inner prefixes and postfixes included (they patch the calls the method makes:
     /// code a mirror of the method would skip as surely as a prefix).
     /// </summary>
-    private static IEnumerable<Patch> AllPatches(HarmonyLib.Patches info) =>
+    internal static IEnumerable<Patch> AllPatches(HarmonyLib.Patches info) =>
         info.Prefixes.Concat(info.Postfixes).Concat(info.Transpilers).Concat(info.Finalizers).Concat(info.InnerPrefixes).Concat(info.InnerPostfixes);
 
     /// <summary>Other mods' patches on a method a patch backs off from, keyed by (patch name, method).</summary>
@@ -636,7 +636,7 @@ public static partial class PatchSafety
     /// A patch's method, resolved once per module and token (a module's methods don't change while it is loaded); the same
     /// as <c>patch.PatchMethod</c>, which is also what is done when Harmony gave none (not kept: its assembly may load later).
     /// </summary>
-    private static MethodInfo? PatchMethodOf(Patch patch)
+    internal static MethodInfo? PatchMethodOf(Patch patch)
     {
         if (_patchToken?.GetValue(patch) is not int token || _patchModule?.GetValue(patch) is not string module)
         {

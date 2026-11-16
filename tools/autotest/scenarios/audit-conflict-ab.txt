@@ -20,12 +20,15 @@ wait 2
 cmd bigdeck import ref all all
 cmd bigdeck import ref all cards
 enemyhp 999999
-fakeconflict MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners
-fakeconflict MegaCrit.Sts2.Core.Runs.RunState:IterateHookListeners
+# Bool prefixes (sorted after a prefix of this mod: registered later at the same priority) on the walks and CardModel.Pile: postfixes
+# and void prefixes are let stand on the walks (SurroundingOnly), postfixes and prefixes running first on CardModel.Pile
+# (BeforeReplace), so a no-op postfix there would no longer be a back-off (foreign-needless-2k-on has those).
+fakeconflict MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners boolprefix
+fakeconflict MegaCrit.Sts2.Core.Runs.RunState:IterateHookListeners boolprefix
 fakeconflict MegaCrit.Sts2.Core.Combat.CombatState:Contains
 fakeconflict MegaCrit.Sts2.Core.Runs.RunState:Contains
 fakeconflict MegaCrit.Sts2.Core.Modding.ModHelper:IterateAllCombatStateSubscribers
-fakeconflict MegaCrit.Sts2.Core.Models.CardModel:get_Pile
+fakeconflict MegaCrit.Sts2.Core.Models.CardModel:get_Pile boolprefix
 fakeconflict MegaCrit.Sts2.Core.Nodes.Combat.NCombatCardPile:RemoveCard
 fakeconflict MegaCrit.Sts2.Core.GameActions.Multiplayer.NetCombatCardDb:OnPileContentsChanged
 cmd fight CULTISTS_NORMAL

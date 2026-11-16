@@ -667,7 +667,7 @@ public static partial class PatchSafety
         kind == PatchKind.Postfix ? "postfix" : method.ReturnType == typeof(bool) ? "bool prefix" : "void prefix";
 
     /// <summary>A Harmony factory: a static method of one parameter returning the patch to use (<c>Patch.GetMethod</c> runs it).</summary>
-    private static bool IsFactory(MethodInfo method) =>
+    internal static bool IsFactory(MethodInfo method) =>
         (method.ReturnType == typeof(MethodInfo) || method.ReturnType == typeof(DynamicMethod)) && method.IsStatic && method.GetParameters().Length == 1;
 
     /// <summary>
@@ -972,19 +972,19 @@ public static partial class PatchSafety
         }
     }
 
-    private static bool LoadsArgument(MethodFingerprint.Instruction ins, int index) =>
+    internal static bool LoadsArgument(MethodFingerprint.Instruction ins, int index) =>
         (index == 0 && ins.Op == OpCodes.Ldarg_0) || (index == 1 && ins.Op == OpCodes.Ldarg_1)
         || (index == 2 && ins.Op == OpCodes.Ldarg_2) || (index == 3 && ins.Op == OpCodes.Ldarg_3)
         || ((ins.Op == OpCodes.Ldarg_S || ins.Op == OpCodes.Ldarg) && ins.Operand is int n && n == index);
 
-    private static bool StoresLocal(MethodFingerprint.Instruction ins, out int local)
+    internal static bool StoresLocal(MethodFingerprint.Instruction ins, out int local)
     {
         local = ins.Op == OpCodes.Stloc_0 ? 0 : ins.Op == OpCodes.Stloc_1 ? 1 : ins.Op == OpCodes.Stloc_2 ? 2 : ins.Op == OpCodes.Stloc_3 ? 3
             : (ins.Op == OpCodes.Stloc_S || ins.Op == OpCodes.Stloc) && ins.Operand is int n ? n : -1;
         return local >= 0;
     }
 
-    private static bool LoadsLocal(MethodFingerprint.Instruction ins, int local) =>
+    internal static bool LoadsLocal(MethodFingerprint.Instruction ins, int local) =>
         (local == 0 && ins.Op == OpCodes.Ldloc_0) || (local == 1 && ins.Op == OpCodes.Ldloc_1)
         || (local == 2 && ins.Op == OpCodes.Ldloc_2) || (local == 3 && ins.Op == OpCodes.Ldloc_3)
         || ((ins.Op == OpCodes.Ldloc_S || ins.Op == OpCodes.Ldloc) && ins.Operand is int n && n == local);

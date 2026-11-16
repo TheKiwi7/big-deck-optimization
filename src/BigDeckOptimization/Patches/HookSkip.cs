@@ -65,6 +65,24 @@ public static partial class HookSkip
         System.Threading.Interlocked.Increment(ref counts[index]);
     }
 
+    /// <summary>Per hook: walks past the transpiled code's check while other mods' transpilers judged by their IL stood there (the foreign tests).</summary>
+    private static long[] _judgedWalks = Array.Empty<long>();
+
+    private static void CountJudged(int index)
+    {
+        long[] counts = _judgedWalks;
+        if (counts.Length != Hooks.Length)
+        {
+            counts = _judgedWalks = new long[Hooks.Length];
+        }
+        System.Threading.Interlocked.Increment(ref counts[index]);
+    }
+
+    /// <summary>"Hook.Name N" per hook filtered with other mods' transpilers judged by their IL standing there.</summary>
+    public static IReadOnlyList<string> JudgedWalkReport() =>
+        Hooks.Select((entry, i) => (entry.Hook, Count: i < _judgedWalks.Length ? _judgedWalks[i] : 0)).Where(e => e.Count > 0)
+            .Select(e => $"Hook.{e.Hook} {e.Count}").ToList();
+
     /// <summary>"Hook.Name N" per hook that ran with gates (test tooling: what only a runtime walk produces).</summary>
     public static IReadOnlyList<string> GatedWalkReport() =>
         Hooks.Select((entry, i) => (entry.Hook, Count: i < _gatedWalks.Length ? _gatedWalks[i] : 0)).Where(e => e.Count > 0)
@@ -105,6 +123,15 @@ public static partial class HookSkip
         public sealed record Combined(Type[][] Inputs, Type[] Gates);
 
         public Combined? LastCombined;
+
+        /// <summary>
+        /// The patches let stand on the hook's transpiled code (BaseLib's allowed ones, plus other mods' transpilers the IL judge
+        /// accepted) and the judged gates, with the Harmony epoch and capture they were worked out at (<see cref="BodyAllowed"/>).
+        /// Read and replaced whole.
+        /// </summary>
+        public sealed record Judged(int Epoch, int Capture, long CheckedAt, MethodInfo[] Allowed, Type[] Gates, bool Accepted);
+
+        public Judged? LastJudged;
 
         public Entry(string hook, string fingerprint, bool subscribed, int profile, params string[] methods)
         {
@@ -374,10 +401,13 @@ public static partial class HookSkip
     /// </summary>
     private static void Watch(Entry entry)
     {
-        PatchSafety.Watch(Name, entry.Method, PatchTolerance.SurroundingOnly, lazyAllowed: AllowedForPreflight);
+        // The transpiled code (the hook itself, or its state machine) with other mods' transpilers the IL judge accepts: judged
+        // here, in the preflight's load part, as at the first walk.
+        Func<MethodInfo[]> judged = () => BodyAllowed(entry, preflight: true).Allowed;
+        PatchSafety.Watch(Name, entry.Method, PatchTolerance.SurroundingOnly, lazyAllowed: entry.Body == entry.Method ? judged : AllowedForPreflight);
         if (entry.Body != entry.Method)
         {
-            PatchSafety.Watch(Name, entry.Body, AllowedForPreflight);
+            PatchSafety.Watch(Name, entry.Body, judged);
         }
         if (entry.Profile >= 0)
         {
@@ -412,6 +442,47 @@ public static partial class HookSkip
 
     /// <summary>One of the walk calls <see cref="Transpiler"/> redirects.</summary>
     private static bool IsWalk(MethodInfo method) => Same(method, _runWalk) || Same(method, _combatWalk) || Same(method, _combatHookWalk);
+
+    /// <summary><see cref="IsWalk"/> for the IL judge and its tests.</summary>
+    internal static readonly Func<MethodInfo, bool> IsWalkCall = IsWalk;
+
+    /// <summary>This patch's transpiler (the IL judge checks Harmony runs it last).</summary>
+    internal static MethodInfo OwnTranspiler => _ownTranspiler ??= Reflect.Method(typeof(HookSkip), nameof(Transpiler))!;
+
+    private static MethodInfo? _ownTranspiler;
+
+    /// <summary>
+    /// The patches let stand on the hook's transpiled code: BaseLib's allowed ones, plus every other mod's transpiler there when
+    /// <see cref="TranspilerJudge"/> accepts their result (with the types their gated insertions test). Worked out again when
+    /// Harmony's epoch or the judge's capture moved (each second as well without HarmonyWatch); the hot path compares two ints.
+    /// <paramref name="preflight"/>: BaseLib's list as the preflight builds it (not kept for the runtime).
+    /// </summary>
+    private static Entry.Judged BodyAllowed(Entry entry, bool preflight = false)
+    {
+        Entry.Judged? last = entry.LastJudged;
+        int epoch = HarmonyWatch.Epoch, capture = TranspilerJudge.CaptureVersion;
+        long now = Environment.TickCount64;
+        if (!preflight && last != null && last.Epoch == epoch && last.Capture == capture && (HarmonyWatch.Applied || now - last.CheckedAt < 1000))
+        {
+            return last;
+        }
+        MethodInfo[] allowed = preflight ? AllowedForPreflight() : AllowedBodyPatches();
+        Entry.Judged judged;
+        if (!PatchSafety.ShapeRules || entry.Body == null
+            || TranspilerJudge.Judge(entry.Body, OwnTranspiler, IsWalkCall, entry.Hook, allowed) is not { Accepted: true } verdict)
+        {
+            judged = new Entry.Judged(epoch, capture, now, allowed, Type.EmptyTypes, false);
+        }
+        else
+        {
+            judged = new Entry.Judged(epoch, capture, now, allowed.Concat(verdict.Transpilers).Distinct().ToArray(), verdict.Gates, true);
+        }
+        if (!preflight)
+        {
+            entry.LastJudged = judged;
+        }
+        return judged;
+    }
 
     private static bool Same(MethodInfo method, MethodInfo? other) =>
         other != null && method.MetadataToken == other.MetadataToken && method.Module == other.Module;
@@ -589,7 +660,11 @@ public static partial class HookSkip
             }
             yield break;
         }
-        foreach (CodeInstruction code in instructions)
+        // What every other mod's transpiler made of the hook (Harmony runs this one last): kept for the IL judge, confirmed once
+        // this rebuild ends well (HarmonyWatch). Never throws.
+        List<CodeInstruction> input = instructions as List<CodeInstruction> ?? instructions.ToList();
+        TranspilerJudge.Capture(__originalMethod, input);
+        foreach (CodeInstruction code in input)
         {
             MethodInfo? redirect = code.Calls(_runWalk!) ? _redirectRun
                 : code.Calls(_combatWalk!) ? _redirectCombat
@@ -637,12 +712,22 @@ public static partial class HookSkip
             // Invariant with HookFilter: on the hooks it mirrors (a bool prefix of this mod skipping the original), a postfix
             // is let stand here only because FilteredHook.IsSafe checks the same method with PrefixesOnly, turning the mirror
             // off (the original runs) whenever another mod has a postfix there: a change to either check needs the other.
-            if (PatchSafety.IsPatchedByOthers(entry.Method, AllowedBodyPatches(), PatchTolerance.SurroundingOnly)
-                || (entry.Body != entry.Method && PatchSafety.IsPatchedByOthers(entry.Body, AllowedBodyPatches()))
+            // Other mods' transpilers on the transpiled code stand only when TranspilerJudge accepts what they produce (inserted
+            // observers outside the listener iterations, or calls gated on the current listener's type: those types keep their
+            // iterations, as gated defaults' do below). Everything else there still backs off.
+            Entry.Judged judged = BodyAllowed(entry);
+            if (PatchSafety.IsPatchedByOthers(entry.Method, entry.Body == entry.Method ? judged.Allowed : AllowedBodyPatches(), PatchTolerance.SurroundingOnly)
+                || (entry.Body != entry.Method && PatchSafety.IsPatchedByOthers(entry.Body, judged.Allowed))
                 || (entry.Profile >= 0 && HelpersPatched(entry.Profile)))
             {
                 return null;
             }
+#if BENCH
+            if (judged.Accepted)
+            {
+                CountJudged(index);
+            }
+#endif
             // The defaults a dropped listener's call would run: a postfix or prefix there would miss the skipped calls, so only
             // patches doing nothing unless the listener is of some types stand (TypeGated), and those types keep their calls
             // (the filter treats them as overriders); any other patch keeps the hook vanilla.
@@ -651,6 +736,13 @@ public static partial class HookSkip
             Entry.Combined? known = entry.LastCombined;
             bool same = known != null;
             MethodInfo[] bases = entry.Filter!.BaseMethods!;
+            // The judged transpilers' gates first (the same array while the judgement stands).
+            if (judged.Gates.Length > 0)
+            {
+                same = same && known!.Inputs.Length > 0 && ReferenceEquals(known.Inputs[0], judged.Gates);
+                single = judged.Gates;
+                gated++;
+            }
             for (int i = 0; i < bases.Length; i++)
             {
                 if (PatchSafety.IsPatchedByOthers(bases[i], out Type[] found))
@@ -685,6 +777,10 @@ public static partial class HookSkip
             // Several gated defaults with a new answer: their arrays taken again (cached answers, the same unless one expired
             // meanwhile: then a patched one keeps the hook vanilla) and combined once for the following walks.
             var inputs = new List<Type[]>(gated);
+            if (judged.Gates.Length > 0)
+            {
+                inputs.Add(judged.Gates);
+            }
             foreach (MethodInfo baseMethod in bases)
             {
                 if (PatchSafety.IsPatchedByOthers(baseMethod, out Type[] found))

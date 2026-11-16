@@ -1339,8 +1339,9 @@ public static partial class AutoTest
                     break;
                 case "fakeconflict":
                     // Another "mod" patching a game method (no-op postfix under another Harmony id, or with "boolprefix" a prefix
-                    // returning true: one no tolerance lets stand, for a method whose checks let postfixes stand): the optimization
-                    // using it must back off and report it. Other shapes: foreignpatch (ForeignPatches).
+                    // returning true at the default priority, installed after this mod's patches so sorted after a prefix of this mod: no
+                    // tolerance lets that stand, BeforeReplace included, for a method whose checks let postfixes stand): the
+                    // optimization using it must back off and report it. Other shapes: foreignpatch (ForeignPatches).
                     string[] conflictArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                     MethodInfo conflictTarget = AccessTools.Method(conflictArgs[0]) ?? throw new InvalidOperationException("no method " + conflictArgs[0]);
                     bool boolPrefix = conflictArgs.Length > 1 && conflictArgs[1] == "boolprefix";

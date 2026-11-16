@@ -1,10 +1,12 @@
 # The preflight's own positive control (DESIGN "Back-offs visible before they happen"): another mod's patch installed at the
 # main menu, before any run, is found by the preflight bdopt why runs (PatchSafety.Preflight) and listed, while no
 # optimization's runtime check has backed off yet (runtimebackoff ... none). The other back-off scenarios assert the runtime.
+# A bool prefix (sorted after PileIndex's, registered later at the same priority): CardModel.Pile lets postfixes and prefixes
+# running before its own stand (BeforeReplace), so a no-op postfix there is no back-off any more.
 timeout 300
-expect PileIndex: CardModel\.get_Pile is also patched by bdtest\.fakeconflict: normal game for that part
-expect PileIndex: CardModel\.get_Pile <- bdtest\.fakeconflict
-fakeconflict MegaCrit.Sts2.Core.Models.CardModel:get_Pile
+expect PileIndex: CardModel\.get_Pile is also patched by bdtest\.fakeconflict \(postfixes and prefixes running before this mod's not enough\): normal game for that part
+expect PileIndex: CardModel\.get_Pile .*<- bdtest\.fakeconflict
+fakeconflict MegaCrit.Sts2.Core.Models.CardModel:get_Pile boolprefix
 cmd bdopt why
 runtimebackoff PileIndex CardModel.get_Pile none
 quit

@@ -1,0 +1,56 @@
+# Foreign transpilers judged by their IL (A/B, mod off): the same synthetic transpilers of "another mod" as foreign-il-2k-on (see
+# there); CHECKSUM and STATE lines must match line for line. The on side's own checks (expect, effects, the judge's self-test)
+# left out.
+timeout 2400
+cmd bdopt off
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 999999
+# (1) accepted on the on side: a call gated on Squeeze before each InvokeExecutionFinished, a counting call before each walk.
+foreignpatch il-gated-observer MegaCrit.Sts2.Core.Hooks.Hook:BeforeCardPlayed squeeze
+foreignpatch il-prewalk-observer MegaCrit.Sts2.Core.Hooks.Hook:AfterEnergySpent
+foreignpatch il-prewalk-observer MegaCrit.Sts2.Core.Hooks.Hook:ModifyHpLost
+# (2) refused on the on side: an ungated call there, a store, a call into the game, a jump, an identity transpiler sorted after.
+foreignpatch il-ungated-observer MegaCrit.Sts2.Core.Hooks.Hook:AfterCardDrawn
+foreignpatch il-store-local MegaCrit.Sts2.Core.Hooks.Hook:AfterCardDiscarded
+foreignpatch il-game-call MegaCrit.Sts2.Core.Hooks.Hook:AfterPlayerTurnStart
+foreignpatch il-branch MegaCrit.Sts2.Core.Hooks.Hook:BeforeHandDraw
+foreignpatch identity-transpiler MegaCrit.Sts2.Core.Hooks.Hook:ModifyDamageInternal priority 0
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+play 4
+waitfor idle 120
+checksum t3 plays
+endturn
+waitfor idle 300
+checksum t3 end
+state t3
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+foreignpatch report end
+foreignpatch remove
+cmd bdopt on
+quit

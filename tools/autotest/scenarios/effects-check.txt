@@ -51,6 +51,8 @@ waitfor idle 120
 wait 1
 checksum plays
 state plays
+# The hand may be full after the plays (v0.113.1: 10/10): emptied first, as handselect-on/off do.
+emptyhand
 cmd card DUAL_WIELD hand
 cmd card PERFECTED_STRIKE hand
 cmd card PERFECTED_STRIKE hand

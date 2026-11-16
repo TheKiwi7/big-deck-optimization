@@ -101,6 +101,12 @@ public static class HarmonyWatch
     {
         try
         {
+            // HookSkip's transpiler kept what the other mods' transpilers made of a hook during this rebuild: confirmed (or dropped)
+            // before the epoch moves, so a judgement redone for the new epoch reads the code now running.
+            if (original != null)
+            {
+                TranspilerJudge.RebuildEnded(original, __exception == null);
+            }
             Interlocked.Increment(ref _epoch);
             if (original == null)
             {

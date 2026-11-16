@@ -57,6 +57,9 @@ foreignpatch piles-postfix MegaCrit.Sts2.Core.Entities.Players.Player:get_Piles
 foreignpatch byref-arg-prefix MegaCrit.Sts2.Core.Hooks.Hook:ModifyHpLost
 foreignpatch byref-arg-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal
 foreignpatch byref-out-postfix MegaCrit.Sts2.Core.Hooks.Hook:ModifyHpLost
+# HookFilter has no runtime check of its own on the walks (it runs only inside ListenerCache's caching scopes: IsCaching): its
+# whole back-off is the preflight's line, logged here, before anything else can fail.
+cmd bdopt why
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 1

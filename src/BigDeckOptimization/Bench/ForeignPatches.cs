@@ -139,6 +139,15 @@ public static class ForeignPatches
                 return new[] { $"FOREIGN modname {parts[1]}: " + (named == null ? "not loaded"
                     : $"{PatchSafety.ModNameOf(named) ?? "none"} ({(PatchSafety.ModEntryNameOf(named) != null ? "mod entry" : "no mod entry")})") };
         }
+        // Transpilers on the Hook methods HookSkip filters, judged by their IL (IlJudgeShapes.cs).
+        if (parts[0] == "iljudge")
+        {
+            return IlJudgeShapes.Command(parts.Skip(1).ToArray());
+        }
+        if (IlJudgeShapes.Shapes.Contains(parts[0]) && parts.Length >= 2)
+        {
+            return InstallIl(parts);
+        }
         if (!Shapes.Contains(parts[0]) || parts.Length < 2)
         {
             throw new ArgumentException($"unknown foreignpatch shape '{parts[0]}' (or no target): {string.Join(", ", Shapes)}");
@@ -274,7 +283,7 @@ public static class ForeignPatches
                 break;
             case "walk-expand-postfix":
                 RequireWalk(target);
-                harmony.Patch(target, postfix: Fix(nameof(WalkExpandPostfix)));
+                harmony.Patch(target, postfix: Fix(target.DeclaringType == typeof(MegaCrit.Sts2.Core.Runs.RunState) ? nameof(WalkExpandRunPostfix) : nameof(WalkExpandPostfix)));
                 break;
             case "walk-filter-repeat":
                 RequireWalk(target);
@@ -318,6 +327,30 @@ public static class ForeignPatches
         }
         var lines = new List<string> { $"FOREIGN installed {shape}{(gate.Length > 0 ? " " + gate : "")} on {Name(target)} as {id} (priority {priority})" };
         lines.AddRange(Classification(target));
+        return lines;
+    }
+
+    /// <summary>An <see cref="IlJudgeShapes"/> transpiler on a hook's code (its state machine for an async hook), and the judge's verdict.</summary>
+    private static IReadOnlyList<string> InstallIl(string[] parts)
+    {
+        string shape = parts[0];
+        MethodBase hook = Target(parts[1]);
+        int priority = Priority.Normal;
+        int at = Array.IndexOf(parts, "priority");
+        if (at >= 0 && at + 1 < parts.Length)
+        {
+            priority = int.Parse(parts[at + 1]);
+        }
+        string gate = parts.Length > 2 && parts[2] != "priority" ? parts[2] : "";
+        string id = IdPrefix + shape + (gate.Length > 0 ? "-" + gate : "");
+        MethodBase body = IlJudgeShapes.Install(shape, gate, hook, new Harmony(id), priority);
+        lock (_installed)
+        {
+            _installed.Add((id, body));
+        }
+        var lines = new List<string> { $"FOREIGN installed {shape}{(gate.Length > 0 ? " " + gate : "")} on {Name(hook)} ({Name(body)}) as {id} (priority {priority})" };
+        lines.AddRange(Classification(body));
+        lines.AddRange(IlJudgeShapes.Verdict(body));
         return lines;
     }
 
@@ -388,6 +421,7 @@ public static class ForeignPatches
     private static IReadOnlyList<string> Report(string label)
     {
         var lines = _counts.OrderBy(e => e.Key, StringComparer.Ordinal).Select(e => $"STATE foreign {label} {e.Key} {e.Value}").ToList();
+        lines.AddRange(IlJudgeShapes.ReportLines(label));
         if (Gates.NearMissCalls > 0)
         {
             lines.Add($"STATE foreign {label} nearmiss-postfix every call {Gates.NearMissCalls}");
@@ -398,6 +432,8 @@ public static class ForeignPatches
             + $"mirrored combat {FastListeners.CombatWalks} run {FastListeners.RunWalks}, pile lookups fast {PileIndex.Fast} verified {PileIndex.Verified}");
         lines.AddRange(PatchSafety.RuntimeReport().Select(t => "FOREIGN runtime " + t));
         lines.AddRange(HookSkip.GatedWalkReport().Select(t => "FOREIGN gated walks " + t));
+        lines.AddRange(HookSkip.JudgedWalkReport().Select(t => "FOREIGN judged walks " + t));
+        lines.AddRange(TranspilerJudge.Report().Select(t => "FOREIGN iljudge " + t));
 #endif
         lines.AddRange(PatchSafety.ToleratedReport().Select(t => "FOREIGN tolerated " + t));
         return lines;
@@ -654,16 +690,32 @@ public static class ForeignPatches
     {
     }
 
-    /// <summary>RitsuLib's walk shape: the walk wrapped lazily, by value with <c>ref __result</c> only.</summary>
-    private static void WalkExpandPostfix(ref IEnumerable<AbstractModel> __result) => __result = ExpandWalk(__result);
+    /// <summary>RitsuLib's walk shape: the walk wrapped lazily, by value with <c>ref __result</c> only (on the combat walk).</summary>
+    private static void WalkExpandPostfix(ref IEnumerable<AbstractModel> __result) => __result = ExpandWalk(__result, nested: false);
 
-    /// <summary>Each Squeeze yielded twice (it reacts to no hook); the same model twice in a row in the input means it was already expanded.</summary>
-    private static IEnumerable<AbstractModel> ExpandWalk(IEnumerable<AbstractModel> walk)
+    /// <summary><see cref="WalkExpandPostfix"/> on the run walk, whose input ends with the child combat walk's output.</summary>
+    private static void WalkExpandRunPostfix(ref IEnumerable<AbstractModel> __result) => __result = ExpandWalk(__result, nested: true);
+
+    /// <summary>The Squeezes the combat walk's expansion yielded twice: the run walk's input holds them as pairs (its child combat walk).</summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<AbstractModel, object> _expandedInCombat = new();
+
+    /// <summary>
+    /// Each Squeeze yielded twice (it reacts to no hook). A second application on its own output is counted. The combat walk's
+    /// input must never hold the same model twice in a row. The run walk's may, as the game builds it: <c>RunState.IterateHookListeners</c>
+    /// ends with <c>childCombatState.IterateHookListeners()</c>, the combat walk's patched call, whose postfixes (this one included)
+    /// have run, so a combat Squeeze comes as a pair there, with or without this mod. There a pair of a Squeeze the combat walk's
+    /// expansion yielded is the game's; a pair of any other model (the deck's cards are other objects than the combat's) or three
+    /// in a row is a second application.
+    /// </summary>
+    private static IEnumerable<AbstractModel> ExpandWalk(IEnumerable<AbstractModel> walk, bool nested)
     {
         AbstractModel? previous = null;
+        int repeated = 0;
         foreach (AbstractModel model in walk)
         {
-            if (previous is Squeeze && ReferenceEquals(previous, model))
+            repeated = ReferenceEquals(previous, model) ? repeated + 1 : 1;
+            if (repeated > 1 && model is Squeeze
+                && (!nested || repeated > 2 || !_expandedInCombat.TryGetValue(model, out _)))
             {
                 Count("walk-expand-postfix applied twice");
             }
@@ -671,6 +723,10 @@ public static class ForeignPatches
             yield return model;
             if (model is Squeeze)
             {
+                if (!nested && !_expandedInCombat.TryGetValue(model, out _))
+                {
+                    _expandedInCombat.AddOrUpdate(model, model);
+                }
                 yield return model;
             }
         }

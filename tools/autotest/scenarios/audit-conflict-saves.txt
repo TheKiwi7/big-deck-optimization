@@ -10,7 +10,7 @@ expect HookSkip: Hook\.IterateCombatHookListeners is also patched by bdtest\.fak
 expect IdleButtonInput: NButton\._Input is also patched by bdtest\.fakeconflict
 expect LimitlessReserialize: SavedProperties\.FromInternal is also patched by bdtest\.fakeconflict
 expect RelicStateReuse: SavedProperties\.FromInternal is also patched by bdtest\.fakeconflict
-expect PileIndex: Player\.get_Piles is also patched by bdtest\.fakeconflict
+expect PileIndex: CardPile\.get_Cards is also patched by bdtest\.fakeconflict
 expect \[limitless_saves\]: on \(partly vanilla because of bdtest\.fakeconflict\)
 expect \[relic_input\]: on \(partly vanilla because of bdtest\.fakeconflict\)
 newrun NECROBINDER
@@ -25,7 +25,11 @@ fakeconflict MegaCrit.Sts2.Core.Saves.Runs.SavedProperties:FromInternal
 fakeconflict MegaCrit.Sts2.Core.GameActions.Multiplayer.NetCombatCardDb:IdCardIfNecessary
 fakeconflict MegaCrit.Sts2.Core.Hooks.Hook:IterateCombatHookListeners
 fakeconflict MegaCrit.Sts2.Core.Models.CardModel:GetKeywordsWithSources
+# Player.Piles patched is no back-off any more: PileIndex reads the owner's piles through the patched getter, as the game
+# does (the checksums against ab-2k-off prove it gives the same answers); CardPile.Cards, through which the game's scan reads
+# each pile, still is (PileIndex's getter back-off, strict).
 fakeconflict MegaCrit.Sts2.Core.Entities.Players.Player:get_Piles
+fakeconflict MegaCrit.Sts2.Core.Entities.Cards.CardPile:get_Cards
 fakeconflict MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton:_Input
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
@@ -110,7 +114,7 @@ runtimebackoff HookSkip Hook.IterateCombatHookListeners
 runtimebackoff IdleButtonInput NButton._Input
 runtimebackoff LimitlessReserialize SavedProperties.FromInternal
 runtimebackoff RelicStateReuse SavedProperties.FromInternal
-runtimebackoff PileIndex Player.get_Piles
+runtimebackoff PileIndex CardPile.get_Cards
 cmd bdopt
 counters end
 quit
