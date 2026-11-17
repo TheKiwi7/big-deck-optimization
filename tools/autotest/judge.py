@@ -84,13 +84,14 @@ MOD_PROBLEM = re.compile(r'\[BigDeckOptimization\].*(MISMATCH|mismatches [1-9]|\
 # done (the left run's caches not released, a switch not set, a check not run, a rebuild failed...). Except these, intended or
 # already reported elsewhere: the settings menu missing (started-off-nomenu sets it aside; release-incopy checks it registers), the
 # menu's co-op refusal of the master switch, a fault's retried removal (the fault is a problem line already), a mirrored hook
-# rethrowing the game's own exception as the game would, a pile snapshot read hitting the game's own exception (the game's call
+# or FromRun rethrowing the game's own exception as the game would, a pile snapshot read hitting the game's own exception (the game's call
 # then made, as mod off), and the test tooling's own timers and probes. A new warning is a problem
 # until it is listed here: never missed silently. A scenario expecting one says `expect <regex>`.
 MOD_WARN = re.compile(r'^\[WARN\].*\[BigDeckOptimization\]')
 MOD_WARN_OK = re.compile(r'\[BigDeckOptimization\] (SettingsMenu: (settings menu unavailable|the saved "off" can\'t be changed)'
                          r'|menu texts for \S+ unreadable|BaseLibSettings: the mod stays (on|off) during a co-op run'
                          r'|PatchGuard: faulted patches not removed yet|HookFilter: a mirrored hook threw \(passed on'
+                         r'|SnapshotVerifier: the game.s FromRun threw \(passed on'
                          r'|SnapshotCardReuse: the game.s own code threw while a pile.s snapshot was read'
                          r'|PerfProbe: |CombatStartTimer: )')
 # AutoTest's line at the script's start, one per `expect` line of the script (executed or not).

@@ -2657,7 +2657,10 @@ public static class FastListeners
             ? Run(run, child, null) : null;
 
     /// <summary>Whether both <see cref="UnpatchedCombat"/> and <see cref="UnpatchedRun"/> can answer now.</summary>
-    internal static bool MirrorsUnpatched => CombatMirrored && RunMirrored && Enabled && !ListenerCache.IsSuspended;
+    internal static bool MirrorsUnpatched => MirrorsApplied && !ListenerCache.IsSuspended;
+
+    /// <summary>Both mirrors applied and the option on, whatever the thread does now (the co-op tag's setup input).</summary>
+    internal static bool MirrorsApplied => CombatMirrored && RunMirrored && Enabled;
 
     /// <summary>
     /// The code a walk's result comes from besides the two IterateHookListeners methods: both state machines, both
@@ -3068,6 +3071,57 @@ public static class FastListeners
     };
 
     /// <summary>
+    /// The snapshot walk net's check of a memo used in a checksum snapshot (ListenerCache.EndSnapshotWalks): KeptOnly's own loop
+    /// over <paramref name="output"/>'s first <c>memo.Judged</c> elements (the first kept, a pile entry by the filter's verdict,
+    /// anything else kept), each kept index compared with the memo's entries, live ones (judged at every replay, as this loop
+    /// judges them) left out; where the memo reached the output's end, the output must end there. Null when the same, else what
+    /// differs. The output's elements are the fresh walk's (the net compared them first). A verdict's exception reaches the net
+    /// (a detection). Main thread.
+    /// </summary>
+    internal static string? MemoAgainstLoop(ListenerCache.FilteredMemo memo, object filter, ListenerCache.LazyOutput output)
+    {
+        if (filter is not PileFilter pileFilter)
+        {
+            return "a memo of an unknown filter";
+        }
+        int judged = memo.Judged;
+        if (judged > output.Count)
+        {
+            return $"a memo judged {judged} listeners, past the output's {output.Count}";
+        }
+        var expected = new List<int>();
+        for (int i = 0; i < judged; i++)
+        {
+            AbstractModel model = output[i];
+            if (JudgedLive(model))
+            {
+                continue;
+            }
+            if (i == 0 || model is not (CardModel or EnchantmentModel or AfflictionModel) || pileFilter.Keeps(model))
+            {
+                expected.Add(i);
+            }
+        }
+        var actual = new List<int>();
+        for (int e = 0; e < memo.Kept.Count; e++)
+        {
+            if (!memo.Live[e])
+            {
+                actual.Add(memo.KeptAt[e]);
+            }
+        }
+        if (!expected.SequenceEqual(actual))
+        {
+            return $"a memo keeps {actual.Count} listeners where KeptOnly's loop over the fresh walk keeps {expected.Count}";
+        }
+        if (memo.Done && (!output.Complete || output.Count != judged))
+        {
+            return $"a memo ended at {judged} listeners, the output {(output.Complete ? "at " + output.Count : "isn't complete")}";
+        }
+        return null;
+    }
+
+    /// <summary>
     /// A listener KeptOnly's memo never judges once for all: Limitless's stacked enchantment (its verdict reads its inner
     /// enchantments, and judging it notes them), judged again at every replay.
     /// </summary>
@@ -3104,7 +3158,7 @@ public static class FastListeners
             int position = 0;
             bool failed = false;
             // The part turned off (a difference, an error) stops every replay at once, the memos of outputs not yet closed included.
-            while (!memo.Off && ListenerCache.WalkMemoEnabled)
+            while (!memo.Off && ListenerCache.MemoOn)
             {
                 if (replayed < memo.Kept.Count)
                 {

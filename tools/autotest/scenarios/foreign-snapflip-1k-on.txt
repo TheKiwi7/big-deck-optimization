@@ -1,0 +1,59 @@
+# The checksum snapshot walk reuse's control (A/B, mod on; DESIGN "Snapshot walk reuse", 2026-11-17): a postfix of "another mod"
+# on CombatState.IterateHookListeners whose output changes in the middle of each checksum snapshot (walk-snapflip-postfix: from
+# the snapshot's third combat walk on, every Squeeze yielded twice; Squeeze reacts to no hook, so no game value changes, on or
+# off). The first reuse's check (the snapshot's second walk) sees the same output as the kept one: only the net (a fresh walk at
+# the snapshot's end, compared with what was reused) can find it. Each snapshot is then a detection and is built again the game's
+# way before its checksum (SnapshotVerifier.Rebuilt grew), the part stays on (per snapshot: the same decision on every peer for
+# the same state), and every snapshot used equals a vanilla one built apart (bdperf verify all, bdperf verify check).
+# foreignpatch require snapwalks detected fails if the net is removed. CHECKSUM and STATE identical with foreign-snapflip-1k-off.
+# Game v0.111+ (SKIPPED on v0.107.1). ~945 cards.
+timeout 1800
+requiregame v0.111
+expect ListenerCache: a co-op state check that reused listener walk outputs \(other mods' postfixes included\) differs from the game's walks
+expect EFFECTCHECK ListenerCache\.SnapshotWalks grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK ListenerCache\.SnapshotWalks\.Detections grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK SnapshotVerifier\.Rebuilt grew since 'start': [0-9]+ -> [1-9]
+expect FOREIGN snapwalks kept [1-9]\d*, reused [1-9]\d*, checked [1-9]\d*, net compared [1-9]\d*, detections [1-9]\d*, net errors 0, memos compared \d+, seal changes \d+ \(RNGs not put back \d+\), rebuilt [1-9]\d*, re-checked [1-9]\d*, re-check mismatches 0, re-checks discarded 0, on True, faulted False
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+cmd bdperf verify all
+foreignpatch walk-snapflip-postfix MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners
+effects start
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+foreignpatch report end
+foreignpatch snapwalks status
+effects end
+effectcheck ListenerCache.SnapshotWalks grew start
+effectcheck ListenerCache.SnapshotWalks.Detections grew start
+effectcheck SnapshotVerifier.Rebuilt grew start
+foreignpatch require snapwalks detected
+cmd bdperf verify check
+cmd bdopt why
+counters end
+foreignpatch remove
+quit

@@ -1,0 +1,33 @@
+# The checksum snapshot's walk reuse in co-op (client; see coop-snapwalks-host). Run with parcoop -OnOff. Every machine needs
+# the same bigdeck/ref.run.
+timeout 2400
+expect FOREIGN snapwalks kept [1-9]\d*, reused [1-9]\d*, checked [1-9]\d*, net compared [1-9]\d*, detections 0, net errors 0, memos compared \d+, seal changes \d+ \(RNGs not put back \d+\), rebuilt 0, re-checked \d+, re-check mismatches 0, re-checks discarded 0, on True, faulted False, co-op tag ''
+mplobby IRONCLAD 2
+waitfor run 240
+cmd bdperf checks off
+# The same synthetic patches of "another mod" on every peer (see coop-snapwalks-host).
+foreignpatch walk-expand-postfix MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners
+foreignpatch walk-expand-postfix MegaCrit.Sts2.Core.Runs.RunState:IterateHookListeners
+barrier foreign-installed
+wait 14
+cmd bigdeck import ref all cards {hash:ref}
+enemyhp 999999
+waitfor combat 900
+waitfor idle 900
+state t1
+play 4
+endturn
+waitfor idle 900
+state t2
+play 4
+endturn
+waitfor idle 900
+state t3
+barrier foreign-report
+foreignpatch report end
+foreignpatch snapwalks status
+foreignpatch require nodouble
+foreignpatch require snapwalks on
+waitfor nocombat 900
+wait 25
+quit

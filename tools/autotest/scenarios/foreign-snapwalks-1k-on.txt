@@ -1,0 +1,77 @@
+# The checksum snapshot's walk reuse (A/B, mod on; DESIGN "Snapshot walk reuse", 2026-11-17): RitsuLib's lazy expansion
+# (walk-expand-postfix on CombatState.IterateHookListeners) and EnchantLib's eager snapshot-filter-repeat (walk-filter-repeat on
+# RunState.IterateHookListeners). Game v0.111+ (it checksums solo combats; v0.107.1 only in co-op: SKIPPED there). Inside each
+# checksum snapshot the walks' outputs after those postfixes are kept and reused (ListenerCache.SnapshotWalks grew), the first
+# reuse of each key checked (.Checked grew), and at the snapshot's end every reused output compared with a fresh call of the
+# game's walk by the net (.Net grew), none different (foreignpatch require snapwalks on: no detection, the part on). The live
+# re-check runs on every snapshot here (bdperf verify all: below 1,000 combat cards the snapshots reuse only in that mode or
+# off, never in Sample, whose timing-dependent schedule would differ between peers): each optimized snapshot equal to a vanilla
+# one built apart (bdperf verify check). The kept note names the walks. CHECKSUM and STATE identical with
+# foreign-snapwalks-1k-off; the expansion never ran on its own output (require nodouble). The kept outputs' self-test, its
+# snapshot cases included (foreignpatch walkreuse selftest), and bdperf snapnet: the whole path through FromRun (plain, the net
+# made to differ: rebuilt, both inside a suspended display refresh: the same reuses), each checksum the game's own. ~945 cards.
+# effects-zero-ok: ListenerCache\.SnapshotWalks\.Detections
+timeout 1800
+requiregame v0.111
+expect FOREIGN kept ListenerCache\.SnapshotWalks: other mods' code on the listener walks \(.*IterateHookListeners.*\) runs once per co-op state check instead of once per walk
+expect EFFECTCHECK ListenerCache\.SnapshotWalks grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK ListenerCache\.SnapshotWalks\.Checked grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK ListenerCache\.SnapshotWalks\.Net grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK ListenerCache\.SnapshotWalks\.Detections same since 'start'
+expect FOREIGN walk-expand-postfix never ran on its own output
+expect FOREIGN walkreuse selftest: \d+ cases as expected
+expect FOREIGN snapwalks kept [1-9]\d*, reused [1-9]\d*, checked [1-9]\d*, net compared [1-9]\d*, detections 0, net errors 0, memos compared \d+, seal changes \d+ \(RNGs not put back \d+\), rebuilt 0, re-checked [1-9]\d*, re-check mismatches 0, re-checks discarded 0, on True, faulted False, co-op tag ''
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+cmd bdperf verify all
+foreignpatch walk-expand-postfix MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners
+foreignpatch walk-filter-repeat MegaCrit.Sts2.Core.Runs.RunState:IterateHookListeners
+effects start
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+play 4
+waitfor idle 120
+checksum t3 plays
+endturn
+waitfor idle 300
+checksum t3 end
+state t3
+cmd bdperf snapnet
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+foreignpatch report end
+effects end
+effectcheck ListenerCache.SnapshotWalks grew start
+effectcheck ListenerCache.SnapshotWalks.Checked grew start
+effectcheck ListenerCache.SnapshotWalks.Net grew start
+effectcheck ListenerCache.SnapshotWalks.Detections same start
+foreignpatch require nodouble
+foreignpatch require snapwalks on
+cmd bdperf verify check
+foreignpatch walkreuse selftest
+cmd bdopt why
+counters end
+foreignpatch remove
+quit

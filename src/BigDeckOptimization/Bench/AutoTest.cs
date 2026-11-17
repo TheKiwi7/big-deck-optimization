@@ -552,6 +552,12 @@ public static partial class AutoTest
             // KeptOnly's memo over the kept outputs: filtered walks replayed, memos made, uses checked against KeptOnly's own loop.
             (ListenerCache.WalkMemoName, ListenerCache.MemoHits), (ListenerCache.WalkMemoName + ".Built", ListenerCache.MemoBuilt),
             (ListenerCache.WalkMemoName + ".Verified", ListenerCache.MemoVerified),
+            // The checksum snapshot's walk reuse: walks answered from a kept output, outputs kept, reuses checked in the snapshot,
+            // fresh walks compared by its net, snapshots the net found wrong and the snapshots built again.
+            (ListenerCache.SnapshotWalksName, ListenerCache.SnapshotWalkReuses), (ListenerCache.SnapshotWalksName + ".Kept", ListenerCache.SnapshotWalksKept),
+            (ListenerCache.SnapshotWalksName + ".Checked", ListenerCache.SnapshotWalkChecks), (ListenerCache.SnapshotWalksName + ".Net", ListenerCache.SnapshotNetCompared),
+            (ListenerCache.SnapshotWalksName + ".Detections", ListenerCache.SnapshotDetections), (SnapshotVerifier.Name + ".Rebuilt", SnapshotVerifier.Rebuilt),
+            (ListenerCache.SnapshotWalksName + ".Memos", ListenerCache.SnapshotMemosCompared), (ListenerCache.SnapshotWalksName + ".Sealed", ListenerCache.SnapshotSealChanges),
             (RelicFlashMerge.Name + ".Holder", RelicFlashMerge.MergedHolder), (RelicFlashMerge.Name + ".Creature", RelicFlashMerge.MergedCreature),
             (RelicFlashMerge.Name + ".SceneRefusals", RelicFlashMerge.SceneRefusals), (RelicFlashMerge.Name + ".NoNode", RelicFlashMerge.MergedNoNode),
             // Only where another mod patches a small method after this mod's load (foreign-helpers-2k-on).
@@ -1061,16 +1067,16 @@ public static partial class AutoTest
     }
 
     /// <summary>
-    /// Script <c>coopmodetag on|off</c>: this mod's entry in the co-op join list the game uses now (v0.111+: the lobby's net
+    /// Script <c>coopmodetag on|off|exactsnap</c>: this mod's entry in the co-op join list the game uses now (v0.111+: the lobby's net
     /// service's own, kept since hosting or joining started; v0.107.1: the game's list as built at each connection) must say
-    /// that state ("+off" or not). Logs it with <see cref="CoopModeTag.Tagged"/>.
+    /// that state ("+off", "+exactsnap" or neither). Logs it with <see cref="CoopModeTag.Tagged"/>.
     /// </summary>
     private static void CheckCoopModeTag(string arg)
     {
         string wanted = arg.Trim();
-        if (wanted is not ("on" or "off"))
+        if (wanted is not ("on" or "off" or "exactsnap" or "exactsnap-c" or "exactsnap-r"))
         {
-            throw new ArgumentException("coopmodetag on|off");
+            throw new ArgumentException("coopmodetag on|off|exactsnap|exactsnap-c|exactsnap-r");
         }
         List<string>? list = null;
         string source = "the game's list now";
@@ -1089,10 +1095,13 @@ public static partial class AutoTest
         {
             throw new InvalidOperationException($"no {ModEntry.Id} entry in {source}");
         }
-        bool tagged = entry.EndsWith(CoopModeTag.OffSuffix, StringComparison.Ordinal);
-        if (tagged != (wanted == "off"))
+        string says = entry.EndsWith(CoopModeTag.OffSuffix, StringComparison.Ordinal) ? "off"
+            : entry.EndsWith(CoopModeTag.ExactSnapSuffix + "-c", StringComparison.Ordinal) ? "exactsnap-c"
+            : entry.EndsWith(CoopModeTag.ExactSnapSuffix + "-r", StringComparison.Ordinal) ? "exactsnap-r"
+            : entry.EndsWith(CoopModeTag.ExactSnapSuffix, StringComparison.Ordinal) ? "exactsnap" : "on";
+        if (says != wanted)
         {
-            throw new InvalidOperationException($"{source} says {(tagged ? "off" : "on")}, expected {wanted}: {entry}");
+            throw new InvalidOperationException($"{source} says {says}, expected {wanted}: {entry}");
         }
     }
 

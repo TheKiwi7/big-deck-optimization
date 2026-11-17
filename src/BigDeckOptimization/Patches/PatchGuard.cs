@@ -23,7 +23,8 @@ namespace BigDeckOptimization.Patches;
 /// finalizer on it (every mod's) is void does it rethrow the exception as it was (<c>rethrow</c>). One finalizer returning
 /// an Exception makes it <c>throw</c> the exception again, its stack trace then starting at the replacement method, the
 /// frames below (the game's or another mod's code that threw) gone. Only HookFilter's mirrored hooks keep one
-/// (<c>RethrowFinalizer</c>, which substitutes an exception): it logs the full trace before.
+/// (<c>RethrowFinalizer</c>, which substitutes an exception), and SnapshotVerifier's on <c>NetFullCombatState.FromRun</c> (a snapshot
+/// that threw with reused walk outputs built again): both log the full trace before.
 /// </summary>
 public static class PatchGuard
 {

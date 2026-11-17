@@ -202,7 +202,8 @@ public static class ForeignPatches
         "create-null-gated-postfix", "create-nearmiss-postfix", "create-null-gated-reach-postfix", "trail-replacing-prefix",
         "skip-prefix", "skip-and-add-prefix", "display-count-prefix",
         "name-gated-postfix", "fullname-gated-postfix", "name-nearmiss-postfix", "name-othervar-postfix", "walk-unstable-postfix",
-        "flash-script-postfix", "energy-cost-postfix", "energy-cost-unstable-postfix",
+        "flash-script-postfix", "energy-cost-postfix", "energy-cost-unstable-postfix", "walk-snapflip-postfix",
+        "walk-snapflip-cost-postfix", "walk-snaprng-postfix",
     };
 
     /// <summary>
@@ -255,6 +256,22 @@ public static class ForeignPatches
                 return new[] { $"FOREIGN statechanged subscriber added ({(mutating ? "mutating" : noop ? "noop" : "walking")}, handler {position} of the dispatch)" };
             case "require" when parts.Length > 1 && parts[1] == "freshhandler":
                 return RequireFreshHandler();
+            case "require" when parts.Length > 2 && parts[1] == "snapwalks" && parts[2] == "sealed":
+                // walk-snaprng-postfix: the net's seal found RNGs drawn during the snapshot and put every one back.
+#if BENCH
+                return new[] { ListenerCache.SnapshotWalksControl("require sealed"), $"FOREIGN walk-snaprng-postfix draws {_snapRngDraws}" };
+#else
+                return Array.Empty<string>();
+#endif
+            case "require" when parts.Length > 2 && parts[1] == "snapwalks":
+                // The checksum snapshot's walk reuse (DESIGN "Snapshot walk reuse"): "on" (reused, compared by its net, no detection,
+                // no live re-check difference, the part on) or "detected" (the net found snapshots wrong and they were built again,
+                // the part still on, no live re-check difference). A "require" line: parcoop's mod-off twins drop it.
+#if BENCH
+                return new[] { ListenerCache.SnapshotWalksControl("require " + parts[2]) };
+#else
+                return Array.Empty<string>();
+#endif
             case "require" when parts.Length > 1 && parts[1] == "dropped":
                 return RequireDropped();
             case "report":
@@ -322,6 +339,11 @@ public static class ForeignPatches
         if (parts[0] == "keptmemo" && parts.Length > 1)
         {
             return new[] { ListenerCache.MemoControl(string.Join(" ", parts.Skip(1))) };
+        }
+        // The checksum snapshot's walk reuse: its counters (foreignpatch require snapwalks on|detected for the checks).
+        if (parts[0] == "snapwalks" && parts.Length > 1 && parts[1] == "status")
+        {
+            return new[] { ListenerCache.SnapshotWalksControl("status"), $"FOREIGN walk-snapflip shapes changed walks {_snapFlips}, RNG draws {_snapRngDraws}" };
         }
         // The name gates' resolution (re-audit of the premises, P-1): closed generic names, types being built, types emitted later.
         if (parts[0] == "namegate" && parts.Length > 1 && parts[1] == "selftest")
@@ -551,6 +573,32 @@ public static class ForeignPatches
             case "walk-filter-repeat":
                 RequireWalk(target);
                 harmony.Patch(target, postfix: Fix(nameof(WalkFilterRepeatPostfix)));
+                break;
+            case "walk-snapflip-postfix":
+            case "walk-snapflip-cost-postfix":
+            case "walk-snaprng-postfix":
+                // The snapshot walk reuse's controls (DESIGN "Snapshot walk reuse"), postfixes on the combat walk whose output or side
+                // effect changes in the middle of each checksum snapshot, counted per FromRun call (its own frame: a rebuild or the
+                // vanilla re-check nested in a snapshot starts at its beginning again, as the game's own FromRun):
+                //  - walk-snapflip-postfix: from the frame's third combat walk on, every Squeeze yielded twice (Squeeze reacts to no
+                //    hook: no game value changes). The first reuse's check (the second walk) sees the same output: only the net can.
+                //  - walk-snapflip-cost-postfix: from the frame's second pile on (CombatPileState.From counted: the same point however
+                //    many walks this mod's other parts make), every Spiked Gauntlets relic yielded twice: a power card's cost there is
+                //    +2 instead of +1 in the game's own FromRun, so a reused snapshot would differ from vanilla (the net must find it
+                //    and the rebuilt snapshot must be the one used: bdperf verify all compares it with a vanilla one).
+                //  - walk-snaprng-postfix: each enumeration of the walk's output inside a FromRun draws the run's Niche RNG once (a lazy
+                //    side effect a reuse runs fewer times): the net's seal must find it and put the RNG back before the rebuild.
+                if (target.DeclaringType != typeof(MegaCrit.Sts2.Core.Combat.CombatState) || target.Name != "IterateHookListeners")
+                {
+                    throw new ArgumentException(shape + " goes on MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners");
+                }
+                InstallFromRunFrames(id, extra, piles: shape == "walk-snapflip-cost-postfix");
+                harmony.Patch(target, postfix: Fix(shape switch
+                {
+                    "walk-snapflip-postfix" => nameof(WalkSnapFlipPostfix),
+                    "walk-snapflip-cost-postfix" => nameof(WalkSnapCostPostfix),
+                    _ => nameof(WalkSnapRngPostfix),
+                }));
                 break;
             case "pile-prefix-narrow":
                 if (target.DeclaringType != typeof(CardModel) || target.Name != "get_Pile")
@@ -898,6 +946,8 @@ public static class ForeignPatches
             lines.Add($"FOREIGN removed {id} from {Name(target)}");
         }
         SoulShapes.UnwatchTree();
+        _framesInstalled = false;
+        _pileFramesInstalled = false;
         if (_stateTracker != null)
         {
             if (_stateHandler != null)
@@ -945,6 +995,7 @@ public static class ForeignPatches
             + $"out of scope {ListenerCache.ReusesOutOfScope}, "
             + $"suspended {ListenerCache.SuspendedRevalidations}, on {ListenerCache.WalkReuseEnabled}");
         lines.Add(ListenerCache.MemoControl("status"));
+        lines.Add(ListenerCache.SnapshotWalksControl("status"));
         lines.AddRange(PatchSafety.RuntimeReport().Select(t => "FOREIGN runtime " + t));
         lines.AddRange(HookSkip.GatedWalkReport().Select(t => "FOREIGN gated walks " + t));
         lines.AddRange(HookSkip.FilteredWalkReport().Select(t => "FOREIGN filtered walks " + t));
@@ -1497,6 +1548,138 @@ public static class ForeignPatches
             }
             held = model;
             any = true;
+        }
+    }
+
+    /// <summary>Per FromRun call on this thread (innermost last): its combat walks and the piles it started (the snapflip shapes).</summary>
+    [ThreadStatic] private static List<(int Walks, int Piles)>? _fromRunFrames;
+    private static bool _framesInstalled, _pileFramesInstalled;
+    /// <summary>Walks the snapflip shapes changed, and the RNG draws of walk-snaprng-postfix (FOREIGN lines: not compared).</summary>
+    private static long _snapFlips, _snapRngDraws;
+
+    /// <summary>
+    /// A prefix and a finalizer of "another mod" on FromRun keeping <see cref="_fromRunFrames"/> (and, for the cost shape, a prefix on
+    /// CombatPileState.From counting the frame's piles), once for the shapes installed (removed with them).
+    /// </summary>
+    private static void InstallFromRunFrames(string id, List<(string Id, MethodBase Target)> extra, bool piles)
+    {
+        MethodBase fromRun = AccessTools.Method(typeof(MegaCrit.Sts2.Core.Entities.Multiplayer.NetFullCombatState), "FromRun")
+            ?? throw new ArgumentException("NetFullCombatState.FromRun not found");
+        if (!_framesInstalled)
+        {
+            new Harmony(id + ".frames").Patch(fromRun, prefix: new HarmonyMethod(typeof(ForeignPatches), nameof(FramePrefix)),
+                finalizer: new HarmonyMethod(typeof(ForeignPatches), nameof(FrameFinalizer)));
+            extra.Add((id + ".frames", fromRun));
+            _framesInstalled = true;
+        }
+        if (piles && !_pileFramesInstalled)
+        {
+            MethodBase pileFrom = AccessTools.Method(typeof(MegaCrit.Sts2.Core.Entities.Multiplayer.NetFullCombatState.CombatPileState), "From")
+                ?? throw new ArgumentException("CombatPileState.From not found");
+            new Harmony(id + ".piles").Patch(pileFrom, prefix: new HarmonyMethod(typeof(ForeignPatches), nameof(PileFramePrefix)));
+            extra.Add((id + ".piles", pileFrom));
+            _pileFramesInstalled = true;
+        }
+    }
+
+    private static void FramePrefix(out int __state)
+    {
+        _fromRunFrames ??= new List<(int, int)>();
+        __state = _fromRunFrames.Count;
+        _fromRunFrames.Add((0, 0));
+    }
+
+    /// <summary>Back to the depth the prefix found (Harmony may run a finalizer twice: the same depth again).</summary>
+    private static void FrameFinalizer(int __state)
+    {
+        if (_fromRunFrames != null && _fromRunFrames.Count > __state && __state >= 0)
+        {
+            _fromRunFrames.RemoveRange(__state, _fromRunFrames.Count - __state);
+        }
+    }
+
+    private static void PileFramePrefix()
+    {
+        if (_fromRunFrames is { Count: > 0 })
+        {
+            (int walks, int piles) = _fromRunFrames[^1];
+            _fromRunFrames[^1] = (walks, piles + 1);
+        }
+    }
+
+    /// <summary>This walk's place in the innermost FromRun call (walks so far included), or null outside one.</summary>
+    private static (int Walks, int Piles)? NextFrameWalk()
+    {
+        if (_fromRunFrames is not { Count: > 0 })
+        {
+            return null;
+        }
+        (int walks, int piles) = _fromRunFrames[^1];
+        _fromRunFrames[^1] = (walks + 1, piles);
+        return (walks + 1, piles);
+    }
+
+    private static void WalkSnapFlipPostfix(ref IEnumerable<AbstractModel> __result)
+    {
+        if (NextFrameWalk() is { Walks: >= 3 })
+        {
+            _snapFlips++;
+            __result = DoubleSqueezes(__result);
+        }
+    }
+
+    private static void WalkSnapCostPostfix(ref IEnumerable<AbstractModel> __result)
+    {
+        if (NextFrameWalk() is { Piles: >= 2 })
+        {
+            _snapFlips++;
+            __result = DoubleGauntlets(__result);
+        }
+    }
+
+    private static IEnumerable<AbstractModel> DoubleGauntlets(IEnumerable<AbstractModel> walk)
+    {
+        foreach (AbstractModel model in walk)
+        {
+            yield return model;
+            if (model.GetType().Name == "SpikedGauntlets")
+            {
+                yield return model;
+            }
+        }
+    }
+
+    private static void WalkSnapRngPostfix(ref IEnumerable<AbstractModel> __result)
+    {
+        if (NextFrameWalk() != null)
+        {
+            __result = DrawWhenEnumerated(__result);
+        }
+    }
+
+    /// <summary>The walk's output, drawing the run's Niche RNG once when it starts being enumerated (a lazy side effect).</summary>
+    private static IEnumerable<AbstractModel> DrawWhenEnumerated(IEnumerable<AbstractModel> walk)
+    {
+        if (RunManager.Instance.DebugOnlyGetState() is { } run)
+        {
+            run.Rng.Niche.NextInt();
+            _snapRngDraws++;
+        }
+        foreach (AbstractModel model in walk)
+        {
+            yield return model;
+        }
+    }
+
+    private static IEnumerable<AbstractModel> DoubleSqueezes(IEnumerable<AbstractModel> walk)
+    {
+        foreach (AbstractModel model in walk)
+        {
+            yield return model;
+            if (model is Squeeze)
+            {
+                yield return model;
+            }
         }
     }
 

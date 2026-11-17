@@ -1,0 +1,44 @@
+# The checksum snapshot's walk reuse in co-op (host; DESIGN "Snapshot walk reuse", 2026-11-17): RitsuLib's lazy expansion
+# (walk-expand-postfix) on both CombatState and RunState.IterateHookListeners, on every peer. One import per peer (~945 cards
+# each, ~1,900 combat cards in all: above 1,000, so the snapshots reuse in the Sample mode and its live re-check never runs, on
+# any peer); the first version imported four times per peer (3,741 cards in a draw pile): with the synthetic postfix's cost at
+# every walk outside the state check (the play's own hooks, the combat start), a play took ~22 s on the mod-off twin and the
+# combat start held the main thread long enough for the client's connection to time out. Each peer's state check after every
+# action reuses the walks' outputs, its net compares them with a fresh walk at the snapshot's end, no difference (foreignpatch
+# require snapwalks on, both peers). Run with parcoop -OnOff: each peer against its mod-off twin (turn states, run states and
+# the synthetic patches' counts), and the game's own checksums between the peers (no state divergence). Every machine needs the
+# same bigdeck/ref.run.
+timeout 2400
+expect FOREIGN snapwalks kept [1-9]\d*, reused [1-9]\d*, checked [1-9]\d*, net compared [1-9]\d*, detections 0, net errors 0, memos compared \d+, seal changes \d+ \(RNGs not put back \d+\), rebuilt 0, re-checked \d+, re-check mismatches 0, re-checks discarded 0, on True, faulted False, co-op tag ''
+mplobby NECROBINDER 2
+waitfor run 240
+cmd bdperf checks off
+# The same synthetic patches of "another mod" on every peer, installed before the imports and before any combat, then a barrier
+# (as coop-foreign): every peer, and its mod-off twin, runs them on the same calls.
+foreignpatch walk-expand-postfix MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners
+foreignpatch walk-expand-postfix MegaCrit.Sts2.Core.Runs.RunState:IterateHookListeners
+barrier foreign-installed
+wait 8
+cmd bigdeck import ref all all {hash:ref}
+enemyhp 999999
+wait 25
+cmd fight CULTISTS_NORMAL
+waitfor idle 900
+state t1
+play 4
+endturn
+waitfor idle 900
+state t2
+play 4
+endturn
+waitfor idle 900
+state t3
+barrier foreign-report
+foreignpatch report end
+foreignpatch snapwalks status
+foreignpatch require nodouble
+foreignpatch require snapwalks on
+cmd kill all
+waitfor nocombat 600
+wait 20
+quit

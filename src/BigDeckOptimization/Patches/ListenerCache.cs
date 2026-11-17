@@ -270,6 +270,7 @@ public static class ListenerCache
         PatchSafety.WatchNote(ReuseFault, () => BaseLibTypes.NoteIfDefined(ReuseFault, "card_modifiers", CardModifierType,
             "listener lists are rebuilt in each refresh instead of reused: other mods define BaseLib card modifiers", whole: true));
         PatchSafety.WatchNote(WalkReuseName, NoteAugmentedWalks);
+        PatchSafety.WatchNote(SnapshotWalksName, NoteSnapshotWalks);
     }
 
     // ---- The augmented-walk premise (Walks Tier 2, owner-approved 2026-11-17; DESIGN "Owner-approved premises") ----
@@ -290,6 +291,8 @@ public static class ListenerCache
         public readonly int Version;
         public readonly LazyOutput Output;
         public bool Checked;
+        /// <summary>Reused in the current checksum snapshot: compared with a fresh walk at its end (<see cref="EndSnapshotWalks"/>).</summary>
+        public bool InNet;
 
         public KeptOutput(int version, LazyOutput output)
         {
@@ -365,7 +368,14 @@ public static class ListenerCache
     /// (<see cref="_foreignDepth"/>).
     /// </summary>
     private static bool ReuseOpen =>
-        WalkReuseEnabled && !_exactScope && _foreignDepth == 0 && !_materializingAugmented && !_mirrorDeclined && Serving;
+        PartOn && !_exactScope && _foreignDepth == 0 && !_materializingAugmented && !_mirrorDeclined && Serving;
+
+    /// <summary>
+    /// The part this scope's reuse belongs to is on: in a checksum snapshot (<see cref="_snapshotReuse"/>) its own part, at the
+    /// state version the snapshot started at; elsewhere the display refreshes' part. The display part's switch and session faults
+    /// never decide anything in a snapshot (peer determinism, DESIGN "Snapshot walk reuse").
+    /// </summary>
+    private static bool PartOn => _snapshotReuse ? SnapshotWalksEnabled && _version == _snapshotVersion : WalkReuseEnabled;
 
     /// <summary>
     /// This class's postfix runs after every other mod's on the walk (Harmony's sort, asked again when Harmony's epoch moves, each
@@ -456,12 +466,27 @@ public static class ListenerCache
                 }
 #endif
                 // D1 (re-audit of c2f613b): Checked is set by a check that covered everything its caller read (CheckedOutput), not
-                // when a check is handed out. D2: the per-key sample's position moves with the scope (display only).
-                bool check = !entry.Checked || CountReuse(key) % WalkVerifyEvery == 0;
+                // when a check is handed out. D2: the per-key sample's position moves with the scope (display only). In a checksum
+                // snapshot the schedule is the snapshot's own (its first reuse of each key until one covered what its caller read,
+                // none after it): no count kept across scopes, so every peer checks the same walks for the same state (R3-3).
+                bool check = _snapshotReuse ? !entry.Checked : !entry.Checked || CountReuse(key) % WalkVerifyEvery == 0;
+                if (_snapshotReuse && !entry.InNet)
+                {
+                    // Compared with a fresh walk at the snapshot's end, before the snapshot is used (EndSnapshotWalks).
+                    entry.InNet = true;
+                    (_snapshotReused ??= new List<KeptOutput>()).Add(entry);
+                }
                 if (!check)
                 {
 #if BENCH
-                    WalksReused++;
+                    if (_snapshotReuse)
+                    {
+                        SnapshotWalkReuses++;
+                    }
+                    else
+                    {
+                        WalksReused++;
+                    }
                     if (_inGameHandler)
                     {
                         GameHandlerReuses++;
@@ -470,16 +495,38 @@ public static class ListenerCache
                     return new ReusedOutput(entry.Output, output, _scopeSerial, _version);
                 }
 #if BENCH
-                WalksVerified++;
+                if (_snapshotReuse)
+                {
+                    SnapshotWalkChecks++;
+                }
+                else
+                {
+                    WalksVerified++;
+                }
 #endif
                 return new CheckedOutput(output, entry.Output, key, _scopeSerial, _version, entry);
             }
             // D3: a kept output of another state version is closed (its source disposed once no caller is in it).
             entry?.Output.Close();
             var lazy = new LazyOutput(output, key);
-            _augmented[key] = new KeptOutput(_version, lazy);
+            var kept = new KeptOutput(_version, lazy);
+            _augmented[key] = kept;
+            if (_snapshotReuse)
+            {
+                // Every output a snapshot keeps is compared by its net, a key walked once too (its pulls then interleaved with that
+                // caller's loop only, but the comparison costs one fresh walk per key, and nothing is left to an argument).
+                kept.InNet = true;
+                (_snapshotReused ??= new List<KeptOutput>()).Add(kept);
+            }
 #if BENCH
-            WalksMaterialized++;
+            if (_snapshotReuse)
+            {
+                SnapshotWalksKept++;
+            }
+            else
+            {
+                WalksMaterialized++;
+            }
             if (afterForeign)
             {
                 KeptAfterForeign++;
@@ -541,6 +588,12 @@ public static class ListenerCache
 
     private static void WalkReuseFailed(Exception e)
     {
+        if (_snapshotReuse)
+        {
+            // In a checksum snapshot: that snapshot is built again the game's way (its net), nothing turned off for the session.
+            SnapshotTaint("this class's error: " + e.Message);
+            return;
+        }
         WalkReuseEnabled = false;
         ClearAugmented();
         PatchSafety.Fault(WalkReuseName);
@@ -549,6 +602,13 @@ public static class ListenerCache
 
     private static void WalkMismatch((object, object?) key, string what)
     {
+        if (_snapshotReuse)
+        {
+            // A checked reuse in a checksum snapshot (CheckedOutput compares only in the scope it was made for): that snapshot is
+            // built again the game's way before it is used; the display part and its session state are not touched.
+            SnapshotTaint($"a checked reuse differs ({what})");
+            return;
+        }
 #if BENCH
         if (_selfTesting)
         {
@@ -607,6 +667,8 @@ public static class ListenerCache
         public bool Pulling => _pulling;
         /// <summary>The source reached its end (not a throw, not closed early): its length is known.</summary>
         public bool Complete { get; private set; }
+        /// <summary>Its source threw (every caller met that exception at the same element).</summary>
+        public bool Failed => _error != null;
         /// <summary>
         /// Closed, or a close asked while a caller was in it (round 4): what it pulled is all it will ever give, so a reuse handed
         /// out before and enumerated now would be cut short there (<see cref="ReusedOutput"/> gives the call's own output then).
@@ -693,6 +755,10 @@ public static class ListenerCache
 
         /// <summary>KeptOnly's memos over this output, per filter (<see cref="FilteredMemo"/>): they live and go with it.</summary>
         private Dictionary<object, FilteredMemo>? _memos;
+
+        /// <summary>The memos over this output now, with their filters (the snapshot net compares them).</summary>
+        internal KeyValuePair<object, FilteredMemo>[] MemoList() =>
+            _memos == null ? Array.Empty<KeyValuePair<object, FilteredMemo>>() : _memos.ToArray();
 
         /// <summary>This filter's memo over this output, made now if it has none (<paramref name="built"/>).</summary>
         internal FilteredMemo MemoOf(object filter, out bool built)
@@ -864,7 +930,7 @@ public static class ListenerCache
         }
 
         /// <summary>Whether enumerating it now gives the kept output (else the call's own).</summary>
-        private bool InScope => _scope == _scopeSerial && _version == ListenerCache._version && !_kept.Closed && WalkReuseEnabled && !_exactScope
+        private bool InScope => _scope == _scopeSerial && _version == ListenerCache._version && !_kept.Closed && PartOn && !_exactScope
             && _foreignDepth == 0 && !_mirrorDeclined && Serving && !_kept.Pulling;
 
         /// <summary>
@@ -931,6 +997,9 @@ public static class ListenerCache
         /// <summary>Its filter's uses over its walk key, across scopes (<see cref="MemoStats"/>).</summary>
         internal MemoStats? Stats;
 
+        /// <summary>A checked use of it covered what its caller read (its output lives in one scope: the snapshot's schedule).</summary>
+        public bool CheckedHere;
+
         public FilteredMemo(LazyOutput source)
         {
             Source = source;
@@ -985,7 +1054,7 @@ public static class ListenerCache
     internal static FilteredMemo? MemoFor(IEnumerable<AbstractModel> walk, object filter, out bool check)
     {
         check = false;
-        if (!WalkMemoEnabled || walk is not ReusedOutput reused)
+        if (!MemoOn || walk is not ReusedOutput reused)
         {
             return null;
         }
@@ -1015,8 +1084,17 @@ public static class ListenerCache
 #endif
                 return memo;
             }
-            MemoStats stats = memo.Stats ??= StatsOf(filter, kept.Key);
-            check = !stats.Checked || ++stats.Uses % WalkVerifyEvery == 0;
+            if (_snapshotReuse)
+            {
+                // In a checksum snapshot: the snapshot's own schedule (this memo's first replay in it until one covered what its
+                // caller read), no count kept across scopes: every peer checks the same uses for the same state.
+                check = !memo.CheckedHere;
+            }
+            else
+            {
+                MemoStats stats = memo.Stats ??= StatsOf(filter, kept.Key);
+                check = !stats.Checked || ++stats.Uses % WalkVerifyEvery == 0;
+            }
 #if BENCH
             if (_memoInjectWrong && memo.Kept.Count >= 2)
             {
@@ -1050,15 +1128,32 @@ public static class ListenerCache
     /// <summary>A checked use ended: it compared everything its caller read (the filter's memos over that key then sampled one in 16), or not (checked again next time).</summary>
     internal static void MemoCheckDone(FilteredMemo memo, bool covered)
     {
-        if (covered && memo.Stats != null)
+        if (covered)
         {
-            memo.Stats.Checked = true;
+            memo.CheckedHere = true;
+            if (memo.Stats != null)
+            {
+                memo.Stats.Checked = true;
+            }
         }
     }
+
+    /// <summary>
+    /// The memo may be used now: while its part is on, in a checksum snapshot too (a memo faulted in a display refresh stays off
+    /// there). The memo is exact, KeptOnly's result over the same output, so whether a peer uses it never changes a snapshot; in
+    /// a snapshot its checks follow the snapshot's own schedule, and the net compares every memo used there with KeptOnly's
+    /// loop over the fresh walk (<see cref="EndSnapshotWalks"/>).
+    /// </summary>
+    internal static bool MemoOn => WalkMemoEnabled;
 
     /// <summary>A memo differs from KeptOnly's own loop over the same output: the part off for the session, every memo dropped, logged.</summary>
     internal static void MemoMismatch(string what)
     {
+        if (_snapshotReuse)
+        {
+            // Callers of this checksum snapshot read the memo before: the snapshot is built again the game's way before it is used.
+            SnapshotTaint($"a memoized filtered walk differs ({what})");
+        }
 #if BENCH
         if (_selfTesting)
         {
@@ -1081,6 +1176,10 @@ public static class ListenerCache
     /// <summary>An error in the memo's own code (never the filter's verdicts, never the output's): the part off for the session, logged.</summary>
     internal static void WalkMemoFailed(Exception e)
     {
+        if (_snapshotReuse)
+        {
+            SnapshotTaint("the filtered walks' memo failed: " + e.Message);
+        }
 #if BENCH
         if (_selfTesting)
         {
@@ -1156,6 +1255,51 @@ public static class ListenerCache
     }
 
     [ThreadStatic] private static int _selfTestMemoFaults;
+
+    /// <summary>
+    /// <c>foreignpatch snapwalks status</c>, <c>foreignpatch require snapwalks on|detected</c>: the checksum snapshot's walk reuse's
+    /// counters, and its checks. on: walks reused and compared by the net, no detection, the part on and not faulted, no live
+    /// re-check (SnapshotVerifier) differing. detected: the net found snapshots wrong and they were built again, the part still
+    /// on (per snapshot, nothing turned off), no live re-check differing (each snapshot used was the game's).
+    /// </summary>
+    internal static string SnapshotWalksControl(string what)
+    {
+        string status = $"FOREIGN snapwalks kept {SnapshotWalksKept}, reused {SnapshotWalkReuses}, checked {SnapshotWalkChecks}, net compared {SnapshotNetCompared}, "
+            + $"detections {SnapshotDetections}, net errors {SnapshotNetErrors}, memos compared {SnapshotMemosCompared}, seal changes {SnapshotSealChanges} "
+            + $"(RNGs not put back {SnapshotSealUnrestored}), rebuilt {SnapshotVerifier.Rebuilt}, re-checked {SnapshotVerifier.Verified}, "
+            + $"re-check mismatches {SnapshotVerifier.Mismatches}, re-checks discarded {SnapshotVerifier.ReChecksDiscarded}, on {SnapshotWalksEnabled}, faulted {PatchSafety.IsFaulted(SnapshotWalksName)}, "
+            + $"co-op tag '{CoopModeTag.Suffix}'";
+        switch (what)
+        {
+            case "status":
+                return status;
+            case "require on":
+                if (SnapshotWalkReuses == 0 || SnapshotNetCompared == 0 || SnapshotDetections > 0 || !SnapshotWalksEnabled
+                    || PatchSafety.IsFaulted(SnapshotWalksName) || SnapshotVerifier.Mismatches > 0)
+                {
+                    throw new InvalidOperationException(status);
+                }
+                return status;
+            case "require sealed":
+                // RNGs drawn during the snapshots (walk-snaprng-postfix): every one put back, each such snapshot rebuilt.
+                if (SnapshotSealChanges == 0 || SnapshotSealUnrestored > 0 || SnapshotDetections == 0 || SnapshotVerifier.Rebuilt == 0
+                    || SnapshotVerifier.Mismatches > 0 || SnapshotVerifier.ReChecksDiscarded > 0
+                    || !SnapshotWalksEnabled || PatchSafety.IsFaulted(SnapshotWalksName))
+                {
+                    throw new InvalidOperationException(status);
+                }
+                return status;
+            case "require detected":
+                if (SnapshotDetections == 0 || SnapshotVerifier.Rebuilt == 0 || SnapshotWalkReuses == 0 || !SnapshotWalksEnabled
+                    || PatchSafety.IsFaulted(SnapshotWalksName) || SnapshotVerifier.Mismatches > 0)
+                {
+                    throw new InvalidOperationException(status);
+                }
+                return status;
+            default:
+                throw new ArgumentException("foreignpatch snapwalks status | foreignpatch require snapwalks on|detected");
+        }
+    }
 #endif
 
     /// <summary>
@@ -1246,6 +1390,580 @@ public static class ListenerCache
     {
         _exactScope = true;
         ClearAugmented();
+    }
+
+    // ---- The checksum snapshot's walk reuse (owner-approved 2026-11-17, DESIGN "Snapshot walk reuse") ----
+
+    /// <summary>
+    /// The augmented walks' reuse inside the checksum's outermost snapshot (a part of the co-op state check). No session state
+    /// of its own: a snapshot whose reuse its net finds wrong is built again the game's way, and the next one reuses again.
+    /// Turned off only by its setting, or a fault of the net itself (a snapshot returned without its comparison).
+    /// </summary>
+    public const string SnapshotWalksName = Name + ".SnapshotWalks";
+
+    public static bool SnapshotWalksEnabled { get; set; } = true;
+
+    /// <summary>The current outermost scope is a checksum snapshot reusing walk outputs (<see cref="BeginSnapshotReuse"/>), until its net ran.</summary>
+    [ThreadStatic] private static bool _snapshotReuse;
+    /// <summary>The state version that snapshot started at: no reuse at another one, and a reuse before a change is a detection.</summary>
+    [ThreadStatic] private static int _snapshotVersion;
+    /// <summary>Something of the snapshot found its reuse wrong (a checked reuse, a memo check, this class's error): what, first.</summary>
+    [ThreadStatic] private static string? _snapshotTaint;
+    /// <summary>
+    /// The state FromRun only reads, sealed at the snapshot's start (<see cref="SnapshotSeal"/>): a reused output enumerated fewer
+    /// times than the game's walks ran less of other mods' enumeration code, whose side effects (an RNG drawn, a counter bumped)
+    /// the net compares too. Null in the self-test (no game state).
+    /// </summary>
+    [ThreadStatic] private static SnapshotSeal? _snapshotSeal;
+    [ThreadStatic] private static MegaCrit.Sts2.Core.Runs.IRunState? _snapshotRun;
+
+    /// <summary>Snapshots whose seal changed (a detection each), and of those, RNGs drawn that couldn't be put back (v0.107.1, an error).</summary>
+    public static long SnapshotSealChanges { get; private set; }
+    public static long SnapshotSealUnrestored { get; private set; }
+
+    /// <summary>The kept outputs that snapshot made (each one's walks after the first given it): what its net compares.</summary>
+    [ThreadStatic] private static List<KeptOutput>? _snapshotReused;
+
+    /// <summary>Snapshots whose walk reuse the net found wrong (each built again the game's way: SnapshotVerifier.Detections).</summary>
+    public static long SnapshotDetections { get; private set; }
+    /// <summary>Of those, the net's own comparison failing (another mod's code throwing in the fresh walk, an error here).</summary>
+    public static long SnapshotNetErrors { get; private set; }
+
+#if BENCH
+    /// <summary>Snapshot walks answered from a kept output, outputs kept, reuses checked in the snapshot, fresh walks compared at its end.</summary>
+    public static long SnapshotWalkReuses { get; private set; }
+    public static long SnapshotWalksKept { get; private set; }
+    public static long SnapshotWalkChecks { get; private set; }
+    public static long SnapshotNetCompared { get; private set; }
+    public static long SnapshotMemosCompared { get; private set; }
+
+    /// <summary>The self-test's fresh walks (no game state): the net's source instead of the game's walk.</summary>
+    [ThreadStatic] private static Func<(object, object?), IEnumerable<AbstractModel>>? _netSourceForTest;
+
+    /// <summary><c>bdperf snapnet</c>: the next net that compared something reports a difference (the whole path then runs: rebuild).</summary>
+    [ThreadStatic] private static bool _injectNetDifference;
+
+    internal static void InjectNetDifferenceForTest() => _injectNetDifference = true;
+
+    /// <summary>
+    /// <c>bdperf snapnet nested</c>: <paramref name="run"/> inside a display refresh scope with game logic resuming inline
+    /// (<see cref="SuspendPrefix"/>), as the checksum after an action runs on a peer whose hand selection ended inside the
+    /// CombatStateChanged dispatch: a snapshot there must be decided as one with nothing around it.
+    /// </summary>
+    internal static T InsideSuspendedDispatchForTest<T>(Func<T> run)
+    {
+        EnterDisplayRefresh(out int scope);
+        SuspendPrefix(out int suspension);
+        try
+        {
+            return run();
+        }
+        finally
+        {
+            ResumeFinalizer(suspension);
+            ExitRefresh(null, scope);
+        }
+    }
+#endif
+
+    /// <summary>
+    /// At the outermost snapshot's start: whether it reuses walk outputs. Only where its net can run and nothing peer-dependent
+    /// can see a reused snapshot: the part on, the state check on and serving, other mods' postfixes on a walk, and
+    /// <see cref="SnapshotVerifier.WalkNetFor"/> (the net's postfix in place, and no sampled live re-check possible for this
+    /// snapshot: its schedule depends on timing, so a peer's re-check finding a difference the net missed would make only that
+    /// peer use another snapshot). Every input is the same on every peer for the same state and the same mods and settings
+    /// (CoopModeTag tags a player whose snapshots can't reuse). Never throws.
+    /// </summary>
+    private static bool BeginSnapshotReuse(MegaCrit.Sts2.Core.Runs.IRunState? runState)
+    {
+        _snapshotReuse = false;
+        _snapshotTaint = null;
+        _snapshotReused?.Clear();
+        _snapshotSeal = null;
+        _snapshotRun = null;
+        try
+        {
+            _threwAfterReuse = false;
+            if (_noSnapshotReuse > 0 || !SnapshotWalksEnabled || !SnapshotEnabled || !_safe || _suspended || !PatchSafety.ShapeRules
+                || !(_combatAugmented || _runAugmented) || _combatWalkPostfix == null || _runWalkPostfix == null
+                || !NetFor(runState))
+            {
+                return false;
+            }
+            if (runState != null)
+            {
+                // No seal, no reuse: the net couldn't see what other mods' enumeration code did to the state.
+                _snapshotSeal = SnapshotSeal.Take(runState);
+                if (_snapshotSeal == null)
+                {
+                    return false;
+                }
+                _snapshotRun = runState;
+            }
+            _snapshotVersion = _version;
+            _snapshotReuse = true;
+            return true;
+        }
+        catch
+        {
+            _snapshotReuse = false;
+            return false;
+        }
+    }
+
+    /// <summary>The last outermost snapshot threw before its net ran, with reused outputs (<see cref="TakeThrewAfterReuse"/>).</summary>
+    [ThreadStatic] private static bool _threwAfterReuse;
+
+    /// <summary>
+    /// For SnapshotVerifier's FromRun finalizer (after this class's): whether the snapshot ending now threw with reused outputs
+    /// before its net ran (it must then be built again exactly). Cleared.
+    /// </summary>
+    internal static bool TakeThrewAfterReuse()
+    {
+        bool threw = _threwAfterReuse;
+        _threwAfterReuse = false;
+        return threw;
+    }
+
+    /// <summary>Snapshots built inside <see cref="WithoutSnapshotReuse"/> never reuse walk outputs (an exact rebuild after the scope closed).</summary>
+    [ThreadStatic] private static int _noSnapshotReuse;
+
+    internal static T WithoutSnapshotReuse<T>(Func<T> build)
+    {
+        int was = _noSnapshotReuse;
+        _noSnapshotReuse = was + 1;
+        try
+        {
+            return build();
+        }
+        finally
+        {
+            _noSnapshotReuse = was;
+        }
+    }
+
+    private static bool NetFor(MegaCrit.Sts2.Core.Runs.IRunState? runState)
+    {
+#if BENCH
+        if (_snapshotNetForTest)
+        {
+            return true;
+        }
+#endif
+        return runState != null && SnapshotVerifier.WalkNetFor(runState);
+    }
+
+#if BENCH
+    /// <summary>The self-test's snapshots: no game state, the net run by the test itself.</summary>
+    [ThreadStatic] private static bool _snapshotNetForTest;
+#endif
+
+    /// <summary>
+    /// Something in the snapshot found its reuse wrong: no more reuse in it (outputs dropped), and its net reports a detection
+    /// (the snapshot built again the game's way). Never throws.
+    /// </summary>
+    private static void SnapshotTaint(string what)
+    {
+        _snapshotTaint ??= what;
+        try
+        {
+            _exactScope = true;
+            ClearAugmented();
+        }
+        catch
+        {
+            // The net reports the taint whatever was left: the snapshot is built again.
+        }
+    }
+
+    /// <summary>
+    /// The net, at the end of the checksum's outermost snapshot (SnapshotVerifier's FromRun postfix, before the snapshot is
+    /// returned to the game's checksum): true when the snapshot must be built again the game's way. For each kept output the
+    /// snapshot reused, one fresh call of the game's walk (its postfixes, every other mod's, run as the game runs them; this
+    /// mod's listener optimizations suspended) is enumerated as far as the kept output was pulled, and compared element by
+    /// element, by reference, with it: every element any caller of the snapshot read is one of those (a reuse replays the kept
+    /// elements, a memo judges them). Where the kept output reached its end, the fresh one must end there too; where it didn't
+    /// (every caller stopped early), the fresh one must have at least as many. Also a detection: a kept output that threw, a
+    /// state version change during the snapshot, anything the snapshot's own checks found (a checked reuse, a memo check) or an
+    /// error of this code or in the fresh walk. A detection is counted (<see cref="SnapshotDetections"/>, part of
+    /// SnapshotVerifier.Detections); nothing is turned off. From here to the scope's end nothing is reused. Never throws.
+    /// </summary>
+    internal static bool EndSnapshotWalks()
+    {
+        if (!_snapshotReuse || _snapshotDepth != 1)
+        {
+            return false;
+        }
+        List<KeptOutput>? reused = _snapshotReused;
+        // The walks this snapshot kept outputs of (combat, run): whose code the seal names if the state changed.
+        bool combatWalked = false, runWalked = false;
+        if (reused != null)
+        {
+            foreach (KeptOutput entry in reused)
+            {
+                combatWalked |= entry.Output.Key.Item1 is CombatState;
+                runWalked |= entry.Output.Key.Item1 is RunState;
+            }
+        }
+        string? why = _snapshotTaint;
+        bool versionMoved = _version != _snapshotVersion;
+        SnapshotSeal? seal = _snapshotSeal;
+        MegaCrit.Sts2.Core.Runs.IRunState? run = _snapshotRun;
+        _snapshotReuse = false;
+        _snapshotTaint = null;
+        _snapshotSeal = null;
+        _snapshotRun = null;
+        // The memos used in the snapshot, taken before the outputs close (their close drops them).
+        var memos = new List<(LazyOutput Output, object Filter, FilteredMemo Memo)>();
+        try
+        {
+            if (reused != null)
+            {
+                foreach (KeptOutput entry in reused)
+                {
+                    foreach (KeyValuePair<object, FilteredMemo> pair in entry.Output.MemoList())
+                    {
+                        memos.Add((entry.Output, pair.Key, pair.Value));
+                    }
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            why ??= "the snapshot's memos couldn't be listed: " + e.Message;
+        }
+        try
+        {
+            _exactScope = true;
+            ClearAugmented();
+        }
+        catch
+        {
+            // Nothing reused from here: _exactScope is set first.
+        }
+        if (why == null && (reused == null || reused.Count == 0))
+        {
+            return false;
+        }
+        try
+        {
+            if (why == null && versionMoved)
+            {
+                why = "the state changed during the check";
+            }
+            for (int i = 0; why == null && i < reused!.Count; i++)
+            {
+#if BENCH
+                SnapshotNetCompared++;
+#endif
+                why = CompareWithFresh(reused[i].Output);
+            }
+            // Every memo used in the snapshot against KeptOnly's own loop over the fresh walk (equal to its kept output, element by
+            // element, once the comparisons above found nothing).
+            for (int i = 0; why == null && i < memos.Count; i++)
+            {
+#if BENCH
+                SnapshotMemosCompared++;
+#endif
+                why = FastListeners.MemoAgainstLoop(memos[i].Memo, memos[i].Filter, memos[i].Output);
+            }
+        }
+        catch (Exception e)
+        {
+            SnapshotNetErrors++;
+            why = "the comparison with a fresh walk failed: " + e.Message;
+        }
+        finally
+        {
+            reused?.Clear();
+        }
+#if BENCH
+        if (_injectNetDifference && why == null)
+        {
+            _injectNetDifference = false;
+            why = "injected (bdperf snapnet)";
+        }
+#endif
+        // What other mods' enumeration code did to the state FromRun only reads (after the fresh walks: they ran it too, as the
+        // game's walks would have): a change is a detection, and the RNGs drawn are put back as they were before the snapshot
+        // (v0.111+), so the snapshot built again draws them as the game's own FromRun does. Nothing is turned off: the next
+        // snapshot is decided the same way on every peer (a switch-off kept per run or session would differ on a peer that
+        // rejoined or restarted).
+        if (seal != null && run != null && seal.Changed(run) is { } changed)
+        {
+            SnapshotSealChanges++;
+            bool restored = seal.RestoreRngs();
+            if (!restored)
+            {
+                SnapshotSealUnrestored++;
+            }
+            string walks = WalkOwners(combatWalked, runWalked);
+            string sealedLine = $"other mods' code on {walks} changed what a co-op state check reads while it was enumerated ({changed}): "
+                + (restored ? "the RNGs drawn were put back and the check is built again the game's way"
+                    : "it can't be put back on this game version; the check is built again the game's way");
+            why ??= sealedLine;
+            if (_sealedWalks == null || !_sealedWalks.Contains(walks))
+            {
+                // A line per walk set and session (the counter, ListenerCache.SnapshotWalks.Sealed, counts every one), the mods named
+                // in bdopt why too (the kept note).
+                (_sealedWalks ??= new HashSet<string>(StringComparer.Ordinal)).Add(walks);
+                Log.Info($"[{ModEntry.Id}] {Name}: {sealedLine}");
+                NoteSnapshotWalks();
+            }
+        }
+        if (why == null)
+        {
+            return false;
+        }
+        SnapshotDetected(why);
+        return true;
+    }
+
+    /// <summary>
+    /// One fresh call of the game's walk for <paramref name="kept"/>'s key compared with it (see <see cref="EndSnapshotWalks"/>):
+    /// null when the same, else what differs. Its exceptions (another mod's code in the fresh walk) reach the caller.
+    /// </summary>
+    private static string? CompareWithFresh(LazyOutput kept)
+    {
+        if (kept.Failed)
+        {
+            return "a reused output threw";
+        }
+        (object state, object? child) = kept.Key;
+        return RunVanilla<string?>(() =>
+        {
+            IEnumerable<AbstractModel> fresh = FreshWalk(state, child);
+            using IEnumerator<AbstractModel> enumerator = fresh.GetEnumerator();
+            for (int i = 0; i < kept.Count; i++)
+            {
+                if (!enumerator.MoveNext())
+                {
+                    return $"{i} listeners, the reused output {kept.Count}";
+                }
+                if (!ReferenceEquals(enumerator.Current, kept[i]))
+                {
+                    return $"listener {i} differs";
+                }
+            }
+            return kept.Complete && enumerator.MoveNext() ? $"more than the reused output's {kept.Count} listeners" : null;
+        });
+    }
+
+    /// <summary>The game's walk of a key: (combat state, null) or (run state, child combat or null), called as the game calls it.</summary>
+    private static IEnumerable<AbstractModel> FreshWalk(object state, object? child)
+    {
+#if BENCH
+        if (_netSourceForTest != null)
+        {
+            return _netSourceForTest((state, child));
+        }
+#endif
+        return state switch
+        {
+            CombatState combat when child == null => combat.IterateHookListeners(),
+            RunState run => run.IterateHookListeners(child as ICombatState),
+            _ => throw new InvalidOperationException("unknown walk key " + state.GetType().Name),
+        };
+    }
+
+    private static bool _detectionLogged;
+
+    /// <summary>The walks (with their other mods' patches) whose code changed what a state check reads, this session (the seal).</summary>
+    private static HashSet<string>? _sealedWalks;
+
+    /// <summary>
+    /// The walks a snapshot kept outputs of, each with the Harmony ids of the other mods' patches on it and their mod names (as
+    /// back-off lines give them): what the seal's log line and bdopt why name. Never throws.
+    /// </summary>
+    private static string WalkOwners(bool combat, bool run)
+    {
+        var parts = new List<string>();
+        try
+        {
+            foreach ((bool walked, MethodBase? walk) in new[] { (combat, (MethodBase?)_combatIterate), (run, (MethodBase?)_runIterate) })
+            {
+                if (!walked || walk == null)
+                {
+                    continue;
+                }
+                string[] ids = Harmony.GetPatchInfo(walk) is { } info
+                    ? info.Prefixes.Concat(info.Postfixes).Concat(info.Transpilers).Concat(info.Finalizers)
+                        .Select(p => p.owner).Where(owner => !PatchGuard.IsOurs(owner)).Distinct().OrderBy(o => o, StringComparer.Ordinal).ToArray()
+                    : Array.Empty<string>();
+                string[] mods = PatchSafety.OtherModsPatching(new[] { walk }).Concat(HarmonyWatch.HiddenOwners(walk)).Distinct().ToArray();
+                parts.Add($"{walk.DeclaringType?.Name}.{walk.Name} (Harmony ids: {(ids.Length > 0 ? string.Join(", ", ids) : "none")}; "
+                    + $"mods: {(mods.Length > 0 ? string.Join(", ", mods) : "unknown")})");
+            }
+        }
+        catch
+        {
+            // The line still says what changed.
+        }
+        return parts.Count > 0 ? string.Join(" and ", parts) : "the listener walks";
+    }
+
+    private static void SnapshotDetected(string why)
+    {
+        SnapshotDetections++;
+#if BENCH
+        if (_selfTesting)
+        {
+            return;
+        }
+#endif
+#if BENCH
+        if (why.StartsWith("injected", StringComparison.Ordinal))
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: a state check's walk reuse reported different by the test tooling: built again the game's way");
+            return;
+        }
+#endif
+        if (!_detectionLogged)
+        {
+            _detectionLogged = true;
+            Log.Error($"[{ModEntry.Id}] {Name}: a co-op state check that reused listener walk outputs (other mods' postfixes included) "
+                + $"differs from the game's walks ({why}): that check is built again the game's way before it is used (each time this happens). "
+                + "Please report this log.");
+            NoteSnapshotWalks();
+        }
+        else
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: a state check's walk reuse differs again ({why}): built again the game's way ({SnapshotDetections} so far).");
+        }
+    }
+
+    /// <summary>
+    /// At the outermost snapshot scope's end (its finalizer): a snapshot that reused walk outputs and returned without its net
+    /// having run (SnapshotVerifier's postfix didn't run: never seen) was used unchecked. The part is turned off for the session
+    /// (a fault of the net itself: from then on snapshots run exact, as before this part; CoopModeTag retags). Never throws.
+    /// </summary>
+    private static void EndSnapshotScope(Exception? exception)
+    {
+        if (!_snapshotReuse)
+        {
+            return;
+        }
+        bool reused = _snapshotTaint != null || _snapshotReused is { Count: > 0 };
+        SnapshotSeal? seal = _snapshotSeal;
+        _snapshotReuse = false;
+        _snapshotTaint = null;
+        _snapshotReused?.Clear();
+        _snapshotSeal = null;
+        _snapshotRun = null;
+        if (!reused)
+        {
+            return;
+        }
+        if (exception != null)
+        {
+            // FromRun threw before its net ran (the game's body, a prefix or a postfix before SnapshotVerifier's), with reused
+            // outputs: the game's own FromRun might not have. SnapshotVerifier's finalizer builds it again exactly and returns
+            // that (or its exception); the RNGs drawn meanwhile are put back first.
+            seal?.RestoreRngs();
+            _threwAfterReuse = true;
+            return;
+        }
+        try
+        {
+            SnapshotWalksEnabled = false;
+            PatchSafety.Fault(SnapshotWalksName);
+            Log.Error($"[{ModEntry.Id}] {Name}: a co-op state check reused listener walk outputs but its comparison didn't run: "
+                + "this reuse is off for this session (state checks run as before). Please report this log.");
+            Config.Settings.ApplyAll();
+        }
+        catch
+        {
+            SnapshotWalksEnabled = false;
+        }
+    }
+
+    /// <summary>
+    /// This player's co-op tag for the snapshot walk reuse (CoopModeTag), from the walks' per-walk decisions: "" when every walk
+    /// carrying other mods' postfixes is reused in snapshots (or none carries any: nothing to reuse anywhere); <c>+exactsnap</c>
+    /// when none of them is; <c>+exactsnap-c</c> / <c>+exactsnap-r</c> when the combat / run walk carries them but isn't reused
+    /// while the other is. Two players whose snapshots would reuse different walks carry different tags (a premise violation the
+    /// net misses would make their checksums differ at the same point every time): the game's join check keeps them apart.
+    /// Inputs: what <see cref="BeginSnapshotReuse"/> and <see cref="AugmentedReuse"/> read that doesn't depend on the snapshot
+    /// or the moment: the switches and faults, the net in place, the walks' patches (setup), the scope check without the
+    /// thread's suspension (<see cref="ScopesSafe"/> with <c>atLoad</c>), and this mod's walk postfix sorting last after another
+    /// mod's on each walk (Harmony's sort, HarmonyWatch's cached verdict). Left out: the state (the Sample mode's 1,000-card gate
+    /// is the same on every peer; Mode itself is test tooling), a mid-scope declined mirror, RunVanilla. Unsure: <c>+exactsnap</c>.
+    /// Never throws.
+    /// </summary>
+    public static string SnapshotWalksTag
+    {
+        get
+        {
+            try
+            {
+                MethodBase? combatWalk = _combatIterate ?? Reflect.Method(typeof(CombatState), nameof(CombatState.IterateHookListeners));
+                MethodBase? runWalk = _runIterate ?? Reflect.Method(typeof(RunState), nameof(RunState.IterateHookListeners), new[] { typeof(ICombatState) });
+                bool combatOthers = PatchSafety.HasOtherPatches(combatWalk), runOthers = PatchSafety.HasOtherPatches(runWalk);
+                if (!combatOthers && !runOthers)
+                {
+                    return "";
+                }
+                bool on = _applied && SnapshotWalksEnabled && SnapshotEnabled && PatchSafety.ShapeRules && _combatWalkPostfix != null && _runWalkPostfix != null
+                    && SnapshotVerifier.NetApplied && !PatchSafety.IsFaulted(Name) && !PatchSafety.IsFaulted(SnapshotWalksName)
+                    && ScopesSafe(out _, out _, atLoad: true);
+                bool combatReused = on && combatOthers && PostfixLast(_combatIterate, _combatWalkPostfix!, ref _combatLast);
+                bool runReused = on && runOthers && PostfixLast(_runIterate, _runWalkPostfix!, ref _runLast);
+                bool combatExact = combatOthers && !combatReused, runExact = runOthers && !runReused;
+                return !combatExact && !runExact ? ""
+                    : !combatReused && !runReused ? CoopModeTag.ExactSnapSuffix
+                    : combatExact ? CoopModeTag.ExactSnapSuffix + "-c"
+                    : CoopModeTag.ExactSnapSuffix + "-r";
+            }
+            catch
+            {
+                return CoopModeTag.ExactSnapSuffix;
+            }
+        }
+    }
+
+    /// <summary>The kept note of this part (preflight): which walks a state check may reuse, with the mods patching them.</summary>
+    private static void NoteSnapshotWalks()
+    {
+        try
+        {
+            var walks = new List<MethodBase>();
+            if (PatchSafety.ShapeRules && SnapshotWalksEnabled && SnapshotEnabled && _applied && SnapshotVerifier.NetApplied
+                && _combatWalkPostfix != null && _runWalkPostfix != null)
+            {
+                if (PatchSafety.HasOtherPatches(_combatIterate) && PostfixLast(_combatIterate, _combatWalkPostfix, ref _combatLast))
+                {
+                    walks.Add(_combatIterate!);
+                }
+                if (PatchSafety.HasOtherPatches(_runIterate) && PostfixLast(_runIterate, _runWalkPostfix, ref _runLast))
+                {
+                    walks.Add(_runIterate!);
+                }
+            }
+            if (walks.Count == 0)
+            {
+                PatchSafety.ClearKept(SnapshotWalksName, "snapshot_walks");
+                return;
+            }
+            var mods = new List<string>(PatchSafety.OtherModsPatching(walks));
+            foreach (MethodBase walk in walks)
+            {
+                mods.AddRange(HarmonyWatch.HiddenOwners(walk));
+            }
+            string names = string.Join(", ", walks.Select(m => $"{m.DeclaringType?.Name}.{m.Name}"));
+            PatchSafety.Kept(SnapshotWalksName, "snapshot_walks", $"other mods' code on the listener walks ({names}) runs once per co-op state "
+                + $"check instead of once per walk, above {SnapshotVerifier.MaxCombatCards} combat cards: its output is reused for that check's walks "
+                + "(a stated premise: within one state check, at one state, it gives the same listeners); at the check's end, before the "
+                + "state is used, every reused output is compared with a fresh call of the game's walk, and a difference builds that check "
+                + "again the game's way (the checksum sent is then the game's)"
+                + (SnapshotDetections > 0 ? $"; differences found this session: {SnapshotDetections}" : "")
+                + (_sealedWalks is { Count: > 0 } ? "; this session, other mods' code on " + string.Join("; ", _sealedWalks)
+                    + " changed what a state check reads while it was enumerated (each time: the RNGs drawn put back, the check built again)" : ""),
+                mods.ToArray());
+        }
+        catch
+        {
+            // Display only.
+        }
     }
 
     /// <summary>
@@ -1868,6 +2586,9 @@ public static class ListenerCache
 
             // 8. KeptOnly's memo over a kept output (Walks Tier 2): the same result, the same pulls, every way it falls back.
             MemoSelfTest(Expect);
+
+            // 9. The checksum snapshot's walk reuse and its net (DESIGN "Snapshot walk reuse").
+            SnapshotSelfTest(Expect, models);
         }
         catch (Exception e)
         {
@@ -1902,6 +2623,270 @@ public static class ListenerCache
         }
         lines.Add($"FOREIGN walkreuse selftest: {lines.Count} cases as expected");
         return lines;
+    }
+
+    /// <summary>
+    /// The checksum snapshot's walk reuse (no game state: the net's fresh walks are the test's): the snapshot's own check schedule
+    /// whatever was counted before, the net finding nothing when the fresh walk is the same, and a detection for every way it can
+    /// differ (another listener, shorter, longer than a complete output, none past a partly pulled one), for a checked reuse that
+    /// differed, a state change during the snapshot, a reused output that threw and the fresh walk throwing; a key walked once
+    /// compared too; nothing reused after the net. Removing the net (EndSnapshotWalks returning false) fails the detection cases.
+    /// </summary>
+    private static void SnapshotSelfTest(Action<bool, string> expect, AbstractModel[] models)
+    {
+        bool wasExact = _exactScope, wasSafeHere = _safe, wasSuspended = _suspended, wasCombatAugmented = _combatAugmented, wasRunAugmented = _runAugmented;
+        bool wasSnapshotEnabled = SnapshotEnabled, wasPart = SnapshotWalksEnabled, wasDisplayPart = WalkReuseEnabled, wasDeclined = _mirrorDeclined;
+        int wasSnapshot = _snapshotDepth, wasRefresh = _refreshDepth, wasSerial = _scopeSerial, wasVersion = _version;
+        MethodInfo? wasCombatPostfix = _combatWalkPostfix, wasRunPostfix = _runWalkPostfix;
+        long wasDetections = SnapshotDetections, wasErrors = SnapshotNetErrors, wasReuses = SnapshotWalkReuses, wasKept = SnapshotWalksKept;
+        long wasChecks = SnapshotWalkChecks, wasCompared = SnapshotNetCompared;
+        MethodInfo anyPostfix = typeof(ListenerCache).GetMethod(nameof(CombatAugmentedPostfix), BindingFlags.NonPublic | BindingFlags.Static)!;
+        int freshCalls = 0;
+        AbstractModel[] fresh = models.Take(4).ToArray();
+        try
+        {
+            _snapshotNetForTest = true;
+            _netSourceForTest = _ =>
+            {
+                freshCalls++;
+                return fresh;
+            };
+            _combatWalkPostfix ??= anyPostfix;
+            _runWalkPostfix ??= anyPostfix;
+            SnapshotEnabled = true;
+            SnapshotWalksEnabled = true;
+            _suspended = false;
+
+            // A snapshot as EnterSnapshot opens it (outermost), the walks of a key, its net, its scope's end.
+            bool Snapshot(Func<(object, object?), bool> body, out bool detected)
+            {
+                _snapshotDepth = 0;
+                _refreshDepth = 0;
+                EnterAny();
+                _safe = true;
+                _combatAugmented = true;
+                _mirrorDeclined = false;
+                BlockReuse();
+                bool began = BeginSnapshotReuse(null);
+                _snapshotDepth = 1;
+                var key = ((object)models[5], (object?)null);
+                bool ok = began && body(key);
+                detected = EndSnapshotWalks();
+                ExitSnapshot(null, 1);
+                return ok;
+            }
+            AbstractModel[] four = models.Take(4).ToArray();
+
+            // a. Kept, the first reuse checked, then reused; the same fresh walk: nothing found; nothing reused after the net.
+            IEnumerable<AbstractModel>? held = null;
+            bool sameOk = Snapshot(key =>
+            {
+                bool firstOk = Augmented(key, four).SequenceEqual(four);
+                IEnumerable<AbstractModel> second = Augmented(key, four);
+                bool checkedOk = second is CheckedOutput && second.SequenceEqual(four);
+                held = Augmented(key, models.Skip(4).ToArray());
+                return firstOk && checkedOk && held is ReusedOutput && held.SequenceEqual(four) && ReuseOpen;
+            }, out bool sameDetected);
+            expect(sameOk && !sameDetected && freshCalls == 1 && SnapshotDetections == wasDetections, "snapshot: kept, first reuse checked, then reused; the same fresh walk: no detection");
+            expect(held != null && held.SequenceEqual(models.Skip(4)), "snapshot: a reuse enumerated after the net is the call's own output");
+
+            // b. The schedule is the snapshot's own: walks 2 and 3 checked then reused whatever the display counts were.
+            string Schedule()
+            {
+                string kinds = "";
+                Snapshot(key =>
+                {
+                    Augmented(key, four).ToList();
+                    for (int i = 0; i < 3; i++)
+                    {
+                        IEnumerable<AbstractModel> output = Augmented(key, four);
+                        kinds += output is CheckedOutput ? "C" : output is ReusedOutput ? "R" : "?";
+                        output.ToList();
+                    }
+                    return true;
+                }, out _);
+                return kinds;
+            }
+            string scheduleA = Schedule();
+            for (int i = 0; i < 7; i++)
+            {
+                CountReuse(((object)models[5], (object?)null));
+            }
+            string scheduleB = Schedule();
+            expect(scheduleA == "CRR" && scheduleB == "CRR", $"snapshot: the check schedule is the snapshot's own ({scheduleA}, {scheduleB})");
+
+            // c. Every way the fresh walk can differ: found (each one a detection); none past a partly pulled output.
+            bool Detects(AbstractModel[] freshNow, int read)
+            {
+                fresh = freshNow;
+                Snapshot(key =>
+                {
+                    Augmented(key, four).Take(read).ToList();
+                    Augmented(key, four).Take(read).ToList(); // Checked, covered (stopped within what was pulled).
+                    Augmented(key, four).Take(read).ToList(); // Reused.
+                    return true;
+                }, out bool found);
+                return found;
+            }
+            long before = SnapshotDetections;
+            expect(Detects(new[] { models[0], models[1], models[5], models[3] }, 99), "snapshot net: another listener found");
+            expect(Detects(models.Take(3).ToArray(), 99), "snapshot net: a shorter fresh walk found");
+            expect(Detects(models.Take(5).ToArray(), 99), "snapshot net: longer than a complete output found");
+            expect(!Detects(models.Take(5).ToArray(), 2), "snapshot net: longer than a partly pulled output: no difference (nothing past it was read)");
+            expect(Detects(new[] { models[0], models[4] }, 2), "snapshot net: a difference within a partly pulled output found");
+            expect(SnapshotDetections == before + 4, "snapshot net: each difference counted as a detection");
+            fresh = four;
+
+            // d. A checked reuse differing in the snapshot: reported by the net (no fresh walk needed), the display part untouched.
+            int callsBefore = freshCalls;
+            WalkReuseEnabled = true;
+            Snapshot(key =>
+            {
+                Augmented(key, four).ToList();
+                Augmented(key, models.Take(3).ToArray()).ToList(); // Checked: shorter than the complete kept output.
+                return true;
+            }, out bool checkedDetected);
+            expect(checkedDetected && freshCalls == callsBefore && WalkReuseEnabled && SnapshotWalksEnabled,
+                "snapshot: a checked reuse that differs is a detection, nothing turned off");
+
+            // e. A state version change after a reuse: a detection, and no reuse after it.
+            bool openAfterBump = true;
+            Snapshot(key =>
+            {
+                Augmented(key, four).ToList();
+                Augmented(key, four).ToList();
+                Bump();
+                openAfterBump = ReuseOpen;
+                return true;
+            }, out bool bumpDetected);
+            expect(bumpDetected && !openAfterBump, "snapshot: a state change during it is a detection, no reuse after it");
+
+            // f. The fresh walk throwing (another mod's code): a detection, nothing escapes.
+            Func<(object, object?), IEnumerable<AbstractModel>>? wasSource = _netSourceForTest;
+            _netSourceForTest = _ => new CountingSource(four, throwAt: 1);
+            long errorsBefore = SnapshotNetErrors;
+            bool escaped = false;
+            bool throwDetected = false;
+            try
+            {
+                Snapshot(key =>
+                {
+                    Augmented(key, four).ToList();
+                    Augmented(key, four).ToList();
+                    Augmented(key, four).ToList();
+                    return true;
+                }, out throwDetected);
+            }
+            catch
+            {
+                escaped = true;
+            }
+            _netSourceForTest = wasSource;
+            expect(throwDetected && !escaped && SnapshotNetErrors == errorsBefore + 1, "snapshot net: a fresh walk that throws is a detection, nothing escapes");
+
+            // g. A reused output that threw: a detection.
+            bool reusedThrew = false;
+            Snapshot(key =>
+            {
+                var source = new CountingSource(four, throwAt: 2);
+                Augmented(key, source).Take(2).ToList();
+                Augmented(key, four).Take(2).ToList(); // Checked, covered.
+                try
+                {
+                    Augmented(key, four).ToList(); // Reused, pulled past the throw.
+                }
+                catch (SelfTestException)
+                {
+                    reusedThrew = true;
+                }
+                return true;
+            }, out bool failedDetected);
+            expect(reusedThrew && failedDetected, "snapshot net: a reused output that threw is a detection");
+
+            // h. One walk of a key: its kept output is compared too (the same fresh walk: nothing found).
+            callsBefore = freshCalls;
+            Snapshot(key =>
+            {
+                Augmented(key, four).ToList();
+                return true;
+            }, out bool loneDetected);
+            expect(!loneDetected && freshCalls == callsBefore + 1, "snapshot: a key walked once is compared too");
+            fresh = models.Take(3).ToArray();
+            Snapshot(key =>
+            {
+                Augmented(key, four).ToList();
+                return true;
+            }, out bool loneDifferent);
+            fresh = four;
+            expect(loneDifferent, "snapshot net: a key walked once that differs is found");
+
+            // j. The first snapshot inside a display scope with game logic resuming inline (a peer whose hand selection ended): its
+            // own context (nothing open around it, no suspension), the enclosing one back after it, exact from there as before.
+            _snapshotDepth = 0;
+            _refreshDepth = 0;
+            EnterDisplayRefresh(out int dispatch);
+            SuspendPrefix(out int suspension);
+            EnterSnapshot(null, out int snapState);
+            bool ownContext = _refreshDepth == 0 && !_suspended && _snapshotDepth == 1 && _enclosing != null;
+            ExitSnapshot(null, snapState);
+            ExitSnapshot(null, snapState); // Harmony may run a finalizer twice: restored once.
+            bool restored = _refreshDepth == 1 && _suspended && _snapshotDepth == 0 && _exactScope && _enclosing == null;
+            ResumeFinalizer(suspension);
+            ExitRefresh(null, dispatch);
+            expect(ownContext && restored && _refreshDepth == 0 && !_suspended,
+                "snapshot: the first one inside a suspended display scope runs in its own context, the enclosing one restored after it");
+            // Inside the vanilla reference (RunVanilla) a snapshot keeps the context it runs in (exact).
+            bool vanillaKept = RunVanilla(() =>
+            {
+                EnterDisplayRefresh(out int scope);
+                EnterSnapshot(null, out int state);
+                bool kept = _refreshDepth == 1 && _suspended && _enclosing == null;
+                ExitSnapshot(null, state);
+                ExitRefresh(null, scope);
+                return kept;
+            });
+            expect(vanillaKept, "snapshot: inside the vanilla reference it stays in its context");
+
+            // i. The part off: no snapshot reuse at all (BeginSnapshotReuse), the snapshot exact.
+            SnapshotWalksEnabled = false;
+            bool offBegan = Snapshot(_ => true, out bool offDetected);
+            SnapshotWalksEnabled = true;
+            expect(!offBegan && !offDetected && _exactScope == false, "snapshot: the part off, no reuse");
+        }
+        catch (Exception e)
+        {
+            expect(false, "snapshot cases threw: " + e);
+        }
+        finally
+        {
+            _snapshotNetForTest = false;
+            _netSourceForTest = null;
+            _enclosing = null;
+            _snapshotReuse = false;
+            _snapshotTaint = null;
+            _snapshotReused?.Clear();
+            _combatWalkPostfix = wasCombatPostfix;
+            _runWalkPostfix = wasRunPostfix;
+            SnapshotEnabled = wasSnapshotEnabled;
+            SnapshotWalksEnabled = wasPart;
+            WalkReuseEnabled = wasDisplayPart;
+            _exactScope = wasExact;
+            _safe = wasSafeHere;
+            _suspended = wasSuspended;
+            _combatAugmented = wasCombatAugmented;
+            _runAugmented = wasRunAugmented;
+            _mirrorDeclined = wasDeclined;
+            _snapshotDepth = wasSnapshot;
+            _refreshDepth = wasRefresh;
+            _scopeSerial = wasSerial;
+            _version = Math.Max(_version, wasVersion);
+            SnapshotDetections = wasDetections;
+            SnapshotNetErrors = wasErrors;
+            SnapshotWalkReuses = wasReuses;
+            SnapshotWalksKept = wasKept;
+            SnapshotWalkChecks = wasChecks;
+            SnapshotNetCompared = wasCompared;
+        }
     }
 
     /// <summary>
@@ -2573,7 +3558,9 @@ public static class ListenerCache
     public static T RunVanilla<T>(Func<T> action)
     {
         bool wasSuspended = _suspended;
+        int wasVanilla = _vanillaRef;
         _suspended = true;
+        _vanillaRef = wasVanilla + 1;
         try
         {
             return action();
@@ -2581,6 +3568,7 @@ public static class ListenerCache
         finally
         {
             _suspended = wasSuspended;
+            _vanillaRef = wasVanilla;
         }
     }
 
@@ -2791,10 +3779,7 @@ public static class ListenerCache
                 // serving prefix on every call, on the replayed list, once, as on the game's stream without this mod. Only
                 // the unpatched part is kept (what the scopes already assume stable); what the postfixes add, drop or reorder
                 // is computed live at each call. HookFilter, which uses the lists directly, stays off then (IsCaching).
-                bool combatOthers = PatchSafety.HasOtherPatches(_combatIterate), runOthers = PatchSafety.HasOtherPatches(_runIterate);
-                _safe = _applied && !PatchSafety.IsPatchedByOthers(_combatIterate, PatchTolerance.SurroundingOnly)
-                    && !PatchSafety.IsPatchedByOthers(_runIterate, PatchTolerance.SurroundingOnly)
-                    && !FastListeners.WalkCodePatchedByOthers() && (!(combatOthers || runOthers) || FastListeners.MirrorsUnpatched);
+                _safe = ScopesSafe(out bool combatOthers, out bool runOthers);
                 _combatAugmented = combatOthers;
                 _runAugmented = runOthers;
                 _mirrorDeclined = false;
@@ -2821,6 +3806,23 @@ public static class ListenerCache
     }
 
     private static bool _safeCheckFailed;
+
+    /// <summary>
+    /// The scope check an outermost scope makes at its start (<see cref="EnterAny"/>): no other mod's patch this class can't let
+    /// stand on the walks or the walk code FastListeners knows, and FastListeners' unpatched mirrors where other mods' postfixes
+    /// on the walks are let stand (<paramref name="combatOthers"/>, <paramref name="runOthers"/>). Setup only (the mods' patches):
+    /// the same on every peer with the same mods. May throw.
+    /// </summary>
+    private static bool ScopesSafe(out bool combatOthers, out bool runOthers, bool atLoad = false)
+    {
+        combatOthers = PatchSafety.HasOtherPatches(_combatIterate);
+        runOthers = PatchSafety.HasOtherPatches(_runIterate);
+        // atLoad (the co-op tag): the mirrors as applied and switched, not whether this thread is suspended right now.
+        return _applied && !PatchSafety.IsPatchedByOthers(_combatIterate, PatchTolerance.SurroundingOnly)
+            && !PatchSafety.IsPatchedByOthers(_runIterate, PatchTolerance.SurroundingOnly)
+            && !FastListeners.WalkCodePatchedByOthers()
+            && (!(combatOthers || runOthers) || (atLoad ? FastListeners.MirrorsApplied : FastListeners.MirrorsUnpatched));
+    }
 
     [ThreadStatic] private static bool _releaseAtExit;
 
@@ -3017,12 +4019,31 @@ public static class ListenerCache
     // A state of 0 is the default Harmony gives a finalizer whose prefix never ran (an earlier prefix threw): no scope was
     // opened, nothing to restore (restoring 0 would close the scopes this call runs nested in).
 
-    private static void EnterSnapshot(out int __state)
+    /// <summary>
+    /// The checksum snapshot's scope (<c>NetFullCombatState.FromRun</c>). The first one (no snapshot open) runs in a context of its
+    /// own (<see cref="SetAside"/>): whatever encloses it on this peer (a refresh scope, the CombatStateChanged dispatch with a
+    /// hand selection's end resuming the card's play inline, its suspension, another mod's handler) is set aside for its
+    /// duration, so it is decided and served exactly as a snapshot with nothing around it, the same on every peer (a peer whose
+    /// selection ended runs the action queue, and the checksum after each action, inside that dispatch: R3-3). It may reuse the
+    /// augmented walks' outputs (<see cref="BeginSnapshotReuse"/>, checked by its net at its end: <see cref="EndSnapshotWalks"/>).
+    /// A nested snapshot, or one inside the vanilla reference (<see cref="RunVanilla"/>), is exact from its start.
+    /// </summary>
+    private static void EnterSnapshot(MegaCrit.Sts2.Core.Runs.IRunState? runState, out int __state)
     {
         __state = _snapshotDepth + 1;
+        if (_snapshotDepth == 0 && _vanillaRef == 0 && _enclosing == null
+            && (_refreshDepth > 0 || _suspended || _foreignDepth > 0 || _materializingAugmented || _materializingCombat || _materializingRun))
+        {
+            SetAside();
+            __state |= SetAsideFlag;
+        }
+        bool outermost = _snapshotDepth + _refreshDepth == 0;
         EnterAny();
         BlockReuse();
-        ExactFromHere();
+        if (!(outermost && _vanillaRef == 0 && BeginSnapshotReuse(runState)))
+        {
+            ExactFromHere();
+        }
         _snapshotDepth++;
     }
 
@@ -3032,8 +4053,118 @@ public static class ListenerCache
         {
             return;
         }
-        _snapshotDepth = __state - 1;
+        bool setAside = (__state & SetAsideFlag) != 0;
+        _snapshotDepth = (__state & ~SetAsideFlag) - 1;
+        if (_snapshotDepth + _refreshDepth == 0)
+        {
+            EndSnapshotScope(__exception);
+        }
         ExitAny();
+        // Harmony runs the finalizers a second time when one throws: the context is restored once (_enclosing taken).
+        if (setAside && _enclosing != null)
+        {
+            Restore();
+        }
+    }
+
+    /// <summary>In a snapshot scope's state: its context was set aside at its start (<see cref="SetAside"/>).</summary>
+    private const int SetAsideFlag = 1 << 24;
+
+    /// <summary>
+    /// Inside <see cref="RunVanilla"/> (the vanilla reference: SnapshotVerifier's re-check, the benches): its snapshots stay exact
+    /// and in the context they run in. Apart from <see cref="_suspended"/>, which a suspension (game logic resuming inline) sets too.
+    /// </summary>
+    [ThreadStatic] private static int _vanillaRef;
+
+    /// <summary>What a first snapshot set aside (<see cref="SetAside"/>), until its end.</summary>
+    private sealed class EnclosingContext
+    {
+        public int RefreshDepth, ForeignDepth;
+        public bool Suspended, ExactScope, ReuseBlocked, Safe, CombatAugmented, RunAugmented, MirrorDeclined, ReleaseAtExit;
+        public bool MaterializingCombat, MaterializingRun, MaterializingAugmented;
+#if BENCH
+        public bool InGameHandler;
+#endif
+        public Dictionary<(object, object?), KeptOutput>? Augmented;
+        public Dictionary<(object, object?), (int Version, ReadOnlyCollection<AbstractModel> Listeners)>? Cache;
+        public HashSet<(object, object?)>? FromKept;
+    }
+
+    [ThreadStatic] private static EnclosingContext? _enclosing;
+
+    /// <summary>
+    /// A first snapshot inside another context: this thread's scope state as it is (refresh depth, suspension, another mod's
+    /// handler, the kept outputs and lists) put aside, and a context with nothing open in its place: the snapshot then opens as
+    /// an outermost scope (its own lists, its own kept outputs, its own exact flag and serial). Never throws.
+    /// </summary>
+    private static void SetAside()
+    {
+        _enclosing = new EnclosingContext
+        {
+            RefreshDepth = _refreshDepth, ForeignDepth = _foreignDepth, Suspended = _suspended, ExactScope = _exactScope,
+            ReuseBlocked = _reuseBlocked, Safe = _safe, CombatAugmented = _combatAugmented, RunAugmented = _runAugmented,
+            MirrorDeclined = _mirrorDeclined, ReleaseAtExit = _releaseAtExit, MaterializingCombat = _materializingCombat,
+            MaterializingRun = _materializingRun, MaterializingAugmented = _materializingAugmented,
+            Augmented = _augmented, Cache = _cache, FromKept = _fromKept,
+        };
+        _refreshDepth = 0;
+        _foreignDepth = 0;
+        _suspended = false;
+        _exactScope = false;
+        _reuseBlocked = false;
+        _releaseAtExit = false;
+        _materializingCombat = _materializingRun = _materializingAugmented = false;
+#if BENCH
+        _enclosing.InGameHandler = _inGameHandler;
+        _inGameHandler = false;
+#endif
+        _augmented = null;
+        _cache = null;
+        _fromKept = null;
+    }
+
+    /// <summary>
+    /// The snapshot set aside its context ended (its own scope closed): that context back, with what a snapshot inside it always
+    /// did to it (no kept list or walk output reused in it from here: <see cref="BlockReuse"/>, <see cref="ExactFromHere"/>, a new
+    /// serial so nothing handed out before is the kept output when enumerated later). Never throws.
+    /// </summary>
+    private static void Restore()
+    {
+        EnclosingContext? outer = _enclosing;
+        _enclosing = null;
+        if (outer == null)
+        {
+            return;
+        }
+        _refreshDepth = outer.RefreshDepth;
+        _foreignDepth = outer.ForeignDepth;
+        _suspended = outer.Suspended;
+        _exactScope = outer.ExactScope;
+        _reuseBlocked = outer.ReuseBlocked;
+        _safe = outer.Safe;
+        _combatAugmented = outer.CombatAugmented;
+        _runAugmented = outer.RunAugmented;
+        _mirrorDeclined = outer.MirrorDeclined;
+        _releaseAtExit = outer.ReleaseAtExit;
+        _materializingCombat = outer.MaterializingCombat;
+        _materializingRun = outer.MaterializingRun;
+        _materializingAugmented = outer.MaterializingAugmented;
+#if BENCH
+        _inGameHandler = outer.InGameHandler;
+#endif
+        _augmented = outer.Augmented;
+        _cache = outer.Cache;
+        _fromKept = outer.FromKept;
+        _scopeSerial++;
+        try
+        {
+            BlockReuse();
+            ExactFromHere();
+        }
+        catch
+        {
+            _exactScope = true;
+        }
     }
 
     /// <summary>
@@ -3207,5 +4338,7 @@ public static class ListenerCache
         _kept?.Clear();
         _augmented?.Clear();
         Log.Error($"[{ModEntry.Id}] {Name} disabled after exception, falling back to vanilla: {e}");
+        // Snapshots can no longer reuse walk outputs here: the co-op join list says so (SnapshotWalksTag).
+        CoopModeTag.Refresh();
     }
 }

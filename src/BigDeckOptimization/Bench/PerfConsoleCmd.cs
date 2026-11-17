@@ -59,7 +59,7 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
 
     public override string CmdName => "bdperf";
 
-    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | verify [off|sample|all] | combatstart | grid [cards:int] | probe [reset|log|on|off|nodes|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | sortkeys [wrong] | checks on|off | opt on|off [yes] | listeners [iterations:int] | costwrites | fault piles|walk | badges [clear|guard off|on] | snapgameerror <n> | reserialize [verify <n>] | clonememo [verify <n>] | conflicts | states | roomleft | modorder [none|<owner>] | firstturn inner | foreign <shape> <Type:Method> [gate] [priority N] | foreign remove|report|classify <Type:Method>";
+    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | verify [off|sample|all] | snapnet | combatstart | grid [cards:int] | probe [reset|log|on|off|nodes|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | sortkeys [wrong] | checks on|off | opt on|off [yes] | listeners [iterations:int] | costwrites | fault piles|walk | badges [clear|guard off|on] | snapgameerror <n> | reserialize [verify <n>] | clonememo [verify <n>] | conflicts | states | roomleft | modorder [none|<owner>] | firstturn inner | foreign <shape> <Type:Method> [gate] [priority N] | foreign remove|report|classify <Type:Method>";
 
     public override string Description => "[BigDeckOptimization] Measures the multiplayer post-action checksum cost, vanilla vs optimized, or shows/sets live snapshot verification.";
 
@@ -201,13 +201,13 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
     public override CmdResult Process(Player? issuingPlayer, string[] args)
     {
         string sub = args.Length > 0 ? args[0].ToLowerInvariant() : "";
-        if (sub is "checksum" or "refresh" or "listeners" or "pile" or "text" or "scan" or "plaque" or "grid" or "sortkeys" && !(sub is "pile" or "sortkeys" && args.Length > 1) && ModOff() is { } off)
+        if (sub is "checksum" or "refresh" or "listeners" or "pile" or "text" or "scan" or "plaque" or "grid" or "sortkeys" or "snapnet" && !(sub is "pile" or "sortkeys" && args.Length > 1) && ModOff() is { } off)
         {
             return off;
         }
         bool coop = RunManager.Instance.IsInProgress && !RunManager.Instance.IsSingleplayerOrFakeMultiplayer;
         // The benches freeze the game for seconds (vanilla runs) and replay game code: keep them out of real co-op.
-        if (sub is "checksum" or "refresh" && coop)
+        if (sub is "checksum" or "refresh" or "snapnet" && coop)
         {
             return new CmdResult(success: false, "bdperf " + sub + " is singleplayer only. In co-op use 'bdperf verify'.");
         }
@@ -220,7 +220,7 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
         }
         // Effect counters as the game's own calls left them (see EffectCounters); the benches read their own deltas inside.
         using IDisposable? frozen = sub is "checksum" or "refresh" or "listeners" or "pile" or "text" or "scan" or "plaque" or "grid" or "sortkeys"
-            or "relics" or "upgradebench" or "shufflebench" or "costhooks"
+            or "relics" or "upgradebench" or "shufflebench" or "costhooks" or "snapnet"
             ? EffectCounters.Freeze() : null;
         // Positive controls and limits of the safety nets (Bench/PerfInjections.cs).
         if (Injection(sub, args, coop) is { } injected)
@@ -285,6 +285,8 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                 return CompareChecksum(iterations);
             case "verify":
                 return Verify(args.Length >= 2 ? args[1] : null);
+            case "snapnet":
+                return SnapNet();
             case "blocks" when args.Length >= 2:
                 SnapshotCardReuse.BlockCopies = args[1] == "on";
                 return new CmdResult(success: true, $"{SnapshotCardReuse.Name}: unchanged runs of a pile's cards {(SnapshotCardReuse.BlockCopies ? "copied as blocks" : "composed card by card")}; {SnapshotCardReuse.BlockCopiedCards} cards copied in blocks so far.");
@@ -1172,6 +1174,82 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
         return new CmdResult(success: identical, msg);
     }
 
+    /// <summary>
+    /// <c>bdperf snapnet</c>: the snapshot walk reuse's whole path through the game's own call (<c>NetFullCombatState.FromRun</c>
+    /// with every patch: ListenerCache's EnterSnapshot, the walks, SnapshotVerifier's postfix, the net, RebuildIfDetected), with
+    /// other mods' walk postfixes installed (foreignpatch walk shapes). Four snapshots of the same state, each one's checksum
+    /// compared with the game's own (the whole mod off): plain (reused, compared by the net, nothing found); with the net made
+    /// to report a difference (a detection, the snapshot rebuilt: the rebuilt one is what FromRun returns); both again inside a
+    /// display refresh with game logic resuming inline (the checksum after an action on a peer whose hand selection ended inside
+    /// the CombatStateChanged dispatch): the same reuses as the plain one (decided as a snapshot with nothing around it).
+    /// SnapshotVerifier's live re-check is off meanwhile. Singleplayer.
+    /// </summary>
+    private static CmdResult SnapNet()
+    {
+        RunState? state = RunManager.Instance.DebugOnlyGetState();
+        if (state == null || !CombatManager.Instance.IsInProgress)
+        {
+            return new CmdResult(success: false, "Start a combat first.");
+        }
+        ChecksumTracker tracker = RunManager.Instance.ChecksumTracker;
+        VerifyMode mode = SnapshotVerifier.Mode;
+        var lines = new List<string>();
+        bool ok = true;
+        try
+        {
+            SnapshotVerifier.Mode = VerifyMode.Off;
+            uint vanilla = Vanilla(() => tracker.GenerateChecksum(NetFullCombatState.FromRun(state, null)));
+            (uint Checksum, long Reuses, long Kept, long Detections, int Rebuilt) Run(bool inject, bool nested)
+            {
+                long reuses = ListenerCache.SnapshotWalkReuses, kept = ListenerCache.SnapshotWalksKept, detections = ListenerCache.SnapshotDetections;
+                int rebuilt = SnapshotVerifier.Rebuilt;
+                if (inject)
+                {
+                    ListenerCache.InjectNetDifferenceForTest();
+                }
+                NetFullCombatState snapshot = nested
+                    ? ListenerCache.InsideSuspendedDispatchForTest(() => NetFullCombatState.FromRun(state, null))
+                    : NetFullCombatState.FromRun(state, null);
+                return (tracker.GenerateChecksum(snapshot), ListenerCache.SnapshotWalkReuses - reuses, ListenerCache.SnapshotWalksKept - kept,
+                    ListenerCache.SnapshotDetections - detections, SnapshotVerifier.Rebuilt - rebuilt);
+            }
+            var plain = Run(inject: false, nested: false);
+            var injected = Run(inject: true, nested: false);
+            var nestedPlain = Run(inject: false, nested: true);
+            var nestedInjected = Run(inject: true, nested: true);
+            void Line(string what, (uint Checksum, long Reuses, long Kept, long Detections, int Rebuilt) r, bool expected)
+            {
+                lines.Add($"  {what}: checksum {r.Checksum} (game's {vanilla}), kept {r.Kept}, reused {r.Reuses}, detections {r.Detections}, rebuilt {r.Rebuilt}: {(expected ? "as expected" : "UNEXPECTED")}");
+                ok &= expected;
+            }
+            Line("plain", plain, plain.Checksum == vanilla && plain.Reuses > 0 && plain.Detections == 0 && plain.Rebuilt == 0);
+            Line("net made to differ", injected, injected.Checksum == vanilla && injected.Reuses > 0 && injected.Detections == 1 && injected.Rebuilt == 1);
+            Line("inside a suspended dispatch", nestedPlain, nestedPlain.Checksum == vanilla && nestedPlain.Reuses == plain.Reuses
+                && nestedPlain.Kept == plain.Kept && nestedPlain.Detections == 0 && nestedPlain.Rebuilt == 0);
+            Line("inside a suspended dispatch, net made to differ", nestedInjected, nestedInjected.Checksum == vanilla
+                && nestedInjected.Reuses == plain.Reuses && nestedInjected.Detections == 1 && nestedInjected.Rebuilt == 1);
+        }
+        catch (Exception e)
+        {
+            lines.Add("  threw: " + e);
+            ok = false;
+        }
+        finally
+        {
+            SnapshotVerifier.Mode = mode;
+        }
+        string msg = $"snapnet — the snapshot walk reuse through FromRun ({(ok ? "OK" : "MISMATCH")})\n" + string.Join("\n", lines);
+        if (ok)
+        {
+            Log.Info("[BigDeckOptimization] " + msg.Replace("\n", " |"));
+        }
+        else
+        {
+            Log.Error("[BigDeckOptimization] " + msg.Replace("\n", " |"));
+        }
+        return new CmdResult(success: ok, msg);
+    }
+
     private static CmdResult CompareChecksum(int iterations)
     {
         RunState? state = RunManager.Instance.DebugOnlyGetState();
@@ -1200,6 +1278,9 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
         static long? FilterCount() => HookFilter.Served;
         long cacheServed = 0, reuseServed = 0;
         long? filterServed = null;
+        // The checksum snapshot's walk reuse (other mods' postfixes on the walks), in every row with the state check on: reuses,
+        // fresh walks its net compared, snapshots it found wrong (built again the game's way: the row's checksum is the game's).
+        long snapReusesBefore = ListenerCache.SnapshotWalkReuses, snapComparedBefore = ListenerCache.SnapshotNetCompared, snapDetectionsBefore = ListenerCache.SnapshotDetections;
         try
         {
             // The bench compares against vanilla itself; live verification would skew timings.
@@ -1274,6 +1355,8 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
             + filtered.Format("cache+filter") + "\n"
             + optimized.Format("+card reuse ") + "\n"
             + $"  served: cache {cacheServed}, filter {(filterServed is { } f ? f.ToString() : "not counted")}, card reuse {reuseServed}\n"
+            + $"  snapshot walks: reused {ListenerCache.SnapshotWalkReuses - snapReusesBefore}, compared by the net {ListenerCache.SnapshotNetCompared - snapComparedBefore}, "
+            + $"found different and built again {ListenerCache.SnapshotDetections - snapDetectionsBefore}\n"
             + cacheNote
             + (!identical ? "  MISMATCH: optimized checksum differs from vanilla!"
                 : !engaged ? $"  not compared: {string.Join(", ", idle)}: identical checksums, but that row compared the row before it with itself"

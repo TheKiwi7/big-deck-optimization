@@ -1,0 +1,56 @@
+# The snapshot walk net's seal (A/B, mod on; DESIGN "Snapshot walk reuse", review of 2026-11-17): a postfix of "another mod" on
+# CombatState.IterateHookListeners (walk-snaprng-postfix) whose output draws the run's Niche RNG once each time it starts being
+# enumerated inside a FromRun call: a lazy side effect a reused output runs fewer times than the game's walks, unseen by
+# comparing walk outputs. The net's seal must find the RNG drawn, put it back as it was before the snapshot and build the
+# snapshot again exactly, so the RNG ends as the game's own FromRun leaves it (foreignpatch require snapwalks sealed: seal
+# changes, none left unrestored, rebuilt). The live re-check runs on every snapshot (bdperf verify all): it starts from the RNGs
+# as the snapshot found them and puts them back to what the snapshot left (its own draws undone), so it finds no difference
+# (bdperf verify check) and changes nothing. CHECKSUM and STATE identical with foreign-snaprng-1k-off (the RNG's later draws
+# included). The detection is logged once, naming the walk and the Harmony ids and mods patching it, and counted
+# (ListenerCache.SnapshotWalks.Sealed). Game v0.111+ (v0.107.1 has no way to put an RNG back: SKIPPED). ~945 cards.
+timeout 1800
+requiregame v0.111
+expect ListenerCache: a co-op state check that reused listener walk outputs \(other mods' postfixes included\) differs from the game's walks
+expect EFFECTCHECK ListenerCache\.SnapshotWalks\.Sealed grew since 'start': [0-9]+ -> [1-9]
+expect ListenerCache: other mods' code on CombatState\.IterateHookListeners \(Harmony ids: [^;]*bdtest\.foreign\.walk-snaprng-postfix[^;]*; mods: .*\) changed what a co-op state check reads while it was enumerated \(an RNG was drawn during the check\): the RNGs drawn were put back
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+cmd bdperf verify all
+foreignpatch walk-snaprng-postfix MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners
+effects start
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+foreignpatch report end
+foreignpatch snapwalks status
+effects end
+effectcheck ListenerCache.SnapshotWalks.Sealed grew start
+foreignpatch require snapwalks sealed
+cmd bdperf verify check
+cmd bdopt why
+counters end
+foreignpatch remove
+quit

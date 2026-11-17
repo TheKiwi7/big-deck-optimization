@@ -320,6 +320,8 @@ public static class Settings
 
     public const string KeptTipsText = "Still on with {mods}. When a creature's tooltips haven't changed, they aren't rebuilt and keep what those mods added.";
 
+    public const string KeptSnapWalksText = "Still on with {mods}. In the state check after each action, their additions to the lists of what reacts to an effect are worked out once per check instead of for every card, then compared with the game's own before the check is used. The game itself isn't changed.";
+
     /// <summary>
     /// The kept notes the menu has a sentence for (the owner-approved premises, DESIGN "Owner-approved premises"), by note key:
     /// the translation key and the English text. Other kept notes are in bdopt why only (HookSkip's helper gates).
@@ -333,6 +335,7 @@ public static class Settings
         ("name_gates", "kept_names", KeptNamesText),
         ("identity_bridges", "kept_bridges", KeptBridgesText),
         ("walk_reuse", "kept_walks", KeptWalksText),
+        ("snapshot_walks", "kept_snapwalks", KeptSnapWalksText),
     };
 
     /// <summary>
@@ -604,11 +607,11 @@ public static class Settings
             "Visual: plays the combat-start relic effects without their animation waits (like the game's Instant speed), from the number of relics set below (0 = always, the default). Same results. Solo only: always on in co-op, so every player starts the combat at the same pace.",
             new[] { FastCombatStart.Name }, on => FastCombatStart.Enabled = on),
         new("coop_checksum", "Co-op state check",
-            "Faster state check after every action in co-op, and in solo too on newer game versions (the biggest co-op lag with huge decks).",
+            "Faster state check after every action in co-op, and in solo too on newer game versions (the biggest co-op lag with huge decks). Next to mods that add to the lists of what reacts to effects, co-op players can only join each other with this option set the same way.",
             new[] { ListenerCache.Name, ListenerCache.SnapshotFault }, on => ListenerCache.SnapshotEnabled = on,
             () => NoneApplied(ListenerCache.Name, ReplayStateSkip.Name, SavedPropertyLookup.Name, RelicStateReuse.Name, SnapshotCardReuse.Name),
-            parts: new OptionPart[] { new(SnapshotCardReuse.Name, NeedsMods: true), new(ReplayStateSkip.Name), new(SavedPropertyLookup.Name), new(RelicStateReuse.Name), new(RelicStateReuse.ScalarName) },
-            setParts: on => { Flag(() => SnapshotCardReuse.Enabled = Part(on, SnapshotCardReuse.Name)); Flag(() => ReplayStateSkip.Enabled = Part(on, ReplayStateSkip.Name)); Flag(() => SavedPropertyLookup.Enabled = Part(on, SavedPropertyLookup.Name)); Flag(() => RelicStateReuse.Enabled = Part(on, RelicStateReuse.Name)); Flag(() => RelicStateReuse.ScalarEnabled = Part(on, RelicStateReuse.ScalarName)); },
+            parts: new OptionPart[] { new(SnapshotCardReuse.Name, NeedsMods: true), new(ReplayStateSkip.Name), new(SavedPropertyLookup.Name), new(RelicStateReuse.Name), new(RelicStateReuse.ScalarName), new(ListenerCache.SnapshotWalksName) },
+            setParts: on => { Flag(() => SnapshotCardReuse.Enabled = Part(on, SnapshotCardReuse.Name)); Flag(() => ReplayStateSkip.Enabled = Part(on, ReplayStateSkip.Name)); Flag(() => SavedPropertyLookup.Enabled = Part(on, SavedPropertyLookup.Name)); Flag(() => RelicStateReuse.Enabled = Part(on, RelicStateReuse.Name)); Flag(() => RelicStateReuse.ScalarEnabled = Part(on, RelicStateReuse.ScalarName)); Flag(() => ListenerCache.SnapshotWalksEnabled = Part(on, ListenerCache.SnapshotWalksName)); },
             // A snapshot that differed from the game's: anything of the state check may be why.
             wholeFaults: new[] { ListenerCache.SnapshotFault }),
         new("combat_refresh", "Combat refresh",
@@ -989,6 +992,9 @@ public static class Settings
                 MegaCrit.Sts2.Core.Logging.Log.Warn($"[{ModEntry.Id}] {option.Key}: parts' switches not set: {e.Message}");
             }
         }
+        // The co-op join lists already handed out say what the switches now give (CoopModeTag: whether this player's state checks
+        // can reuse the walks' outputs is part of what co-op players must share). Never throws.
+        CoopModeTag.Refresh();
     }
 
     /// <summary>One line per optimization, for bdopt.</summary>

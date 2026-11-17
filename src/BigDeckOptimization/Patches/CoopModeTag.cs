@@ -29,6 +29,15 @@ namespace BigDeckOptimization.Patches;
 /// switch changes, so a player joining later is compared with this player's state at that handshake, not the one from when
 /// hosting started.
 ///
+/// A second tag, <c>+exactsnap</c> (owner's rule of 2026-11-17: a desync this mod could cause must never be reproducible): with
+/// the mod on, when other mods' postfixes are on the listener walks and this player's co-op state checks can't reuse their
+/// outputs (the "Co-op state check" option off, a fault, the net missing), or <c>+exactsnap-c</c> / <c>+exactsnap-r</c> when only
+/// the combat / run walk's can't be reused while the other's can (other mods' patches loaded in another order):
+/// <see cref="ListenerCache.SnapshotWalksTag"/>, the per-walk decisions.
+/// A player whose state checks reuse them and one whose checks can't would compute different checksums at the same point every
+/// time if a premise violation escaped the reuse's net; with the tag they can't join each other (the game's mod mismatch
+/// error), whatever the number of re-hosts. Retagged as the off tag is, at every settings change (<see cref="Config.Settings.ApplyAll"/>).
+///
 /// Applied even when the mod was turned off at the start (<see cref="ModEntry.StartedOff"/>: then nothing else is). It
 /// changes no game state: only this list, which the game uses for that comparison (the host's message, the client's check;
 /// v0.111+ through <c>PeerVersionInfo</c>, whose other readers only test whether any mod is listed). If the list's format
@@ -39,6 +48,9 @@ public static class CoopModeTag
     public const string Name = "CoopModeTag";
 
     public const string OffSuffix = "+off";
+
+    /// <summary>The mod on, its co-op state checks unable to reuse the walks' outputs other mods' postfixes make (see the class).</summary>
+    public const string ExactSnapSuffix = "+exactsnap";
 
     public static bool Applied { get; private set; }
 
@@ -186,7 +198,7 @@ public static class CoopModeTag
     }
 
     /// <summary>
-    /// After the master switch changed (<see cref="Config.Settings.SetMaster"/>): every list handed out and still alive gets this
+    /// After a switch changed (<see cref="Config.Settings.SetMaster"/>, <see cref="Config.Settings.ApplyAll"/>): every list handed out and still alive gets this
     /// mod's entry as the switch now says, so the next handshake sends and compares the current state. Never throws.
     /// </summary>
     public static void Refresh()
@@ -211,14 +223,20 @@ public static class CoopModeTag
         }
     }
 
+    /// <summary>This player's tag now: <see cref="OffSuffix"/> with the mod off, <see cref="ExactSnapSuffix"/> (see the class), or none.</summary>
+    public static string Suffix => Off ? OffSuffix : ListenerCache.SnapshotWalksTag;
+
+    /// <summary>Every tag this class writes, the longest first (stripped before the current one is written).</summary>
+    private static readonly string[] Suffixes = { ExactSnapSuffix + "-c", ExactSnapSuffix + "-r", ExactSnapSuffix, OffSuffix };
+
     /// <summary>
-    /// The entry of this mod in <paramref name="list"/> as <see cref="Off"/> says (tagged or not): the game's own value when on.
-    /// False when the list has no entry of this mod.
+    /// The entry of this mod in <paramref name="list"/> as <see cref="Suffix"/> says (tagged or not): the game's own value when on
+    /// with no tag. False when the list has no entry of this mod.
     /// </summary>
     private static bool Tag(List<string> list)
     {
         string prefix = ModEntry.Id + "-";
-        bool off = Off;
+        string suffix = Suffix;
         for (int i = 0; i < list.Count; i++)
         {
             string entry = list[i];
@@ -226,17 +244,25 @@ public static class CoopModeTag
             {
                 continue;
             }
-            bool tagged = entry.EndsWith(OffSuffix, StringComparison.Ordinal);
-            if (off && !tagged)
+            string bare = entry;
+            foreach (string known in Suffixes)
             {
-                list[i] = entry + OffSuffix;
-#if BENCH
-                Tagged++;
-#endif
+                if (entry.EndsWith(known, StringComparison.Ordinal))
+                {
+                    bare = entry.Substring(0, entry.Length - known.Length);
+                    break;
+                }
             }
-            else if (!off && tagged)
+            string wanted = bare + suffix;
+            if (entry != wanted)
             {
-                list[i] = entry.Substring(0, entry.Length - OffSuffix.Length);
+                list[i] = wanted;
+#if BENCH
+                if (suffix == OffSuffix)
+                {
+                    Tagged++;
+                }
+#endif
             }
             return true;
         }

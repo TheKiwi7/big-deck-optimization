@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Reflection;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
@@ -71,8 +72,37 @@ public static class SnapshotVerifier
     public static int Rebuilt { get; private set; }
     public static int Reserialized { get; private set; }
 
-    /// <summary>Reuses found wrong (or a reuse turned off) by the card and the relic reuse: what a snapshot or checksum is redone on.</summary>
-    private static long Detections => SnapshotCardReuse.Detections + RelicStateReuse.Detections;
+    /// <summary>
+    /// Reuses found wrong (or a reuse turned off) by the card and the relic reuse, and snapshots whose walk reuse the listener
+    /// cache's net found wrong (<see cref="ListenerCache.EndSnapshotWalks"/>): what a snapshot or checksum is redone on.
+    /// </summary>
+    private static long Detections => SnapshotCardReuse.Detections + RelicStateReuse.Detections + ListenerCache.SnapshotDetections;
+
+    /// <summary>FromRun's prefix and postfix are in place: the snapshot walk reuse's net can run (<see cref="NetApplied"/>).</summary>
+    private static bool _fromRunPatched;
+
+    /// <summary>The net of the snapshot walk reuse runs in this class's FromRun postfix: patched and not faulted.</summary>
+    public static bool NetApplied => _fromRunPatched && !Faulted;
+
+    /// <summary>
+    /// Whether the checksum snapshot of <paramref name="runState"/> may reuse walk outputs (ListenerCache): its net in place, and
+    /// no sampled re-check of this snapshot possible. The Sample mode's schedule depends on timing (a time budget, the cost of the
+    /// last re-check), so one peer may re-check a snapshot another doesn't, and a re-check finding a difference the net missed
+    /// would make only that peer use the game's snapshot (a desync) and turn its optimizations off (its later checksums differing
+    /// at the same points). Above <see cref="MaxCombatCards"/> combat cards (every peer counts the same state) Sample never
+    /// re-checks; Off never does; All (test tooling) re-checks every snapshot, an independent reference. Never throws.
+    /// </summary>
+    internal static bool WalkNetFor(IRunState runState)
+    {
+        try
+        {
+            return NetApplied && (Mode != VerifyMode.Sample || CombatCards(runState) > MaxCombatCards);
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     /// <summary><see cref="Detections"/> when the current snapshot, and the current checksum, started.</summary>
     [ThreadStatic] private static long _detectionsAtSnapshot;
@@ -90,7 +120,12 @@ public static class SnapshotVerifier
         PatchGuard.Patch(harmony,
             Reflect.Method(typeof(NetFullCombatState), nameof(NetFullCombatState.FromRun)),
             prefix: new HarmonyMethod(typeof(SnapshotVerifier), nameof(FromRunPrefix)),
-            postfix: new HarmonyMethod(typeof(SnapshotVerifier), nameof(FromRunPostfix)));
+            // First of FromRun's postfixes: another mod's postfix never sees a snapshot the walk reuse's net hasn't checked (or
+            // rebuilt), and a walk it makes runs exact (the net ends the reuse).
+            postfix: new HarmonyMethod(typeof(SnapshotVerifier), nameof(FromRunPostfix)) { priority = Priority.First },
+            // After ListenerCache's scope finalizer (which says whether the snapshot threw with reused walk outputs).
+            finalizer: new HarmonyMethod(typeof(SnapshotVerifier), nameof(FromRunFinalizer)) { priority = Priority.Last });
+        _fromRunPatched = true;
         try
         {
             PatchGuard.Patch(harmony,
@@ -104,21 +139,65 @@ public static class SnapshotVerifier
         }
     }
 
-    private static void FromRunPrefix()
+    private static void FromRunPrefix(IRunState runState)
     {
         if (!_verifying && !Faulted)
         {
             _detectionsAtSnapshot = Detections;
+            // The state FromRun only reads, as it is before this snapshot, where a re-check may come (see ReCheckFromStart).
+            _preSeal = null;
+            try
+            {
+                if (Mode == VerifyMode.All || (Mode == VerifyMode.Sample && !_gaveUp && CombatCards(runState) <= MaxCombatCards))
+                {
+                    _preSeal = SnapshotSeal.Take(runState);
+                }
+            }
+            catch
+            {
+                _preSeal = null;
+            }
+        }
+    }
+
+    /// <summary>The seal FromRunPrefix took for the snapshot being built (null: no re-check possible, or it couldn't be taken).</summary>
+    [ThreadStatic] private static SnapshotSeal? _preSeal;
+
+    /// <summary>Re-checks discarded: another mod's code changed what FromRun only reads, in a way an RNG put-back can't undo.</summary>
+    public static int ReChecksDiscarded { get; private set; }
+    private static bool _loggedDiscard;
+
+    private static void Discard(string why)
+    {
+        ReChecksDiscarded++;
+        if (!_loggedDiscard)
+        {
+            _loggedDiscard = true;
+            Log.Info($"[{ModEntry.Id}] {Name}: a vanilla re-check was discarded ({why}): other mods' code changes what the state check reads "
+                + "while it runs, so a second build can't be compared with the first; nothing turned off");
         }
     }
 
     private static void FromRunPostfix(IRunState runState, GameAction? justFinishedAction, ref NetFullCombatState __result)
     {
-        if (_verifying || ListenerCache.IsSuspended || Faulted)
+        if (_verifying)
         {
             return;
         }
-        RebuildIfDetected(runState, justFinishedAction, ref __result);
+        // First, before anything else reads the snapshot: the walk reuse's net (ListenerCache.EndSnapshotWalks, the outermost
+        // snapshot only). A difference counts a detection and the snapshot is built again below, here, before FromRun returns it
+        // to the game's checksum (ChecksumTracker.ObtainAndTrackChecksum: FromRun, then GenerateChecksum on what it returned).
+        // Also when this class is faulted meanwhile: the walk reuse is gated on NetApplied, this is its only rebuild.
+        bool walksWrong = ListenerCache.EndSnapshotWalks();
+        if (!walksWrong && (ListenerCache.IsSuspended || Faulted))
+        {
+            return;
+        }
+        RebuildIfDetected(runState, justFinishedAction, ref __result, walksWrong);
+        if (ListenerCache.IsSuspended || Faulted)
+        {
+            return;
+        }
         // Also when the listener cache backs off or faulted: the card and relic reuse in snapshots still run then.
         // A snapshot (this is FromRun's postfix), not the vanilla reference (RunVanilla), with a snapshot optimization on
         // (also when the listener cache backs off, faulted or never applied: the card and relic reuse still run then).
@@ -153,7 +232,51 @@ public static class SnapshotVerifier
                 }
                 return;
             }
-            NetFullCombatState vanilla = ListenerCache.RunVanilla(() => NetFullCombatState.FromRun(runState, justFinishedAction));
+            // The re-check runs other mods' walk postfixes again, unsealed: one drawing an RNG while its output is enumerated would
+            // start it from RNGs the snapshot already advanced (a difference on this peer alone, its snapshot optimizations then
+            // off: a desync recurring at every rejoin, index 0 being always re-checked). It starts from the state the snapshot
+            // started from (the RNGs put back), and the RNGs are put back afterwards to what the snapshot left (the game's state
+            // after FromRun). A change the RNGs don't explain can't be undone: the re-check is discarded, nothing turned off.
+            SnapshotSeal? after = null;
+            SnapshotSeal? before = _preSeal;
+            _preSeal = null;
+            if (before != null)
+            {
+                (bool rngs, string? other) = before.Diff(runState);
+                if (other != null || (rngs && !SnapshotSeal.CanRestore))
+                {
+                    Discard(other ?? "an RNG drawn while the snapshot was built, which this game version can't put back");
+                    return;
+                }
+                if (rngs)
+                {
+                    after = SnapshotSeal.Take(runState);
+                    if (after == null || !before.RestoreRngs())
+                    {
+                        after?.RestoreRngs();
+                        Discard("the RNGs couldn't be put back");
+                        return;
+                    }
+                }
+                else
+                {
+                    after = before;
+                }
+            }
+            NetFullCombatState vanilla;
+            try
+            {
+                vanilla = ListenerCache.RunVanilla(() => NetFullCombatState.FromRun(runState, justFinishedAction));
+            }
+            finally
+            {
+                after?.RestoreRngs();
+            }
+            if (after != null && after.Diff(runState).Other is { } changedByReCheck)
+            {
+                Discard(changedByReCheck);
+                return;
+            }
             Verified++;
             _lastVerifyMs = Stopwatch.GetElapsedTime(now).TotalMilliseconds;
             _nextAllowedTicks = Stopwatch.GetTimestamp() + (long)(_lastVerifyMs / MaxTimeShare / 1000 * Stopwatch.Frequency);
@@ -214,20 +337,29 @@ public static class SnapshotVerifier
     /// or its scalar part), but the
     /// snapshot's other states may have been taken the same way. Built again at the optimized speed (a vanilla rebuild freezes for
     /// seconds at large decks), with what found it off; at most three times, each pass turning more off.
+    /// <paramref name="walks"/>: the walk reuse's net found this snapshot wrong (ListenerCache.EndSnapshotWalks). The rebuild is a
+    /// nested FromRun, never the outermost snapshot, so its walks are the exact tier's (the game's call at each walk, every postfix
+    /// run): the snapshot the game builds without that reuse. Nothing is turned off for the session (the next snapshot reuses and
+    /// is checked again: the same decision on every peer for the same state). If that rebuild throws, the exception (the game's
+    /// or another mod's, met where the game's own FromRun meets it) goes on to the game's caller, as without the reuse: the reused
+    /// snapshot is never kept.
     /// </summary>
-    private static void RebuildIfDetected(IRunState runState, GameAction? justFinishedAction, ref NetFullCombatState __result)
+    private static void RebuildIfDetected(IRunState runState, GameAction? justFinishedAction, ref NetFullCombatState __result, bool walks = false)
     {
-        for (int pass = 0; pass < 3 && Detections != _detectionsAtSnapshot; pass++)
+        for (int pass = 0; pass < 3 && ((walks && pass == 0) || Detections != _detectionsAtSnapshot); pass++)
         {
             _detectionsAtSnapshot = Detections;
             _verifying = true;
             try
             {
-                __result = NetFullCombatState.FromRun(runState, justFinishedAction);
+                __result = BuildAgain(runState, justFinishedAction);
                 Rebuilt++;
-                Log.Info($"[{ModEntry.Id}] {Name}: a snapshot reuse was found wrong while building a snapshot: built again");
+                if (!walks)
+                {
+                    Log.Info($"[{ModEntry.Id}] {Name}: a snapshot reuse was found wrong while building a snapshot: built again");
+                }
             }
-            catch (Exception e)
+            catch (Exception e) when (!walks)
             {
                 Log.Error($"[{ModEntry.Id}] {Name}: building a snapshot again failed, keeping the first one: {e}");
                 return;
@@ -238,6 +370,80 @@ public static class SnapshotVerifier
             }
         }
     }
+
+    /// <summary>Snapshots that threw with reused walk outputs before their net ran, built again exactly by <see cref="FromRunFinalizer"/>.</summary>
+    public static int RebuiltAfterThrow { get; private set; }
+
+    /// <summary>
+    /// FromRun's last finalizer. When the snapshot threw with reused walk outputs before the walk net ran
+    /// (<see cref="ListenerCache.TakeThrewAfterReuse"/>), the game's own FromRun might not have: it is built again exactly
+    /// (<see cref="ListenerCache.WithoutSnapshotReuse"/>) and that snapshot returned, or that build's exception passed on (the
+    /// game's, met where its FromRun meets it). Any other exception is passed on as it is. A finalizer returning an exception makes
+    /// Harmony throw it again from FromRun for every exception through it, its stack trace restarting there (as HookFilter's
+    /// RethrowFinalizer). Returning null instead would swallow it (Harmony stores what a finalizer returns as the exception), so an
+    /// exception this finalizer doesn't handle is returned as it is, its trace so far kept in front of the new one
+    /// (<see cref="PassOn"/>, as ExceptionDispatchInfo does): the log and the game's error report show it whole, reuse or not.
+    /// PatchGuard's guard (first finalizer) has seen the original.
+    /// </summary>
+    private static Exception? FromRunFinalizer(Exception? __exception, IRunState runState, GameAction? justFinishedAction, ref NetFullCombatState __result)
+    {
+        if (__exception == null)
+        {
+            return null;
+        }
+        if (!ListenerCache.TakeThrewAfterReuse())
+        {
+            return PassOn(__exception);
+        }
+        bool wasVerifying = _verifying;
+        _verifying = true;
+        try
+        {
+            __result = ListenerCache.WithoutSnapshotReuse(() => BuildAgain(runState, justFinishedAction));
+            Rebuilt++;
+            RebuiltAfterThrow++;
+            Log.Info($"[{ModEntry.Id}] {Name}: a state check that reused listener walk outputs threw ({__exception.GetType().Name}): built again the game's way");
+            return null;
+        }
+        catch (Exception e)
+        {
+            return PassOn(e);
+        }
+        finally
+        {
+            _verifying = wasVerifying;
+        }
+    }
+
+    /// <summary>The runtime's "remote" stack trace of an exception: what ExceptionDispatchInfo keeps in front of a rethrow's trace.</summary>
+    private static readonly FieldInfo? RemoteStackTrace = typeof(Exception).GetField("_remoteStackTraceString", BindingFlags.Instance | BindingFlags.NonPublic);
+
+    /// <summary>
+    /// <paramref name="exception"/>, to be thrown again from FromRun by Harmony, with its trace so far kept in front of the new one
+    /// (as ExceptionDispatchInfo.Throw keeps it). Where the runtime has no such field, logged with its full trace instead. Never throws.
+    /// </summary>
+    private static Exception PassOn(Exception exception)
+    {
+        try
+        {
+            if (RemoteStackTrace != null && exception.StackTrace is { } trace)
+            {
+                RemoteStackTrace.SetValue(exception, trace + Environment.NewLine + "--- End of stack trace from previous location ---" + Environment.NewLine);
+                return exception;
+            }
+        }
+        catch
+        {
+            // Logged below.
+        }
+        Log.Warn($"[{ModEntry.Id}] {Name}: the game's FromRun threw (passed on to its caller as the game would): {exception}");
+        return exception;
+    }
+
+    /// <summary>The game's own FromRun, called again as the game called it: its exceptions are the game's (or another mod's).</summary>
+    [GameCallReplay]
+    private static NetFullCombatState BuildAgain(IRunState runState, GameAction? justFinishedAction) =>
+        NetFullCombatState.FromRun(runState, justFinishedAction);
 
     private static void ChecksumPrefix()
     {

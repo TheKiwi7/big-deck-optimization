@@ -1,0 +1,58 @@
+# The snapshot walk reuse's control on a checksummed value (A/B, mod on; DESIGN "Snapshot walk reuse", review of 2026-11-17):
+# with Spiked Gauntlets (power cards cost 1 more), a postfix of "another mod" on CombatState.IterateHookListeners
+# (walk-snapflip-cost-postfix) yields the relic twice from the second pile each FromRun call reads on (counted per call:
+# a rebuild or a vanilla re-check starts again): in the game's own FromRun, the power cards of the draw pile and after cost 2
+# more, those of the hand 1 more. A snapshot reusing the first walk's output would give them all 1 more: the net must find it,
+# and the snapshot rebuilt exactly must be the one used. bdperf verify all compares every snapshot used with a vanilla one
+# built apart (bdperf verify check: no difference, which fails if the reused snapshot were kept); CHECKSUM and STATE identical
+# with foreign-snapcost-1k-off. The test's prefix on CombatPileState.From sends SnapshotCardReuse's pile states to the game's
+# code (its runtime back-off). Game v0.111+ (SKIPPED on v0.107.1). ~945 cards.
+# effects-zero-ok: SnapshotCardReuse
+timeout 1800
+requiregame v0.111
+expect ListenerCache: a co-op state check that reused listener walk outputs \(other mods' postfixes included\) differs from the game's walks
+expect EFFECTCHECK ListenerCache\.SnapshotWalks\.Detections grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK SnapshotVerifier\.Rebuilt grew since 'start': [0-9]+ -> [1-9]
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+cmd bdperf verify all
+cmd relic add SPIKED_GAUNTLETS
+foreignpatch walk-snapflip-cost-postfix MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners
+effects start
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+foreignpatch report end
+foreignpatch snapwalks status
+effects end
+effectcheck ListenerCache.SnapshotWalks.Detections grew start
+effectcheck SnapshotVerifier.Rebuilt grew start
+foreignpatch require snapwalks detected
+cmd bdperf verify check
+cmd bdopt why
+counters end
+foreignpatch remove
+quit

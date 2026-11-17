@@ -61,6 +61,12 @@ internal static class EffectCounters
         (typeof(ListenerCache), nameof(ListenerCache.KeptAfterForeign)), (typeof(ListenerCache), nameof(ListenerCache.ReusedAfterForeign)),
         (typeof(ListenerCache), nameof(ListenerCache.MemoHits)), (typeof(ListenerCache), nameof(ListenerCache.MemoBuilt)),
         (typeof(ListenerCache), nameof(ListenerCache.MemoVerified)),
+        (typeof(ListenerCache), nameof(ListenerCache.SnapshotWalkReuses)), (typeof(ListenerCache), nameof(ListenerCache.SnapshotWalksKept)),
+        (typeof(ListenerCache), nameof(ListenerCache.SnapshotWalkChecks)), (typeof(ListenerCache), nameof(ListenerCache.SnapshotNetCompared)),
+        (typeof(ListenerCache), nameof(ListenerCache.SnapshotDetections)), (typeof(SnapshotVerifier), nameof(SnapshotVerifier.Rebuilt)),
+        (typeof(ListenerCache), nameof(ListenerCache.SnapshotMemosCompared)), (typeof(ListenerCache), nameof(ListenerCache.SnapshotSealChanges)),
+        (typeof(ListenerCache), nameof(ListenerCache.SnapshotSealUnrestored)), (typeof(ListenerCache), nameof(ListenerCache.SnapshotNetErrors)),
+        (typeof(SnapshotVerifier), nameof(SnapshotVerifier.RebuiltAfterThrow)),
     };
 
     /// <summary>Each counter's getter and setter (private setters included), resolved once.</summary>

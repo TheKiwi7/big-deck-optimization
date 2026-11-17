@@ -1,0 +1,39 @@
+# The snapshot walk net's seal (A/B, mod off): the same synthetic patch as foreign-snaprng-1k-on (see there); CHECKSUM and STATE lines must match line for line.
+# Game v0.111+ (SKIPPED on v0.107.1, as the on side).
+timeout 1800
+requiregame v0.111
+cmd bdopt off
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+cmd bdperf checks off
+foreignpatch walk-snaprng-postfix MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+foreignpatch report end
+foreignpatch remove
+cmd bdopt on
+quit
