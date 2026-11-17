@@ -1,13 +1,18 @@
-# The augmented-walk premise next to another mod's CombatStateChanged handler (A/B, mod on; re-audit of the premises, W-1a,
-# W-7): the shapes of foreign-walkreuse-1k-on plus a handler of "another mod" on CombatStateChanged walking the combat's listeners
-# (RandomForeseer's prediction refresh: "foreignpatch statechanged subscribe", its calls and the listeners it saw are STATE lines).
-# No walk output is reused in a dispatch it handles (ListenerCache.Walks.ForeignDispatches grew, the log says so once); what it
-# sees is the game's own walk. CHECKSUM and STATE identical with foreign-walkreuse-sub-1k-off; the expansion never ran on its own
-# output (require nodouble). Also the kept outputs' self-test (foreignpatch walkreuse selftest: no game state used). ~945 cards.
-# effects-zero-ok: ListenerCache\.Walks$
+# The augmented-walk premise next to another mod's CombatStateChanged handler (A/B, mod on; the rule of 2026-11-17, DESIGN
+# "Owner-approved premises", Walks Tier 2): the shapes of foreign-walkreuse-1k-on plus a handler of "another mod" walking the
+# combat's and the run's listeners, put right after the hand's handler ("foreignpatch statechanged subscribe afterhand": its
+# calls and the listeners it saw are STATE lines). The handlers run one at a time: the game's keep the reuse
+# (ListenerCache.Walks.GameHandlerReuses grew), the other mod's runs with it suspended (ForeignHandlers grew): each of its walks
+# equals the game's own call made right after it, and no kept output was made or reused while it ran (require freshhandler);
+# the exact note names it. CHECKSUM and STATE identical with foreign-walkreuse-sub-1k-off; the expansion never ran on its own
+# output (require nodouble). Also the kept outputs' and the dispatch's self-test (foreignpatch walkreuse selftest). ~945 cards.
 expect FOREIGN walkreuse selftest: \d+ cases as expected
-expect ListenerCache: other mods handle CombatStateChanged \(.*OnStateChangedForTest.*\): no listener walk output is reused in that dispatch
+expect ListenerCache\.Walks: other mods handle CombatStateChanged \(.*OnStateChangedForTest.*\): their handlers run with the game's listener walks at the scope's exact tier
+expect FOREIGN exact ListenerCache\.Walks: other mods handle CombatStateChanged \(.*OnStateChangedForTest.*\)
 expect EFFECTCHECK ListenerCache\.Walks\.ForeignDispatches grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK ListenerCache\.Walks\.ForeignHandlers grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK ListenerCache\.Walks\.GameHandlerReuses grew since 'start': [0-9]+ -> [1-9]
+expect FOREIGN statechanged subscriber walks compared [1-9][0-9]*, mismatches 0, kept outputs made or reused inside 0
 expect STATE foreign end statechanged-subscriber calls [1-9]
 expect FOREIGN walk-expand-postfix never ran on its own output
 timeout 1500
@@ -23,7 +28,7 @@ effects start
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 1
-foreignpatch statechanged subscribe
+foreignpatch statechanged subscribe afterhand
 checksum start
 play 4
 waitfor idle 120
@@ -54,6 +59,9 @@ state after combat
 foreignpatch report end
 effects end
 effectcheck ListenerCache.Walks.ForeignDispatches grew start
+effectcheck ListenerCache.Walks.ForeignHandlers grew start
+effectcheck ListenerCache.Walks.GameHandlerReuses grew start
+foreignpatch require freshhandler
 foreignpatch require nodouble
 cmd bdopt why
 counters end

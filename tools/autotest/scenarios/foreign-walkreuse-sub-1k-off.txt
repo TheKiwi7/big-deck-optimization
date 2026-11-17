@@ -13,7 +13,7 @@ foreignpatch walk-filter-repeat MegaCrit.Sts2.Core.Runs.RunState:IterateHookList
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 1
-foreignpatch statechanged subscribe
+foreignpatch statechanged subscribe afterhand
 checksum start
 play 4
 waitfor idle 120

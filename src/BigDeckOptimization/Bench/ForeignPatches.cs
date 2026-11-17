@@ -233,16 +233,30 @@ public static class ForeignPatches
             case "remove":
                 return Remove();
             case "statechanged" when parts.Length > 1 && parts[1] == "subscribe":
-                // Another mod's CombatStateChanged handler walking the real state (RandomForeseer's prediction refresh; re-audit of
-                // the premises, W-1a): no walk output may be reused in a dispatch it handles. Counted (calls, listeners seen: STATE
-                // lines, the same on and off); removed by "foreignpatch remove".
+                // Another mod's CombatStateChanged handler (the rule of 2026-11-17: it runs with the walk reuse suspended, the
+                // game's own handlers keep it). Default: walking the real state (RandomForeseer's prediction refresh), each walk
+                // compared with the game's own call (foreignpatch require freshhandler); "noop": doing nothing but count its calls
+                // (the game's handlers around it must still reuse); "mutating": flipping walk-expand-postfix's output (state no
+                // version bump sees: the outputs kept before it must not be reused after it, foreignpatch require dropped). "afterhand": put right after the hand's handler (NPlayerHand,
+                // whose card updates walk the most: the outputs it kept are dropped after this one, the game's handlers after it
+                // keep and reuse again), else in the middle of the handlers; default: after every handler, as a mod's +=. Counted
+                // (calls, listeners seen: STATE lines, the same on and off); removed by "foreignpatch remove". One at a time.
                 MegaCrit.Sts2.Core.Combat.CombatStateTracker tracker = MegaCrit.Sts2.Core.Combat.CombatManager.Instance.StateTracker;
-                if (_stateTracker == null)
+                bool noop = parts.Skip(2).Contains("noop"), afterHand = parts.Skip(2).Contains("afterhand");
+                if (_stateTracker != null)
                 {
-                    tracker.CombatStateChanged += OnStateChangedForTest;
-                    _stateTracker = tracker;
+                    return new[] { "FOREIGN statechanged subscriber already added" };
                 }
-                return new[] { "FOREIGN statechanged subscriber added" };
+                bool mutating = parts.Skip(2).Contains("mutating");
+                Action<MegaCrit.Sts2.Core.Combat.CombatState> handler = mutating ? OnStateChangedMutating : noop ? OnStateChangedNoop : OnStateChangedForTest;
+                int position = SubscribeForTest(tracker, handler, afterHand);
+                _stateTracker = tracker;
+                _stateHandler = handler;
+                return new[] { $"FOREIGN statechanged subscriber added ({(mutating ? "mutating" : noop ? "noop" : "walking")}, handler {position} of the dispatch)" };
+            case "require" when parts.Length > 1 && parts[1] == "freshhandler":
+                return RequireFreshHandler();
+            case "require" when parts.Length > 1 && parts[1] == "dropped":
+                return RequireDropped();
             case "report":
                 return Report(parts.Length > 1 ? string.Join(" ", parts.Skip(1)) : "");
             case "require" when parts.Length > 1 && parts[1] == "tolerated":
@@ -881,8 +895,12 @@ public static class ForeignPatches
         SoulShapes.UnwatchTree();
         if (_stateTracker != null)
         {
-            _stateTracker.CombatStateChanged -= OnStateChangedForTest;
+            if (_stateHandler != null)
+            {
+                _stateTracker.CombatStateChanged -= _stateHandler;
+            }
             _stateTracker = null;
+            _stateHandler = null;
             lines.Add("FOREIGN removed the statechanged subscriber");
         }
         return lines.Count > 0 ? lines : new[] { "FOREIGN nothing to remove" };
@@ -916,7 +934,10 @@ public static class ForeignPatches
         lines.Add($"FOREIGN listener scopes with walk patches {ListenerCache.AugmentedScopes}, walks served {ListenerCache.Served}, "
             + $"mirrored combat {FastListeners.CombatWalks} run {FastListeners.RunWalks}, pile lookups fast {PileIndex.Fast} verified {PileIndex.Verified}");
         lines.Add($"FOREIGN walk reuse kept {ListenerCache.WalksMaterialized}, reused {ListenerCache.WalksReused}, checked {ListenerCache.WalksVerified}, "
-            + $"mismatches {ListenerCache.WalkMismatches}, foreign dispatches {ListenerCache.ForeignDispatches}, out of scope {ListenerCache.ReusesOutOfScope}, "
+            + $"mismatches {ListenerCache.WalkMismatches}, foreign dispatches {ListenerCache.ForeignDispatches} (reused in the game's handlers "
+            + $"{ListenerCache.GameHandlerReuses}, other mods' handlers run suspended {ListenerCache.ForeignHandlerCalls}, kept outputs dropped after them "
+            + $"{ListenerCache.KeptDroppedAfterForeign}, first walks after them kept anew {ListenerCache.KeptAfterForeign}, reused {ListenerCache.ReusedAfterForeign}), "
+            + $"out of scope {ListenerCache.ReusesOutOfScope}, "
             + $"suspended {ListenerCache.SuspendedRevalidations}, on {ListenerCache.WalkReuseEnabled}");
         lines.AddRange(PatchSafety.RuntimeReport().Select(t => "FOREIGN runtime " + t));
         lines.AddRange(HookSkip.GatedWalkReport().Select(t => "FOREIGN gated walks " + t));
@@ -926,6 +947,7 @@ public static class ForeignPatches
 #endif
         lines.AddRange(PatchSafety.ToleratedReport().Select(t => "FOREIGN tolerated " + t));
         lines.AddRange(PatchSafety.KeptNotes().Select(k => $"FOREIGN kept {k.Patch}: {k.Text} <- {string.Join(", ", k.Mods)}"));
+        lines.AddRange(PatchSafety.ExactNotes().Select(k => $"FOREIGN exact {k.Patch}: {k.Text} <- {string.Join(", ", k.Mods)}"));
         // Whether combat hook subscriptions exist (BaseLib's, say): every merged relic flash replays its sound then, and the
         // combat-end walk counts as another mod's code for CardFlightLimit (re-audit round 2).
         lines.Add($"FOREIGN combat hook subscriptions {(GameHookDelegates.Subscribed() ? "present" : "none")}");
@@ -944,17 +966,111 @@ public static class ForeignPatches
     private static void Count(string key) => _counts.AddOrUpdate(key, 1, (_, n) => n + 1);
 
     private static MegaCrit.Sts2.Core.Combat.CombatStateTracker? _stateTracker;
+    private static Action<MegaCrit.Sts2.Core.Combat.CombatState>? _stateHandler;
 
-    /// <summary>The statechanged subscriber: a walk of the combat's listeners in each dispatch, as RandomForeseer's refresh makes.</summary>
+    /// <summary>
+    /// Subscribes <paramref name="handler"/> to the tracker's CombatStateChanged: after every handler (+=, as a mod subscribing),
+    /// or right after the hand's (NPlayerHand) handler, else in the middle of them (the event's field set to the same handlers
+    /// with it inserted there: their order kept). The same on and off. Returns its index in the invocation list.
+    /// </summary>
+    private static int SubscribeForTest(MegaCrit.Sts2.Core.Combat.CombatStateTracker tracker, Action<MegaCrit.Sts2.Core.Combat.CombatState> handler, bool afterHand)
+    {
+        FieldInfo field = AccessTools.Field(typeof(MegaCrit.Sts2.Core.Combat.CombatStateTracker), "CombatStateChanged")
+            ?? throw new InvalidOperationException("CombatStateTracker.CombatStateChanged's field not found");
+        if (!afterHand)
+        {
+            tracker.CombatStateChanged += handler;
+            return field.GetValue(tracker) is Delegate all ? all.GetInvocationList().Length - 1 : 0;
+        }
+        Delegate[] current = (field.GetValue(tracker) as Delegate)?.GetInvocationList() ?? Array.Empty<Delegate>();
+        int hand = Array.FindIndex(current, d => d.Method.DeclaringType == typeof(MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand));
+        int at = hand >= 0 ? hand + 1 : current.Length / 2;
+        field.SetValue(tracker, Delegate.Combine(current.Take(at).Append(handler).Concat(current.Skip(at)).ToArray()));
+        return at;
+    }
+
+    /// <summary>
+    /// The statechanged subscriber: a walk of the combat's listeners and of the run's (with the combat as child) in each dispatch,
+    /// as RandomForeseer's refresh makes, each compared with the game's own call made right after it (ListenerCache.RunVanilla:
+    /// every listener optimization off). The rule of 2026-11-17: what it sees is the game's walk, and no kept output was made,
+    /// checked or reused while it ran (test builds; <c>foreignpatch require freshhandler</c>).
+    /// </summary>
     private static void OnStateChangedForTest(MegaCrit.Sts2.Core.Combat.CombatState state)
     {
         Count("statechanged-subscriber calls");
-        long listeners = 0;
-        foreach (AbstractModel _ in state.IterateHookListeners())
+#if BENCH
+        long touchedBefore = ListenerCache.WalksReused + ListenerCache.WalksVerified + ListenerCache.WalksMaterialized;
+#endif
+        List<AbstractModel> combat = state.IterateHookListeners().ToList();
+        RunState? runState = state.RunState as RunState;
+        List<AbstractModel>? run = runState?.IterateHookListeners(state).ToList();
+#if BENCH
+        _freshHandlerTouched += ListenerCache.WalksReused + ListenerCache.WalksVerified + ListenerCache.WalksMaterialized - touchedBefore;
+#endif
+        List<AbstractModel> freshCombat = ListenerCache.RunVanilla(() => state.IterateHookListeners().ToList());
+        List<AbstractModel>? freshRun = runState == null ? null : ListenerCache.RunVanilla(() => runState.IterateHookListeners(state).ToList());
+        _freshHandlerWalks += run == null ? 1 : 2;
+        if (!combat.SequenceEqual(freshCombat, ReferenceEqualityComparer.Instance)
+            || (run != null && !run.SequenceEqual(freshRun!, ReferenceEqualityComparer.Instance)))
         {
-            listeners++;
+            _freshHandlerMismatches++;
         }
-        _counts.AddOrUpdate("statechanged-subscriber listeners", listeners, (_, n) => n + listeners);
+        _counts.AddOrUpdate("statechanged-subscriber listeners", combat.Count, (_, n) => n + combat.Count);
+        if (run != null)
+        {
+            _counts.AddOrUpdate("statechanged-subscriber run listeners", run.Count, (_, n) => n + run.Count);
+        }
+    }
+
+    /// <summary>
+    /// The mutating statechanged subscriber: counts its calls (a STATE line) and flips what walk-expand-postfix returns from the next
+    /// walk on (<see cref="_expandFlipped"/>): another mod's handler changing state a version bump doesn't see. The game's handlers
+    /// after it must keep new outputs, never reuse those kept before it (<c>foreignpatch require dropped</c>).
+    /// </summary>
+    private static void OnStateChangedMutating(MegaCrit.Sts2.Core.Combat.CombatState state)
+    {
+        Count("statechanged-mutating calls");
+        _expandFlipped = !_expandFlipped;
+    }
+
+    /// <summary>
+    /// <c>foreignpatch require dropped</c> (test builds): keys kept when another mod's handler returned were kept anew at their next
+    /// walk, never reused or checked against an output kept before it, no kept output differed from a fresh one, the part on.
+    /// </summary>
+    private static IReadOnlyList<string> RequireDropped()
+    {
+#if BENCH
+        string line = $"FOREIGN after other mods' handlers: kept anew {ListenerCache.KeptAfterForeign}, reused {ListenerCache.ReusedAfterForeign}, "
+            + $"walk mismatches {ListenerCache.WalkMismatches}, walk reuse on {ListenerCache.WalkReuseEnabled}";
+        if (ListenerCache.KeptAfterForeign == 0 || ListenerCache.ReusedAfterForeign > 0 || ListenerCache.WalkMismatches > 0 || !ListenerCache.WalkReuseEnabled)
+        {
+            throw new InvalidOperationException(line);
+        }
+        return new[] { line };
+#else
+        return Array.Empty<string>();
+#endif
+    }
+
+    /// <summary>The noop statechanged subscriber: counts its calls (a STATE line), nothing else.</summary>
+    private static void OnStateChangedNoop(MegaCrit.Sts2.Core.Combat.CombatState state) => Count("statechanged-noop calls");
+
+    /// <summary>The walking subscriber's walks compared, those differing from the game's call, and kept outputs made or reused while it ran.</summary>
+    private static long _freshHandlerWalks, _freshHandlerMismatches, _freshHandlerTouched;
+
+    /// <summary>
+    /// <c>foreignpatch require freshhandler</c>: the walking subscriber compared walks, none differed from the game's own call, and
+    /// (test builds) no kept walk output was made, checked or reused while it ran.
+    /// </summary>
+    private static IReadOnlyList<string> RequireFreshHandler()
+    {
+        string line = $"FOREIGN statechanged subscriber walks compared {_freshHandlerWalks}, mismatches {_freshHandlerMismatches}, "
+            + $"kept outputs made or reused inside {_freshHandlerTouched}";
+        if (_freshHandlerWalks == 0 || _freshHandlerMismatches > 0 || _freshHandlerTouched > 0)
+        {
+            throw new InvalidOperationException(line);
+        }
+        return new[] { line };
     }
 
     /// <summary>The local player in a combat (the narrow and pilecard lines), or why not.</summary>
@@ -1303,10 +1419,16 @@ public static class ForeignPatches
     }
 
     /// <summary>RitsuLib's walk shape: the walk wrapped lazily, by value with <c>ref __result</c> only (on the combat walk).</summary>
-    private static void WalkExpandPostfix(ref IEnumerable<AbstractModel> __result) => __result = ExpandWalk(__result, nested: false);
+    private static void WalkExpandPostfix(ref IEnumerable<AbstractModel> __result) => __result = ExpandWalk(__result, nested: false, expand: !_expandFlipped);
 
     /// <summary><see cref="WalkExpandPostfix"/> on the run walk, whose input ends with the child combat walk's output.</summary>
-    private static void WalkExpandRunPostfix(ref IEnumerable<AbstractModel> __result) => __result = ExpandWalk(__result, nested: true);
+    private static void WalkExpandRunPostfix(ref IEnumerable<AbstractModel> __result) => __result = ExpandWalk(__result, nested: true, expand: !_expandFlipped);
+
+    /// <summary>
+    /// Flipped by the mutating statechanged subscriber at each of its calls: the expansion's output then changes (Squeezes no longer
+    /// doubled, or doubled again) from the next walk on, read when the postfix runs (state a version bump doesn't see).
+    /// </summary>
+    private static bool _expandFlipped;
 
     /// <summary>The Squeezes the combat walk's expansion yielded twice: the run walk's input holds them as pairs (its child combat walk).</summary>
 
@@ -1318,7 +1440,7 @@ public static class ForeignPatches
     /// expansion yielded is the game's; a pair of any other model (the deck's cards are other objects than the combat's) or three
     /// in a row is a second application.
     /// </summary>
-    private static IEnumerable<AbstractModel> ExpandWalk(IEnumerable<AbstractModel> walk, bool nested)
+    private static IEnumerable<AbstractModel> ExpandWalk(IEnumerable<AbstractModel> walk, bool nested, bool expand)
     {
         AbstractModel? previous = null;
         int repeated = 0;
@@ -1332,7 +1454,7 @@ public static class ForeignPatches
             }
             previous = model;
             yield return model;
-            if (model is Squeeze)
+            if (model is Squeeze && expand)
             {
                 if (!nested && !Tables.ExpandedInCombat.TryGetValue(model, out _))
                 {

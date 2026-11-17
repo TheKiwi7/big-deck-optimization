@@ -304,18 +304,30 @@ public static class ListenerCache
     /// <summary>
     /// Per walk, the output after every other mod's postfix (the first walk's own, <see cref="LazyOutput"/>: pulled only as far as
     /// a caller enumerates), kept from the first walk of the current outermost display scope and state version; dropped at its
-    /// end, at a version change (the key's version), and when a snapshot, a game-value refresh, a suspension or another mod's
-    /// CombatStateChanged handler comes in it (<see cref="_exactScope"/>).
+    /// end, at a version change (the key's version), when a snapshot, a game-value refresh or a suspension comes in it
+    /// (<see cref="_exactScope"/>), and after another mod's CombatStateChanged handler ran (<see cref="EndForeignHandler"/>).
     /// </summary>
     [ThreadStatic] private static Dictionary<(object, object?), KeptOutput>? _augmented;
 
     /// <summary>
-    /// A snapshot, a game-state refresh scope, a suspension (game logic resuming inline) or a CombatStateChanged dispatch with
-    /// another mod's handler is (or was) in the current outermost scope: no augmented reuse in it.
+    /// A snapshot, a game-state refresh scope or a suspension (game logic resuming inline) is (or was) in the current outermost
+    /// scope: no augmented reuse in it.
     /// </summary>
     [ThreadStatic] private static bool _exactScope;
 
-    /// <summary>The current outermost scope's number: a reused output enumerated after its scope ended is the call's own (<see cref="ReusedOutput"/>).</summary>
+    /// <summary>
+    /// Another mod's CombatStateChanged handler (or one this class can't tell is the game's) is running, at any depth: no
+    /// augmented output is kept, reused or compared until it returns (its walks, and every walk of the code it runs or waits on
+    /// inline, are the game's walks at the scope's exact tier: the unpatched lists by state version, every other mod's postfix
+    /// run at each call, as in the scope's walks without the walk premise). Restored, not decremented, by
+    /// <see cref="EndForeignHandler"/>.
+    /// </summary>
+    [ThreadStatic] private static int _foreignDepth;
+
+    /// <summary>
+    /// The current outermost scope's number, moved on too when another mod's CombatStateChanged handler starts and ends: a reused
+    /// output enumerated after its scope (or that part of it) ended is the call's own (<see cref="ReusedOutput"/>).
+    /// </summary>
     [ThreadStatic] private static int _scopeSerial;
 
     /// <summary>
@@ -348,8 +360,15 @@ public static class ListenerCache
     /// mid-scope; re-audit of the premises, W-6).
     /// </summary>
     private static bool AugmentedReuse(bool augmented, MethodBase? walk, MethodInfo? postfix, ref LastVerdict? last) =>
-        PatchSafety.ShapeRules && WalkReuseEnabled && augmented && !_exactScope && !_materializingAugmented && !_mirrorDeclined && Serving
-        && postfix != null && PostfixLast(walk, postfix, ref last);
+        PatchSafety.ShapeRules && augmented && ReuseOpen && postfix != null && PostfixLast(walk, postfix, ref last);
+
+    /// <summary>
+    /// The part of <see cref="AugmentedReuse"/> that doesn't depend on the walk: the part on, no exact mode, no output being
+    /// pulled, no declined mirror, inside a scope this class serves, and no other mod's CombatStateChanged handler running
+    /// (<see cref="_foreignDepth"/>).
+    /// </summary>
+    private static bool ReuseOpen =>
+        WalkReuseEnabled && !_exactScope && _foreignDepth == 0 && !_materializingAugmented && !_mirrorDeclined && Serving;
 
     /// <summary>
     /// This class's postfix runs after every other mod's on the walk (Harmony's sort, asked again when Harmony's epoch moves, each
@@ -427,8 +446,18 @@ public static class ListenerCache
         try
         {
             _augmented ??= new Dictionary<(object, object?), KeptOutput>(new RefComparer());
+#if BENCH
+            // This key's first walk since another mod's handler returned while it was kept: must be kept anew, never reused.
+            bool afterForeign = _keysAtForeignEnd != null && _keysAtForeignEnd.Remove(key);
+#endif
             if (_augmented.TryGetValue(key, out KeptOutput? entry) && entry.Version == _version)
             {
+#if BENCH
+                if (afterForeign)
+                {
+                    ReusedAfterForeign++;
+                }
+#endif
                 // D1 (re-audit of c2f613b): Checked is set by a check that covered everything its caller read (CheckedOutput), not
                 // when a check is handed out. D2: the per-key sample's position moves with the scope (display only).
                 bool check = !entry.Checked || (CountReuse(key) + SampleOffset()) % WalkVerifyEvery == 0;
@@ -436,6 +465,10 @@ public static class ListenerCache
                 {
 #if BENCH
                     WalksReused++;
+                    if (_inGameHandler)
+                    {
+                        GameHandlerReuses++;
+                    }
 #endif
                     return new ReusedOutput(entry.Output, output, _scopeSerial, _version);
                 }
@@ -450,6 +483,10 @@ public static class ListenerCache
             _augmented[key] = new KeptOutput(_version, lazy);
 #if BENCH
             WalksMaterialized++;
+            if (afterForeign)
+            {
+                KeptAfterForeign++;
+            }
 #endif
             // D6: the first walk's own caller is guarded as the reuses are (outside its scope, or once the scope's reuse ended,
             // the call's own output).
@@ -708,7 +745,7 @@ public static class ListenerCache
 
     /// <summary>
     /// A reuse handed to a walk's caller: the kept output while enumerated inside the scope it was kept for, reuse still allowed
-    /// there (no snapshot, game-value refresh, suspension or foreign dispatch since, the part on); otherwise this call's own
+    /// there (no snapshot, game-value refresh, suspension or other mod's CombatStateChanged handler since, the part on); otherwise this call's own
     /// output, the game's (re-audit of the premises, W-1b: a kept output never reaches code outside its display scope, even an
     /// enumerable kept by a caller and enumerated later). Round 4: also at the state version it was handed out at, and the kept
     /// output not closed (a version bump in the scope, then another walk of that key, closes it: enumerated again, a held reuse
@@ -731,7 +768,7 @@ public static class ListenerCache
         public IEnumerator<AbstractModel> GetEnumerator()
         {
             bool inScope = _scope == _scopeSerial && _version == ListenerCache._version && !_kept.Closed && WalkReuseEnabled && !_exactScope
-                && !_mirrorDeclined && Serving && !_kept.Pulling;
+                && _foreignDepth == 0 && !_mirrorDeclined && Serving && !_kept.Pulling;
 #if BENCH
             if (!inScope)
             {
@@ -773,7 +810,7 @@ public static class ListenerCache
         }
 
         /// <summary>Compared only in the scope and at the state the kept output is for (enumerated later, the state may differ).</summary>
-        private bool Comparable => _scope == _scopeSerial && _version == ListenerCache._version && !_exactScope;
+        private bool Comparable => _scope == _scopeSerial && _version == ListenerCache._version && !_exactScope && _foreignDepth == 0;
 
         public IEnumerator<AbstractModel> GetEnumerator()
         {
@@ -831,7 +868,7 @@ public static class ListenerCache
 
     /// <summary>
     /// From here to the end of the outermost scope, no augmented output is kept or reused (a snapshot, a game-state scope, a
-    /// suspension, a dispatch with another mod's handler). Outputs being enumerated go on (their callers' own, as in the game).
+    /// suspension). Outputs being enumerated go on (their callers' own, as in the game).
     /// </summary>
     private static void ExactFromHere()
     {
@@ -840,29 +877,85 @@ public static class ListenerCache
     }
 
     /// <summary>
-    /// The CombatStateChanged dispatch's handlers are all the game's (re-audit of the premises, W-1a): another mod's handler
-    /// may walk the real state there (RandomForeseer's prediction refresh) or do more than display; then nothing is reused in
-    /// that dispatch. Cached per delegate (a subscription makes a new one). Never throws: can't tell, not all the game's.
+    /// Which of the CombatStateChanged dispatch's handlers are not the game's (re-audit of the premises, W-1a; the rule of
+    /// 2026-11-17): another mod's handler may walk the real state (RandomForeseer's prediction refresh) or do more than display,
+    /// so it runs with the reuse suspended (<see cref="InvokeHandlers"/>); the game's own keep it. Null: all the game's. Cached
+    /// per delegate (a subscription makes a new one; its invocation list is fixed). The flags follow
+    /// <paramref name="handlers"/>' invocation list (<paramref name="list"/>, given when some aren't the game's), index for index.
+    /// A handler it can't tell is not the game's.
     /// </summary>
-    private static bool GameHandlersOnly(Action<CombatState> handlers)
+    private static bool[]? ForeignHandlers(Action<CombatState> handlers, out Delegate[]? list)
+    {
+        list = null;
+        HandlersVerdict? last = _lastHandlers;
+        if (last != null && last.Handlers.TryGetTarget(out Action<CombatState>? known) && ReferenceEquals(handlers, known))
+        {
+            if (last.Foreign != null)
+            {
+                list = handlers.GetInvocationList();
+            }
+            return last.Foreign;
+        }
+        list = handlers.GetInvocationList();
+        var flags = new bool[list.Length];
+        var names = new List<string>();
+        var assemblies = new List<Assembly?>();
+        for (int i = 0; i < list.Length; i++)
+        {
+            if (IsGameHandler(list[i]))
+            {
+                continue;
+            }
+            flags[i] = true;
+            try
+            {
+                MethodInfo method = list[i].Method;
+                string name = $"{method.DeclaringType?.FullName}.{method.Name}";
+                if (!names.Contains(name))
+                {
+                    names.Add(name);
+                }
+                // A game method on another mod's object (its subclass of a game node): that mod's.
+                Assembly? assembly = method.DeclaringType?.Assembly;
+                assemblies.Add(assembly == Reflect.Game && list[i].Target is { } target ? target.GetType().Assembly : assembly);
+            }
+            catch
+            {
+                // Named or not, it runs with the reuse suspended.
+                if (!names.Contains("(unnamed)"))
+                {
+                    names.Add("(unnamed)");
+                }
+            }
+        }
+        bool[]? foreign = Array.IndexOf(flags, true) >= 0 ? flags : null;
+        _lastHandlers = new HandlersVerdict(new WeakReference<Action<CombatState>>(handlers), foreign);
+        if (!SelfTesting)
+        {
+            NoteForeignHandlers(names, assemblies);
+        }
+        return foreign;
+    }
+
+    /// <summary>
+    /// A handler of the game's own: its method declared in the game's assembly (closures and lambdas the game compiles
+    /// included), on no target or a target of a game type (not another mod's subclass of a game node), no type argument from
+    /// outside the game or the runtime. Other mods' Harmony patches on a game handler don't change this (D4, owner decision:
+    /// taken as display under the walk premise). Never throws: can't tell, not the game's.
+    /// </summary>
+    private static bool IsGameHandler(Delegate handler)
     {
         try
         {
-            HandlersVerdict? last = _lastHandlers;
-            if (last != null && last.Handlers.TryGetTarget(out Action<CombatState>? known) && ReferenceEquals(handlers, known))
+            MethodInfo method = handler.Method;
+            Type? declaring = method.DeclaringType;
+            if (declaring == null || method.Module.Assembly != Reflect.Game || !GameType(declaring)
+                || (method.IsGenericMethod && !method.GetGenericArguments().All(GameOrRuntimeType)))
             {
-                return last.GameOnly;
+                return false;
             }
-            string[] foreign = handlers.GetInvocationList().Where(d => d.Method.Module.Assembly != Reflect.Game)
-                .Select(d => $"{d.Method.DeclaringType?.FullName}.{d.Method.Name}").Distinct().ToArray();
-            bool gameOnly = foreign.Length == 0;
-            if (!gameOnly && (last == null || last.GameOnly) && !SelfTesting)
-            {
-                Log.Info($"[{ModEntry.Id}] {Name}: other mods handle CombatStateChanged ({string.Join(", ", foreign.Take(4))}): "
-                    + "no listener walk output is reused in that dispatch");
-            }
-            _lastHandlers = new HandlersVerdict(new WeakReference<Action<CombatState>>(handlers), gameOnly);
-            return gameOnly;
+            object? target = handler.Target;
+            return target == null || GameType(target.GetType());
         }
         catch
         {
@@ -870,8 +963,42 @@ public static class ListenerCache
         }
     }
 
+    private static bool GameType(Type type) =>
+        type.Assembly == Reflect.Game && (!type.IsGenericType || type.GetGenericArguments().All(GameOrRuntimeType));
+
+    private static bool GameOrRuntimeType(Type type) =>
+        !type.IsGenericParameter && (type.Assembly == Reflect.Game || type.Assembly == typeof(object).Assembly)
+        && (!type.IsGenericType || type.GetGenericArguments().All(GameOrRuntimeType))
+        && (!type.HasElementType || GameOrRuntimeType(type.GetElementType()!));
+
+    /// <summary>
+    /// bdopt why's note on other mods' CombatStateChanged handlers (no walk premise for them: they get the game's walks at the
+    /// scope's exact tier), recorded or cleared per change of the handlers' delegate. Display only, never throws.
+    /// </summary>
+    private static void NoteForeignHandlers(List<string> names, List<Assembly?> assemblies)
+    {
+        try
+        {
+            if (names.Count == 0)
+            {
+                PatchSafety.ClearExact(WalkReuseName, "foreign_handlers");
+                return;
+            }
+            // Sorted: the four named don't change with the handlers' order (a node subscribing again), so the note logs once.
+            names.Sort(StringComparer.Ordinal);
+            PatchSafety.Exact(WalkReuseName, "foreign_handlers", $"other mods handle CombatStateChanged ({string.Join(", ", names.Take(4))}"
+                + (names.Count > 4 ? ", ..." : "") + "): their handlers run with the game's listener walks at the scope's exact tier (the "
+                + "unpatched lists by state version, every other mod's postfix run at each call: no walk output kept for the game's handlers "
+                + "reaches them, and none kept before them is reused after them)", PatchSafety.ModNamesOf(assemblies));
+        }
+        catch
+        {
+            // Display only.
+        }
+    }
+
     /// <summary>The last dispatch's verdict, its delegate held weakly (D5, re-audit of c2f613b: it holds the handlers' nodes).</summary>
-    private sealed record HandlersVerdict(WeakReference<Action<CombatState>> Handlers, bool GameOnly);
+    private sealed record HandlersVerdict(WeakReference<Action<CombatState>> Handlers, bool[]? Foreign);
 
 #if BENCH
     private static bool SelfTesting => _selfTesting;
@@ -886,6 +1013,9 @@ public static class ListenerCache
 
     /// <summary>Set while the self-test runs: a difference found is counted here instead of turning the part off.</summary>
     [ThreadStatic] private static int _selfTestMismatches;
+    /// <summary>The self-test's errors of the dispatch's own code (<see cref="DispatchFailed"/>), and its injected one.</summary>
+    [ThreadStatic] private static int _selfTestDispatchFaults;
+    [ThreadStatic] private static bool _selfTestFailPlan;
     [ThreadStatic] private static bool _selfTesting;
 
     /// <summary>A source counting what the walk's caller makes it do: elements produced, disposals, and the flag seen while producing.</summary>
@@ -958,6 +1088,9 @@ public static class ListenerCache
         AbstractModel[] models = Enumerable.Range(0, 6).Select(_ => (AbstractModel)RuntimeHelpers.GetUninitializedObject(concrete)).ToArray();
         bool wasEnabled = WalkReuseEnabled, wasSafe = _safe;
         int wasDepth = _refreshDepth;
+        // The dispatch counters are the effects check's: what the cases below count is put back.
+        long wasDispatches = ForeignDispatches, wasGameReuses = GameHandlerReuses, wasForeignCalls = ForeignHandlerCalls, wasDropped = KeptDroppedAfterForeign;
+        long wasKeptAfter = KeptAfterForeign, wasReusedAfter = ReusedAfterForeign;
         var wasAugmented = _augmented;
         _selfTesting = true;
         try
@@ -1083,10 +1216,10 @@ public static class ListenerCache
             Expect(otherVersion.SequenceEqual(models.Skip(3)) && afterClose.SequenceEqual(models.Skip(3)),
                 "a reuse held across a state version or its kept output's close is the call's own output");
 
-            // 6. W-7: in an outermost display scope, a nested game-value refresh, a suspension (game logic resuming inline), and
-            // another mod's CombatStateChanged handler each end the reuse for the rest of the scope (kept outputs dropped, a reuse
-            // handed out before gives the call's own output); the game's own handlers don't; a reuse enumerated after the scope's
-            // end gives the call's own output.
+            // 6. W-7: in an outermost display scope, a nested game-value refresh and a suspension (game logic resuming inline) each
+            // end the reuse for the rest of the scope (kept outputs dropped, a reuse handed out before gives the call's own output);
+            // another mod's CombatStateChanged handler suspends it while it runs (6b); a reuse enumerated after the scope's end
+            // gives the call's own output.
             bool ScopeCase(Action inner)
             {
                 bool wasExact = _exactScope;
@@ -1129,13 +1262,10 @@ public static class ListenerCache
                 SuspendPrefix(out int state);
                 ResumeFinalizer(state);
             }), "a suspension ends the reuse");
-            Expect(ScopeCase(() =>
-            {
-                if (!GameHandlersOnly(_ => { }))
-                {
-                    ExactFromHere();
-                }
-            }), "another mod's CombatStateChanged handler ends the reuse");
+            // 6b. The rule of 2026-11-17: in a CombatStateChanged dispatch other mods handle too, the handlers run one at a time,
+            // each once, in order, with the same argument, a throw stopping the rest as Invoke does; the game's own keep the reuse,
+            // another mod's runs with it suspended (its walks are the calls' own, a reuse handed out before gives the call's own
+            // inside it), and nothing kept before it is reused after it. An error of this class's code before any handler ran: Invoke.
             System.Reflection.MethodInfo? gameHandler = typeof(MegaCrit.Sts2.Core.Nodes.Combat.NEnergyCounter).GetMethod("OnCombatStateChanged",
                 System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public,
                 null, new[] { typeof(CombatState) }, null);
@@ -1143,7 +1273,156 @@ public static class ListenerCache
             {
                 object counter = RuntimeHelpers.GetUninitializedObject(typeof(MegaCrit.Sts2.Core.Nodes.Combat.NEnergyCounter));
                 var game = (Action<CombatState>)Delegate.CreateDelegate(typeof(Action<CombatState>), counter, gameHandler);
-                Expect(GameHandlersOnly(game) && !GameHandlersOnly(game + (_ => { })), "the game's own handlers keep the reuse, one more of another assembly doesn't");
+                Action<CombatState> mixed = game + (_ => { }) + game;
+                bool[]? gameOnly = ForeignHandlers(game, out _);
+                bool[]? mixedFlags = ForeignHandlers(mixed, out Delegate[]? mixedList);
+                Expect(gameOnly == null && mixedFlags is { Length: 3 } && !mixedFlags[0] && mixedFlags[1] && !mixedFlags[2] && mixedList is { Length: 3 },
+                    "the game's own handlers are told apart from one of another assembly, index for index");
+                _lastHandlers = null;
+            }
+            var argument = (CombatState)RuntimeHelpers.GetUninitializedObject(typeof(CombatState));
+            (List<string> Calls, Exception? Error) Dispatch(Action<Action<CombatState>> invoke, bool throwAt3)
+            {
+                var calls = new List<string>();
+                Action<CombatState> chain = null!;
+                for (int n = 0; n < 5; n++)
+                {
+                    int index = n;
+                    chain += s =>
+                    {
+                        calls.Add($"{index}{(ReferenceEquals(s, argument) ? "" : "?")}");
+                        if (index == 0)
+                        {
+                            // A subscription during the dispatch: not called by it (the delegate as read).
+                            chain += _ => calls.Add("subscribed during the dispatch");
+                        }
+                        if (index == 3 && throwAt3)
+                        {
+                            throw new SelfTestException();
+                        }
+                    };
+                }
+                try
+                {
+                    invoke(chain);
+                    return (calls, null);
+                }
+                catch (Exception e)
+                {
+                    return (calls, e);
+                }
+            }
+            bool[] flags = { false, true, false, true, false };
+            Action<CombatState>[] Typed(Action<CombatState> chain) => chain.GetInvocationList().Cast<Action<CombatState>>().ToArray();
+            {
+                int wasSerial = _scopeSerial, wasForeign = _foreignDepth;
+                try
+                {
+                    foreach (bool throwAt3 in new[] { false, true })
+                    {
+                        (List<string> vanilla, Exception? vanillaError) = Dispatch(chain => chain(argument), throwAt3);
+                        (List<string> split, Exception? splitError) = Dispatch(chain => InvokeHandlers(Typed(chain), flags, argument), throwAt3);
+                        Expect(split.SequenceEqual(vanilla) && (vanillaError == null) == (splitError == null)
+                            && (splitError == null || splitError is SelfTestException) && _foreignDepth == wasForeign,
+                            throwAt3 ? "one handler at a time: a throw stops the rest and passes on as Invoke's"
+                                : "one handler at a time: each once, in order, the same argument, the delegate as read");
+                    }
+                    // Through the dispatch itself (every handler of this assembly), then with its own code failing before any ran.
+                    bool wasCombat = _combatAugmented;
+                    int wasSnapshot = _snapshotDepth, wasRefresh = _refreshDepth;
+                    bool wasSafeHere = _safe;
+                    try
+                    {
+                        _snapshotDepth = 0;
+                        _refreshDepth = 0;
+                        EnterDisplayRefresh(out int outer);
+                        _combatAugmented = true;
+                        (List<string> vanilla, Exception? _) = Dispatch(chain => chain(argument), throwAt3: true);
+                        long callsBefore = ForeignHandlerCalls;
+                        (List<string> split, Exception? splitError) = Dispatch(chain => InvokeStateChangedInScope(chain, argument), throwAt3: true);
+                        // With the shape rules off nothing is reused, so the dispatch is Invoke itself.
+                        bool fourForeign = !PatchSafety.ShapeRules || ForeignHandlerCalls - callsBefore == 4;
+                        _selfTestFailPlan = true;
+                        int faultsBefore = _selfTestDispatchFaults;
+                        (List<string> fallback, Exception? fallbackError) = Dispatch(chain => InvokeStateChangedInScope(chain, argument), throwAt3: true);
+                        _selfTestFailPlan = false;
+                        ExitRefresh(null, outer);
+                        Expect(split.SequenceEqual(vanilla) && splitError is SelfTestException && fourForeign, "the dispatch runs other mods' handlers one at a time, as Invoke");
+                        Expect(fallback.SequenceEqual(vanilla) && fallbackError is SelfTestException && (!PatchSafety.ShapeRules || _selfTestDispatchFaults == faultsBefore + 1),
+                            "an error of the dispatch's own code before any handler ran: Invoke, each handler once");
+                    }
+                    finally
+                    {
+                        _selfTestFailPlan = false;
+                        _combatAugmented = wasCombat;
+                        _snapshotDepth = wasSnapshot;
+                        _refreshDepth = wasRefresh;
+                        _safe = wasSafeHere;
+                        _lastHandlers = null;
+                    }
+                }
+                finally
+                {
+                    _scopeSerial = wasSerial;
+                    _foreignDepth = wasForeign;
+                }
+            }
+            {
+                int wasSnapshot = _snapshotDepth, wasRefresh = _refreshDepth, wasSerial = _scopeSerial;
+                bool wasSafeHere = _safe, wasExact = _exactScope;
+                try
+                {
+                    _snapshotDepth = 0;
+                    _refreshDepth = 0;
+                    EnterDisplayRefresh(out int outer);
+                    _safe = true;
+                    var key = ((object)models[2], (object?)null);
+                    // The walk as the postfix makes it: kept or reused only where the reuse is open.
+                    IEnumerable<AbstractModel> Walk(IEnumerable<AbstractModel> output) => ReuseOpen ? Augmented(key, output) : output;
+                    IEnumerable<AbstractModel>? held = null;
+                    bool beforeReused = false, insideOwn = false, heldInside = false, insideClosed = false, afterDropped = false, afterKeptAgain = false, heldAfter = false;
+                    long droppedBefore = KeptDroppedAfterForeign, keptAfterBefore = KeptAfterForeign, reusedAfterBefore = ReusedAfterForeign;
+                    Action<CombatState>[] handlers =
+                    {
+                        _ =>
+                        {
+                            Walk(models.Take(3).ToArray()).ToList();
+                            Walk(models.Take(3).ToArray()).ToList(); // The first reuse of the scope: checked.
+                            held = Walk(models.Skip(3).ToArray());
+                            beforeReused = held is ReusedOutput && held.SequenceEqual(models.Take(3));
+                        },
+                        _ =>
+                        {
+                            IEnumerable<AbstractModel> own = models.Skip(3).ToArray();
+                            insideOwn = ReferenceEquals(Walk(own), own);
+                            heldInside = held != null && held.SequenceEqual(models.Skip(3));
+                            insideClosed = !ReuseOpen;
+                        },
+                        _ =>
+                        {
+                            afterDropped = _augmented == null || _augmented.Count == 0;
+                            IEnumerable<AbstractModel> first = Walk(models.Skip(3).ToArray());
+                            afterKeptAgain = first is ReusedOutput && first.SequenceEqual(models.Skip(3)) && ReuseOpen;
+                            heldAfter = held != null && held.SequenceEqual(models.Skip(3));
+                        },
+                    };
+                    InvokeHandlers(handlers, new[] { false, true, false }, argument);
+                    ExitRefresh(null, outer);
+                    Expect(beforeReused, "a game handler before another mod's reuses");
+                    Expect(insideOwn && heldInside && insideClosed, "another mod's handler runs with the reuse suspended: its walks and a reuse handed out before are the calls' own");
+                    Expect(afterDropped && KeptDroppedAfterForeign > droppedBefore && heldAfter, "nothing kept before another mod's handler is reused after it");
+                    Expect(afterKeptAgain, "a game handler after another mod's keeps and reuses again");
+                    Expect(KeptAfterForeign > keptAfterBefore && ReusedAfterForeign == reusedAfterBefore,
+                        "the first walk of a dropped key after another mod's handler is counted as kept anew, not reused");
+                }
+                finally
+                {
+                    _snapshotDepth = wasSnapshot;
+                    _refreshDepth = wasRefresh;
+                    _scopeSerial = wasSerial;
+                    _safe = wasSafeHere;
+                    _exactScope = wasExact;
+                }
             }
             bool afterEnd;
             {
@@ -1222,6 +1501,13 @@ public static class ListenerCache
             _selfTesting = false;
             // The handlers' verdict cached by the cases above is the test's: the next dispatch works it out (and logs) again.
             _lastHandlers = null;
+            ForeignDispatches = wasDispatches;
+            GameHandlerReuses = wasGameReuses;
+            ForeignHandlerCalls = wasForeignCalls;
+            KeptDroppedAfterForeign = wasDropped;
+            KeptAfterForeign = wasKeptAfter;
+            ReusedAfterForeign = wasReusedAfter;
+            _keysAtForeignEnd?.Clear();
             WalkReuseEnabled = wasEnabled;
             _safe = wasSafe;
             _refreshDepth = wasDepth;
@@ -1237,8 +1523,26 @@ public static class ListenerCache
 #endif
 
 #if BENCH
-    /// <summary>CombatStateChanged dispatches with another mod's handler: no reuse in them (the effects check of W-1a).</summary>
+    /// <summary>CombatStateChanged dispatches with another mod's handler, run one handler at a time (<see cref="InvokeHandlers"/>).</summary>
     public static long ForeignDispatches { get; private set; }
+    /// <summary>Walk outputs reused inside the game's own handlers of those dispatches (the rule of 2026-11-17: the reuse stays there).</summary>
+    public static long GameHandlerReuses { get; private set; }
+    /// <summary>Other mods' handlers run with the reuse suspended.</summary>
+    public static long ForeignHandlerCalls { get; private set; }
+    /// <summary>Kept outputs dropped when another mod's handler returned (none reused after it).</summary>
+    public static long KeptDroppedAfterForeign { get; private set; }
+
+    /// <summary>A game handler of a dispatch run one handler at a time is running (counts <see cref="GameHandlerReuses"/>).</summary>
+    [ThreadStatic] private static bool _inGameHandler;
+
+    /// <summary>
+    /// Keys kept when another mod's handler returned, whose next walk must keep a new output (<see cref="KeptAfterForeign"/>) and
+    /// never reuse one (<see cref="ReusedAfterForeign"/>: a drop missing, or another path keeping across it). Cleared per outermost scope.
+    /// </summary>
+    [ThreadStatic] private static HashSet<(object, object?)>? _keysAtForeignEnd;
+    /// <summary>Keys' first walks after another mod's handler that kept a new output (expected), and that were reused or checked (must stay 0).</summary>
+    public static long KeptAfterForeign { get; private set; }
+    public static long ReusedAfterForeign { get; private set; }
 #endif
 
     /// <summary>
@@ -1264,6 +1568,9 @@ public static class ListenerCache
             if (walks.Count == 0)
             {
                 PatchSafety.ClearKept(WalkReuseName, "walk_reuse");
+                // Nothing reused: other mods' handlers see the game's walks however they run (the next dispatch notes them again).
+                PatchSafety.ClearExact(WalkReuseName, "foreign_handlers");
+                _lastHandlers = null;
                 return;
             }
             var mods = new List<string>(PatchSafety.OtherModsPatching(walks));
@@ -1276,7 +1583,7 @@ public static class ListenerCache
                 + "once per walk: its output, enumerated only as far as the game goes, is reused for that refresh's walks (a stated premise: "
                 + "within one display refresh, at one state, it gives the same listeners; each refresh's first reuse of a walk and one in "
                 + $"{WalkVerifyEvery} after it are compared with a fresh call, a difference turns this off; the co-op state check, game-value "
-                + "refreshes, game logic resuming in a refresh and a refresh other mods handle never reuse it)", mods.ToArray());
+                + "refreshes and game logic resuming in a refresh never reuse it, nor other mods' CombatStateChanged handlers)", mods.ToArray());
         }
         catch
         {
@@ -1436,25 +1743,169 @@ public static class ListenerCache
         return code;
     }
 
-    /// <summary>Invokes the CombatStateChanged handlers inside one refresh scope.</summary>
+    /// <summary>
+    /// Invokes the CombatStateChanged handlers inside one refresh scope. <paramref name="handlers"/> is the delegate the game's
+    /// <c>this.CombatStateChanged?.Invoke(_state)</c> read and tested for null (the transpiler replaces only the Invoke call:
+    /// the field read once, before <c>_state</c>, as in the game), so a handler subscribing or unsubscribing during the dispatch
+    /// changes nothing here, as with Invoke (a delegate's invocation list never changes). Where an augmented walk output may be
+    /// reused and some handler isn't the game's, they run one at a time (<see cref="InvokeHandlers"/>); otherwise Invoke.
+    /// </summary>
     public static void InvokeStateChangedInScope(Action<CombatState> handlers, CombatState state)
     {
         EnterRefresh(display: true);
-        // Only where a walk carries other mods' postfixes (the only case anything is reused).
-        if ((_combatAugmented || _runAugmented) && !GameHandlersOnly(handlers))
-        {
-            ExactFromHere();
-#if BENCH
-            ForeignDispatches++;
-#endif
-        }
         try
         {
-            handlers(state);
+            Delegate[]? list = null;
+            bool[]? foreign = null;
+            try
+            {
+                // Only where a walk carries other mods' postfixes (the only case anything is reused).
+                if ((_combatAugmented || _runAugmented) && PatchSafety.ShapeRules && WalkReuseEnabled)
+                {
+                    foreign = ForeignHandlers(handlers, out Delegate[]? invocation);
+#if BENCH
+                    if (_selfTestFailPlan)
+                    {
+                        throw new SelfTestException();
+                    }
+#endif
+                    if (foreign != null)
+                    {
+                        // Checked here, before any handler runs, so the loop's unchecked casts can't fail (an Action<CombatState>'s
+                        // invocation list holds only Action<CombatState> delegates).
+                        if (invocation == null || invocation.Length != foreign.Length || Array.Exists(invocation, d => d is not Action<CombatState>))
+                        {
+                            throw new InvalidOperationException("CombatStateChanged handlers' verdict doesn't match their invocation list");
+                        }
+                        list = invocation;
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                // This class's own error, before any handler ran: Invoke, as the game, and the part off for the session.
+                list = null;
+                DispatchFailed(e);
+            }
+            if (list == null || foreign == null)
+            {
+                handlers(state);
+                return;
+            }
+            InvokeHandlers(list, foreign, state);
         }
         finally
         {
             ExitRefresh(null);
+        }
+    }
+
+    /// <summary>
+    /// The rule of 2026-11-17 (owner-approved; DESIGN "Owner-approved premises", Walks Tier 2): every handler once, in the
+    /// delegate's order, with the same argument, as Invoke calls them (a throw stops the rest and reaches the game's dispatch
+    /// unchanged). The game's own handlers run with the reuse as before. Another mod's (or one this class can't tell) runs with
+    /// it suspended for its whole run (<see cref="_foreignDepth"/>): its walks, and those of everything it runs or waits on
+    /// inline, are the game's walks at the scope's exact tier (the unpatched lists by state version, every other mod's postfix
+    /// run at each call), never a kept output; an output handed out before it gives its caller the call's own there
+    /// (the scope serial moves on); and no output kept before it is reused after it: dropped when it returns, since another
+    /// mod's handler may change state no version bump sees (its own mod's, which other mods' walk postfixes may read). This
+    /// class's code between the handlers never throws: an error there turns the part off (the rest run with no reuse at all).
+    /// </summary>
+    private static void InvokeHandlers(Delegate[] list, bool[] foreign, CombatState state)
+    {
+#if BENCH
+        ForeignDispatches++;
+#endif
+        for (int i = 0; i < list.Length; i++)
+        {
+            if (!foreign[i])
+            {
+#if BENCH
+                bool wasGame = _inGameHandler;
+                _inGameHandler = true;
+                try
+                {
+                    Unsafe.As<Action<CombatState>>(list[i])(state);
+                }
+                finally
+                {
+                    _inGameHandler = wasGame;
+                }
+#else
+                Unsafe.As<Action<CombatState>>(list[i])(state);
+#endif
+                continue;
+            }
+            int was = BeginForeignHandler();
+            try
+            {
+                Unsafe.As<Action<CombatState>>(list[i])(state);
+            }
+            finally
+            {
+                EndForeignHandler(was);
+            }
+        }
+    }
+
+    /// <summary>Another mod's handler starts: the reuse suspended (any depth), outputs handed out before no longer in scope. Never throws.</summary>
+    private static int BeginForeignHandler()
+    {
+        int was = _foreignDepth;
+        _foreignDepth = was + 1;
+        _scopeSerial++;
+#if BENCH
+        ForeignHandlerCalls++;
+#endif
+        return was;
+    }
+
+    /// <summary>
+    /// Another mod's handler returned (or threw): the depth it found back, outputs handed out during it out of scope, and every
+    /// kept output dropped (closed: an unfinished source disposed once no caller is in it). Never throws.
+    /// </summary>
+    private static void EndForeignHandler(int was)
+    {
+        _foreignDepth = was;
+        _scopeSerial++;
+        try
+        {
+            int kept = _augmented?.Count ?? 0;
+#if BENCH
+            // Recorded apart from the drop (the effects check: a missing drop shows as ReusedAfterForeign, not in this count).
+            if (kept > 0)
+            {
+                (_keysAtForeignEnd ??= new HashSet<(object, object?)>(new RefComparer())).UnionWith(_augmented!.Keys);
+            }
+#endif
+            ClearAugmented();
+#if BENCH
+            KeptDroppedAfterForeign += kept;
+#endif
+        }
+        catch (Exception e)
+        {
+            DispatchFailed(e);
+        }
+    }
+
+    /// <summary>This class's error in the dispatch's own code: the part off for the session (no reuse anywhere from here). Never throws.</summary>
+    private static void DispatchFailed(Exception e)
+    {
+#if BENCH
+        if (_selfTesting)
+        {
+            _selfTestDispatchFaults++;
+            return;
+        }
+#endif
+        try
+        {
+            WalkReuseFailed(e);
+        }
+        catch
+        {
+            WalkReuseEnabled = false;
         }
     }
 
@@ -1669,6 +2120,9 @@ public static class ListenerCache
             _exactScope = false;
             _augmented?.Clear();
             _scopeSerial++;
+#if BENCH
+            _keysAtForeignEnd?.Clear();
+#endif
             try
             {
                 // Checked per outermost scope: another mod may patch after we load. A replayed list stands for the whole

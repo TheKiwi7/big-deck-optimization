@@ -1,0 +1,67 @@
+# The rule of 2026-11-17 next to another mod's CombatStateChanged handler that does nothing (A/B, mod on; DESIGN
+# "Owner-approved premises", Walks Tier 2): the shapes of foreign-walkreuse-1k-on plus a handler of "another mod" counting its
+# calls only, put right after the hand's handler ("foreignpatch statechanged subscribe noop afterhand"). The dispatch runs its
+# handlers one at a time: the game's own still reuse the walks' outputs (ListenerCache.Walks.GameHandlerReuses grew), the other
+# mod's runs with the reuse suspended (ForeignHandlers grew), and the outputs the hand kept are dropped after it
+# (DroppedAfterForeign grew: nothing kept before another mod's handler is reused after it). CHECKSUM and STATE identical with
+# foreign-walkreuse-noop-1k-off; the expansion never ran on its own output (require nodouble). ~945 cards.
+expect FOREIGN walkreuse selftest: \d+ cases as expected
+expect ListenerCache\.Walks: other mods handle CombatStateChanged \(.*OnStateChangedNoop.*\): their handlers run with the game's listener walks at the scope's exact tier
+expect EFFECTCHECK ListenerCache\.Walks grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK ListenerCache\.Walks\.ForeignHandlers grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK ListenerCache\.Walks\.GameHandlerReuses grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK ListenerCache\.Walks\.DroppedAfterForeign grew since 'start': [0-9]+ -> [1-9]
+expect STATE foreign end statechanged-noop calls [1-9]
+expect FOREIGN walk-expand-postfix never ran on its own output
+timeout 1500
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+foreignpatch walk-expand-postfix MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners
+foreignpatch walk-filter-repeat MegaCrit.Sts2.Core.Runs.RunState:IterateHookListeners
+foreignpatch walkreuse selftest
+effects start
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+foreignpatch statechanged subscribe noop afterhand
+checksum start
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+play 4
+waitfor idle 120
+checksum t3 plays
+endturn
+waitfor idle 300
+checksum t3 end
+state t3
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+foreignpatch report end
+effects end
+effectcheck ListenerCache.Walks grew start
+effectcheck ListenerCache.Walks.ForeignHandlers grew start
+effectcheck ListenerCache.Walks.GameHandlerReuses grew start
+effectcheck ListenerCache.Walks.DroppedAfterForeign grew start
+foreignpatch require nodouble
+cmd bdopt why
+counters end
+foreignpatch remove
+quit

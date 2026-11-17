@@ -402,6 +402,51 @@ public static partial class PatchSafety
         }
     }
 
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Patch, string Key), (string Text, string[] Mods)> _exact = new();
+
+    /// <summary>
+    /// Records how <paramref name="patch"/> runs next to other mods' code where it needs none of its stated premises there, only
+    /// its exact tier (ListenerCache.Walks: other mods' CombatStateChanged handlers get the game's walks at the scope's exact
+    /// tier, never a reused output): <paramref name="text"/>,
+    /// English, for bdopt why and the log; <paramref name="mods"/> the mods concerned. Neither a back-off nor a premise: no
+    /// colour, nothing in the menu. Logged once per change. Never throws.
+    /// </summary>
+    internal static void Exact(string patch, string key, string text, string[] mods)
+    {
+        try
+        {
+            string[] sorted = mods.Where(m => !string.IsNullOrEmpty(m)).Distinct().OrderBy(m => m, StringComparer.OrdinalIgnoreCase).ToArray();
+            if (_exact.TryGetValue((patch, key), out var known) && known.Text == text && known.Mods.SequenceEqual(sorted))
+            {
+                return;
+            }
+            _exact[(patch, key)] = (text, sorted);
+            Log.Info($"[{ModEntry.Id}] {patch}: {text}" + (sorted.Length > 0 ? $" ({string.Join(", ", sorted)})" : "") + ": exact, the normal game for that code");
+        }
+        catch
+        {
+            // Display only.
+        }
+    }
+
+    /// <summary>The exact note no longer holds (nothing logged). Never throws.</summary>
+    internal static void ClearExact(string patch, string key)
+    {
+        try
+        {
+            _exact.TryRemove((patch, key), out _);
+        }
+        catch
+        {
+            // Display only.
+        }
+    }
+
+    /// <summary>Every exact note recorded now (<see cref="Exact"/>), as kept notes are, sorted by patch then text.</summary>
+    public static IReadOnlyList<KeptNote> ExactNotes() =>
+        _exact.Select(entry => new KeptNote(entry.Key.Patch, entry.Key.Key, entry.Value.Text, entry.Value.Mods))
+            .OrderBy(k => k.Patch, StringComparer.Ordinal).ThenBy(k => k.Text, StringComparer.Ordinal).ToList();
+
     /// <summary>A kept note (<see cref="Kept"/>): the patch, its text and the mods it names.</summary>
     public readonly record struct KeptNote(string Patch, string Key, string Text, string[] Mods);
 

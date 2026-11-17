@@ -1,0 +1,66 @@
+# The rule of 2026-11-17 next to another mod's CombatStateChanged handler that changes what other mods' walk postfixes return
+# (A/B, mod on; DESIGN "Owner-approved premises", Walks Tier 2): the shapes of foreign-walkreuse-1k-on plus a handler of "another
+# mod", right after the hand's handler, flipping walk-expand-postfix's output at each call ("foreignpatch statechanged subscribe
+# mutating afterhand": state no version bump sees). The outputs the hand kept are dropped after it (DroppedAfterForeign grew),
+# each such key's next walk keeps a new output (KeptAfterForeign grew), none is reused across it, no kept output ever differs
+# from a fresh one and the part stays on (require dropped: a missing drop shows there, and as a mismatch at a checked reuse).
+# CHECKSUM and STATE identical with foreign-walkreuse-mut-1k-off; the expansion never ran on its own output (require nodouble).
+# ~945 cards.
+expect FOREIGN walkreuse selftest: \d+ cases as expected
+expect ListenerCache\.Walks: other mods handle CombatStateChanged \(.*OnStateChangedMutating.*\): their handlers run with the game's listener walks at the scope's exact tier
+expect EFFECTCHECK ListenerCache\.Walks\.DroppedAfterForeign grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK ListenerCache\.Walks\.KeptAfterForeign grew since 'start': [0-9]+ -> [1-9]
+expect FOREIGN after other mods' handlers: kept anew [1-9][0-9]*, reused 0, walk mismatches 0, walk reuse on True
+expect STATE foreign end statechanged-mutating calls [1-9]
+expect FOREIGN walk-expand-postfix never ran on its own output
+timeout 1500
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+foreignpatch walk-expand-postfix MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners
+foreignpatch walk-filter-repeat MegaCrit.Sts2.Core.Runs.RunState:IterateHookListeners
+foreignpatch walkreuse selftest
+effects start
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+foreignpatch statechanged subscribe mutating afterhand
+checksum start
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+play 4
+waitfor idle 120
+checksum t3 plays
+endturn
+waitfor idle 300
+checksum t3 end
+state t3
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+foreignpatch report end
+effects end
+effectcheck ListenerCache.Walks.DroppedAfterForeign grew start
+effectcheck ListenerCache.Walks.KeptAfterForeign grew start
+foreignpatch require dropped
+foreignpatch require nodouble
+cmd bdopt why
+counters end
+foreignpatch remove
+quit

@@ -57,6 +57,9 @@ internal static class EffectCounters
         (typeof(ExtraScopes), nameof(ExtraScopes.BetterSpireScopes)), (typeof(CardDbScan), nameof(CardDbScan.Verified)),
         (typeof(FastListeners), nameof(FastListeners.DominionTails)), (typeof(FastListeners), nameof(FastListeners.ModeRunModelTails)),
         (typeof(ListenerCache), nameof(ListenerCache.DominionInvalidations)), (typeof(ListenerCache), nameof(ListenerCache.ModeRunModelInvalidations)),
+        (typeof(ListenerCache), nameof(ListenerCache.ForeignDispatches)), (typeof(ListenerCache), nameof(ListenerCache.GameHandlerReuses)),
+        (typeof(ListenerCache), nameof(ListenerCache.ForeignHandlerCalls)), (typeof(ListenerCache), nameof(ListenerCache.KeptDroppedAfterForeign)),
+        (typeof(ListenerCache), nameof(ListenerCache.KeptAfterForeign)), (typeof(ListenerCache), nameof(ListenerCache.ReusedAfterForeign)),
     };
 
     /// <summary>Each counter's getter and setter (private setters included), resolved once.</summary>

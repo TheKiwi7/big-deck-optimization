@@ -220,7 +220,7 @@ public static class Settings
         // Other mods' Harmony activity this mod can't judge patch by patch (hidden IL hooks, its own code patched, lost detours).
         string harmony = string.Concat(HarmonyWatch.Report().Select(line => "\n" + line));
         // What runs next to other mods on a premise it states (not a back-off): listed after the back-offs.
-        string kept = KeptReport();
+        string kept = KeptReport() + ExactReport();
         if (backOffs.Count == 0)
         {
             return "BigDeckOptimization: no other mod keeps any part of the optimizations on the normal game"
@@ -276,6 +276,31 @@ public static class Settings
         var sb = new StringBuilder(!Master
             ? "\nOnce on, these parts would also run next to other mods' patches (taken as harmless there, not the normal game):"
             : "\nStill running next to other mods' patches (taken as harmless there, not the normal game):");
+        foreach (PatchSafety.KeptNote note in notes)
+        {
+            sb.Append($"\n  {OptionLabels(note.Patch)}: {note.Patch}: {note.Text} <- {(note.Mods.Length > 0 ? string.Join(", ", note.Mods) : OtherModsText)}");
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// bdopt why's lines for the parts that run next to other mods' code on their exact tier only (<see cref="PatchSafety.Exact"/>:
+    /// no stated premise for that code, not a back-off), after a heading; empty when there is none or nothing runs.
+    /// </summary>
+    private static string ExactReport()
+    {
+        if (ModEntry.StartedOff)
+        {
+            return "";
+        }
+        IReadOnlyList<PatchSafety.KeptNote> notes = PatchSafety.ExactNotes().Where(k => !Master || Running(k.Patch)).ToList();
+        if (notes.Count == 0)
+        {
+            return "";
+        }
+        var sb = new StringBuilder(!Master
+            ? "\nOnce on, these parts would also run next to other mods' code with no premise for it (only their exact optimizations):"
+            : "\nRunning next to other mods' code with no premise for it (only their exact optimizations):");
         foreach (PatchSafety.KeptNote note in notes)
         {
             sb.Append($"\n  {OptionLabels(note.Patch)}: {note.Patch}: {note.Text} <- {(note.Mods.Length > 0 ? string.Join(", ", note.Mods) : OtherModsText)}");

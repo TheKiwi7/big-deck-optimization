@@ -544,6 +544,11 @@ public static partial class AutoTest
             (ListenerCache.WalkReuseName, ListenerCache.WalksReused), (ListenerCache.WalkReuseName + ".Verified", ListenerCache.WalksVerified),
             (ListenerCache.WalkReuseName + ".Kept", ListenerCache.WalksMaterialized), (ListenerCache.WalkReuseName + ".ForeignDispatches", ListenerCache.ForeignDispatches),
             (ListenerCache.WalkReuseName + ".OutOfScope", ListenerCache.ReusesOutOfScope),
+            // The rule of 2026-11-17: dispatches other mods handle too reuse in the game's handlers, run theirs suspended, drop after them.
+            (ListenerCache.WalkReuseName + ".GameHandlerReuses", ListenerCache.GameHandlerReuses),
+            (ListenerCache.WalkReuseName + ".ForeignHandlers", ListenerCache.ForeignHandlerCalls),
+            (ListenerCache.WalkReuseName + ".DroppedAfterForeign", ListenerCache.KeptDroppedAfterForeign),
+            (ListenerCache.WalkReuseName + ".KeptAfterForeign", ListenerCache.KeptAfterForeign),
             (RelicFlashMerge.Name + ".Holder", RelicFlashMerge.MergedHolder), (RelicFlashMerge.Name + ".Creature", RelicFlashMerge.MergedCreature),
             (RelicFlashMerge.Name + ".SceneRefusals", RelicFlashMerge.SceneRefusals), (RelicFlashMerge.Name + ".NoNode", RelicFlashMerge.MergedNoNode),
             // Only where another mod patches a small method after this mod's load (foreign-helpers-2k-on).
