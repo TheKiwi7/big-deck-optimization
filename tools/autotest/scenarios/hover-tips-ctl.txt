@@ -2,7 +2,7 @@
 # prefix of "another mod" on NCreature.ShowHoverTips (the creature's own show, outside the premise) must still keep every
 # rebuild (effectcheck HoverTipReuse same), the back-off shown and no kept note for HoverTipReuse. ~945 cards.
 timeout 900
-expect HoverTipReuse: NCreature\.ShowHoverTips is also patched by bdtest\.foreign\.noop-prefix .*normal game
+expect HoverTipReuse: NCreature\.ShowHoverTips is also patched by bdtest\.foreign\.noop-prefix.*: normal game for that part
 expect EFFECTCHECK HoverTipReuse same since 'start'
 newrun NECROBINDER 1234
 waitfor run 120
