@@ -10,9 +10,12 @@ Assert-GameNotRunning
 $menuDll = Join-Path $GameDir "mods\BigDeckOptimization\BigDeckOptimization.Menu.dll"
 $asideDll = "$menuDll.bdtest-aside"
 if (-not (Test-Path $menuDll)) { throw "no menu DLL at ${menuDll}: deploy the Debug build first" }
-# The kept slot, held until the end (other series skip it; run.ps1 -KeepSlot below holds it too).
+# This process's kept slot (Lock-KeptSlot: the first free one of 80-89), held until the end (other series skip it; run.ps1
+# -KeepSlot below holds the same one).
 $runProblems = 0
-[void](Lock-Slot $KeptSlot)
+$KeptSlot = Lock-KeptSlot
+# Held while the menu DLL may be aside: another series' Restore-AsideMenu leaves it alone.
+$asideLock = Lock-MenuAside $GameDir
 try {
     $slot = Sync-Slot $KeptSlot
     $configDir = Join-Path $slot "SlayTheSpire2\mod_configs"
@@ -31,6 +34,6 @@ try {
     Test-SessionLog "started-off-nomenu" "BaseLibSettings: registered" $false "the menu did not register (the case tested)"
     Test-SessionLog "started-off-nomenu" "CHECKSUM started-off-nomenu" $true "a fight played"
 }
-finally { Unlock-Slot $KeptSlot }
+finally { Unlock-Slot $KeptSlot; $asideLock.Dispose() }
 # Exit code 1 on any PROBLEM line above or a session run.ps1 judged with a problem.
 exit $(if ($script:SessionLogProblems -or $runProblems) { 1 } else { 0 })

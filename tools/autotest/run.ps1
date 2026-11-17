@@ -15,7 +15,11 @@ param([Parameter(Mandatory)][string]$Name, [int]$TimeoutSec = 900, [int]$TraceSe
 # -GameDir, else STS2_GAME_DIR (scripts calling run.ps1, e.g. settings.ps1, then test that copy too).
 $copyDir = if ($GameDir) { $GameDir } else { "$env:STS2_GAME_DIR" }
 . (Join-Path $PSScriptRoot "parlib.ps1")
-Assert-GameNotRunning
+# -KeepSlot on a copy (settings.ps1, baselib-optional.ps1, limitless-switches.ps1, started-off.ps1: checks over a restart, never
+# timings) may run beside other games: its kept slot is this process's own (Lock-KeptSlot) and its logs go to results\<version>\.
+# Any other session wants the PC to itself (fps, frame times), and through Steam the marker below is decided with no game running.
+$shared = [bool]$copyDir -and $KeepSlot
+if (-not $shared) { Assert-GameNotRunning }
 # On a copy: no Steam, its own user data, as par.ps1 (with Steam the game writes the test profile to Steam Cloud).
 $noSteam = [bool]$copyDir
 $script = Join-Path $Scenarios "$Name.txt"
@@ -27,7 +31,10 @@ if (-not $noSteam) {
     $steamDll = Join-Path $GameDir "mods\BigDeckOptimization\BigDeckOptimization.dll"
     if (-not (Test-Path $steamDll) -or -not (Test-DebugBuild $steamDll)) { throw "Through Steam no test runner would load: no Debug build in $(Split-Path $steamDll) (the Workshop copy is a Release build, without AutoTest). Give -GameDir <copy> or set STS2_GAME_DIR." }
 }
-$log = if ($noSteam) { Join-Path $Results "$Name.session.log" } else { Join-Path $UserData "logs\godot.log" }
+# On a copy the session's logs go to results\<version>\ (the same scenario on another copy at the same time has its own), and a
+# copy of its log to results\<Name>.log at the end, as through Steam (BD_NO_VERSIONED_LOGS: results\ only).
+$logDir = if ($noSteam -and -not $env:BD_NO_VERSIONED_LOGS) { Get-VersionDir $copyDir } else { $Results }
+$log = if ($noSteam) { Join-Path $logDir "$Name.session.log" } else { Join-Path $UserData "logs\godot.log" }
 $UserDataParent = $env:APPDATA
 $config = Join-Path $UserData "mod_configs\BigDeckOptimization.cfg"
 $backup = Join-Path $Results "BigDeckOptimization.cfg.run-backup"
@@ -41,7 +48,7 @@ $touchConfig = -not $noSteam -and -not $KeepConfig
 # session was still written then. Decided only with no game running (Assert-GameNotRunning above): never while that game still runs.
 $marker = Join-Path $Results "run.inprogress"
 function Get-ConfigHash { if (-not (Test-Path $config)) { return "none" }; try { (Get-FileHash $config -ErrorAction Stop).Hash } catch { $null } }
-if (Test-Path $marker) {
+if (-not $shared -and (Test-Path $marker)) {
     $lines = @(Get-Content $marker -Encoding UTF8)
     $state = $lines[0]
     $seen = @($lines | Where-Object { $_ -like "seen *" } | ForEach-Object { $_.Substring(5) }) | Select-Object -First 1
@@ -74,7 +81,7 @@ if ($touchConfig) {
     if ($hadConfig) { Remove-Item $config -Force }
     Set-Content $marker @($markState, "seen none", "log $log", "script $script") -Encoding UTF8
 }
-$resultLog = Join-Path $Results "$Name.log"
+$resultLog = Join-Path $logDir "$Name.log"
 $slotLocked = $false
 $modsAdded = $false
 $game = $null
@@ -94,7 +101,9 @@ try {
         $modsAdded = $true
         Remove-Item $log -ErrorAction SilentlyContinue
         $launch += "--force-steam", "off", "--log-file", "`"$log`""
-        $slotLocked = Lock-Slot $KeptSlot
+        # This process's kept slot: the one the calling script (settings.ps1...) holds, else a free one of 80-89.
+        $KeptSlot = Lock-KeptSlot
+        $slotLocked = $true
         $env:APPDATA = if ($KeepSlot) { Join-Path $SlotRoot "slot$KeptSlot" } else { Sync-Slot $KeptSlot }
     }
     if ($Show) { $launch += "--bdshow", $Screen, "--screen", $Screen }
@@ -189,7 +198,12 @@ try {
     # session's, or your own game's). Otherwise no results log, and the judge says so.
     if ((Test-Path $log) -and (Get-Item $log).LastWriteTime -ge $launched -and (Select-String -Path $log -SimpleMatch "script $script (" -Quiet)) {
         Copy-Item $log $resultLog -Force
-        Save-VersionedLog $resultLog $(if ($copyDir) { $copyDir } else { $GameDir })
+        if ($logDir -eq $Results) { Save-VersionedLog $resultLog $(if ($copyDir) { $copyDir } else { $GameDir }) }
+        else {
+            # Also results\<Name>.log, the latest session of that name on any version as before (the same name on the other copy
+            # at this moment may hold it: then a note).
+            try { Copy-Item $resultLog (Join-Path $Results "$Name.log") -Force -ErrorAction Stop } catch { Write-Output "note: results\$Name.log not updated ($($_.Exception.Message)): read $resultLog" }
+        }
     }
     else { Write-Output "NO SESSION LOG: $log is missing or isn't this session's" }
     # On a copy, the Workshop mods the game must have found (a mods_STEAMTEST emptied by another series would go unseen).

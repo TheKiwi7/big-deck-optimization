@@ -8,7 +8,16 @@ $BaselineRoot = Join-Path $Results "baselines"
 $MinFreeKB = 3 * 1024 * 1024
 $StartLimitSec = 60
 $FreezeSilenceSec = 20
-# run.ps1 -KeepSlot: the slot of the sessions that follow each other and share their user data.
+# The solo test slots every series on this PC shares (par, parsweep, vanillacheck, mutations: slots 0 to $SlotPool - 1): at most
+# that many solo sessions at once whatever each series' -Jobs, which caps only that series. Two series side by side (both copies'
+# par blocks, the sweeps) share them; Invoke-Sessions gives a free slot to the series whose next session is the longest
+# (Test-OtherSeriesFirst). BDTEST_SLOTS sets the pool (1 to 40: parcoop's slots start at 40); by default the logical processors
+# less two (14 on 16). The memory guard ($MinFreeKB) still holds every start.
+$SlotPool = [Math]::Max(1, [Environment]::ProcessorCount - 2)
+if ("$env:BDTEST_SLOTS" -match '^\d+$') { $SlotPool = [Math]::Min(40, [Math]::Max(1, [int]$env:BDTEST_SLOTS)) }
+# run.ps1 -KeepSlot: the slot of the sessions that follow each other and share their user data (Lock-KeptSlot: one per process,
+# 80 to 89, so settings.ps1 and the like run on two copies at once). $KeptSlot: the one a script locked (80 until then).
+$KeptSlots = 80..89
 $KeptSlot = 80
 # A solo mod-off session's launch argument (Invoke-Sessions, Test-BaselineJob): the mod starts off as a player's saved off would
 # leave it, no optimization patch installed (ModEntry.VanillaArg, Debug builds only). Its log says so in this line.
@@ -28,17 +37,45 @@ function Resolve-GameCopy([string]$dir) {
 
 # started-off-nomenu.ps1 sets this mod's menu DLL aside for one session: one stopped from outside left it there, and every later
 # session on the copy would run without the settings menu (a warning only). Put back, unless that script may be running (it holds
-# the kept slot: this process, or another one).
+# the copy's menu-aside lock, Lock-MenuAside: this process, or another one).
 function Restore-AsideMenu([string]$gameDir) {
     $menu = Join-Path $gameDir "mods\BigDeckOptimization\BigDeckOptimization.Menu.dll"
     $aside = "$menu.bdtest-aside"
-    if (-not (Test-Path $aside) -or $global:BdSlotLocks.ContainsKey($KeptSlot) -or -not (Lock-Slot $KeptSlot -Try)) { return }
+    if (-not (Test-Path $aside)) { return }
+    $lock = Lock-MenuAside $gameDir -Try
+    if (-not $lock) { return }
     try {
         # A menu DLL there was deployed since: the one set aside is older.
         if (Test-Path $menu) { Remove-Item $aside -Force } else { Move-Item $aside $menu }
         Write-Host "put back $menu, set aside by an interrupted started-off-nomenu.ps1"
     }
-    finally { Unlock-Slot $KeptSlot }
+    finally { $lock.Dispose() }
+}
+
+# Held by started-off-nomenu.ps1 while the copy's menu DLL is set aside: a file in the test slots' folder, open until disposed (or
+# the process ends). -Try: $null when another process holds it; this process holding it already counts as held.
+function Lock-MenuAside([string]$gameDir, [switch]$Try) {
+    New-Item -ItemType Directory -Force $SlotRoot | Out-Null
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $hash = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes((Get-CopyKey $gameDir)))) -replace "-", "").Substring(0, 16)
+    try { [IO.File]::Open((Join-Path $SlotRoot "menuaside-$hash.lock"), 'OpenOrCreate', 'ReadWrite', 'None') }
+    catch {
+        if ($Try) { return $null }
+        throw "$gameDir's settings menu is set aside by another started-off-nomenu.ps1: wait for it to end."
+    }
+}
+
+# The kept slot of this process (run.ps1 -KeepSlot and the scripts calling it: settings.ps1, baselib-optional.ps1...): the one it
+# holds already (one level deeper, Lock-Slot's Depth), else the first free one of $KeptSlots. Released with Unlock-Slot.
+function Lock-KeptSlot {
+    if ($null -ne $global:BdKeptSlot -and $global:BdSlotLocks.ContainsKey([int]$global:BdKeptSlot)) {
+        [void](Lock-Slot $global:BdKeptSlot)
+        return [int]$global:BdKeptSlot
+    }
+    foreach ($slot in $KeptSlots) {
+        if (Lock-Slot $slot -Try) { $global:BdKeptSlot = $slot; return $slot }
+    }
+    throw "Every kept test slot ($($KeptSlots[0])-$($KeptSlots[-1]), $SlotRoot) is in use by another test series: wait for one to end."
 }
 
 # Sessions run without Steam (--force-steam off): with it the game writes saves straight to Steam Cloud through Steam's API,
@@ -356,8 +393,10 @@ function Set-SlotModEnabled([string]$slot, [string]$id, [bool]$enabled) {
 # EXPECT and EXPECTDECL lines): 'CHECKSUM x' is the result, '> checksum x' only the request.
 $SessionEnd = 'AutoTest\s+[\d.]+s\s+(script finished|> quit\b|handed over to the player)'
 $ScriptOwnLine = 'AutoTest\s+[\d.]+s\s+(> |EXPECT |EXPECTDECL )|Executing DevConsole command|DevConsole: '
+# The log is run.ps1's on the calling script's copy ($GameDir: results\<version>\<name>.log, the same script on the other copy at the
+# same time writing its own), or results\<name>.log (BD_NO_VERSIONED_LOGS, or no copy).
 function Test-SessionLog([string]$name, [string]$pattern, [bool]$expected, [string]$meaning) {
-    $log = Join-Path $Results "$name.log"
+    $log = if ($GameDir -and -not $env:BD_NO_VERSIONED_LOGS) { Join-Path (Get-VersionDir $GameDir) "$name.log" } else { Join-Path $Results "$name.log" }
     if (-not (Test-Path $log)) { $ok = $false; $meaning += " (no session log)" }
     else {
         $seen = [bool](Select-String -Path $log -Pattern $pattern -CaseSensitive | Where-Object { $_.Line -cnotmatch $ScriptOwnLine } | Select-Object -First 1)

@@ -7,11 +7,13 @@ param([string]$GameDir = "")
 $copy = $GameDir
 . (Join-Path $PSScriptRoot "parlib.ps1")
 $GameDir = Resolve-GameCopy $copy
-Assert-GameNotRunning
+# Other games may run (par, the sweeps, the same script on the other copy): this one's sessions have their own kept slot and
+# results\<version>\ logs, and time nothing.
 
-# The kept slot, held until the end (other series skip it; run.ps1 -KeepSlot below holds it too).
+# This process's kept slot (Lock-KeptSlot: the first free one of 80-89), held until the end (other series skip it; run.ps1
+# -KeepSlot below holds the same one).
 $runProblems = 0
-[void](Lock-Slot $KeptSlot)
+$KeptSlot = Lock-KeptSlot
 try {
     $slot = Sync-Slot $KeptSlot
     Update-SlotModList $slot { param($mods) @($mods | Where-Object { $_.id -eq "BigDeckOptimization" }) + @($mods | Where-Object { $_.id -ne "BigDeckOptimization" }) }
