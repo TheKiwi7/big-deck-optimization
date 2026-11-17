@@ -1,7 +1,6 @@
 // Dumps a WPR trace (.etl) of the game to text files etwreport.py reads: every CPU sample and off-CPU wait of the game's processes
 // with its stack, as module + offset (the engine's native frames have no names here: dwarfsyms reads them from its DWARF).
 //   dotnet run --project tools/profiling/etwdump -c Release -- <trace.etl> <out dir> [process name, default SlayTheSpire2]
-using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 using Microsoft.Diagnostics.Tracing.Parsers.Kernel;
 

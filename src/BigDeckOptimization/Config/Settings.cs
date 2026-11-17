@@ -27,8 +27,6 @@ public static class Settings
     public sealed class Option(string key, string label, string description, string[] faults, Action<bool> setEnabled,
         Func<string?>? unavailable = null, bool defaultOn = true, OptionPart[]? parts = null, Action<bool>? setParts = null, string[]? wholeFaults = null)
     {
-        /// <summary>The state before any choice (BaseLib's "restore defaults" goes back to it).</summary>
-        public bool DefaultOn { get; } = defaultOn;
         public string Key { get; } = key;
         public string Label { get; } = label;
         public string Description { get; } = description;

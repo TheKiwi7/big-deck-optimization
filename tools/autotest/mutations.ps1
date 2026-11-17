@@ -10,14 +10,14 @@
 #   - the optimizations not relying on the changed code still work: against a session on the unmodified game, only the
 #     effects (AutoTest's "effects" counters) the mutation may take away dropped to zero,
 #   - the game did the same: CHECKSUM, STATE and CARDPLAY lines identical to that session, whatever is left vanilla.
-#   powershell -ExecutionPolicy Bypass -File tools/autotest/mutations.ps1 [-GameDir C:\Games\StS2-public-0.107.1] [-Only renumber-hooks,energy-hook] [-Scenario effects-check] [-AllowUndefined]
+#   powershell -ExecutionPolicy Bypass -File tools/autotest/mutations.ps1 [-GameDir C:\Games\StS2-public-0.111.1] [-Only renumber-hooks,energy-hook] [-Scenario effects-check] [-AllowUndefined]
 # tools/mutate is built first: a build that fails stops the run (an old mutate.dll would run old mutations). A mutation of the
 # table that tools/mutate doesn't define is a failure, unless -AllowUndefined (a name in -Only that isn't in the table stops the run).
 # One run at a time on this PC (its thin copies, its results/mutation-*.log).
 # Each mutation runs in parallel in its own folder of hard links to the copy (no disk used) holding only its modified file,
 # headless and without Steam, so the copy itself is never modified and stopping this script leaves nothing behind.
 # Debug build deployed in the copy first.
-param([string]$GameDir = "C:\Games\StS2-public-0.107.1", [string[]]$Only = @(), [string]$Scenario = "effects-check", [int]$TimeoutSec = 600, [int]$Jobs = [Environment]::ProcessorCount, [switch]$AllowUndefined)
+param([string]$GameDir = "C:\Games\StS2-public-0.111.1", [string[]]$Only = @(), [string]$Scenario = "effects-check", [int]$TimeoutSec = 600, [int]$Jobs = [Environment]::ProcessorCount, [switch]$AllowUndefined)
 $copy = $GameDir
 . (Join-Path $PSScriptRoot "parlib.ps1")
 if ($copy -like "*steamapps*") { throw "Use a game copy, not the Steam install" }
@@ -148,7 +148,9 @@ try {
     # Co-op only: effects-check, solo, can't make SyncedCardRelease run, nor ReplayStateSkip on v0.107.x (the game checksums solo
     # combats from v0.111 on: there it must run). SnapshotCardReuse.Hooks must run (effects-check applies Curious): a mutation losing
     # it is seen. (judge.py checks the same from effects-check's '# effects-ran' lines: the reference's problems below.)
-    $allowZero = if ((Get-GameTag $GameDir) -match '^v0\.107\.') { "^(ReplayStateSkip|SyncedCardRelease)$" } else { "^SyncedCardRelease$" }
+    # HookSkip.NoBadge and HookSkip.Emptied count the badge guard's fallbacks: 0 in the game's runs since the exact model stack
+    # (their positive control is modelstack-badges), as effects-check's own 'effectcheck all ran except' says.
+    $allowZero = if ((Get-GameTag $GameDir) -match '^v0\.107\.') { "^(ReplayStateSkip|SyncedCardRelease|HookSkip\.NoBadge|HookSkip\.Emptied)$" } else { "^(SyncedCardRelease|HookSkip\.NoBadge|HookSkip\.Emptied)$" }
     python -I (Join-Path $PSScriptRoot "effects.py") $Reference --allow-zero $allowZero | Out-Host
     # The reference: every effect fired and nothing left unbalanced on the unmodified game, and its comparisons said identical,
     # or the checks below (lost effects, comparisons) prove nothing for what it lacks.

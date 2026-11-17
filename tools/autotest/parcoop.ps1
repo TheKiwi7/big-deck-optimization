@@ -2,7 +2,7 @@
 # local port and its own copy of the user data, so nothing shows on screen and your settings aren't touched. Equivalence only:
 # the peers must agree (no divergence, same enemy states), timings aren't meaningful; coop.ps1 for fps or hands-on.
 # Logs: results/<game version>/<name>-host.log, -client.log.
-#   powershell -ExecutionPolicy Bypass -File tools/autotest/parcoop.ps1 -Names coopfast,coopclone -GameDir C:\Games\StS2-public-0.107.1 [-Plain] [-Jobs 6] [-TimeoutSec 900] [-Instant] [-OnOff]
+#   powershell -ExecutionPolicy Bypass -File tools/autotest/parcoop.ps1 -Names coopfast,coopclone -GameDir C:\Games\StS2-public-0.111.1 [-Plain] [-Jobs 6] [-TimeoutSec 900] [-Instant] [-OnOff]
 # -Plain: only this mod, no other Workshop mod (coop.ps1 without -WithMods).
 # Mod on vs mod off: peers agreeing says nothing of what the game would have done (both run the same code). Each scenario
 # <x> whose mod-off twin <x>off or <x>-off is in -Names too is compared with it, peer by peer (host with host, client with
@@ -222,7 +222,8 @@ function Get-PairLines([string]$log, [string[]]$checksums) {
 # running action's OwnerId, an AsyncLocal): the game's end of turn (phase two, the enemy turn, the next turn's start) runs inside
 # whichever player's ReadyToBeginEnemyTurnAction executed last (CombatManager.SetReadyToBeginEnemyTurn -> TaskHelper.RunSafely), a
 # network race, so a random draw there (Parrying Shield's target) comes from another slot when the last ready player differs
-# between the sides. v0.113 resumes the turn loop in its own context. Returns, per "floor F round N" in order, the owner of the
+# between the sides. v0.111 and v0.113 resume the turn loop in its own context (it awaits CombatTurnState's
+# BeginEnemyTurnSignalSource, which SetReadyToBeginEnemyTurn completes). Returns, per "floor F round N" in order, the owner of the
 # last ReadyToBeginEnemyTurnAction before that round's first "STATE floor F round N Enemy" line; empty when the game isn't v0.107.x
 # or the log hasn't Limitless's "per-player combat rng prefix: ACTIVE" line.
 function Get-LastReadyOwners([string]$log) {

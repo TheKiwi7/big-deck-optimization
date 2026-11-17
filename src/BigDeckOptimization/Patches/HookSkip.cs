@@ -804,7 +804,7 @@ public static partial class HookSkip
     {
         if (!PatchSafety.ShapeRules)
         {
-            if (entry.LastOwn is { } prior)
+            if (entry.LastOwn is not null)
             {
                 // Shape rules turned off: SurroundingOnly from now on, a TranspiledOnly record forgotten (asked again once on).
                 entry.LastOwn = null;

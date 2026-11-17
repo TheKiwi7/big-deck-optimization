@@ -1,7 +1,7 @@
 # Runs scenarios in parallel, headless, each on its own copy of the user data (parlib.ps1): for equivalence checks, not
 # for timings. Logs in results/<game version>/. Every <x>-off / <x>-on pair in the list is compared, and every scenario with a
 # '# compare-with: <reference>' header line with that reference when both are in the list (one alone: a note, not a problem).
-#   powershell -ExecutionPolicy Bypass -File tools/autotest/par.ps1 -Names ab-2k-off,ab-2k-on,shuffle-off,shuffle-on -GameDir C:\Games\StS2-public-0.107.1 [-Jobs n] [-TimeoutSec 900] [-StallSec 240] [-Rendered] [-UseBaselines] [-Instant] [-PatchedOff]
+#   powershell -ExecutionPolicy Bypass -File tools/autotest/par.ps1 -Names ab-2k-off,ab-2k-on,shuffle-off,shuffle-on -GameDir C:\Games\StS2-public-0.111.1 [-Jobs n] [-TimeoutSec 900] [-StallSec 240] [-Rendered] [-UseBaselines] [-Instant] [-PatchedOff]
 # A mod-off scenario (its first console command 'cmd bdopt off', parlib.ps1's Test-BaselineJob) is launched with --bdvanilla:
 # the mod off from the game's start, no patch of it installed. -UseBaselines: such a log already made with this game, these
 # Workshop mods, this test tooling and this scenario isn't run again. -PatchedOff: mod-off scenarios the old way instead, every

@@ -1,7 +1,7 @@
 # The release package in game: dist/BigDeckOptimization-v*.zip installed on a game copy in place of its Debug build, the
 # account's Workshop mods beside it, one headless session without Steam in a test slot, then the Debug build put back.
 # Reads its log for the version, every patch applied, nothing skipped or failed. Never on the Steam install.
-#   powershell -ExecutionPolicy Bypass -File tools/autotest/release-incopy.ps1 -Copy C:\Games\StS2-public-0.107.1 [-WaitSec 120]
+#   powershell -ExecutionPolicy Bypass -File tools/autotest/release-incopy.ps1 -Copy C:\Games\StS2-public-0.111.1 [-WaitSec 120]
 param([Parameter(Mandatory)][string]$Copy, [int]$WaitSec = 120)
 if ($Copy -match 'steamapps') { throw "$Copy is under steamapps: only a game copy" }
 . (Join-Path $PSScriptRoot "parlib.ps1")

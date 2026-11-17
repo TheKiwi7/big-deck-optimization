@@ -31,7 +31,7 @@ What "a no-op for a default listener" needs, checked here and not assumed:
   may only be read by `await Task.WhenAll(list)` (same completion either way) and emptied by `Clear()`.
 Made exact, no longer a premise (verification audit of 2026-11-17, A4; DESIGN "Hardening of 2026-11-17"): PlayerChoiceContext
 creates its model stack (`_modelStack`, a Stack<AbstractModel>) on the first PushModel, and in Hook.cs every PushModel is the
-first statement of its foreach over a walk (24 on v0.107.1 and v0.113.1), so only a walk keeping no listener where vanilla's
+first statement of its foreach over a walk (24 on v0.107.1, v0.111.1 and v0.113.1), so only a walk keeping no listener where vanilla's
 yields some would leave a passed-in context's stack null where vanilla leaves it empty. HookSkip's filters keep every badge
 and walk vanilla on a state without one (every run has them: RunState.CreateShared), and the filtered walks over the game's
 own walk (FastListeners.KeptOnly) keep its first listener. What this script relies on is unchanged: PushModel/PopModel in
@@ -40,11 +40,12 @@ walk the stack may still be created at the first kept listener rather than the f
 the listener stand on PushModel (postfixes run once the stack exists on both sides).
 
 Every game version the DLL has code paths for is classified on its own code (the table is rewritten from the versions
-given: one left out loses its own rows; since 2026-11-16 only the public version and the latest beta are given, v0.111.0,
-the former beta, no longer). HookSkip matches a hook against every row of its name whatever the version, so a version left
-out keeps the filtering for each hook whose code, defaults and helpers equal a kept version's row (v0.111.0: all but
-AfterDeath, AfterTakingExtraTurn and ModifyDamageInternal, untested there since 2026-11-16) and runs the game's code for the
-others: an entry is kept for a version only when that version's hook passes, and carries what it relies on in that version: the hook's code fingerprint, the fingerprint of each
+given: one left out loses its own rows; only the public version and the latest beta are given: v0.111.1 and v0.113.1
+since 2026-11-17, when v0.111.1 became the public version and v0.107.1 was no longer distributed). HookSkip matches a hook
+against every row of its name whatever the version, so a version left out keeps the filtering for each hook whose code,
+defaults and helpers equal a kept version's row (v0.111.0: all 148, its hooks, defaults and helpers being v0.111.1's;
+v0.107.1: the 62 hooks using no helper whose code and defaults equal a kept row, its helpers matching no kept profile;
+both untested) and runs the game's code for the others: an entry is kept for a version only when that version's hook passes, and carries what it relies on in that version: the hook's code fingerprint, the fingerprint of each
 AbstractModel default it calls ("Name=FP"), and, for hooks using choice contexts / PushModel / ExecutionFinished, the
 helpers' fingerprints of that version (HelperProfiles, reviewed by hand: tools/fpdiff review flags them when they change).
 HookSkip turns a hook on only when all of these match the running game.
@@ -62,7 +63,7 @@ argument) and pinned in the version's profile.
 Usage (repo root), per version: decompile the game (ilspycmd -p) and dump the fingerprints, then classify all at once
 (from Git Bash; in Windows PowerShell 5.1 `>` writes UTF-16, which load() also reads, or pipe to `Out-File -Encoding utf8`):
   dotnet run --project tools/fpdiff -c Release -- hookfps <game>/data_sts2_windows_x86_64 > fps-<version>.txt
-  python -I tools/hookskip/classify.py v0.107.1 decompiled/sts2 fps-v0.107.1.txt \
+  python -I tools/hookskip/classify.py v0.111.1 decompiled/sts2-public-0.111.1 fps-v0.111.1.txt \
       v0.113.1 decompiled/sts2-beta-0.113.1 fps-v0.113.1.txt
 """
 import glob

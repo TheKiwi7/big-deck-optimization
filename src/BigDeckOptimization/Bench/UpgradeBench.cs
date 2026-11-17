@@ -6,7 +6,6 @@ using System.Runtime.CompilerServices;
 using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.DevConsole;
-using MegaCrit.Sts2.Core.DevConsole.ConsoleCommands;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Localization.DynamicVars;
 using MegaCrit.Sts2.Core.Models;

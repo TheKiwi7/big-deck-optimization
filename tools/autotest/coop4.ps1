@@ -2,7 +2,7 @@
 # peers; the runs this mod is for have four or five. The scenario pair is <name>-host.txt and <name>-client.txt, CHARACTER in the
 # client's script is replaced for each one. Pass: every peer reaches its end, the same enemy and run states on all, no divergence.
 # Logs: results/<game version>/<name>-host.log, -client1.log...
-#   powershell -ExecutionPolicy Bypass -File tools/autotest/coop4.ps1 -Name coop4 -GameDir C:\Games\StS2-public-0.107.1 [-Peers 4] [-Rendered]
+#   powershell -ExecutionPolicy Bypass -File tools/autotest/coop4.ps1 -Name coop4 -GameDir C:\Games\StS2-public-0.111.1 [-Peers 4] [-Rendered]
 # -Rendered: the host renders, off screen, for fps and frame times; the clients stay headless (one GPU). -RenderedClient: the first
 # client renders and the host is headless, for what a player who is not hosting sees.
 param([Parameter(Mandatory)][string]$Name, [string]$GameDir = "", [int]$Peers = 4, [int]$TimeoutSec = 1200, [int]$StallSec = 240, [switch]$Rendered, [switch]$RenderedClient)

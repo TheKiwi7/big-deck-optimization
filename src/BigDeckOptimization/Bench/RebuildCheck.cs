@@ -7,7 +7,6 @@ using BigDeckOptimization.Patches;
 using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Nodes;
-using MegaCrit.Sts2.Core.Nodes.Relics;
 
 namespace BigDeckOptimization.Bench;
 

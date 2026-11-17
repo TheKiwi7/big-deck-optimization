@@ -86,9 +86,6 @@ public static class ListenerCache
     /// <summary>True while inside a checksum snapshot where the snapshot optimizations may run.</summary>
     public static bool IsInSnapshot => SnapshotEnabled && _snapshotDepth > 0 && _safe && !_suspended;
 
-    /// <summary>Inside a snapshot scope, whether or not its listener lists are cached (the snapshot reuse patches run either way).</summary>
-    public static bool InSnapshotScope => _snapshotDepth > 0 && !_suspended;
-
     /// <summary>
     /// True inside any scope (snapshot or refresh) where listener lists are cached and may be used directly (HookFilter's
     /// per-hook lists). False while other mods' postfixes on the walks are let stand: a list built here is the unpatched

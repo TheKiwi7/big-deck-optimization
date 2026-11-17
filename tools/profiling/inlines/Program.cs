@@ -4,7 +4,6 @@
 // Usage: dotnet run --project tools/profiling/inlines -- <file.nettrace> <session log>
 using System.Text.RegularExpressions;
 using Microsoft.Diagnostics.Tracing;
-using Microsoft.Diagnostics.Tracing.Parsers;
 using Microsoft.Diagnostics.Tracing.Parsers.Clr;
 
 var patched = new Dictionary<string, string>();

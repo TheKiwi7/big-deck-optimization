@@ -1729,7 +1729,7 @@ public static class SnapshotCardReuse
         last.MemoStamp = -1;
         EnchantmentModel? enchantment = card.Enchantment;
         Func<object, List<SerializableCard>?>? getter = null;
-        Func<object, List<SerializableCard>?>? cardList = null;
+        Func<object, List<SerializableCard>?>? cardList;
         if (stamp < 0 || !card.IsMutable || (_trustPiles && !KeepsTypeGetter(card.GetType())) || !LimitlessReserialize.MemoPlan(card, out cardList)
             || (enchantment != null && (!enchantment.IsMutable || !LimitlessReserialize.MemoPlan(enchantment, out getter))))
         {

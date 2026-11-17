@@ -140,9 +140,9 @@ function Exit-ModLock($mutex) {
 # in its initializer (the game logs "Finished" all the same) or a degraded start. A mod the session's profile disables is a script's
 # own choice (Sync-Slot enables every test mod in the slot's profiles: only a script's later edit, baselib-absent, disables one), and
 # so are the mods depending on it. Known failures (a note, not a problem): LobbyBanlist's initializer throws on v0.113; Unlimited
-# 2.0.0's throws on v0.107 (built for v0.113: a TypeLoadException on NBlitzScreen, a v0.113 type, before any of its patches; with
-# or without this mod, so on v0.107.1 those sessions run without Unlimited's patches).
-$KnownModInitFailures = @{ "LobbyBanlist" = '^v0\.113\.'; "sts2unlimited" = '^v0\.107\.' }
+# 2.0.0's throws on v0.107 and v0.111 (built for v0.113: a TypeLoadException on NBlitzScreen, a v0.113 type absent from v0.107.1
+# and v0.111.1, before any of its patches; with or without this mod, so on those versions sessions run without Unlimited's patches).
+$KnownModInitFailures = @{ "LobbyBanlist" = '^v0\.113\.'; "sts2unlimited" = '^v0\.1(07|11)\.' }
 $DegradedMarkers = @{ "sts2unlimited" = "Sts2Unlimited loaded DEGRADED" }
 if (-not (Test-Path variable:global:BdNotedModFailures)) { $global:BdNotedModFailures = [Collections.Generic.HashSet[string]]::new() }
 function Get-MissingTestMods([string]$log, [string]$gameDir) {

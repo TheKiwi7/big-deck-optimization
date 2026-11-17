@@ -1,6 +1,6 @@
 # Who holds the runs a session has left: runs memory-runs-on (or -Scenario) headless on a game copy, dumps the process at
 # the last menu, and for every RunState prints what roots it (dotnet-dump gcroot), counting chains through this mod.
-#   powershell -ExecutionPolicy Bypass -File tools/autotest/leakroots.ps1 -GameDir C:\Games\StS2-public-0.107.1 [-Scenario memory-runs-off]
+#   powershell -ExecutionPolicy Bypass -File tools/autotest/leakroots.ps1 -GameDir C:\Games\StS2-public-0.111.1 [-Scenario memory-runs-off]
 # The dump (about 1.5 GB) is deleted afterwards. Needs dotnet-dump (dotnet tool install -g dotnet-dump --version 9.0.*).
 # -Type: another object to look for, e.g. MegaCrit.Sts2.Core.Combat.CombatState with -Scenario combats-on (combats left behind).
 param([string]$GameDir = "", [string]$Scenario = "memory-runs-on", [string]$Type = "MegaCrit.Sts2.Core.Runs.RunState")

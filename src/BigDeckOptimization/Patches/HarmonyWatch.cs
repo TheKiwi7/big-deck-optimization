@@ -114,7 +114,7 @@ public static class HarmonyWatch
         {
             if (IsHarmonyInternal(method) && Harmony.GetPatchInfo(method) is { } listed)
             {
-                NoteHidden(method, AllPatches(listed));
+                NoteHidden(method, PatchSafety.AllPatches(listed));
             }
         }
         if (_hidden.Count == 0)
@@ -123,7 +123,7 @@ public static class HarmonyWatch
         }
         foreach (MethodBase method in patched)
         {
-            if (!IsHarmonyInternal(method) && Harmony.GetPatchInfo(method) is { } info && !AllPatches(info).Any())
+            if (!IsHarmonyInternal(method) && Harmony.GetPatchInfo(method) is { } info && !PatchSafety.AllPatches(info).Any())
             {
                 Suspect(method);
             }
@@ -167,7 +167,7 @@ public static class HarmonyWatch
                 // when UpdateWrapper succeeded: on a throw Harmony never stores that list nor installs its detour, so the list it
                 // still holds is the one in place (a failed patch is no hidden hook, nor another mod's patch on this mod's code).
                 Patch[] patches = __exception == null && __1 != null ? AllPatches(__1).ToArray()
-                    : Harmony.GetPatchInfo(original) is { } listed ? AllPatches(listed).ToArray() : Array.Empty<Patch>();
+                    : Harmony.GetPatchInfo(original) is { } listed ? PatchSafety.AllPatches(listed).ToArray() : Array.Empty<Patch>();
                 if (IsHarmonyInternal(original))
                 {
                     NoteHidden(original, patches);
@@ -335,7 +335,7 @@ public static class HarmonyWatch
                 {
                     continue;
                 }
-                string[] ours = AllPatches(info).Select(p => p.owner).Where(PatchGuard.IsOurs).Distinct().ToArray();
+                string[] ours = PatchSafety.AllPatches(info).Select(p => p.owner).Where(PatchGuard.IsOurs).Distinct().ToArray();
                 if (ours.Length == 0 || HarmonyRebuild.Replacement(original) != null)
                 {
                     continue;
@@ -361,9 +361,6 @@ public static class HarmonyWatch
 
     private static IEnumerable<Patch> AllPatches(PatchInfo info) =>
         info.prefixes.Concat(info.postfixes).Concat(info.transpilers).Concat(info.finalizers).Concat(info.innerprefixes).Concat(info.innerpostfixes);
-
-    private static IEnumerable<Patch> AllPatches(HarmonyLib.Patches info) =>
-        info.Prefixes.Concat(info.Postfixes).Concat(info.Transpilers).Concat(info.Finalizers).Concat(info.InnerPrefixes).Concat(info.InnerPostfixes);
 
     /// <summary>For bdopt why: hidden IL hooks, this mod's own code patched by others, lost detours (empty when none).</summary>
     public static IEnumerable<string> Report()

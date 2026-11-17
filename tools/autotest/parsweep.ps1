@@ -3,7 +3,7 @@
 # one goes on from the next item, up to the end of the chunk (as sweep.ps1), queued as soon as that session ends. sweepreport.py
 # then says what differs, down to the values. Live progress: results/status-<Kind>.txt (status.ps1). Logs and report-<Kind>.md:
 # results/<game version>/. The five kinds at once on one copy: parsweep-all.ps1 (slots are shared, each series takes free ones).
-#   powershell -ExecutionPolicy Bypass -File tools/autotest/parsweep.ps1 -Kind cards -GameDir C:\Games\StS2-public-0.107.1 [-Jobs 16] [-ChunkItems 20] [-ItemTimeout 45] [-Speed instant|fast] [-UseBaselines]
+#   powershell -ExecutionPolicy Bypass -File tools/autotest/parsweep.ps1 -Kind cards -GameDir C:\Games\StS2-public-0.111.1 [-Jobs 16] [-ChunkItems 20] [-ItemTimeout 45] [-Speed instant|fast] [-UseBaselines]
 # -Speed instant (default) skips animation waits: same results (checked on whole sweeps), about 4 times faster mod on. Once
 # per release, -Speed fast for what only shows with animations playing.
 # -Chunks 27,28: only those chunks, to rerun what a report says wasn't compared (the same -ChunkItems).

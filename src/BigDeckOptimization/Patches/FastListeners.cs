@@ -13,7 +13,6 @@ using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Modding;
 using MegaCrit.Sts2.Core.Models;
-using MegaCrit.Sts2.Core.Models.Singleton;
 using MegaCrit.Sts2.Core.Runs;
 
 namespace BigDeckOptimization.Patches;

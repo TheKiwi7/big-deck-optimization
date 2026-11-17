@@ -169,8 +169,6 @@ internal static class TranspilerJudge
     public static IReadOnlyList<string> Report() => _verdicts.Values.Where(v => v.Owners.Length > 0)
         .Select(v => $"{v.Key.Split('#')[0]} {(v.Accepted ? "accepted" : "refused")} ({v.Owners}): {(v.Accepted ? $"{v.Runs} insertion(s)" + (v.Gates.Length > 0 ? ", gates " + string.Join("|", v.Gates.Select(g => g.Name)) : "") : v.Why)}")
         .OrderBy(s => s, StringComparer.Ordinal).ToList();
-
-    public static int AcceptedCount => _verdicts.Values.Count(v => v.Accepted);
 #endif
 
     /// <summary>
@@ -1579,7 +1577,6 @@ internal static class TranspilerJudge
     {
         private readonly MethodBase _body;
         private readonly IReadOnlyList<Ins> _code;
-        private readonly Func<MethodInfo, bool> _isWalk;
         private readonly Dictionary<int, int> _labels = new();
         private readonly int[] _loopOf;
         private readonly int _loops;
@@ -1597,7 +1594,6 @@ internal static class TranspilerJudge
         {
             _body = body;
             _code = code;
-            _isWalk = isWalk;
             _instance = !body.IsStatic;
             _localCount = body.GetMethodBody()?.LocalVariables.Count ?? 0;
             _loopOf = new int[code.Count];

@@ -17,7 +17,9 @@ namespace BigDeckOptimization.Bench;
 /// <list type="bullet">
 /// <item><c>reflection-intercept</c>: what a cross-version compatibility mod does to Harmony's reflection lookups, for every caller.
 /// A failed <c>AccessTools.Method</c>/<c>DeclaredMethod</c> on <c>Hook</c> is answered with the hook of the other game version's
-/// name (BeforeTurnEnd and BeforeSideTurnEnd, AfterTurnEnd and AfterSideTurnEnd, both ways); a failed <c>AccessTools.Field</c> of
+/// name (BeforeTurnEnd and BeforeSideTurnEnd, AfterTurnEnd and AfterSideTurnEnd, both ways; v0.113's ModifyPreBlockDamageTarget
+/// with ModifyUnblockedDamageTarget: since HookSkip's table holds v0.111.1's and v0.113.1's rows only, the one name of a row a
+/// supported version lacks, so the substitution is seen on v0.111.1, not on v0.113.1); a failed <c>AccessTools.Field</c> of
 /// <c>Mod.assembly</c> or <c>Mod.assemblies</c> (the one this game version lacks) with a stand-in FieldInfo giving the core library
 /// for every mod. This mod's lookups go through the runtime (Reflect) and its mod names through the game's own field, so:
 /// every hook row matches (no "left vanilla" from a substituted hook), the substitutions are logged as such, and mods keep their
@@ -36,6 +38,7 @@ public static class ForeignLaunch
     {
         ["BeforeTurnEnd"] = "BeforeSideTurnEnd", ["BeforeSideTurnEnd"] = "BeforeTurnEnd",
         ["AfterTurnEnd"] = "AfterSideTurnEnd", ["AfterSideTurnEnd"] = "AfterTurnEnd",
+        ["ModifyPreBlockDamageTarget"] = "ModifyUnblockedDamageTarget",
     };
 
     /// <summary>Installs the shapes the launch arguments name (AutoTest.Apply, at the mod's start).</summary>

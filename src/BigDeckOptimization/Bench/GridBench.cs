@@ -7,10 +7,8 @@ using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.DevConsole;
-using MegaCrit.Sts2.Core.DevConsole.ConsoleCommands;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Players;
-using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Nodes;
@@ -180,6 +178,12 @@ public static class GridBench
     /// freed without it, as in the game. That card node is first moved out of the holder (its _ExitTree then leaves it
     /// alone) and freed here as the card row (the bulk of what the scan walks): a deferred free would run after the bench,
     /// once the effect counters are put back (<see cref="EffectCounters"/>), and count as the game's own call.
+    /// Twins come from the pool, so they can carry connections their history left (v0.111.1 mutations, 2026-11-17: three
+    /// card children with one incoming connection on one twin only, in 9 of 45 sessions; most likely the ancient textures,
+    /// which NCard never clears: AncientBorder, AncientTextBg, AncientPortrait are set once a node shows an Ancient card and
+    /// kept through OnFreedToPool, and a texture's "changed" connection is one neither free disconnects: its owner isn't a
+    /// node, and the bench frees out of the tree). Twins prepared alike are compared on what is left; twins left unlike, on
+    /// what each free disconnected, per node. A connection only one twin has is then not compared: the other free never saw it.
     /// </summary>
     private static (string, bool) ComparePoolFree(List<CardModel> cards)
     {
@@ -197,14 +201,15 @@ public static class GridBench
         {
             NGame.Instance!.AddChild(container);
             double vanillaMs = 0, scanMs = 0;
-            int holderMismatches = 0, cardMismatches = 0;
+            int holderMismatches = 0, cardMismatches = 0, unlike = 0;
             long holderNodes = 0, cardNodes = 0;
-            string? firstMismatch = null;
+            string? firstMismatch = null, firstUnlike = null;
             bool faulted = false;
 
-            // One node freed the game's way (the whole mod off, timed inside), then its twin with the scan; their connections after.
+            // One node freed the game's way (the whole mod off, timed inside), then its twin with the scan; what each free disconnected.
             bool FreeBoth(Node vanillaNode, Node scanNode, ref long scanned, ref int mismatches)
             {
+                Dictionary<string, (int Out, int In)> vanillaBefore = ConnectionCounts(vanillaNode), scanBefore = ConnectionCounts(scanNode);
                 vanillaMs += PerfConsoleCmd.Vanilla(() =>
                 {
                     long t = Stopwatch.GetTimestamp();
@@ -221,7 +226,22 @@ public static class GridBench
                 NodePool.Free((IPoolable)scanNode);
                 scanMs += Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
                 scanned += PoolSignalScan.Nodes - before;
-                string expected = Connections(vanillaNode), actual = Connections(scanNode);
+                Dictionary<string, (int Out, int In)> vanillaAfter = ConnectionCounts(vanillaNode), scanAfter = ConnectionCounts(scanNode);
+                string expected, actual;
+                if (Describe(vanillaBefore) == Describe(scanBefore))
+                {
+                    // Prepared alike: the same connections left.
+                    expected = Describe(vanillaAfter);
+                    actual = Describe(scanAfter);
+                }
+                else
+                {
+                    // The pool's history left them unlike: what each free disconnected ("path:-out/-in").
+                    unlike++;
+                    firstUnlike ??= $"\n    {vanillaNode.GetType().Name} before, vanilla twin: {Describe(vanillaBefore)}\n    {scanNode.GetType().Name} before, scan twin   : {Describe(scanBefore)}";
+                    expected = Removed(vanillaBefore, vanillaAfter);
+                    actual = Removed(scanBefore, scanAfter);
+                }
                 if (expected != actual)
                 {
                     mismatches++;
@@ -267,10 +287,12 @@ public static class GridBench
             }
             // A row whose scan never ran compared the game's free with itself: said, not "OK".
             string notScanned = holderNodes == 0 ? " (holders: none scanned, not compared)" : cardNodes == 0 ? " (card nodes: none scanned, not compared)" : "";
-            // "mismatched", not "differ": mutations.ps1 takes any "differ" for a failed comparison, a count of 0 included.
+            // Twins the pool's history left unlike (ancient textures kept): compared on what each free disconnected, said.
+            string unlikeNote = unlike == 0 ? "" : $"; {unlike} twins unlike before the free (pool history), compared by what each free disconnected";
+            // "mismatched"/"unlike", not "differ": mutations.ps1 takes any "differ" for a failed comparison, a count of 0 included.
             return ($"  pool free ({cards.Count} grid holders: {holderNodes} nodes scanned, {holderMismatches} mismatched; {cards.Count} card nodes: {cardNodes} nodes scanned, "
-                + $"{cardMismatches} mismatched){notScanned}: vanilla {vanillaMs / cards.Count:F2} ms, scan {scanMs / cards.Count:F2} ms per card — "
-                + (mismatches == 0 ? $"OK: identical connections, x{vanillaMs / Math.Max(0.001, scanMs):F1} faster" : $"MISMATCH on {mismatches} nodes!{firstMismatch}"),
+                + $"{cardMismatches} mismatched{unlikeNote}){notScanned}: vanilla {vanillaMs / cards.Count:F2} ms, scan {scanMs / cards.Count:F2} ms per card — "
+                + (mismatches == 0 ? $"OK: identical connections, x{vanillaMs / Math.Max(0.001, scanMs):F1} faster" : $"MISMATCH on {mismatches} nodes!{firstMismatch}{firstUnlike}"),
                 mismatches == 0);
         }
         finally
@@ -323,10 +345,13 @@ public static class GridBench
         }
     }
 
-    /// <summary>Every node's outgoing connections per signal and incoming connection count, read the vanilla way.</summary>
-    private static string Connections(Node root)
+    /// <summary>
+    /// Every node's outgoing connections (all signals) and incoming connection count, read the vanilla way, by child-index path
+    /// (nodes with none left out), in tree order.
+    /// </summary>
+    private static Dictionary<string, (int Out, int In)> ConnectionCounts(Node root)
     {
-        System.Text.StringBuilder sb = new();
+        Dictionary<string, (int Out, int In)> counts = new();
         void Visit(Node node, string path)
         {
             int incoming = node.GetIncomingConnections().Count;
@@ -337,7 +362,7 @@ public static class GridBench
             }
             if (incoming + outgoing > 0)
             {
-                sb.Append($"{path}:{outgoing}/{incoming} ");
+                counts[path] = (outgoing, incoming);
             }
             for (int i = 0; i < node.GetChildCount(); i++)
             {
@@ -345,7 +370,25 @@ public static class GridBench
             }
         }
         Visit(root, "");
-        return sb.ToString();
+        return counts;
+    }
+
+    private static string Describe(Dictionary<string, (int Out, int In)> counts) =>
+        string.Concat(counts.Select(c => $"{c.Key}:{c.Value.Out}/{c.Value.In} "));
+
+    /// <summary>What a free disconnected, per node ("path:-out/-in"; nodes it left alone left out).</summary>
+    private static string Removed(Dictionary<string, (int Out, int In)> before, Dictionary<string, (int Out, int In)> after)
+    {
+        System.Text.StringBuilder sb = new();
+        foreach (string path in before.Keys.Concat(after.Keys.Where(k => !before.ContainsKey(k))))
+        {
+            (int Out, int In) b = before.GetValueOrDefault(path), a = after.GetValueOrDefault(path);
+            if (b != a)
+            {
+                sb.Append($"{path}:-{b.Out - a.Out}/-{b.In - a.In} ");
+            }
+        }
+        return sb.Length == 0 ? "(nothing)" : sb.ToString();
     }
 
     private static (string, bool) CompareTabs(List<CardModel> cards)

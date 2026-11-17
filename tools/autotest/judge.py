@@ -38,7 +38,7 @@ A problem:
 
 - a bdperf comparison that compared nothing (`... not applied ...: nothing to compare`, `left the walks vanilla`, `not
   compared: ...`): it says identical without having compared anything. Not in a vanilla session, on a mod-off side (--mod-off)
-  nor on a modified game (--mutated), and not CardSortKeys' own "not needed on this game version" (v0.107: no sort to answer);
+  nor on a modified game (--mutated), and not CardSortKeys' own "not needed on this game version" (v0.107, v0.111: no sort to answer);
 - the effects a scenario says must have run (`# effects-ran:` below) still at zero at its last `effects` command, an open
   BALANCE, or no EFFECT line at all (a session cut short, --no-end, is not held to that last one);
 - an `expect` line the script holds (AutoTest's `EXPECTDECL <regex>` at the script's start) that no line of the session
@@ -57,7 +57,7 @@ one Python can't compile is a problem. Every `expect` line of the script must be
 
 Scenario directives: comment lines of the scenario that ran (the log's `script <path> (<n> lines)` line names it; a script
 not found leaves them unknown), checked by check_scenarios.py. `<regex>` is Python's; ` on <version regex>` at the end of a
-line limits it to the game versions that regex matches (the log's `release=v0.107.1`).
+line limits it to the game versions that regex matches (the log's `release=v0.111.1`).
     # effects-ran: all | <regex>          every effect of the last `effects` command (or those the regex matches, at least one)
                                           above zero, and every BALANCE at 0
     # effects-zero-ok: <regex> [on <v>]   those effects may stay at zero (the scenario can't make them run there)
@@ -100,7 +100,7 @@ SKIPPED = re.compile(CLOCK + r'SKIPPED: ')
 # AutoTest's ABORT line ends with the number of script lines that never ran (builds since 2026-11-17; older ones: no suffix).
 ABORT_LEFT = re.compile(r' \[lines left (\d+)\]\s*$')
 # A bdperf comparison that compared nothing: its echo (the 'ok:' line and its continuation lines). CardSortKeys not needed on this
-# game version (v0.107: the game's sort has nothing to answer) is the game's, not a part left vanilla.
+# game version (v0.107, v0.111: the game's sort has nothing to answer) is the game's, not a part left vanilla.
 ECHO_OK = re.compile(CLOCK + r'ok: ')
 UNCOMPARED = re.compile(r'nothing to compare|left the walks vanilla|\bnot compared: ')
 UNCOMPARED_OK = re.compile(r'not applied \(not needed on this game version\): nothing to compare')
