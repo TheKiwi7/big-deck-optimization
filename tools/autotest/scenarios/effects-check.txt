@@ -8,7 +8,22 @@
 # there only) through Stone Cracker at the combat starts and the reshuffle after pilemove; no bdperf comparison counts in the
 # effects (they are frozen around each bench): every effect comes from the game's own calls, or, for the snapshot effects on
 # v0.107.1, from the script's checksum lines (the game's FromRun and GenerateChecksum, as co-op runs them).
+# Every effect above zero but those allowed: the session's own 'effectcheck all ran' at the end. Every bdperf comparison said
+# identical: the expect lines (CardSortKeys has nothing to answer on v0.107). The checksum's cache row compares nothing when
+# HookSkip's filtered walks answer every hook (the filter row after it compares them): declared for judge.py below.
+# RelicFlashMerge (mutations.ps1, proof run 2: 0 merges in one session, some in the reference: how a session's flashes fall into
+# frames is pace) merges in a burst of 50 flashes of the first relic in one frame (bdperf relicflash, in the first fight): the
+# game's own Flash() and handlers, the one effect a bench line drives here, so that it runs in every session alike.
+# uncompared: ^cache row: nothing served \(HookSkip's filtered walks answered every hook\)
 timeout 900
+expect ^\s+OK: identical checksums
+expect ^\s+OK: identical state
+expect ^\s+sort \(\d+ orders\): .*OK: identical orders
+expect ^\s+tabs \(.*OK: identical tabs
+expect ^\s+pool free \(.*OK: identical connections
+expect ^\s+OK: identical piles
+expect ok: OK: identical listeners
+expect ok: (SORTKEYS .*: OK: identical orders|CardSortKeys not applied \(not needed on this game version\))
 newrun NECROBINDER 1234
 waitfor run 120
 wait 2
@@ -24,6 +39,8 @@ cmd bdperf grid
 cmd bdperf pile
 cmd bdperf listeners 10
 cmd bdperf sortkeys
+cmd bdperf relicflash 50
+wait 1
 checksum first fight
 state first fight
 cmd kill all
@@ -31,7 +48,7 @@ waitfor nocombat 300
 wait 2
 deckview 2
 decksort
-cmd bigdeck import ref all cards
+cmd bigdeck import ref 1 cards
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 2
@@ -80,4 +97,14 @@ wait 3
 state after combat
 effects end
 counters end
+# Every effect above zero but those this solo session can't run (SyncedCardRelease: co-op only; ReplayStateSkip: the game
+# checksums solo combats from v0.111 only): what effects.py says, failing the session itself. After 'onfail continue': a
+# mutation (mutations.ps1) losing an effect on purpose still reaches quit, its loss judged there; any other run fails on it.
+onfail continue
+# A4 (DESIGN, "Fix 1, PushModel's prefixes"): no filtered walk ended with nothing kept where the game's walk yields some, the
+# badge guard never needed (every run has badges). FastListeners.FirstKept isn't listed: with another mod on the walks
+# (BDTEST_EXTRA_MODS: RitsuLib, Zone) the filtered walks go through the game's walk and keep its first listener.
+effectcheck HookSkip.Emptied zero
+effectcheck HookSkip.NoBadge zero
+effectcheck all ran except ^(SyncedCardRelease|ReplayStateSkip@v0\.107\..*|HookSkip\.Emptied|HookSkip\.NoBadge)$
 quit

@@ -1,4 +1,4 @@
-# Memory check across fights and runs (on), ~1,900 cards: 4 runs of 2 fights, back to the main menu between runs.
+# Memory check across fights and runs (on), ~945 cards: 4 runs of 2 fights, back to the main menu between runs.
 # Every LEAKCHECK menu/oldest line must find no path from the mod's statics to a left run; LEAKCHECK current, in a fight, is the
 # positive control: it must find some. What the GCFULL menu lines may do: docs/RELEASE.md.
 timeout 600
@@ -6,7 +6,6 @@ newrun NECROBINDER 1234
 waitfor run 60
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 cmd bdperf checks off
 enemyhp 999999
 gcfull run1 start
@@ -38,7 +37,6 @@ newrun NECROBINDER 1234
 waitfor run 60
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 enemyhp 999999
 cmd fight CULTISTS_NORMAL
 waitfor idle 60
@@ -67,7 +65,6 @@ newrun NECROBINDER 1234
 waitfor run 60
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 enemyhp 999999
 cmd fight CULTISTS_NORMAL
 waitfor idle 60
@@ -96,7 +93,6 @@ newrun NECROBINDER 1234
 waitfor run 60
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 enemyhp 999999
 cmd fight CULTISTS_NORMAL
 waitfor idle 60

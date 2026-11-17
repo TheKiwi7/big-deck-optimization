@@ -53,7 +53,13 @@ public static class LimitlessCloneMemo
 
     /// <summary>Holds saved cards only, no model. Main thread.</summary>
     private static readonly Dictionary<Key, SerializableCard> _memo = new(new ContentComparer());
+#if BENCH
+    /// <summary>The memo's limit; tests lower it (<c>bdperf clonememocap N</c>) so a small run reaches it. Its clears: <see cref="MemoClears"/>.</summary>
+    internal static int MaxContents = 16384;
+    public static long MemoClears;
+#else
     private const int MaxContents = 16384;
+#endif
     private static long _memoStamp = -1;
     private static MethodInfo? _lambda;
     private static int _sinceVerify;
@@ -698,6 +704,15 @@ public static class LimitlessCloneMemo
             if (_memo.TryGetValue(key, out SerializableCard? memo))
             {
                 Verified++;
+#if BENCH
+                // Test: compared with another content's kept card (the check must see it differ). Taken only once such a card is
+                // kept (one content alone: nothing to compare with, the take would prove nothing).
+                if (TestWrong.IsArmed("clonememo") && _memo.Values.FirstOrDefault(other => !ReferenceEquals(other, memo) && !SameBytes(other, __result)) is { } wrongMemo
+                    && TestWrong.Take("clonememo"))
+                {
+                    memo = wrongMemo;
+                }
+#endif
                 if (!SameBytes(memo, __result))
                 {
                     Fail($"a kept inner card differs from a rebuilt one ({__0.Id})");
@@ -707,6 +722,9 @@ public static class LimitlessCloneMemo
             if (_memo.Count >= MaxContents)
             {
                 _memo.Clear();
+#if BENCH
+                MemoClears++;
+#endif
             }
             _memo[key] = __result;
         }

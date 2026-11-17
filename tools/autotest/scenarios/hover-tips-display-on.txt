@@ -1,0 +1,42 @@
+# HoverTipReuse under the hover-tip display premise (A/B, mod on; DESIGN "Owner-approved premises", 2026-11-17): counting
+# prefixes of "another mod" on the hover-tip panel's own methods a reuse doesn't run (NHoverTipSet.CreateAndShow, Init,
+# Remove: Minty's, RitsuLib's, Downfall's... shapes). The mouse on an enemy, plays and a turn: panels are still reused
+# (effectcheck HoverTipReuse grew), the patches named in the kept note (not a back-off), their calls fewer than mod off (FOREIGN
+# display lines, by design: not compared). CHECKSUM and STATE identical with hover-tips-display-off. ~945 cards.
+timeout 900
+expect FOREIGN kept HoverTipReuse: other mods' code on the hover-tip panel \(.*NHoverTipSet\.CreateAndShow.*\) doesn't run while a creature's unchanged tips are kept on screen, nor what building the panel runs .*: taken as display only \(a stated premise
+expect FOREIGN display end NHoverTipSet\.CreateAndShow [1-9]
+expect EFFECTCHECK HoverTipReuse grew since 'start': [0-9]+ -> [1-9]
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+foreignpatch display-count-prefix MegaCrit.Sts2.Core.Nodes.HoverTips.NHoverTipSet::CreateAndShow(Control,IEnumerable`1,HoverTipAlignment)
+foreignpatch display-count-prefix MegaCrit.Sts2.Core.Nodes.HoverTips.NHoverTipSet::Init(Control,IEnumerable`1)
+foreignpatch display-count-prefix MegaCrit.Sts2.Core.Nodes.HoverTips.NHoverTipSet::Remove(Control)
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+hover 0
+checksum start
+effects start
+play 3
+waitfor idle 300
+checksum plays
+state plays
+endturn
+waitfor idle 300
+checksum t2
+state t2
+play 2
+waitfor idle 300
+checksum t2plays
+state t2plays
+effects end
+effectcheck HoverTipReuse grew start
+foreignpatch report end
+cmd bdopt why
+foreignpatch remove
+quit

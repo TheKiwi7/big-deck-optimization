@@ -2,13 +2,13 @@
 # without reading it; the part's own sampled check put out of reach, see relics-scalarblind): the verifier must see a snapshot
 # differ. Expected to fail at its last line.
 expect SnapshotVerifier: (optimized snapshot differs from vanilla|line \d+: optimized)
-expect verified \d+, mismatches [1-9]
+# SnapshotVerifier's own count (bdperf verify: 'snapshots n, verified n, mismatches n'; its failed check), not a COUNTERS part's.
+expect (snapshots \d+, |the command failed: )verified \d+, mismatches [1-9]
 timeout 1500
 newrun NECROBINDER 1234
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 cmd bdperf checks off
 cmd bdperf probe off
 cmd bdperf segments verify off

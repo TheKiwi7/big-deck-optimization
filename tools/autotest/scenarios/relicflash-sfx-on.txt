@@ -1,0 +1,33 @@
+# RelicFlashMerge next to another mod's patch on the game's sound command (A/B, mod on; DESIGN "Needless back-offs made safe",
+# rule D): ARAM's / RegentFX's shape, a bool prefix on SfxCmd.Play(string, float) counting each relic sound and suppressing the
+# general relic flash sound. A merged flash now plays its sound through the game's own call (SfxCmd.Play(relic.FlashSfx, 1f)) and
+# only its creature effect is merged: the prefix sees the same calls with the same arguments as mod off (STATE lines, compared
+# with relicflash-sfx-off), flashes are still merged (effectcheck RelicFlashMerge grew) and their sounds replayed
+# (RelicFlashMerge.SoundsReplayed grew). A campfire clone at ~945 cards: Bing Bong flashes once per card added, thousands in a
+# frame. CHECKSUM lines identical too.
+timeout 1200
+expect EFFECTCHECK RelicFlashMerge grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK RelicFlashMerge\.SoundsReplayed grew since 'start': [0-9]+ -> [1-9]
+expect STATE foreign end sfx-observer-prefix suppressed [1-9]
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+foreignpatch sfx-observer-prefix MegaCrit.Sts2.Core.Commands.SfxCmd::Play(String,Single)
+checksum before
+state before optional
+effects start
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+checksum after
+state after optional
+foreignpatch report end
+effects end
+effectcheck RelicFlashMerge grew start
+effectcheck RelicFlashMerge.SoundsReplayed grew start
+cmd bdopt why
+foreignpatch remove
+quit

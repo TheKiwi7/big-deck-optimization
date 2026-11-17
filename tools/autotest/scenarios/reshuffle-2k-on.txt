@@ -1,10 +1,9 @@
-# Reshuffle of a ~1,900-card discard pile, on: same checksums with the flying cards limited.
+# Reshuffle of a ~945-card discard pile, on: same checksums with the flying cards limited.
 timeout 900
 newrun NECROBINDER 1234
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 cmd bdperf checks off
 enemyhp 999999
 speed fast

@@ -1,0 +1,23 @@
+# RelicFlashMerge next to another mod's patch deeper in the game's sound call (A/B, mod off): the same synthetic patch as
+# relicflash-deep-on (see there); CHECKSUM and STATE lines must match line for line.
+timeout 1200
+cmd bdopt off
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+foreignpatch count-prefix MegaCrit.Sts2.Core.Helpers.NonInteractiveMode::get_IsActive()
+checksum before
+state before optional
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+checksum after
+state after optional
+foreignpatch report end
+foreignpatch remove
+cmd bdopt on
+quit

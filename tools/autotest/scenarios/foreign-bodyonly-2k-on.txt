@@ -1,0 +1,92 @@
+# HookSkip's hook methods judged by rule A (A/B, mod on; DESIGN "Needless back-offs made safe", rule A, TranspiledOnly): this
+# mod only transpiles these hooks, so every prefix and postfix of "another mod" stands there, whatever its shape. The same
+# synthetic patches (Bench/ForeignPatches.cs) as foreign-bodyonly-2k-off; CHECKSUM and STATE lines must match line for line.
+# EnchantLib's shape: a bool prefix answering Hook.ModifyBlock itself for an even block (ref __result, the out modifiers written)
+# with Harmony's __runOriginal idiom in a postfix there; Zone's: a postfix writing ModifyHpLost's out modifiers and __result
+# (monsters lose 1 HP more) and ShouldAllowTargeting's out preventer; a void prefix taking __args on ModifyHpLost and ShouldDie;
+# a bool prefix (returns true) on ModifyEnergyCostInCombat, where HookFilter's mirror backs off (PrefixesOnly) and HookSkip's
+# filtered walk stays. ~945 cards. The hooks keep running filtered (require filtered: names of the other game version listed and
+# skipped), the patches' counts the same as mod off (STATE). A Shrug It Off played free (8 block, even) makes the replacing
+# prefix answer ModifyBlock at least once; ShouldDie is reached by the final kill (CreatureCmd.Kill, not forced).
+timeout 2400
+expect HookSkip: Hook\.ModifyBlock is also patched by .*bdtest\.foreign\.hook-replacing-prefix.* \(prefixes and postfixes around the transpiled body: run around this mod's code as without it\): kept
+expect HookSkip: Hook\.ModifyHpLost is also patched by .*bdtest\.foreign\.hook-out-write-postfix.* \(prefixes and postfixes around the transpiled body: run around this mod's code as without it\): kept
+expect HookSkip: Hook\.ShouldAllowTargeting is also patched by .*bdtest\.foreign\.hook-out-write-postfix.* \(prefixes and postfixes around the transpiled body: run around
+expect HookSkip: Hook\.ModifyEnergyCostInCombat is also patched by .*bdtest\.foreign\.bool-prefix.* \(prefixes and postfixes around the transpiled body: run around
+expect HookFilter: Hook\.ModifyEnergyCostInCombat is also patched by bdtest\.foreign\.bool-prefix \(void prefixes not enough\): normal game for that part
+expect FOREIGN classify Hook\.ShouldDie: bdtest\.foreign\.hook-args-prefix Prefix .*SurroundingOnly backs off \(prefix taking __args.*TranspiledOnly tolerated
+expect FOREIGN classify Hook\.ModifyBlock: bdtest\.foreign\.hook-replacing-prefix Prefix .*SurroundingOnly backs off \(prefix returning Boolean.*TranspiledOnly tolerated
+expect FOREIGN runtime HookSkip Hook\.ModifyHpLost \(TranspiledOnly\) kept [1-9][0-9]* backed off 0
+expect FOREIGN runtime HookSkip Hook\.ModifyEnergyCostInCombat \(TranspiledOnly\) kept [1-9][0-9]* backed off 0
+expect FOREIGN walks Hook\.ModifyHpLost: [1-9][0-9]* since the mark, [1-9][0-9]* filtered
+expect STATE foreign end hook-out-write-postfix ModifyHpLost monster hp losses [1-9]
+expect STATE foreign end hook-args-prefix Hook\.ModifyHpLost [0-9]+ [1-9]
+expect FOREIGN runtime HookSkip Hook\.ModifyBlock \(TranspiledOnly\) kept [1-9][0-9]* backed off 0
+expect FOREIGN runtime HookSkip Hook\.ShouldAllowTargeting \(TranspiledOnly\) kept [1-9][0-9]* backed off 0
+expect FOREIGN runtime HookSkip Hook\.ShouldDie \(TranspiledOnly\) kept [1-9][0-9]* backed off 0
+expect STATE foreign end hook-replacing-prefix ModifyBlock replaced [1-9]
+expect STATE foreign end hook-args-prefix Hook\.ShouldDie [0-9]+ [1-9]
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+# Every shape before the combat (some change the game's state: both sides install them alike).
+foreignpatch hook-replacing-prefix MegaCrit.Sts2.Core.Hooks.Hook:ModifyBlock
+foreignpatch runoriginal-postfix MegaCrit.Sts2.Core.Hooks.Hook:ModifyBlock
+foreignpatch hook-out-write-postfix MegaCrit.Sts2.Core.Hooks.Hook:ModifyHpLost
+foreignpatch hook-out-write-postfix MegaCrit.Sts2.Core.Hooks.Hook:ShouldAllowTargeting
+foreignpatch hook-args-prefix MegaCrit.Sts2.Core.Hooks.Hook:ModifyHpLost
+foreignpatch hook-args-prefix MegaCrit.Sts2.Core.Hooks.Hook:ShouldDie
+foreignpatch bool-prefix MegaCrit.Sts2.Core.Hooks.Hook:ModifyEnergyCostInCombat
+cmd bdopt why
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+# Room in the hand first: the reference run's relics (Vexing Puzzlebox's card among them) fill it to 10 at the first turn.
+pilemove hand discard 9
+checksum start
+effects start
+foreignpatch walks mark
+# A certain even block (Shrug It Off: 8, both versions) through Hook.ModifyBlock: the replacing prefix answers it (STATE).
+cmd card SHRUG_IT_OFF hand
+wait 1
+playcard SHRUG_IT_OFF free
+waitfor idle 120
+checksum t0 shrug
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+play 4
+waitfor idle 120
+checksum t3 plays
+endturn
+waitfor idle 300
+checksum t3 end
+state t3
+foreignpatch require filtered ModifyBlock,ModifyHpLost,ShouldAllowTargeting,ModifyEnergyCostInCombat
+cmd kill all
+waitfor nocombat 300
+wait 3
+# Kill goes through Hook.ShouldDie (not forced: CreatureCmd.Kill), filtered like the others.
+foreignpatch require filtered ShouldDie
+checksum after combat
+state after combat
+foreignpatch report end
+effects end
+effectcheck HookSkip grew start
+cmd bdopt why
+counters end
+foreignpatch remove
+quit

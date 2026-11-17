@@ -1,0 +1,69 @@
+# The identity-bridge premise (A/B, mod on; DESIGN "Owner-approved premises", 2026-11-17): Downfall's and Watcher's transpiler
+# shape on Hook.ModifyDamageInternal (Bench/IlJudgeShapes.cs il-damage-bridge): after the game's stloc of each listener's
+# ModifyDamageAdditive result, a call of a bridge gated on Squeeze (a card overriding no damage hook: dropped without the gate)
+# that adds 1 for it and gives the game's value back otherwise, stored back into the same local. Accepted (HookSkip keeps
+# filtering the hook, judged walks > 0), Squeeze keeps its iterations: damage +1 per Squeeze listener on both sides, CHECKSUM and
+# STATE identical with foreign-dmgbridge-1k-off (a Squeeze dropped would show in both). Then the control: the same bridge with a
+# static write before its gate (il-damage-bridge-callfirst): refused, the hook vanilla, every call counted the same on both sides,
+# over one turn's plays only (proof run 2: the deck's Doom ends the combat at that turn's end, both sides alike; a later
+# `waitfor idle` waited 300 s on an ended combat).
+# The judge's self-test covers the exact insertion once and twice (two mods) and the near misses (foreign-il-2k-on).
+# The bridges' calls are compared inside the game's damage actions only (a counting scope on the state machines of every async
+# CreatureCmd.Damage and Thrash.OnPlay, both sides), so a Squeeze iteration dropped shows as a count, while previews, recomputed at
+# the display's or the clock's pace (proof run 2: the game's, 1-2% fewer calls with the mod on; proof run 3: BetterSpire2's
+# DamageTracker, 4 a second, outside the game's previews, so the longer mod-off session counted more), are display lines.
+expect FOREIGN iljudge Hook\.ModifyDamageInternal: accepted \([0-9]+ insertion\(s\), gates Squeeze\)
+expect HookSkip: Hook\.ModifyDamageInternal: other mods' transpilers judged by their IL \(bdtest\.foreign\.il-damage-bridge-squeeze\): [0-9]+ insertion\(s\) that change nothing this mod relies on \([0-9]+ storing their result back into the iteration's own: identity bridges, a stated premise\), gated on Squeeze \(kept\): kept
+expect FOREIGN kept HookSkip: other mods' code passing each listener's result through their own method \(Hook\.ModifyDamageInternal\)
+expect FOREIGN judged walks Hook\.ModifyDamageInternal [1-9]
+expect STATE foreign end il-damage-bridge squeeze calls in damage actions [1-9]
+expect FOREIGN display end il-damage-bridge squeeze calls [1-9]
+expect FOREIGN iljudge Hook\.ModifyDamageInternal: refused \(.*Bridges\.CallFirst takes the stored local but doesn't provably give it back
+expect STATE foreign control il-damage-bridge-callfirst calls in damage actions [1-9]
+timeout 1500
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+effects start
+foreignpatch il-damage-bridge MegaCrit.Sts2.Core.Hooks.Hook:ModifyDamageInternal squeeze
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+play 4
+waitfor idle 120
+checksum t3 plays
+endturn
+waitfor idle 300
+checksum t3 end
+state t3
+foreignpatch report end
+foreignpatch remove
+foreignpatch il-damage-bridge-callfirst MegaCrit.Sts2.Core.Hooks.Hook:ModifyDamageInternal squeeze
+play 4
+waitfor idle 120
+checksum control t1 plays
+state control t1
+foreignpatch report control
+foreignpatch remove
+effects end
+effectcheck HookSkip grew start
+cmd bdopt why
+counters end
+quit

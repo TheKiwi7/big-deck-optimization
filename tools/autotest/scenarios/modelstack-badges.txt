@@ -1,0 +1,83 @@
+# A4 (verification audit of 2026-11-17), made exact: a hook's loop pushes each listener on its passed-in choice context first
+# thing, and PlayerChoiceContext.PushModel creates the context's model stack on its first call, so a filtered walk that kept
+# nothing where the game's walk yields something would leave the stack null where the game leaves it empty. HookSkip's filters
+# keep every badge, a state without one walks vanilla (the badge guard), and the walks over the game's own walk (KeptOnly, when
+# another mod patches a walk) keep its first listener. Mod on, singleplayer, starter deck (small: more hooks with no reacting
+# listener, so the control below finds emptied walks); compares nothing with another session (bdperf badges clear changes the
+# run's listeners). Both supported game versions.
+# (1) The game's runs: no filtered walk emptied, the guard never needed, KeptOnly unused.
+# (2) bdperf badges clear (a state the game never makes): every filtered walk goes to the game's walk (HookSkip.NoBadge grows,
+#     HookSkip's filtered walks stay the same), none emptied.
+# (3) Positive control of HookSkip.Emptied: the guard off on that state, the filtered walks run anyway and some end empty.
+# (4) Another mod on both walks (fakeconflict): the filtered walks go through the game's walk (KeptOnly), which keeps its first
+#     listener (FastListeners.FirstKept grows, counted for HookSkip's walks only: a run walk's first deck card), and none ends
+#     empty even with no badge and the guard still off. Weak on its own: KeptOnly drops only pile entries, so a walk with a power,
+#     relic or monster never ends empty there anyway; that the stack is created at the game's moment on this path is argued
+#     (DESIGN A4), not measured.
+timeout 900
+# (3) must empty a walk of a hook the badges don't react to (they override AfterCardPlayed, AfterSideTurnStart and
+# AfterPowerAmountChanged only): there a walk dropping the badges with the other non-reacting listeners would end empty, so
+# step (1)'s zero shows the badges kept (KeepingBadges) is what keeps it from ending empty.
+expect HookSkip: a filtered walk of Hook\.(?!(AfterCardPlayed|AfterSideTurnStart|AfterPowerAmountChanged) )\w+ kept no listener where the game's walk yields some
+expect BADGES run [1-9][0-9]*, combat [1-9][0-9]*, guard on
+expect BADGES run 0, combat 0, guard on
+expect BADGES run 0, combat 0, guard off
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd bdperf badges
+effects start
+play 2
+waitfor idle 120
+endturn
+waitfor idle 300
+play 2
+waitfor idle 120
+effects badges
+effectcheck HookSkip grew start
+effectcheck HookSkip.Emptied zero
+effectcheck HookSkip.NoBadge zero
+effectcheck FastListeners.FirstKept zero
+cmd bdperf badges clear
+play 2
+waitfor idle 120
+endturn
+waitfor idle 300
+play 2
+waitfor idle 120
+effects cleared
+effectcheck HookSkip.NoBadge grew badges
+effectcheck HookSkip same badges
+effectcheck HookSkip.Emptied same badges
+cmd bdperf badges guard off
+play 2
+waitfor idle 120
+endturn
+waitfor idle 300
+play 2
+waitfor idle 120
+effects control
+effectcheck HookSkip grew cleared
+effectcheck HookSkip.Emptied grew cleared
+fakeconflict MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners
+fakeconflict MegaCrit.Sts2.Core.Runs.RunState:IterateHookListeners
+play 2
+waitfor idle 120
+endturn
+waitfor idle 300
+play 2
+waitfor idle 120
+effects keptonly
+effectcheck HookSkip grew control
+effectcheck FastListeners.FirstKept grew control
+effectcheck HookSkip.Emptied same control
+cmd bdperf badges guard on
+cmd bdperf badges
+cmd kill all
+waitfor nocombat 300
+wait 2
+quit

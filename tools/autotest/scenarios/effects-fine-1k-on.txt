@@ -1,0 +1,73 @@
+# The finer effect counters (listed only where a script names them, AutoTest's opt-in effects), each above zero in an ordinary
+# ~945-card combat with BaseLib, Limitless and BetterSpire2 loaded: HookFilter's mirrors one by one (damage, energy cost,
+# keywords, ShouldPlay, ShouldAllowHitting, the cost color helper; ModifyDamageMultiplicativeLate's variant on v0.113+ only, last
+# after requiregame), ListenerCache's lists reused across refreshes, FastListeners' skip of BaseLib's card modifier subscriber
+# (no mod defines a CardModifier), HookSkip's BaseLib interface walks (GetMaxHandSize at each draw), BetterSpire2's scope.
+# Then the other side of FastListeners' modifier branch: bdperf baselibtypes assume
+# BaseLib.Abstracts.CardModifier (as if a mod defined one): BaseLib's subscriber walks again (its lists empty, as the game's), the
+# skip stops (effectcheck ... same). CHECKSUM and STATE lines must match wrong-1k-off line for line.
+# compare-with: wrong-1k-off
+timeout 900
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+state start
+hover 0
+wait 1
+# ListenerCache's lists kept across display scopes are used only where the listener lists are built through it: with
+# FastListeners on, HookFilter walks its own filtered lists (BetterSpire2's damage preview, the display scope that
+# refreshes several times a second, never asks it). A few idle seconds with that option off: the preview's scopes reuse
+# the kept lists (ListenerCache.Reused). Results stay the game's either way (CHECKSUM lines compared).
+cmd bdopt listeners off
+wait 3
+cmd bdopt listeners on
+play 3
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 3
+waitfor idle 120
+checksum t2 plays
+pilemove draw discard 2
+wait 1
+checksum moved
+cmd bdperf baselibtypes assume BaseLib.Abstracts.CardModifier
+effects assumed
+endturn
+waitfor idle 300
+checksum reshuffle
+state reshuffle
+play 3
+waitfor idle 120
+checksum t3 plays
+state t3
+cmd kill all
+waitfor nocombat 300
+wait 2
+checksum after combat
+state after combat
+cmd bdperf baselibtypes clear
+effects end
+effectcheck HookFilter.Damage ran
+effectcheck HookFilter.EnergyCost ran
+effectcheck HookFilter.Keywords ran
+effectcheck HookFilter.ShouldPlay ran
+effectcheck HookFilter.Hitting ran
+effectcheck HookFilter.EnergyCostColor ran
+effectcheck ListenerCache.Reused ran
+effectcheck FastListeners.ModifierSkip ran
+effectcheck FastListeners.ModifierSkip same assumed
+effectcheck HookSkip.BaseLib ran
+effectcheck ExtraScopes.BetterSpire2 ran
+requiregame v0.113
+effectcheck HookFilter.DamageLate ran
+quit

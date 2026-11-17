@@ -1,11 +1,11 @@
-# All optimizations A/B at ~1,900 cards (on, bench checks on, counters at the end): compare with ab-2k-off; CHECKSUM and STATE lines must match line for line.
-# Same as turns-off with 2 imports instead of 9, so the vanilla run stays short on the game beta too.
+# All optimizations A/B at 1,016 cards (the reference run and Ironclad's 71 cards: above the 1,000 combat cards of ReplayStateSkip and GcPacing; on, bench checks on, counters at the end): compare with ab-2k-off; CHECKSUM and STATE lines must match line for line.
+# Same as turns-off with the reference run and its Ironclad deck (ref 1 cards) instead of 9 imports, so the vanilla run stays short on the game beta too.
 timeout 2400
 newrun NECROBINDER
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
+cmd bigdeck import ref 1 cards
 enemyhp 999999
 cmd fight CULTISTS_NORMAL
 waitfor idle 600

@@ -35,7 +35,7 @@ namespace BigDeckOptimization.Bench;
 ///   Reports: verify, combatstart, probe, piletimes, costhooks, deckcount, clonememo, reserialize, gcprobe, waitspin.
 ///   Switches for tests (they change this mod's behaviour, never the game's state): opt (the master switch for this session
 ///   only, never saved: <see cref="Config.Settings.MasterChoice"/>),
-///   checks, blocks, upgradebits, envrelease, gcmin, release, purehooks, dirtyreads, snapmoved, segments, relicreuse, fault,
+///   checks, blocks, upgradebits, envrelease, gcmin, movecap, clonememocap, release, purehooks, dirtyreads, snapmoved, segments, relicreuse, fault,
 ///   sortkeys wrong, deckcount wrong, snapgameerror.
 ///   Changes the game's state: costwrites (the first hand card free this turn, on this peer only), and foreign with a shape
 ///   changing it (keyword-prefix, cost-postfix, nested-postfix: <see cref="ForeignPatches.ChangesState"/>): singleplayer only,
@@ -43,7 +43,7 @@ namespace BigDeckOptimization.Bench;
 ///   'foreignpatch' line on every peer, before any combat). <c>bdperf opt on|off</c> in a co-op run warns and asks for
 ///   <c>bdperf opt on|off yes</c> either way, as <c>bdopt</c> does.
 /// </summary>
-public class PerfConsoleCmd : AbstractConsoleCmd
+public partial class PerfConsoleCmd : AbstractConsoleCmd
 {
     private readonly struct Sample
     {
@@ -59,11 +59,29 @@ public class PerfConsoleCmd : AbstractConsoleCmd
 
     public override string CmdName => "bdperf";
 
-    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | verify [off|sample|all] | combatstart | grid [cards:int] | probe [reset|log|on|off|nodes|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | sortkeys [wrong] | checks on|off | opt on|off [yes] | listeners [iterations:int] | costwrites | fault piles|walk | snapgameerror <n> | reserialize [verify <n>] | clonememo [verify <n>] | conflicts | states | roomleft | modorder [none|<owner>] | firstturn inner | foreign <shape> <Type:Method> [gate] [priority N] | foreign remove|report|classify <Type:Method>";
+    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | verify [off|sample|all] | combatstart | grid [cards:int] | probe [reset|log|on|off|nodes|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | sortkeys [wrong] | checks on|off | opt on|off [yes] | listeners [iterations:int] | costwrites | fault piles|walk | badges [clear|guard off|on] | snapgameerror <n> | reserialize [verify <n>] | clonememo [verify <n>] | conflicts | states | roomleft | modorder [none|<owner>] | firstturn inner | foreign <shape> <Type:Method> [gate] [priority N] | foreign remove|report|classify <Type:Method>";
 
     public override string Description => "[BigDeckOptimization] Measures the multiplayer post-action checksum cost, vanilla vs optimized, or shows/sets live snapshot verification.";
 
     public override bool IsNetworked => false;
+
+    /// <summary>Flashes the local player's first relic <paramref name="count"/> times in one frame and reports RelicFlashMerge's counters.</summary>
+    private static CmdResult RelicFlashBurst(int count)
+    {
+        if (RunManager.Instance.DebugOnlyGetState() is not { } run || LocalContext.GetMe(run) is not { } me || me.Relics.FirstOrDefault() is not { } relic)
+        {
+            return new CmdResult(success: false, "RELICFLASH no run or no relic");
+        }
+        long merged = RelicFlashMerge.Merged, creature = RelicFlashMerge.MergedCreature, holder = RelicFlashMerge.MergedHolder,
+            noNode = RelicFlashMerge.MergedNoNode, refused = RelicFlashMerge.SceneRefusals;
+        for (int i = 0; i < count; i++)
+        {
+            relic.Flash();
+        }
+        return new CmdResult(success: true, $"RELICFLASH {relic.Id.Entry} x{count} in combat {CombatManager.Instance.IsInProgress}: merged +{RelicFlashMerge.Merged - merged}, "
+            + $"creature +{RelicFlashMerge.MergedCreature - creature}, holder +{RelicFlashMerge.MergedHolder - holder}, no node +{RelicFlashMerge.MergedNoNode - noNode}, "
+            + $"scene refusals +{RelicFlashMerge.SceneRefusals - refused}");
+    }
 
     private static int _spins;
 
@@ -204,6 +222,11 @@ public class PerfConsoleCmd : AbstractConsoleCmd
         using IDisposable? frozen = sub is "checksum" or "refresh" or "listeners" or "pile" or "text" or "scan" or "plaque" or "grid" or "sortkeys"
             or "relics" or "upgradebench" or "shufflebench" or "costhooks"
             ? EffectCounters.Freeze() : null;
+        // Positive controls and limits of the safety nets (Bench/PerfInjections.cs).
+        if (Injection(sub, args, coop) is { } injected)
+        {
+            return injected;
+        }
         switch (sub)
         {
             case "states":
@@ -281,6 +304,28 @@ public class PerfConsoleCmd : AbstractConsoleCmd
                 SyncedCardRelease.Enabled = args[1] != "off";
                 SnapshotCardReuse.ReleaseCombats = args[1] != "off";
                 return new CmdResult(success: true, $"releases {args[1]}");
+            case "movecap":
+                // FastListeners' move journal limit, lowered so a small deck overflows it (the path only 4,000+ card combats reach).
+                if (args.Length >= 2)
+                {
+                    if (!int.TryParse(args[1], out int moveCap) || moveCap < 2)
+                    {
+                        return new CmdResult(success: false, "bdperf movecap <limit, 2 or more>");
+                    }
+                    FastListeners.MaxMoves = moveCap;
+                }
+                return new CmdResult(success: true, $"MOVECAP limit {FastListeners.MaxMoves}, overflows {FastListeners.MoveOverflows}");
+            case "clonememocap":
+                // LimitlessCloneMemo's limit, lowered so a small run clears it (16,384 saved contents otherwise).
+                if (args.Length >= 2)
+                {
+                    if (!int.TryParse(args[1], out int memoCap) || memoCap < 1)
+                    {
+                        return new CmdResult(success: false, "bdperf clonememocap <limit, 1 or more>");
+                    }
+                    LimitlessCloneMemo.MaxContents = memoCap;
+                }
+                return new CmdResult(success: true, $"CLONEMEMOCAP limit {LimitlessCloneMemo.MaxContents}, clears {LimitlessCloneMemo.MemoClears}");
             case "clonememo":
                 bool setCloneVerify = args.Length >= 3 && args[1] == "verify" && int.TryParse(args[2], out int cloneEvery) && cloneEvery > 0;
                 if (setCloneVerify)
@@ -381,6 +426,10 @@ public class PerfConsoleCmd : AbstractConsoleCmd
             case "grid":
                 int tabCards = args.Length >= 2 && int.TryParse(args[1], out int g) && g > 0 ? g : 100;
                 return GridBench.Run(tabCards);
+            case "relicflash":
+                // bdperf relicflash [n]: the local player's first relic flashes n times in this frame (display only: the relic's
+                // Flashed event, whose handlers are the relic bar's and the player's effects and sound; R3-1's in-combat test).
+                return RelicFlashBurst(args.Length >= 2 && int.TryParse(args[1], out int flashes) && flashes > 0 ? flashes : 50);
             case "combatstart":
                 return new CmdResult(success: true, CombatStartTimer.LastReport);
             case "probe":
@@ -448,6 +497,13 @@ public class PerfConsoleCmd : AbstractConsoleCmd
             case "snapmoved" when args.Length >= 2 && args[1] is "on" or "off":
                 SnapshotCardReuse.MovedPiles = args[1] == "on";
                 return new CmdResult(success: true, $"{SnapshotCardReuse.Name} moved piles {args[1]}.");
+            case "sortkeys" when args.Length >= 2 && args[1] == "counters":
+                // R3-4: every answered sort's first answer is compared with the game's (Checks >= Sorts).
+                bool everySortChecked = CardSortKeys.Checks >= CardSortKeys.Sorts;
+                return new CmdResult(everySortChecked, $"SORTKEYS counters sorts {CardSortKeys.Sorts}, answered {CardSortKeys.Answered}, checks {CardSortKeys.Checks}, "
+                    + $"mismatches {CardSortKeys.Mismatches}: {(everySortChecked ? "OK: every sort checked" : "FEWER CHECKS THAN SORTS")}");
+            case "sortkeys" when args.Length >= 2 && args[1] == "deck":
+                return SortKeysBench.RunDeck();
             case "sortkeys":
                 return SortKeysBench.Run(args.Length >= 2 && args[1] == "wrong");
             case "plaque":

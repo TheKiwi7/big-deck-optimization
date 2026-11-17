@@ -1,5 +1,6 @@
 # Debug re-checks on (cost colors: 1 call in 64 compared with the game's helper; walks 1 in 32): turns at ~31,800 cards + 736 relics (same deck as try-32k), BaseLib's type line walk
 # skipped. Run turns-32k-off then turns-32k-on: CHECKSUM/STATE lines must match.
+# compare-with: turns-32k-off
 timeout 1800
 newrun NECROBINDER
 waitfor run 120

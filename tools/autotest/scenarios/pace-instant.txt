@@ -1,6 +1,7 @@
 # Combat pace (v0.6.2): the fast combat start only skips the combat loading, so the 'idle after' times of the turns
 # (waitfor idle after each endturn) match pace-vanilla in pace-on and pace-off; pace-instant (opt-in option) is much shorter.
 # CHECKSUM/STATE lines identical in all four (compare.py).
+# compare-with: pace-vanilla
 timeout 300
 newrun IRONCLAD
 waitfor run 60

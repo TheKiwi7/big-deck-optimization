@@ -219,10 +219,12 @@ public static class Settings
         IReadOnlyList<PatchSafety.BackOff> backOffs = PatchSafety.BackOffs().Where(b => !Master || Running(b.Patch)).ToList();
         // Other mods' Harmony activity this mod can't judge patch by patch (hidden IL hooks, its own code patched, lost detours).
         string harmony = string.Concat(HarmonyWatch.Report().Select(line => "\n" + line));
+        // What runs next to other mods on a premise it states (not a back-off): listed after the back-offs.
+        string kept = KeptReport();
         if (backOffs.Count == 0)
         {
             return "BigDeckOptimization: no other mod keeps any part of the optimizations on the normal game"
-                + (ModEntry.StartedOff ? " (the mod is inactive this session)." : !Master ? " (the mod is off: everything runs the normal game now)." : ".") + harmony;
+                + (ModEntry.StartedOff ? " (the mod is inactive this session)." : !Master ? " (the mod is off: everything runs the normal game now)." : ".") + kept + harmony;
         }
         var sb = new StringBuilder(!Master
             ? "BigDeckOptimization: the mod is off, everything runs the normal game now. Once on, these parts would still run the normal game because of other mods:\n"
@@ -252,7 +254,94 @@ public static class Settings
                 sb.Append(char.ToUpperInvariant(words[0])).Append(words, 1, words.Length - 1).Append(" now: ").Append(string.Join(", ", labels)).Append('\n');
             }
         }
-        return sb.ToString().TrimEnd() + harmony;
+        return sb.ToString().TrimEnd() + kept + harmony;
+    }
+
+    /// <summary>
+    /// bdopt why's lines for the parts that keep running next to other mods' patches on a stated premise (<see cref="PatchSafety.Kept"/>),
+    /// each "Patch: text &lt;- mods", after a heading; empty when there is none or nothing of the mod runs.
+    /// </summary>
+    private static string KeptReport()
+    {
+        if (ModEntry.StartedOff)
+        {
+            return "";
+        }
+        IReadOnlyList<PatchSafety.KeptNote> notes = PatchSafety.KeptNotes().Where(k => !Master || Running(k.Patch)).ToList();
+        if (notes.Count == 0)
+        {
+            return "";
+        }
+        // With the mod off, worded as the back-off section is then ("once on, ...").
+        var sb = new StringBuilder(!Master
+            ? "\nOnce on, these parts would also run next to other mods' patches (taken as harmless there, not the normal game):"
+            : "\nStill running next to other mods' patches (taken as harmless there, not the normal game):");
+        foreach (PatchSafety.KeptNote note in notes)
+        {
+            sb.Append($"\n  {OptionLabels(note.Patch)}: {note.Patch}: {note.Text} <- {(note.Mods.Length > 0 ? string.Join(", ", note.Mods) : OtherModsText)}");
+        }
+        return sb.ToString();
+    }
+
+    public const string KeptText = "Still on with {mods}. When too many cards fly at once, the extra ones aren't shown, along with those mods' visual changes to them. The game itself isn't changed.";
+
+    public const string KeptFlashText = "Still on with {mods}. When a relic triggers many times at once, a single flash is shown, without the visual changes those mods make to it. The game itself isn't changed.";
+
+    public const string KeptSortText = "Still on with {mods}. To sort the cards, each card's cost is read only once: those mods' code on costs runs less often, and the order is the same.";
+
+    public const string KeptNamesText = "Still on with {mods}. Their changes aimed at specific cards, relics or powers still apply to those, as in the normal game.";
+
+    public const string KeptBridgesText = "Still on with {mods}. Their code on damage calculation changes nothing for the cards, relics and powers it doesn't target: those stay sped up.";
+
+    public const string KeptWalksText = "Still on with {mods}. Their additions to the lists of what reacts to an effect are worked out once per screen refresh instead of at every check. The result is the same.";
+
+    public const string KeptTipsText = "Still on with {mods}. When a creature's tooltips haven't changed, they aren't rebuilt and keep what those mods added.";
+
+    /// <summary>
+    /// The kept notes the menu has a sentence for (the owner-approved premises, DESIGN "Owner-approved premises"), by note key:
+    /// the translation key and the English text. Other kept notes are in bdopt why only (HookSkip's helper gates).
+    /// </summary>
+    private static readonly (string Note, string Key, string English)[] MenuKept =
+    {
+        ("flight_display", "kept_display", KeptText),
+        ("flash_display", "kept_flash", KeptFlashText),
+        ("tips_display", "kept_tips", KeptTipsText),
+        ("sort_cost", "kept_sort", KeptSortText),
+        ("name_gates", "kept_names", KeptNamesText),
+        ("identity_bridges", "kept_bridges", KeptBridgesText),
+        ("walk_reuse", "kept_walks", KeptWalksText),
+    };
+
+    /// <summary>
+    /// The menu's sentences for what this option keeps running next to other mods' patches on a stated premise
+    /// (<see cref="PatchSafety.Kept"/>: <see cref="MenuKept"/>), one per premise, or null. Not a back-off: no colour.
+    /// </summary>
+    public static string? Kept(Option option, string? language)
+    {
+        try
+        {
+            if (ModEntry.StartedOff || !Master || !option.Wanted)
+            {
+                return null;
+            }
+            HashSet<string> names = PatchNames(option).ToHashSet(StringComparer.Ordinal);
+            IReadOnlyList<PatchSafety.KeptNote> notes = PatchSafety.KeptNotes();
+            var sentences = new List<string>();
+            foreach ((string note, string key, string english) in MenuKept)
+            {
+                string[] mods = notes.Where(k => k.Key == note && names.Contains(k.Patch) && Running(k.Patch)).SelectMany(k => k.Mods)
+                    .Distinct().OrderBy(m => m, StringComparer.OrdinalIgnoreCase).ToArray();
+                if (mods.Length > 0)
+                {
+                    sentences.Add(Translations.Get(language, key, english).Replace("{mods}", string.Join(", ", mods)));
+                }
+            }
+            return sentences.Count == 0 ? null : string.Join("\n", sentences);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -503,9 +592,9 @@ public static class Settings
             "Faster card and UI refresh after every action in combat.",
             new[] { ListenerCache.Name }, on => ListenerCache.RefreshEnabled = on,
             () => NoneApplied(ListenerCache.Name, TextPoolReuse.Name, ThemeColorSkip.Name, DeckCountMemo.Name),
-            parts: new OptionPart[] { new(TextPoolReuse.Name), new(ThemeColorSkip.Name), new(DeckCountMemo.Name), new(ListenerCache.ReuseFault), new(ExtraScopes.Name), new(ExtraScopes.Name + ".BetterSpire2") },
+            parts: new OptionPart[] { new(TextPoolReuse.Name), new(ThemeColorSkip.Name), new(DeckCountMemo.Name), new(ListenerCache.ReuseFault), new(ListenerCache.WalkReuseName), new(ExtraScopes.Name), new(ExtraScopes.Name + ".BetterSpire2") },
             // ExtraScopes reads its own two fault names itself (a scope stays off once faulted): one switch for both.
-            setParts: on => { Flag(() => TextPoolReuse.Enabled = Part(on, TextPoolReuse.Name)); Flag(() => ThemeColorSkip.Enabled = Part(on, ThemeColorSkip.Name)); Flag(() => DeckCountMemo.Enabled = Part(on, DeckCountMemo.Name)); Flag(() => ExtraScopes.Enabled = on); }),
+            setParts: on => { Flag(() => TextPoolReuse.Enabled = Part(on, TextPoolReuse.Name)); Flag(() => ThemeColorSkip.Enabled = Part(on, ThemeColorSkip.Name)); Flag(() => DeckCountMemo.Enabled = Part(on, DeckCountMemo.Name)); Flag(() => ListenerCache.WalkReuseEnabled = Part(on, ListenerCache.WalkReuseName)); Flag(() => ExtraScopes.Enabled = on); }),
         new("hook_filter", "Skip empty hooks",
             "Inside the two optimizations above, only asks the cards and relics that actually react to each check.",
             new[] { HookFilter.Name }, on => HookFilter.Enabled = on),

@@ -1,0 +1,57 @@
+# CardFlightLimit next to another mod's code in the combat-end check a soul's swoosh makes (A/B, mod on; DESIGN "Re-audit round 2
+# of 2026-11-17", A4): a counting postfix on Hook.ShouldStopCombatFromEnding, the listener walk CombatManager.IsEnding makes when
+# no primary enemy is alive (BaseLib's combat hook subscription, when loaded, is such code too). (1) Mid-combat (a primary enemy
+# alive: the walk can't run) souls are still skipped and none is kept for the check. (2) With STOCK_POWER on the player (its
+# ShouldStopCombatFromEnding keeps the combat going) and every enemy killed, the walk runs at each swoosh: no soul is skipped
+# (KeptAtCombatEnd grows), so the postfix sees the same calls as mod off (STATE lines, compared with foreign-flights-end-2k-off).
+timeout 1200
+expect EFFECTCHECK CardFlightLimit grew since 'mid': [0-9]+ -> [1-9]
+expect EFFECTCHECK CardFlightLimit\.KeptAtCombatEnd same since 'mid'
+expect EFFECTCHECK CardFlightLimit same since 'ending'
+expect EFFECTCHECK CardFlightLimit\.KeptAtCombatEnd grew since 'ending': [0-9]+ -> [1-9]
+expect STATE foreign ending count-postfix Hook\.ShouldStopCombatFromEnding [1-9]
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+enemyhp 999999
+speed fast
+immortal
+foreignpatch count-postfix MegaCrit.Sts2.Core.Hooks.Hook::ShouldStopCombatFromEnding(ICombatState)
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+effects mid
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+wait 6
+effects mid end
+effectcheck CardFlightLimit grew mid
+effectcheck CardFlightLimit.KeptAtCombatEnd same mid
+checksum mid
+state mid
+foreignpatch report mid
+cmd power STOCK_POWER 1 0
+wait 1
+cmd kill all
+waitfor idle 300
+wait 2
+effects ending
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+wait 6
+effects ending end
+effectcheck CardFlightLimit same ending
+effectcheck CardFlightLimit.KeptAtCombatEnd grew ending
+checksum ending
+state ending
+foreignpatch report ending
+cmd bdopt why
+foreignpatch remove
+quit

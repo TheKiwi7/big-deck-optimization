@@ -5,13 +5,13 @@
 # (skills free) added, cards drawn and played between, then the next turn. The last line fails the session on any difference;
 # EFFECT SnapshotCardReuse.Hooks shows piles were kept with listeners active.
 expect SnapshotVerifier: (optimized snapshot differs from vanilla|line \d+: optimized)
-expect verified \d+, mismatches [1-9]
+# SnapshotVerifier's own count (bdperf verify: 'snapshots n, verified n, mismatches n'; its failed check), not a COUNTERS part's.
+expect (snapshots \d+, |the command failed: )verified \d+, mismatches [1-9]
 timeout 600
 newrun NECROBINDER 1234
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 cmd bdperf checks off
 cmd bdperf probe off
 cmd bdperf segments verify off
@@ -57,5 +57,7 @@ checksum next turn
 checksum next turn again
 effects end
 cmd bdperf verify
+# Fails on purpose (expected): the quit after it still runs.
+onfail continue
 cmd bdperf verify check
 quit

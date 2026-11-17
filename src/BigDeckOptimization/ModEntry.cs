@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using BigDeckOptimization.Patches;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Logging;
@@ -225,7 +226,8 @@ public static class ModEntry
     /// settings menu registered in BaseLib: it loaded that saved choice and saves the one that turns the mod back on. A
     /// saved "off" the menu can't load or change (BaseLib failed, a BaseLib update the menu can't run with) is not
     /// honoured: the mod could never be turned back on but by editing the file. Decided at the first patch, once every mod
-    /// has loaded (BaseLib may come after this mod); false until then.
+    /// has loaded (BaseLib may come after this mod); false until then. Also true in a Debug build launched with
+    /// <c>--bdvanilla</c> (the test tooling's vanilla reference sessions, never saved).
     /// </summary>
     public static bool StartedOff { get; private set; }
 
@@ -249,6 +251,24 @@ public static class ModEntry
             StartedOff = false;
             Log.Warn($"[{Id}] Could not read the saved on/off setting (mod on): {e.Message}");
         }
+#if BENCH
+        // Test tooling, --bdvanilla (parlib.ps1's mod-off sessions): this session starts as a player's started with the mod off
+        // (nothing applied but the test tooling and the co-op check), whatever the settings say. Read from the launch arguments
+        // only: never saved, and Rewritten stays OwnIntegrity's alone.
+        try
+        {
+            if (Godot.OS.GetCmdlineArgs().Concat(Godot.OS.GetCmdlineUserArgs()).Contains(VanillaArg))
+            {
+                LaunchedVanilla = true;
+                StartedOff = true;
+                Log.Info($"[{Id}] {VanillaLine}");
+            }
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"[{Id}] {VanillaArg}: launch arguments not read: {e.Message}");
+        }
+#endif
         try
         {
             // Another mod may have loaded a rewritten copy of this DLL (OwnIntegrity): none of it is trusted then.
@@ -265,9 +285,33 @@ public static class ModEntry
         }
         Log.Info($"[{Id}] Initialized v{typeof(ModEntry).Assembly.GetName().Version?.ToString(3)} in {_initMs:F0} ms"
             + (Rewritten != null ? ": loaded rewritten by another mod, nothing applied but the co-op check (CoopModeTag)"
+                : VanillaWhy != null ? $": {VanillaWhy}, nothing applied but the test tooling and the co-op check (CoopModeTag)"
                 : StartedOff ? ": turned off in the settings, nothing applied but the co-op check (CoopModeTag; turn it on, then restart the game)" : ""));
         LogLookups();
     }
+
+#if BENCH
+    /// <summary>
+    /// The test tooling's launch argument for a vanilla reference session: <see cref="StartedOff"/> true from the start, as a
+    /// player's session started with the mod off, so no optimization patch is installed (only the test tooling and
+    /// <see cref="CoopModeTag"/>). parlib.ps1 launches a solo mod-off scenario with it; vanillacheck.ps1 compares such a session
+    /// with one where every patch is installed and <c>bdopt off</c> turns them off.
+    /// </summary>
+    internal const string VanillaArg = "--bdvanilla";
+
+    /// <summary>The log line saying so (judge.py keys the mod off from the start on it, parlib.ps1 requires it).</summary>
+    internal const string VanillaLine = "BDVANILLA: launched with " + VanillaArg + " (test tooling): a vanilla reference session, the mod off from its start as a player's saved off would leave it, for this session only (never saved): no optimization patch applied";
+
+    /// <summary>Launched with <see cref="VanillaArg"/>: this session is a vanilla reference.</summary>
+    internal static bool LaunchedVanilla { get; private set; }
+#endif
+
+    /// <summary>Why nothing is applied in a vanilla reference session (<c>--bdvanilla</c>, test tooling only); null otherwise, always in a Release build.</summary>
+#if BENCH
+    private static string? VanillaWhy => LaunchedVanilla ? $"started off by {VanillaArg} (test tooling)" : null;
+#else
+    private static string? VanillaWhy => null;
+#endif
 
     /// <summary>
     /// Why this mod's own code isn't the shipped one (<see cref="OwnIntegrity"/>), or null: then <see cref="StartedOff"/> is
@@ -316,7 +360,7 @@ public static class ModEntry
         if (StartedOff && !testTooling && patchClass != typeof(CoopModeTag))
         {
             _notApplied.Add(name);
-            Log.Info($"[{Id}] Patch {name} not applied: the mod was turned off when the game started");
+            Log.Info($"[{Id}] Patch {name} not applied: " + (VanillaWhy ?? "the mod was turned off when the game started"));
             return;
         }
         long start = System.Diagnostics.Stopwatch.GetTimestamp();

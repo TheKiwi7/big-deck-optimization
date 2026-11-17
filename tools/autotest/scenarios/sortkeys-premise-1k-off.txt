@@ -1,0 +1,47 @@
+# CardSortKeys under the sort-cost premise (A/B, mod off): the same synthetic patches as sortkeys-premise-1k-on (see there);
+# CHECKSUM and STATE lines must match line for line (the FOREIGN display counts differ by design: not compared).
+requiregame v0.113
+timeout 900
+cmd bdopt off
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+cmd bdperf checks off
+foreignpatch identity-transpiler MegaCrit.Sts2.Core.Entities.Cards.CardEnergyCost:GetWithModifiers
+foreignpatch energy-cost-postfix MegaCrit.Sts2.Core.Entities.Cards.CardEnergyCost:GetWithModifiers
+foreignpatch display-count-prefix MegaCrit.Sts2.Core.Models.CardModel:get_Pile
+foreignpatch bool-prefix MegaCrit.Sts2.Core.Hooks.Hook:ModifyEnergyCostInCombat
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+state start
+play 3
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+pilemove draw discard 2
+wait 1
+checksum moved
+endturn
+waitfor idle 300
+checksum reshuffle
+state reshuffle
+play 3
+waitfor idle 120
+checksum t3 plays
+state t3
+cmd kill all
+waitfor nocombat 300
+wait 2
+checksum after combat
+state after combat
+foreignpatch report end
+foreignpatch remove
+cmd bdopt on
+quit

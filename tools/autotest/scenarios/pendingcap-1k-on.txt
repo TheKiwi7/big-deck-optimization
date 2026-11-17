@@ -1,0 +1,40 @@
+# CardDbScan's pending-add overflow (on; with pendingcap-1k-off), ~935 cards: bdperf pendingcap 4 lowers the per-pile limit
+# (256: only 8,400-card reshuffles reached it, on one game version) so the silent adds of pilemove and of the reshuffle after it
+# overflow it: that pile's next walk runs vanilla, then its tracking starts again from the pile. 'bdperf pendingcap' (no number)
+# fails unless an overflow happened, effectcheck that walks were still skipped after it. Also bdperf cardids failadd: an add
+# the game refuses (a canonical card) must leave no card pending (CardDbScan's AfterAdd). CHECKSUM and STATE lines (STATE ...:
+# cardids, the network ids) must match the off twin line for line.
+timeout 900
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf pendingcap 4
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+cmd bdperf cardids failadd
+pilemove draw discard 2
+wait 1
+effects moved
+checksum moved
+endturn
+waitfor idle 300
+checksum reshuffle
+state reshuffle
+play 3
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+cmd bdperf pendingcap
+effectcheck CardDbScan grew moved
+cmd kill all
+waitfor nocombat 300
+wait 2
+checksum after combat
+quit

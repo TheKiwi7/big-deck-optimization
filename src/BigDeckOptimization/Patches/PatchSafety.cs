@@ -439,6 +439,63 @@ public static partial class PatchSafety
         }
     }
 
+    /// <summary>
+    /// For a call site whose tolerance on a method changes over time (HookSkip's hook methods: TranspiledOnly while this mod's
+    /// own patches there are only those rule A allows, SurroundingOnly otherwise): forgets <paramref name="patch"/>'s back-off
+    /// recorded on <paramref name="method"/> under any of <paramref name="tolerances"/> other than <paramref name="current"/>, so
+    /// the display shows only the answer under the tolerance in force. Never throws.
+    /// </summary>
+    internal static void ForgetOtherTolerances(string patch, MethodBase? method, PatchTolerance current, params PatchTolerance[] tolerances)
+    {
+        try
+        {
+            if (method == null)
+            {
+                return;
+            }
+            bool forgot = false;
+            foreach (PatchTolerance tolerance in tolerances)
+            {
+                if (tolerance != current)
+                {
+                    forgot |= _conflicts.TryRemove((patch, method, tolerance), out _);
+                }
+            }
+            // A cached answer under the other tolerance is recorded again if that tolerance comes back (not skipped as known).
+            foreach ((string Caller, MethodBase Method, PatchTolerance Tolerance) key in _recordedFrom.Keys)
+            {
+                if (key.Method == method && key.Tolerance != current && Array.IndexOf(tolerances, key.Tolerance) >= 0 && PatchName(key.Caller) == patch)
+                {
+                    _recordedFrom.TryRemove(key, out _);
+                }
+            }
+            // C5 nit (re-audit round 2): the patches let stand under the other tolerance too (their log line and ToleratedReport),
+            // logged again if that tolerance comes back.
+            foreach ((string Caller, MethodBase Method, PatchTolerance Tolerance) key in _toleratedFrom.Keys)
+            {
+                if (key.Method == method && key.Tolerance != current && Array.IndexOf(tolerances, key.Tolerance) >= 0 && PatchName(key.Caller) == patch)
+                {
+                    _toleratedFrom.TryRemove(key, out _);
+                }
+            }
+            foreach ((string Patch, MethodBase Method, PatchTolerance Tolerance) key in _toleratedLogged.Keys)
+            {
+                if (key.Method == method && key.Patch == patch && key.Tolerance != current && Array.IndexOf(tolerances, key.Tolerance) >= 0)
+                {
+                    forgot |= _toleratedLogged.TryRemove(key, out _);
+                }
+            }
+            if (forgot)
+            {
+                Config.Settings.NotifyStatesChanged();
+            }
+        }
+        catch
+        {
+            // Display only.
+        }
+    }
+
     private static void Record(string caller, MethodBase method, string[] mods, PatchTolerance tolerance = PatchTolerance.None)
     {
         string patch = PatchName(caller);

@@ -1,12 +1,11 @@
 # Limitless's inner card rebuilt at each clone against the kept result for its content: every answer compared byte for byte
-# (bdperf clonememo verify 1), over three combats at ~1,900 cards. Pass: verified about as many as cards with stacked enchantments,
+# (bdperf clonememo verify 1), over three combats at ~945 cards. Pass: verified about as many as cards with stacked enchantments,
 # enabled True (a difference turns it off). Each `bdperf clonememo` report fails with verified 0 (the part never ran).
 timeout 600
 newrun NECROBINDER 1234
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 cmd bdperf clonememo verify 1
 cmd bdperf checks off
 enemyhp 999999

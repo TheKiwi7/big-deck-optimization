@@ -34,8 +34,20 @@ namespace BigDeckOptimization.Patches;
 /// (<see cref="SnapshotCardReuse.PureHooks"/>; a card in no combat pile runs no cost hook). One of those, Veilpiercer, reads
 /// <c>card.Keywords</c>, which runs the keyword hook: while one stands, every keyword listener must be one known to only add
 /// to the set it is given (<see cref="KeywordAdders"/>). Otherwise, and when another mod
-/// patches what this reproduces or skips, the game's comparison runs. One answer in <see cref="VerifyEvery"/> is compared
-/// with the game's; a difference turns this off for the session.
+/// patches what this reproduces or skips, the game's comparison runs. The first answer of each sort and one in
+/// <see cref="VerifyEvery"/> after it are compared with the game's (a schedule of the sort alone, the same on every co-op peer);
+/// a difference turns this off for the session.
+///
+/// The sort-cost premise (owner-approved 2026-11-17; DESIGN "Owner-approved premises"): other mods' patches on the cost chain a
+/// sort reads once per card (<see cref="_costChain"/>: <c>CardModel.EnergyCost</c>, <c>CardEnergyCost.GetResolved</c> and
+/// <c>GetWithModifiers</c>, <c>LocalCostModifier.Modify</c>, <c>Hook.ModifyEnergyCostInCombat</c>, <c>CardModel.Pile</c>) don't
+/// change, inside one synchronous <c>List.Sort</c>, what any card's cost reads: the game's own sort already needs a consistent
+/// comparer (an inconsistent one throws or scrambles the order in the game too). With the premise the sort is answered while they
+/// carry patches: the cost is still read live, through the patched methods, once per card instead of once per comparison (their
+/// code runs fewer times: the premise). Strict still: the comparison itself and what it mirrors (<c>CompareTo</c>, its base,
+/// <c>ModelId.Compare</c>, <c>StableShuffle</c>, the dynamic variables and their keys), the cost hook defaults (type-gated as
+/// before), the listeners' own cost and keyword hooks, the combat hook walk, the keyword reads, the 1-in-<see cref="VerifyEvery"/>
+/// check, and the cost chain too with <see cref="PatchSafety.ShapeRules"/> off.
 /// </summary>
 public static class CardSortKeys
 {
@@ -59,6 +71,33 @@ public static class CardSortKeys
     private const string KeysGetterFingerprint = "E7FAD3B477754438";
     /// <summary><c>CardModel.Pile</c>: <c>GetWithModifiers</c> reads it through <c>CombatState</c>, Free*Power and Veilpiercer directly.</summary>
     private const string PileGetterFingerprint = "6A1FE5E50F9ECAC2";
+    /// <summary>
+    /// <c>CardModel.CombatState</c> (<c>_owner?.Creature.CombatState</c> when the card is in a combat pile or a combat upgrade
+    /// preview), <c>Player.Creature</c> and <c>Creature.CombatState</c> (auto-properties), v0.113.0 and v0.113.1: <see cref="Open"/>
+    /// reads a card's possible combat from their fields (no getter runs: <see cref="OwnerCombat"/>), so they are strict.
+    /// </summary>
+    private const string CardCombatStateFingerprint = "19AC49F43ACE99F6";
+    private const string PlayerCreatureFingerprint = "0D20F8EB8EC69AA5";
+    private const string CreatureCombatStateFingerprint = "18BE5475C459C82D";
+    /// <summary>
+    /// What <c>CardModel.CombatState</c>'s condition reads besides <c>Pile</c> (R3-2, re-audit round 3): <c>Player.Piles</c> (the
+    /// combat piles, <c>PlayerCombatState.AllPiles</c>, then the deck), <c>Player.PlayerCombatState</c>, the five combat piles'
+    /// auto-properties, <c>CardPile.Cards</c> and <c>CardModel.UpgradePreviewType</c> (fields only), v0.113.0 and v0.113.1:
+    /// <see cref="CombatCards"/> reads their fields.
+    /// </summary>
+    private static readonly (Type Type, string Method, string Fingerprint)[] CombatPileReads =
+    {
+        (typeof(MegaCrit.Sts2.Core.Entities.Players.Player), "get_Piles", "1C4E1C85C62DCE1D"),
+        (typeof(MegaCrit.Sts2.Core.Entities.Players.Player), "get_PlayerCombatState", "623F1DCA6A9A8525"),
+        (typeof(MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState), "get_AllPiles", "33A5BD7841727ED1"),
+        (typeof(MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState), "get_Hand", "9A6C1733E99E2BEA"),
+        (typeof(MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState), "get_DrawPile", "8D3988B953E56D8A"),
+        (typeof(MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState), "get_DiscardPile", "9DBBDBB42097CE6A"),
+        (typeof(MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState), "get_ExhaustPile", "BAF15021F0BD94D4"),
+        (typeof(MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState), "get_PlayPile", "B5E74B72AFB4C262"),
+        (typeof(CardPile), "get_Cards", "C74105B9A028C09A"),
+        (typeof(CardModel), "get_UpgradePreviewType", "0C0AF21DECE63325"),
+    };
     /// <summary>What <c>card.Keywords</c> runs (<see cref="KeywordReaders"/>), the same on v0.107.1 to v0.113.1.</summary>
     private const string KeywordsGetterFingerprint = "51B4751CE85A8DA1";
     private const string KeywordsWithSourcesFingerprint = "0F51A275B1583E96";
@@ -140,14 +179,38 @@ public static class CardSortKeys
     internal static int VerifyEvery { get; set; } = 1024;
 #endif
 
-    private static int _untilCheck = 1;
     private static bool _verifying;
     private static int _mainThread = -1;
 
     private static Func<ModelId?, ModelId?, int>? _modelIdCompare;
+    private static AccessTools.FieldRef<CardModel, MegaCrit.Sts2.Core.Entities.Players.Player?>? _cardOwner;
+    private static AccessTools.FieldRef<MegaCrit.Sts2.Core.Entities.Players.Player, MegaCrit.Sts2.Core.Entities.Creatures.Creature?>? _playerCreature;
+    private static AccessTools.FieldRef<MegaCrit.Sts2.Core.Entities.Creatures.Creature, ICombatState?>? _creatureCombat;
+
+    /// <summary>
+    /// R3-2: <see cref="CombatPileReads"/> are the known code and their fields were found: only cards that can be in a combat pile
+    /// (or a combat upgrade preview) have their owner's combat judged. False: every card's owner's combat is (A3's superset).
+    /// </summary>
+    private static bool _pilesKnown;
+    private static MethodBase[] _pileReads = Array.Empty<MethodBase>();
+    private static MethodBase? _pileGetter;
+    private static AccessTools.FieldRef<MegaCrit.Sts2.Core.Entities.Players.Player, MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState?>? _playerCombatState;
+    private static AccessTools.FieldRef<MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState, CardPile[]?>? _allPiles;
+    private static AccessTools.FieldRef<MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState, CardPile?>[] _pileFields = Array.Empty<AccessTools.FieldRef<MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState, CardPile?>>();
+    private static AccessTools.FieldRef<CardPile, List<CardModel>?>? _pileCards;
+    private static AccessTools.FieldRef<CardModel, CardUpgradePreviewType>? _upgradePreview;
     private static MethodInfo? _inScope;
     /// <summary>What a sort answered here reproduces or skips calling: another mod's patch on one leaves the sort to the game.</summary>
     private static MethodBase?[] _watched = Array.Empty<MethodBase?>();
+
+    /// <summary>
+    /// The cost chain a sort reads live once per card (<see cref="Cost"/>): strict with the shape rules off, under the sort-cost
+    /// premise with them (another mod's patch there runs once per card instead of once per comparison).
+    /// </summary>
+    private static MethodBase?[] _costChain = Array.Empty<MethodBase?>();
+
+    /// <summary>The methods checked strictly now: <see cref="_watched"/>, and the cost chain with the shape rules off.</summary>
+    private static MethodBase?[] Strict() => PatchSafety.ShapeRules ? _watched : _watched.Concat(_costChain).ToArray();
 
     /// <summary>
     /// The cost hooks' AbstractModel defaults: a sort runs the cost hook once per card instead of once per comparison, so a patch
@@ -197,13 +260,38 @@ public static class CardSortKeys
         MethodInfo dynamicVars = Require(Reflect.PropertyGetter(typeof(CardModel), nameof(CardModel.DynamicVars)), DynamicVarsGetterFingerprint, "CardModel.DynamicVars");
         MethodInfo keys = Require(Reflect.PropertyGetter(typeof(DynamicVarSet), nameof(DynamicVarSet.Keys)), KeysGetterFingerprint, "DynamicVarSet.Keys");
         MethodInfo pile = Require(Reflect.PropertyGetter(typeof(CardModel), nameof(CardModel.Pile)), PileGetterFingerprint, "CardModel.Pile");
+        MethodInfo cardCombat = Require(Reflect.PropertyGetter(typeof(CardModel), nameof(CardModel.CombatState)), CardCombatStateFingerprint, "CardModel.CombatState");
+        MethodInfo playerCreature = Require(Reflect.PropertyGetter(typeof(MegaCrit.Sts2.Core.Entities.Players.Player), "Creature"), PlayerCreatureFingerprint, "Player.Creature");
+        MethodInfo creatureCombat = Require(Reflect.PropertyGetter(typeof(MegaCrit.Sts2.Core.Entities.Creatures.Creature), "CombatState"), CreatureCombatStateFingerprint, "Creature.CombatState");
+        _cardOwner = Reflect.FieldRefAccess<CardModel, MegaCrit.Sts2.Core.Entities.Players.Player?>("_owner");
+        _playerCreature = Reflect.FieldRefAccess<MegaCrit.Sts2.Core.Entities.Players.Player, MegaCrit.Sts2.Core.Entities.Creatures.Creature?>("<Creature>k__BackingField");
+        _creatureCombat = Reflect.FieldRefAccess<MegaCrit.Sts2.Core.Entities.Creatures.Creature, ICombatState?>("<CombatState>k__BackingField");
         _modelIdCompare = (Func<ModelId?, ModelId?, int>)Delegate.CreateDelegate(typeof(Func<ModelId?, ModelId?, int>), modelIdCompare);
+        _pileGetter = pile;
+        try
+        {
+            _pileReads = CombatPileReads.Select(r => (MethodBase)Require(Reflect.DeclaredMethod(r.Type, r.Method, Type.EmptyTypes), r.Fingerprint, r.Type.Name + "." + r.Method)).ToArray();
+            _playerCombatState = Reflect.FieldRefAccess<MegaCrit.Sts2.Core.Entities.Players.Player, MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState?>("<PlayerCombatState>k__BackingField");
+            _allPiles = Reflect.FieldRefAccess<MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState, CardPile[]?>("_piles");
+            _pileFields = new[] { "Hand", "DrawPile", "DiscardPile", "ExhaustPile", "PlayPile" }
+                .Select(n => Reflect.FieldRefAccess<MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState, CardPile?>("<" + n + ">k__BackingField")).ToArray();
+            _pileCards = Reflect.FieldRefAccess<CardPile, List<CardModel>?>("_cards");
+            _upgradePreview = Reflect.FieldRefAccess<CardModel, CardUpgradePreviewType>("_upgradePreviewType");
+            _pilesKnown = true;
+        }
+        catch (Exception e)
+        {
+            _pilesKnown = false;
+            Log.Info($"[{ModEntry.Id}] {Name}: combat pile reads changed ({e.Message}): every card's owner's combat is judged");
+        }
         _inScope = Reflect.Method(typeof(CardSortKeys), nameof(StableShuffleInScope));
         _watched = new MethodBase?[]
         {
-            compareTo, baseCompareTo, modelIdCompare, shuffle, shuffle.MakeGenericMethod(typeof(CardModel)), getResolved, withModifiers,
-            localModify, costHook, energyCost, dynamicVars, keys, pile,
+            compareTo, baseCompareTo, modelIdCompare, shuffle, shuffle.MakeGenericMethod(typeof(CardModel)), dynamicVars, keys,
+            // Bypassed by OwnerCombat's field reads: a patch there could make the cost hook walk another combat than the one judged.
+            cardCombat, playerCreature, creatureCombat,
         };
+        _costChain = new MethodBase?[] { energyCost, getResolved, withModifiers, localModify, costHook, pile };
         _costDefaults = new MethodBase?[] { costDefault, costLateDefault };
         try
         {
@@ -255,11 +343,42 @@ public static class CardSortKeys
         // hooks of the combat's listener types (ImpureCostListener) depend on who is in the combat: those of the types met so
         // far are asked again at each preflight. The keyword reads (_keywordWatched) only matter in a combat where a cost hook
         // reads keywords (Veilpiercer): not known at the menu, so they show when such a sort checks them.
-        PatchSafety.Watch(Name, _watched);
+        PatchSafety.Watch(Name, Strict());
         PatchSafety.Watch(Name, _costDefaults, PatchTolerance.TypeGated);
         PatchSafety.WatchAll(Name, HookFilter.CombatHookWalkParts);
         PatchSafety.WatchAll(Name, MetCostHooks);
         PatchSafety.WatchNote(Name, NoteModTypes);
+        PatchSafety.WatchNote(Name, NoteCostChain);
+    }
+
+    /// <summary>
+    /// The kept note of the sort-cost premise: which other mods' patches (or hidden IL hooks) on the cost chain a sort reads once
+    /// per card instead of once per comparison. Cleared with the shape rules off, when there is none, and while a strict method of
+    /// every sort backs off (no sort is answered then: the back-off shows instead).
+    /// </summary>
+    private static void NoteCostChain()
+    {
+        var patched = new List<MethodBase>();
+        // Only while sorts can be answered (G, re-audit of the premises): not once faulted, nor before it applied (with the mod off:
+        // shown as what would run once on, as before).
+        if (PatchSafety.ShapeRules && Applied && !PatchSafety.IsFaulted(Name) && !_watched.Any(PatchSafety.HasOtherPatches))
+        {
+            patched.AddRange(_costChain.OfType<MethodBase>().Where(PatchSafety.HasOtherPatches));
+        }
+        if (patched.Count == 0)
+        {
+            PatchSafety.ClearKept(Name, "sort_cost");
+            return;
+        }
+        var mods = new List<string>(PatchSafety.OtherModsPatching(patched));
+        foreach (MethodBase method in patched)
+        {
+            mods.AddRange(HarmonyWatch.HiddenOwners(method));
+        }
+        string names = string.Join(", ", patched.Select(m => $"{m.DeclaringType?.Name}.{m.Name}").Distinct());
+        PatchSafety.Kept(Name, "sort_cost", $"other mods' code on a card's cost ({names}) runs once per card in a reshuffle's sort instead of "
+            + "once per comparison: taken as harmless (a stated premise: inside one sort it doesn't change any card's cost, as the game's "
+            + $"own sort needs; each sort's first answer and one in {VerifyEvery:N0} after it are still compared with the game's)", mods.ToArray());
     }
 
     private static MethodInfo Require(MethodInfo? method, string fingerprint, string what)
@@ -351,6 +470,23 @@ public static class CardSortKeys
         return scope != null;
     }
 
+    /// <summary>Bench: the first impure cost listener of a combat (what a sort judging it would refuse for), or null.</summary>
+    internal static string? ImpureCostListenerForTest(ICombatState combat) => ImpureCostListener(combat, null, out _);
+
+    /// <summary>
+    /// For the bench: why R3-2's narrow judgment is off now (every card's owner's combat judged), or null when it is on. Another
+    /// mod's patch on one of the reads (BaseLib's transpiler on <c>PlayerCombatState.AllPiles</c>) turns it off.
+    /// </summary>
+    internal static string? NarrowOffForTest()
+    {
+        if (!_pilesKnown)
+        {
+            return "combat pile reads changed";
+        }
+        MethodBase? patched = PatchSafety.HasOtherPatches(_pileGetter) ? _pileGetter : _pileReads.FirstOrDefault(PatchSafety.HasOtherPatches);
+        return patched == null ? null : $"another mod patches {patched.DeclaringType?.Name}.{patched.Name}";
+    }
+
     /// <summary>Bench: the counters as they were, so a bench's sorts don't count as the game's (effects).</summary>
     internal static void RestoreCounters(long sorts, long answered)
     {
@@ -371,10 +507,21 @@ public static class CardSortKeys
         {
             foreach (MethodBase? method in _watched)
             {
-                // No tolerance: the comparison, its keys and the cost are computed here once per card instead of per comparison.
+                // No tolerance: the comparison and its keys are computed here once per card instead of per comparison.
                 if (PatchSafety.IsPatchedByOthers(method))
                 {
                     return Refuse($"another mod patches {method?.DeclaringType?.Name}.{method?.Name}");
+                }
+            }
+            if (!PatchSafety.ShapeRules)
+            {
+                foreach (MethodBase? method in _costChain)
+                {
+                    // As before the sort-cost premise: the cost read once per card, no tolerance.
+                    if (PatchSafety.IsPatchedByOthers(method))
+                    {
+                        return Refuse($"another mod patches {method?.DeclaringType?.Name}.{method?.Name}");
+                    }
                 }
             }
             Type[]? costGates = null;
@@ -392,6 +539,10 @@ public static class CardSortKeys
             Dictionary<CardModel, Entry> cards = new(list.Count, ReferenceEqualityComparer.Instance);
             List<ICombatState>? combats = null;
             ICombatState? last = null;
+            // R3-2: a card's combat is judged only when it can be in a combat pile or a combat preview (no other mod's code on the
+            // reads CardModel.CombatState makes, CardModel.Pile included: else every card's, A3's superset).
+            bool narrow = _pilesKnown && !PatchSafety.HasOtherPatches(_pileGetter) && !_pileReads.Any(PatchSafety.HasOtherPatches);
+            Dictionary<MegaCrit.Sts2.Core.Entities.Players.Player, HashSet<CardModel>>? combatCards = null;
             foreach (CardModel card in list)
             {
                 if (card == null || !cards.TryAdd(card, default))
@@ -402,16 +553,20 @@ public static class CardSortKeys
                 {
                     return Refuse($"{card.GetType().Name} compares itself");
                 }
-                // Its cost runs the cost hook only in a combat pile (GetWithModifiers: CombatState != null), that combat's listeners.
-                ICombatState? combat = card.CombatState;
-                if (combat != null && !ReferenceEquals(combat, last))
+                // Its cost runs the cost hook only in a combat pile (GetWithModifiers: CombatState != null), that combat's listeners:
+                // its owner's combat, read from the fields (no getter, so no other mod's code on CardModel.Pile runs here, for
+                // cards whose sort may never reach the cost; re-audit of the premises, A3). A card outside a combat pile whose owner
+                // is in combat adds that combat to the judged ones: more refusals, never fewer.
+                // R3-2 (re-audit round 3): only a card that can be in a combat pile or a combat upgrade preview (CombatCards: the
+                // owner's combat piles read from the fields) reaches the cost hook: a deck card sorted after a combat ended (WarHammer's
+                // AfterCombatVictory shuffle; Creature.CombatState still the ended combat's) has no combat to judge, as before A3.
+                ICombatState? combat = OwnerCombat(card);
+                if (combat != null && !ReferenceEquals(combat, last) && (combats == null || !combats.Any(c => ReferenceEquals(c, combat)))
+                    && (!narrow || InCombat(card, ref combatCards)))
                 {
                     last = combat;
                     combats ??= new List<ICombatState>();
-                    if (!combats.Any(c => ReferenceEquals(c, combat)))
-                    {
-                        combats.Add(combat);
-                    }
+                    combats.Add(combat);
                 }
             }
             if (combats != null)
@@ -438,6 +593,65 @@ public static class CardSortKeys
             Disable(e);
             return null;
         }
+    }
+
+    /// <summary>
+    /// <c>_owner?.Creature?.CombatState</c> from the fields: a superset of <c>card.CombatState</c> (that one is the same object
+    /// when the card is in a combat pile or a combat upgrade preview, null otherwise), no game or mod code run.
+    /// </summary>
+    private static ICombatState? OwnerCombat(CardModel card)
+    {
+        MegaCrit.Sts2.Core.Entities.Players.Player? owner = _cardOwner!(card);
+        if (owner == null)
+        {
+            return null;
+        }
+        MegaCrit.Sts2.Core.Entities.Creatures.Creature? creature = _playerCreature!(owner);
+        return creature == null ? null : _creatureCombat!(creature);
+    }
+
+    /// <summary>
+    /// Whether <c>card.CombatState</c> may be its owner's combat (R3-2): the card in a combat upgrade preview, or in one of its
+    /// owner's combat piles (<c>Player.Piles</c> is the combat piles, then the deck: <c>Pile</c>, the first pile holding it, is a
+    /// combat pile only when one holds it). A superset, from the fields (no game or mod code), the owner's piles read once a sort.
+    /// </summary>
+    private static bool InCombat(CardModel card, ref Dictionary<MegaCrit.Sts2.Core.Entities.Players.Player, HashSet<CardModel>>? combatCards)
+    {
+        if (_upgradePreview!(card) == CardUpgradePreviewType.Combat)
+        {
+            return true;
+        }
+        MegaCrit.Sts2.Core.Entities.Players.Player? owner = _cardOwner!(card);
+        if (owner == null)
+        {
+            return false;
+        }
+        combatCards ??= new Dictionary<MegaCrit.Sts2.Core.Entities.Players.Player, HashSet<CardModel>>(ReferenceEqualityComparer.Instance);
+        if (!combatCards.TryGetValue(owner, out HashSet<CardModel>? set))
+        {
+            set = CombatCards(owner);
+            combatCards[owner] = set;
+        }
+        return set.Contains(card);
+    }
+
+    /// <summary>The cards of the owner's combat piles (<c>PlayerCombatState.AllPiles</c> as its getter builds it), from the fields.</summary>
+    private static HashSet<CardModel> CombatCards(MegaCrit.Sts2.Core.Entities.Players.Player owner)
+    {
+        var set = new HashSet<CardModel>(ReferenceEqualityComparer.Instance);
+        if (_playerCombatState!(owner) is not { } combat)
+        {
+            return set;
+        }
+        IEnumerable<CardPile?> piles = _allPiles!(combat) ?? _pileFields.Select(f => f(combat));
+        foreach (CardPile? pile in piles)
+        {
+            if (pile != null && _pileCards!(pile) is { } list)
+            {
+                set.UnionWith(list);
+            }
+        }
+        return set;
     }
 
     private static Scope? Refuse(string why, bool keywordListener = false)
@@ -686,11 +900,14 @@ public static class CardSortKeys
                 result = -result;
             }
 #endif
-            scope.Answered++;
             Answered++;
-            if (--_untilCheck <= 0)
+            // The check schedule is the sort's own (re-audit of the premises, A2): the first answer of each sort and every
+            // VerifyEvery-th after it. A sort is a synchronized game action (the same list, the same comparisons on every peer),
+            // so every peer answering it checks the same comparisons and reaches the same verdict at the same one: a process-wide
+            // counter (as before) checked different comparisons per peer, and a difference found by one peer only would have
+            // turned it to the game's order alone.
+            if (scope.Answered++ % VerifyEvery == 0)
             {
-                _untilCheck = VerifyEvery;
                 result = Verify(__instance, __0, result);
             }
             __result = result;

@@ -1,0 +1,50 @@
+# Positive control: LimitlessCloneMemo's compare of a kept inner card (bdperf clonememo verify 1: every answer). Armed at the combat start (bdperf clonememo wrong): the next pass through that check
+# sees a wrong answer, and must find it and take its fallback, which gives the game's own result: CHECKSUM and STATE lines
+# (cardids included) must match wrong-1k-off line for line. ~945 cards; SnapshotVerifier off (bdperf verify off) so that
+# this net, not the verifier, is the one that sees it. bdperf wrong check fails if the injection was never taken.
+# compare-with: wrong-1k-off
+expect LimitlessCloneMemo disabled, inner cards rebuilt at every clone as Limitless does: a kept inner card differs from a rebuilt one
+timeout 900
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf verify off
+enemyhp 999999
+# Armed before the fight: inner cards are cloned at the combat start (every one checked: verify 1), seldom after.
+cmd bdperf clonememo verify 1
+cmd bdperf clonememo wrong
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+state start
+play 3
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 3
+waitfor idle 120
+checksum t2 plays
+pilemove draw discard 2
+wait 1
+checksum moved
+endturn
+waitfor idle 300
+checksum reshuffle
+state reshuffle
+play 3
+waitfor idle 120
+checksum t3 plays
+state t3
+cmd kill all
+waitfor nocombat 300
+wait 2
+checksum after combat
+state after combat
+counters end
+cmd bdperf wrong check
+quit

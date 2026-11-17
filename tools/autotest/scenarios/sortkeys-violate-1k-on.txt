@@ -1,0 +1,36 @@
+# CardSortKeys' sort-cost premise, positive control (mod on; re-audit of the premises, F5; game v0.113+): a by-ref postfix of
+# "another mod" on CardEnergyCost.GetWithModifiers making every other read of any card's cost one more, so a card's cost changes
+# within one sort (the premise violated; the game's own sort is inconsistent then too). The sort's check (each sort's first answer
+# and one in 16 after it in test builds, the same comparisons on every co-op peer) must find an answer that differs from the
+# game's: the part turned off for the session (logged, mismatches > 0), the rest of the session's sorts the game's. On v0.107.1
+# requiregame logs SKIPPED and the session ends there. No off twin: the order is the game's from the mismatch on.
+requiregame v0.113
+expect CardSortKeys disabled, the game compares its cards
+expect COUNTERS end:.*CardSortKeys sorts \d+, answered [1-9]\d*, refused \d+ \(last: [^)]*\), checks [1-9]\d*, mismatches [1-9]
+expect FOREIGN display end energy-cost-unstable-postfix reads [1-9]
+timeout 900
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+foreignpatch energy-cost-unstable-postfix MegaCrit.Sts2.Core.Entities.Cards.CardEnergyCost:GetWithModifiers
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+endturn
+waitfor idle 300
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 300
+endturn
+waitfor idle 300
+cmd kill all
+waitfor nocombat 300
+wait 2
+foreignpatch report end
+counters end
+cmd bdopt why
+foreignpatch remove
+quit

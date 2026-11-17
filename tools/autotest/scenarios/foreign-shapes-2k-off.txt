@@ -5,7 +5,6 @@ newrun NECROBINDER
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 cmd bdperf checks off
 enemyhp 999999
 # (1) no-op postfix and void prefixes: tolerated, the optimizations keep running.

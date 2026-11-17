@@ -1,0 +1,49 @@
+# Dread mode A/B (on; with dread-1k-off): a combat with the run's dominion at ~935 cards (the reference run once, with its relics). Game
+# v0.113+ only: on v0.107.1 newrun logs "SKIPPED: ... has no dread mode" and the session ends there (both sides alike).
+# Dread adds DreadRunModel to the run's models and sets the run's dominion at each act entry; every combat built takes both
+# (CombatState.RunModels, .Dominion): the mirrored walks' v0.113 tails (FastListeners.Dominion, .ModeRunModels) and
+# ListenerCache's invalidation on set_Dominion / set_RunModels (ListenerCache.Dominion, .ModeRunModels) only run in such a run.
+# bdperf listeners and refresh compare the walks with the game's own with the dominion in them; CHECKSUM and STATE lines must
+# match dread-1k-off line for line.
+timeout 1500
+newrun NECROBINDER 1234 dread
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 2
+dominion require
+effects start
+checksum start
+state start
+cmd bdperf listeners 10
+cmd bdperf refresh 5
+play 3
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 3
+waitfor idle 120
+checksum t2 plays
+cmd bdperf listeners 10
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+effects end
+counters end
+effectcheck FastListeners.Dominion grew start
+effectcheck FastListeners.ModeRunModels grew start
+effectcheck ListenerCache.Dominion ran
+effectcheck ListenerCache.ModeRunModels ran
+quit

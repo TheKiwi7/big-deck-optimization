@@ -1,0 +1,23 @@
+# RelicFlashMerge next to another mod's patch on the game's sound command (A/B, mod off): the same synthetic patch as
+# relicflash-sfx-on (see there); CHECKSUM and STATE lines must match line for line.
+timeout 1200
+cmd bdopt off
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+foreignpatch sfx-observer-prefix MegaCrit.Sts2.Core.Commands.SfxCmd::Play(String,Single)
+checksum before
+state before optional
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+checksum after
+state after optional
+foreignpatch report end
+foreignpatch remove
+cmd bdopt on
+quit

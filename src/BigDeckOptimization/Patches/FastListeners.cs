@@ -514,7 +514,12 @@ public static class FastListeners
                 SegmentMoveHits++;
 #endif
                 segment.Version = PileVersion;
+#if BENCH
+                bool wrongMove = segment.Items.Count > 0 && TakeWrong("moves") && Corrupt(segment.Items);
+                if (CheckDue(_nextMoveCheck) || wrongMove)
+#else
                 if (CheckDue(_nextMoveCheck))
+#endif
                 {
                     _nextMoveCheck = Environment.TickCount64 + SubscriptionCheckMs;
                     CheckMoveHit(segment, piles, withAfflictions);
@@ -560,12 +565,20 @@ public static class FastListeners
                 segment.Unscoped = UnscopedVersion;
                 segment.Moves = SubscribedMoves;
             }
+#if BENCH
+            else if (_keepSubscribed && (CheckDue(_nextSubscriberCheck) || (segment.Items.Count > 0 && TakeWrong("subscribers") && Corrupt(segment.Items))))
+#else
             else if (_keepSubscribed && CheckDue(_nextSubscriberCheck))
+#endif
             {
                 _nextSubscriberCheck = Environment.TickCount64 + SubscriptionCheckMs;
                 CheckSubscribers(segment, key, piles, withAfflictions);
             }
 #if BENCH
+            else if (segment.Items.Count > 0 && TakeWrong("segments") && Corrupt(segment.Items))
+            {
+                VerifySegment(segment, piles, withAfflictions);
+            }
             else if (++SegmentHits % CacheVerifyEvery == 0)
             {
                 VerifySegment(segment, piles, withAfflictions);
@@ -1106,6 +1119,25 @@ public static class FastListeners
         public MethodInfo[]? BaseMethods { get; private init; }
 
         /// <summary>
+        /// The mirror walks keep every badge (<c>BadgeModels</c>), reacting or not: HookSkip's filters (<see cref="KeepingBadges"/>).
+        /// A hook's loop pushes each listener on its passed-in choice context first thing (<c>PushModel</c>, which creates the
+        /// context's model stack on its first call): a walk keeping one listener at least leaves the stack created, as the game's
+        /// walk of the same state does (HookSkip's badge guard makes sure the state has a badge: A4 in DESIGN). A kept badge runs
+        /// its default hook body through the game's own loop, as vanilla does for every listener.
+        /// </summary>
+        public bool KeepsBadges { get; private set; }
+
+        /// <summary>This filter, from now on keeping every badge (<see cref="KeepsBadges"/>; set once, before its first walk).</summary>
+        internal PileFilter KeepingBadges()
+        {
+            KeepsBadges = true;
+            return this;
+        }
+
+        /// <summary>What the mirrors pass to the badges' add: no filter (every badge) when this filter keeps them.</summary>
+        internal static PileFilter? ForBadges(PileFilter? filter) => filter is { KeepsBadges: true } ? null : filter;
+
+        /// <summary>
         /// A filter from <see cref="WithGates"/>: a stacked enchantment is never dropped (its inner enchantments' calls reach the
         /// patched default, and LimitlessHookSkip's inner check doesn't know the gates).
         /// </summary>
@@ -1141,6 +1173,7 @@ public static class FastListeners
             {
                 BaseMethods = BaseMethods,
                 _noMultiDrop = true,
+                KeepsBadges = KeepsBadges,
             };
             _gated = new Gated(gates, filter);
             return filter;
@@ -1329,7 +1362,19 @@ public static class FastListeners
             if (shifts > 0)
             {
                 Generation++;
+#if BENCH
+                bool wrongShift = Count > 1 && TakeWrong("shifts");
+                if (wrongShift)
+                {
+                    // Two entries swapped: what an unseen move would leave.
+                    (Entries[0], Entries[1]) = (Entries[1], Entries[0]);
+                    (TypeIds[0], TypeIds[1]) = (TypeIds[1], TypeIds[0]);
+                    Log.Info($"[{ModEntry.Id}] {Name}: shifted snapshot entries made wrong (test)");
+                }
+                if (CheckDue(_nextShiftCheck) || wrongShift)
+#else
                 if (CheckDue(_nextShiftCheck))
+#endif
                 {
                     _nextShiftCheck = Environment.TickCount64 + SubscriptionCheckMs;
                     if (!MatchesPiles(withAfflictions))
@@ -1728,7 +1773,16 @@ public static class FastListeners
     /// one reaching <see cref="PileVersion"/> unless something else changed since. Main thread only.
     /// </summary>
     private static readonly List<Move> _moves = new();
+#if BENCH
+    /// <summary>
+    /// The journal's limit; tests lower it (<c>bdperf movecap N</c>) so a small deck reaches it. Its overflows: each dropped the
+    /// oldest half (<see cref="MoveOverflows"/>).
+    /// </summary>
+    internal static int MaxMoves = 4096;
+    public static long MoveOverflows;
+#else
     private const int MaxMoves = 4096;
+#endif
 
 #if BENCH
     /// <summary>One cache hit in this many is compared with a fresh walk (Debug builds).</summary>
@@ -1742,6 +1796,27 @@ public static class FastListeners
     public static long SegmentRebuilds, SegmentExtends, SegmentHits, SegmentMoveHits, UncachedWalks, SnapshotCatchUps, SnapshotRebuilds, RebuiltVersions;
     /// <summary>Walks run as the mirrors (the effects check).</summary>
     public static long CombatWalks, RunWalks;
+    /// <summary>
+    /// HookSkip's filtered walks over the game's own walk (<see cref="KeptOnly"/> with a filter keeping badges: HookSkip's only,
+    /// not HookFilter's lists) whose first listener the filter would have dropped and that was kept (A4: the model stack created
+    /// at the game's moment). The effect <c>FastListeners.FirstKept</c>.
+    /// </summary>
+    public static long FirstKept;
+
+    private static void CountFirstKept(AbstractModel model, PileFilter filter)
+    {
+        try
+        {
+            if (filter.KeepsBadges && model is (CardModel or EnchantmentModel or AfflictionModel) && !filter.Keeps(model))
+            {
+                FirstKept++;
+            }
+        }
+        catch
+        {
+            // Test counter only: a verdict that throws is not counted (KeptOnly's own verdicts handle their failures).
+        }
+    }
     /// <summary>Shuffles in progress: 0 when nothing runs (the effects check).</summary>
     public static int OpenShuffles => _shuffling;
     private static long _lastRebuildVersion = -1;
@@ -1864,9 +1939,13 @@ public static class FastListeners
         {
             _moves.Clear();
         }
-        if (_moves.Count == MaxMoves)
+        // At the limit: the oldest moves go, the newest half of the limit stays (a test may lower the limit below the count).
+        if (_moves.Count >= MaxMoves)
         {
-            _moves.RemoveRange(0, MaxMoves / 2);
+            _moves.RemoveRange(0, _moves.Count - MaxMoves / 2);
+#if BENCH
+            MoveOverflows++;
+#endif
         }
         _moves.Add(move);
     }
@@ -2406,16 +2485,44 @@ public static class FastListeners
     /// <summary>v0.113: every run model, then the dominion if any.</summary>
     private static void CombatRunModelsTail(List<AbstractModel> list, CombatState state, PileFilter? filter)
     {
-        AddReacting(list, _combatRunModels!(state), filter);
-        AddIfReacting(list, _combatDominion!(state), filter);
+        IReadOnlyList<AbstractModel> runModels = _combatRunModels!(state);
+        AddReacting(list, runModels, filter);
+        AbstractModel? dominion = _combatDominion!(state);
+        AddIfReacting(list, dominion, filter);
+#if BENCH
+        CountTail(runModels, dominion);
+#endif
     }
 
     /// <summary>v0.113: every run model, then the dominion if any.</summary>
     private static void RunRunModelsTail(List<AbstractModel> list, RunState run, PileFilter? filter)
     {
-        AddReacting(list, _runRunModels!(run), filter);
-        AddIfReacting(list, _runDominion!(run), filter);
+        IReadOnlyList<AbstractModel> runModels = _runRunModels!(run);
+        AddReacting(list, runModels, filter);
+        AbstractModel? dominion = _runDominion!(run);
+        AddIfReacting(list, dominion, filter);
+#if BENCH
+        CountTail(runModels, dominion);
+#endif
     }
+
+#if BENCH
+    /// <summary>Mirrored walks whose tail met a dominion (a Dread run's combat), and whose run models were more than the
+    /// multiplayer scaling one every run has (a Dread or Blitz run): the tails only those game modes reach (effect counters).</summary>
+    public static long DominionTails, ModeRunModelTails;
+
+    private static void CountTail(IReadOnlyList<AbstractModel> runModels, AbstractModel? dominion)
+    {
+        if (dominion != null)
+        {
+            DominionTails++;
+        }
+        if (runModels.Count > 1)
+        {
+            ModeRunModelTails++;
+        }
+    }
+#endif
 
     private static void AddIfReacting(List<AbstractModel> list, AbstractModel? model, PileFilter? filter)
     {
@@ -2759,15 +2866,30 @@ public static class FastListeners
 
     /// <summary>
     /// The game's own walk, whatever it became, minus what a filter drops: cards, enchantments and afflictions (wherever they
-    /// come from) whose type keeps the defaults of the hook. No mirror, so nothing here depends on the walk's code.
+    /// come from) whose type keeps the defaults of the hook. No mirror, so nothing here depends on the walk's code. The walk's
+    /// first listener is always kept (A4 in DESIGN): a hook's loop pushes each listener on its passed-in choice context first
+    /// thing, and <c>PushModel</c> creates the context's model stack on its first call, so the stack is created at the game's
+    /// own moment (the first iteration), whatever the filter drops after it. Keeping it runs that listener's iteration as the
+    /// game's loop does (its default hook body when the filter would have dropped it). Callers: HookSkip's filtered walks
+    /// (through <see cref="Filtered(CombatState, PileFilter)"/>), the child combat walk of <see cref="Run"/> (one more kept
+    /// listener in the middle of the run walk: the same iteration as vanilla), and HookFilter's lists (its override mask drops
+    /// it again: the list it builds is unchanged).
     /// </summary>
     private static IEnumerable<AbstractModel> KeptOnly(IEnumerable<AbstractModel> walk, PileFilter filter)
     {
         bool failed = false;
+        bool first = true;
         foreach (AbstractModel model in walk)
         {
             bool kept = true;
-            if (!failed && model is (CardModel or EnchantmentModel or AfflictionModel))
+            if (first)
+            {
+                first = false;
+#if BENCH
+                CountFirstKept(model, filter);
+#endif
+            }
+            else if (!failed && model is (CardModel or EnchantmentModel or AfflictionModel))
             {
                 try
                 {
@@ -2919,6 +3041,12 @@ public static class FastListeners
         {
             return false;
         }
+#if BENCH
+        if (BaseLibTypes.AssumedForTest.Contains(CardModifierType))
+        {
+            return false; // Test: as if a mod defined a CardModifier (bdperf baselibtypes assume).
+        }
+#endif
         if (_noCardModifierTypes is { } known)
         {
             return known;
@@ -3052,7 +3180,7 @@ public static class FastListeners
             }
         }
         AddReacting(list, state.Modifiers, filter);
-        AddReacting(list, state.BadgeModels, filter);
+        AddReacting(list, state.BadgeModels, PileFilter.ForBadges(filter));
         _combatTail!(list, state, filter);
     }
 
@@ -3118,7 +3246,7 @@ public static class FastListeners
                 }
             }
             AddReacting(list, run.Modifiers, filter);
-            AddReacting(list, run.BadgeModels, filter);
+            AddReacting(list, run.BadgeModels, PileFilter.ForBadges(filter));
             _runTail!(list, run, filter);
         }
     }
@@ -3187,6 +3315,22 @@ public static class FastListeners
 #if BENCH
     /// <summary>Test: the next guarded add throws after adding its entries (bdperf fault piles).</summary>
     internal static bool FailNextPileWalk;
+
+    /// <summary>
+    /// Test (<c>bdperf segments wrong [moves|subscribers|shifts]</c>, <see cref="TestWrong"/>): the next cached hit, hit kept
+    /// across moves, subscriber check or shifted snapshot gets a wrong entry list, and its check runs at once: the check must
+    /// find it and repair it (positive control of VerifySegment, CheckMoveHit, CheckSubscribers, MatchesPiles). Main thread only.
+    /// </summary>
+    private static bool TakeWrong(string what) =>
+        Environment.CurrentManagedThreadId == _mainThread && TestWrong.Take(what == "segments" ? what : "segments." + what);
+
+    /// <summary>A kept entry list made wrong (its last entry dropped; callers pass a list with one): what an unseen change leaves.</summary>
+    private static bool Corrupt(List<AbstractModel> items)
+    {
+        items.RemoveAt(items.Count - 1);
+        Log.Info($"[{ModEntry.Id}] {Name}: kept entries made wrong (test)");
+        return true;
+    }
 
     /// <summary>Test: the next filtered mirror walk throws after adding its entries (outside the pile entry cache).</summary>
     internal static bool FailNextFilteredWalk;

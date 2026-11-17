@@ -1,0 +1,40 @@
+# CardFlightLimit next to other mods' patches on a card flight (A/B, mod off): the same synthetic patches of "another mod" as
+# foreign-flights-2k-on (see there); CHECKSUM and STATE lines must match line for line. Every soul flies here: the postfix still
+# sees exactly the souls the scene tree got (require souls).
+timeout 1200
+cmd bdopt off
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+enemyhp 999999
+speed fast
+immortal
+foreignpatch create-null-gated-postfix MegaCrit.Sts2.Core.Nodes.Vfx.NCardFlyShuffleVfx:Create
+foreignpatch trail-replacing-prefix MegaCrit.Sts2.Core.Nodes.Vfx.NCardTrailVfx:Create priority 800
+foreignpatch noop-postfix MegaCrit.Sts2.Core.Nodes.Vfx.NCardTrailVfx:_Process
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+checksum after shuffle
+state after shuffle
+play 3
+waitfor idle 300
+checksum plays
+state plays
+endturn
+waitfor idle 300
+checksum t2
+state t2
+wait 6
+foreignpatch require souls
+foreignpatch report end
+foreignpatch remove
+cmd bdopt on
+quit

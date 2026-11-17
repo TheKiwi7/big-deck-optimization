@@ -154,7 +154,7 @@ public static class ListenerCache
             if (Reflect.PropertySetter(owner, "Dominion") is { } setDominion)
             {
                 PatchSafety.RequireFieldWriters(owner, "<Dominion>k__BackingField", "set_Dominion");
-                PatchGuard.Patch(harmony, setDominion, finalizer: Method(nameof(Invalidate)));
+                PatchGuard.Patch(harmony, setDominion, finalizer: Method(nameof(InvalidateDominion)));
             }
             // Game v0.113: the run models the walks yield sit behind a private setter too. The game sets them once (the run's
             // creation, the combat's construction), a mod may set them again later (a framework adding its run models):
@@ -162,7 +162,7 @@ public static class ListenerCache
             if (Reflect.PropertySetter(owner, "RunModels") is { } setRunModels)
             {
                 PatchSafety.RequireFieldWriters(owner, "<RunModels>k__BackingField", "set_RunModels");
-                PatchGuard.Patch(harmony, setRunModels, finalizer: Method(nameof(Invalidate)));
+                PatchGuard.Patch(harmony, setRunModels, finalizer: Method(nameof(InvalidateRunModels)));
             }
         }
         // The combat's creatures (the walks start from its ally and enemy lists, in that order) and their powers. Every change
@@ -206,6 +206,25 @@ public static class ListenerCache
         _runIterate = Require(Reflect.Method(typeof(RunState), nameof(RunState.IterateHookListeners), new[] { typeof(ICombatState) }));
         PatchGuard.Patch(harmony, _combatIterate, prefix: Method(nameof(CombatIteratePrefix)));
         PatchGuard.Patch(harmony, _runIterate, prefix: Method(nameof(RunIteratePrefix)));
+        // The augmented-walk premise (shape rules on): the walks' outputs after other mods' postfixes, kept per display scope.
+        // Its own part: a failure here leaves only it off (the rest of this class applies as before).
+        if (PatchSafety.ShapeRules)
+        {
+            try
+            {
+                MethodInfo combatPostfix = Require(Reflect.Method(typeof(ListenerCache), nameof(CombatAugmentedPostfix)));
+                MethodInfo runPostfix = Require(Reflect.Method(typeof(ListenerCache), nameof(RunAugmentedPostfix)));
+                PatchGuard.Patch(harmony, _combatIterate, postfix: new HarmonyMethod(combatPostfix) { priority = Priority.Last });
+                _combatWalkPostfix = combatPostfix;
+                PatchGuard.Patch(harmony, _runIterate, postfix: new HarmonyMethod(runPostfix) { priority = Priority.Last });
+                _runWalkPostfix = runPostfix;
+            }
+            catch (Exception e)
+            {
+                WalkReuseEnabled = false;
+                Log.Warn($"[{ModEntry.Id}] {Name}: the augmented walks' reuse not applied (walks with other mods' postfixes as before): {e.Message}");
+            }
+        }
         // A left run: the lists kept for the next display scope (and HookFilter's filtered ones) would hold it until then.
         if (Reflect.Method(typeof(MegaCrit.Sts2.Core.Runs.RunManager), nameof(MegaCrit.Sts2.Core.Runs.RunManager.CleanUp)) is { } cleanUp)
         {
@@ -253,6 +272,1016 @@ public static class ListenerCache
         // Kept lists aren't reused across display scopes while card modifiers may change (CardModifiersMayChange).
         PatchSafety.WatchNote(ReuseFault, () => BaseLibTypes.NoteIfDefined(ReuseFault, "card_modifiers", CardModifierType,
             "listener lists are rebuilt in each refresh instead of reused: other mods define BaseLib card modifiers", whole: true));
+        PatchSafety.WatchNote(WalkReuseName, NoteAugmentedWalks);
+    }
+
+    // ---- The augmented-walk premise (Walks Tier 2, owner-approved 2026-11-17; DESIGN "Owner-approved premises") ----
+
+    /// <summary>The augmented walks' reuse (a part of the combat refresh): its switch, off for the session after a mismatch.</summary>
+    public const string WalkReuseName = Name + ".Walks";
+
+    public static bool WalkReuseEnabled { get; set; } = true;
+
+    /// <summary>One reuse in this many is compared with a fresh call of the game's walk (its postfixes included).</summary>
+    private const int WalkVerifyEvery = 16;
+
+    private static MethodInfo? _combatWalkPostfix, _runWalkPostfix;
+
+    /// <summary>One walk key's kept output in the current outermost scope: the state version it was made at, and whether a reuse of it was checked yet.</summary>
+    private sealed class KeptOutput
+    {
+        public readonly int Version;
+        public readonly LazyOutput Output;
+        public bool Checked;
+
+        public KeptOutput(int version, LazyOutput output)
+        {
+            Version = version;
+            Output = output;
+        }
+    }
+
+    /// <summary>
+    /// Per walk, the output after every other mod's postfix (the first walk's own, <see cref="LazyOutput"/>: pulled only as far as
+    /// a caller enumerates), kept from the first walk of the current outermost display scope and state version; dropped at its
+    /// end, at a version change (the key's version), and when a snapshot, a game-value refresh, a suspension or another mod's
+    /// CombatStateChanged handler comes in it (<see cref="_exactScope"/>).
+    /// </summary>
+    [ThreadStatic] private static Dictionary<(object, object?), KeptOutput>? _augmented;
+
+    /// <summary>
+    /// A snapshot, a game-state refresh scope, a suspension (game logic resuming inline) or a CombatStateChanged dispatch with
+    /// another mod's handler is (or was) in the current outermost scope: no augmented reuse in it.
+    /// </summary>
+    [ThreadStatic] private static bool _exactScope;
+
+    /// <summary>The current outermost scope's number: a reused output enumerated after its scope ended is the call's own (<see cref="ReusedOutput"/>).</summary>
+    [ThreadStatic] private static int _scopeSerial;
+
+    /// <summary>
+    /// Reuses per walk key, surviving across scopes (re-audit of the premises, W-4: a counter per scope never checked a scope
+    /// with fewer than 16 reuses). Weak on the state, so a finished combat or run isn't held; the child combat by its identity
+    /// hash (two children sharing one only share a count: which reuse is checked, nothing else).
+    /// </summary>
+    [ThreadStatic] private static ConditionalWeakTable<object, Dictionary<int, int>>? _reuseCounts;
+
+    [ThreadStatic] private static bool _materializingAugmented;
+
+    /// <summary>The last answer of <see cref="PostfixLast"/> per walk: a record replaced whole (no torn read).</summary>
+    private sealed record LastVerdict(int Epoch, long At, bool Last);
+
+    private static LastVerdict? _combatLast, _runLast;
+
+#if BENCH
+    /// <summary>Augmented walks answered from a kept output, outputs materialized, reuses compared and the differences (the effects check).</summary>
+    public static long WalksReused { get; private set; }
+    public static long WalksMaterialized { get; private set; }
+    public static long WalksVerified { get; private set; }
+#endif
+    public static long WalkMismatches { get; private set; }
+
+    /// <summary>
+    /// Whether an augmented walk's output may be kept and reused now: the shape rules on, the part on, inside a scope this class
+    /// serves (<see cref="Serving"/>) whose outermost scope opened no snapshot nor game-state refresh, the walk carrying other
+    /// mods' postfixes (<paramref name="augmented"/>), and this class's postfix the last one Harmony runs there. Not once
+    /// FastListeners' unpatched mirror declined in this scope (<see cref="_mirrorDeclined"/>: another mod patched the walk's code
+    /// mid-scope; re-audit of the premises, W-6).
+    /// </summary>
+    private static bool AugmentedReuse(bool augmented, MethodBase? walk, MethodInfo? postfix, ref LastVerdict? last) =>
+        PatchSafety.ShapeRules && WalkReuseEnabled && augmented && !_exactScope && !_materializingAugmented && !_mirrorDeclined && Serving
+        && postfix != null && PostfixLast(walk, postfix, ref last);
+
+    /// <summary>
+    /// This class's postfix runs after every other mod's on the walk (Harmony's sort, asked again when Harmony's epoch moves, each
+    /// second without HarmonyWatch): else what it keeps would be read by a postfix after it. A factory-made postfix: no (its sort
+    /// would run another mod's code here).
+    /// </summary>
+    private static bool PostfixLast(MethodBase? walk, MethodInfo postfix, ref LastVerdict? last)
+    {
+        int epoch = HarmonyWatch.Epoch;
+        long now = Environment.TickCount64;
+        if (last is { } known && known.Epoch == epoch && (HarmonyWatch.Applied || now - known.At < 1000))
+        {
+            return known.Last;
+        }
+        bool isLast = false;
+        try
+        {
+            if (walk != null && Harmony.GetPatchInfo(walk) is { } info)
+            {
+                Patch[] postfixes = info.Postfixes.ToArray();
+                var methods = new MethodInfo[postfixes.Length];
+                bool ok = true;
+                for (int i = 0; i < postfixes.Length && ok; i++)
+                {
+                    MethodInfo? method = PatchSafety.PatchMethodOf(postfixes[i]);
+                    ok = method != null && !PatchSafety.IsFactory(method);
+                    if (ok)
+                    {
+                        postfixes[i].PatchMethod = method;
+                    }
+                }
+                if (ok)
+                {
+                    List<MethodInfo> sorted = PatchProcessor.GetSortedPatchMethods(walk, postfixes);
+                    isLast = sorted.Count > 0 && sorted[^1].MethodHandle == postfix.MethodHandle
+                        && sorted.Count(m => m.MethodHandle == postfix.MethodHandle) == 1;
+                }
+            }
+        }
+        catch
+        {
+            isLast = false;
+        }
+        last = new LastVerdict(epoch, now, isLast);
+        return isLast;
+    }
+
+    private static void CombatAugmentedPostfix(CombatState __instance, ref IEnumerable<AbstractModel> __result)
+    {
+        if (!AugmentedReuse(_combatAugmented, _combatIterate, _combatWalkPostfix, ref _combatLast))
+        {
+            return;
+        }
+        __result = Augmented((__instance, null), __result);
+    }
+
+    private static void RunAugmentedPostfix(RunState __instance, ICombatState? childCombatState, ref IEnumerable<AbstractModel> __result)
+    {
+        if (!AugmentedReuse(_runAugmented, _runIterate, _runWalkPostfix, ref _runLast))
+        {
+            return;
+        }
+        __result = Augmented((__instance, childCombatState), __result);
+    }
+
+    /// <summary>
+    /// The walk's output for the caller: the one kept for this scope and version, or this call's own, kept. The first reuse of
+    /// each key in each scope and one in <see cref="WalkVerifyEvery"/> per key after it get this call's own output instead,
+    /// compared with the kept one as the caller enumerates it (<see cref="CheckedOutput"/>). Nothing is enumerated here: the
+    /// kept output is pulled only as far as a caller goes (<see cref="LazyOutput"/>, re-audit of the premises W-2: an eager
+    /// materialization ran other mods' code for listeners a caller stopping early never reaches).
+    /// </summary>
+    private static IEnumerable<AbstractModel> Augmented((object, object?) key, IEnumerable<AbstractModel> output)
+    {
+        try
+        {
+            _augmented ??= new Dictionary<(object, object?), KeptOutput>(new RefComparer());
+            if (_augmented.TryGetValue(key, out KeptOutput? entry) && entry.Version == _version)
+            {
+                // D1 (re-audit of c2f613b): Checked is set by a check that covered everything its caller read (CheckedOutput), not
+                // when a check is handed out. D2: the per-key sample's position moves with the scope (display only).
+                bool check = !entry.Checked || (CountReuse(key) + SampleOffset()) % WalkVerifyEvery == 0;
+                if (!check)
+                {
+#if BENCH
+                    WalksReused++;
+#endif
+                    return new ReusedOutput(entry.Output, output, _scopeSerial, _version);
+                }
+#if BENCH
+                WalksVerified++;
+#endif
+                return new CheckedOutput(output, entry.Output, key, _scopeSerial, _version, entry);
+            }
+            // D3: a kept output of another state version is closed (its source disposed once no caller is in it).
+            entry?.Output.Close();
+            var lazy = new LazyOutput(output, key);
+            _augmented[key] = new KeptOutput(_version, lazy);
+#if BENCH
+            WalksMaterialized++;
+#endif
+            // D6: the first walk's own caller is guarded as the reuses are (outside its scope, or once the scope's reuse ended,
+            // the call's own output).
+            return new ReusedOutput(lazy, output, _scopeSerial, _version);
+        }
+        catch (Exception e)
+        {
+            // This class's own error, before the output was enumerated: the part off, this call's output as the game made it.
+            WalkReuseFailed(e);
+            return output;
+        }
+    }
+
+    /// <summary>D2 (re-audit of c2f613b): where in each run of <see cref="WalkVerifyEvery"/> reuses the sample falls, per scope (0 in the self-test).</summary>
+    private static int SampleOffset() => SelfTesting ? 0 : (int)((uint)(_scopeSerial * 7) % WalkVerifyEvery);
+
+    /// <summary>
+    /// D3 (re-audit of c2f613b): every kept output closed (an unfinished source disposed once no caller is in it: other mods'
+    /// iterators' finally blocks run, EnchantLib returns its ArrayPool arrays there), then dropped.
+    /// </summary>
+    private static void ClearAugmented()
+    {
+        Dictionary<(object, object?), KeptOutput>? kept = _augmented;
+        if (kept == null || kept.Count == 0)
+        {
+            return;
+        }
+        KeptOutput[] entries = kept.Values.ToArray();
+        kept.Clear();
+        foreach (KeptOutput entry in entries)
+        {
+            entry.Output.Close();
+        }
+    }
+
+    private static int CountReuse((object, object?) key)
+    {
+        _reuseCounts ??= new ConditionalWeakTable<object, Dictionary<int, int>>();
+        Dictionary<int, int> counts = _reuseCounts.GetValue(key.Item1, _ => new Dictionary<int, int>());
+        int child = key.Item2 == null ? 0 : RuntimeHelpers.GetHashCode(key.Item2);
+        counts.TryGetValue(child, out int count);
+        counts[child] = ++count;
+        return count;
+    }
+
+    private static void WalkReuseFailed(Exception e)
+    {
+        WalkReuseEnabled = false;
+        ClearAugmented();
+        PatchSafety.Fault(WalkReuseName);
+        Log.Error($"[{ModEntry.Id}] {Name}: the augmented walks' reuse failed, off for this session: {e}");
+    }
+
+    private static void WalkMismatch((object, object?) key, string what)
+    {
+#if BENCH
+        if (_selfTesting)
+        {
+            _selfTestMismatches++;
+            return;
+        }
+#endif
+        if (!WalkReuseEnabled)
+        {
+            return;
+        }
+        WalkMismatches++;
+        WalkReuseEnabled = false;
+        ClearAugmented();
+        PatchSafety.Fault(WalkReuseName);
+        Log.Error($"[{ModEntry.Id}] {Name}: a kept listener walk output (other mods' postfixes included) differs from a fresh one "
+            + $"({key.Item1.GetType().Name}{(key.Item2 == null ? "" : " with a child combat")}: {what}): their reuse turned off for this session. Please report this log.");
+    }
+
+    /// <summary>
+    /// A walk's own output (the game's call, other mods' postfixes included), enumerated only as far as its callers go, one
+    /// element at a time, interleaved with their loops as the game's would be; what was pulled is replayed for the scope's later
+    /// walks of that key, which pull further if they go further. A throw from the output's code reaches the caller at the
+    /// element the game's enumeration would have met it, and every later caller of this output there too; the key is then no
+    /// longer reused. The source is disposed at its end or on its throw, as a foreach does; a source no caller enumerated to its
+    /// end is not disposed when the callers stop (a later walk may go further) but left to the collector (the game's iterators'
+    /// finally blocks only dispose list enumerators: a stated part of the premise). Not a list: an enumerable only, as the game's
+    /// iterator (nothing to test, cast or change).
+    /// </summary>
+    private sealed class LazyOutput : IEnumerable<AbstractModel>
+    {
+        private readonly IEnumerable<AbstractModel> _source;
+        private readonly (object, object?) _key;
+        private readonly List<AbstractModel> _items = new();
+        private IEnumerator<AbstractModel>? _enumerator;
+        private System.Runtime.ExceptionServices.ExceptionDispatchInfo? _error;
+        private bool _done;
+        private bool _pulling;
+        /// <summary>Callers enumerating it now, and a close asked while one was (D3: done when the last one leaves).</summary>
+        private int _consumers;
+        private bool _closeAsked;
+
+        public LazyOutput(IEnumerable<AbstractModel> source, (object, object?) key)
+        {
+            _source = source;
+            _key = key;
+        }
+
+        /// <summary>The elements pulled so far, and whether the source reached its end (or threw, or was closed).</summary>
+        public int Count => _items.Count;
+        public bool Done => _done;
+        /// <summary>Its source is running now (a reuse started from inside it takes its own output).</summary>
+        public bool Pulling => _pulling;
+        /// <summary>The source reached its end (not a throw, not closed early): its length is known.</summary>
+        public bool Complete { get; private set; }
+        /// <summary>
+        /// Closed, or a close asked while a caller was in it (round 4): what it pulled is all it will ever give, so a reuse handed
+        /// out before and enumerated now would be cut short there (<see cref="ReusedOutput"/> gives the call's own output then).
+        /// </summary>
+        public bool Closed => _closed || _closeAsked;
+        private bool _closed;
+        public AbstractModel this[int index] => _items[index];
+
+        public IEnumerator<AbstractModel> GetEnumerator()
+        {
+            _consumers++;
+            try
+            {
+                for (int i = 0; ; i++)
+                {
+                    if (i >= _items.Count && !Pull())
+                    {
+                        yield break;
+                    }
+                    yield return _items[i];
+                }
+            }
+            finally
+            {
+                _consumers--;
+                if (_closeAsked && _consumers == 0)
+                {
+                    Close();
+                }
+            }
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+
+        /// <summary>
+        /// D3 (re-audit of c2f613b): no later walk pulls it (its scope ended, exact mode started, another version): an unfinished
+        /// source is disposed, as a foreach leaving early would, so other mods' iterators run their finally blocks. Not while a
+        /// caller is in it or its source runs (closed when the last one leaves): what a caller enumerates goes on. Never throws.
+        /// </summary>
+        public void Close()
+        {
+            if (_consumers > 0 || _pulling)
+            {
+                _closeAsked = true;
+                return;
+            }
+            _closeAsked = false;
+            IEnumerator<AbstractModel>? open = _enumerator;
+            if (open == null || _done)
+            {
+                return;
+            }
+            _enumerator = null;
+            _done = true;
+            _closed = true;
+            Complete = false;
+            bool wasMaterializing = _materializingAugmented;
+            _materializingAugmented = true;
+            try
+            {
+                open.Dispose();
+            }
+            catch (Exception e)
+            {
+                // Another mod's finally block threw: logged, nothing else to do (no caller is in it).
+                Log.Info($"[{ModEntry.Id}] {Name}: disposing a kept listener walk output threw: {e.Message}");
+            }
+            finally
+            {
+                _materializingAugmented = wasMaterializing;
+            }
+        }
+
+        /// <summary>One more element from the source: false at its end; its exception rethrown (now and for every later caller).</summary>
+        private bool Pull()
+        {
+            if (_error != null)
+            {
+                _error.Throw();
+            }
+            if (_done)
+            {
+                return false;
+            }
+            if (_pulling)
+            {
+                // The source's own code enumerating this output again: never seen; this class's error, not the game's.
+                throw new InvalidOperationException("a kept listener walk output enumerated from inside its own enumeration");
+            }
+            bool wasMaterializing = _materializingAugmented;
+            // A walk called by the output's own code (another mod's postfix) gets its own output, never this one.
+            _materializingAugmented = true;
+            _pulling = true;
+            try
+            {
+                _enumerator ??= _source.GetEnumerator();
+                if (_enumerator.MoveNext())
+                {
+                    _items.Add(_enumerator.Current);
+                    return true;
+                }
+                _done = true;
+                Complete = true;
+                // As a foreach at its end.
+                IEnumerator<AbstractModel> finished = _enumerator;
+                _enumerator = null;
+                finished.Dispose();
+                return false;
+            }
+            catch (Exception e)
+            {
+                _done = true;
+                Complete = false;
+                _error = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e);
+                // As a foreach leaving on a throw: the enumerator disposed, the exception passed on.
+                IEnumerator<AbstractModel>? failed = _enumerator;
+                _enumerator = null;
+                try
+                {
+                    failed?.Dispose();
+                }
+                catch
+                {
+                    // The first exception is the one the caller meets.
+                }
+                Forget();
+                throw;
+            }
+            finally
+            {
+                _pulling = false;
+                _materializingAugmented = wasMaterializing;
+            }
+        }
+
+        /// <summary>No later walk reuses it (a throw while pulling: they get their own outputs, as in the game).</summary>
+        private void Forget()
+        {
+            if (_augmented != null && _augmented.TryGetValue(_key, out KeptOutput? entry) && ReferenceEquals(entry.Output, this))
+            {
+                _augmented.Remove(_key);
+            }
+        }
+
+    }
+
+    /// <summary>
+    /// A reuse handed to a walk's caller: the kept output while enumerated inside the scope it was kept for, reuse still allowed
+    /// there (no snapshot, game-value refresh, suspension or foreign dispatch since, the part on); otherwise this call's own
+    /// output, the game's (re-audit of the premises, W-1b: a kept output never reaches code outside its display scope, even an
+    /// enumerable kept by a caller and enumerated later). Round 4: also at the state version it was handed out at, and the kept
+    /// output not closed (a version bump in the scope, then another walk of that key, closes it: enumerated again, a held reuse
+    /// would have given only what was pulled before; the game's own output, lazy, reads the state as it is then).
+    /// </summary>
+    private sealed class ReusedOutput : IEnumerable<AbstractModel>
+    {
+        private readonly LazyOutput _kept;
+        private readonly IEnumerable<AbstractModel> _own;
+        private readonly int _scope, _version;
+
+        public ReusedOutput(LazyOutput kept, IEnumerable<AbstractModel> own, int scope, int version)
+        {
+            _kept = kept;
+            _own = own;
+            _scope = scope;
+            _version = version;
+        }
+
+        public IEnumerator<AbstractModel> GetEnumerator()
+        {
+            bool inScope = _scope == _scopeSerial && _version == ListenerCache._version && !_kept.Closed && WalkReuseEnabled && !_exactScope
+                && !_mirrorDeclined && Serving && !_kept.Pulling;
+#if BENCH
+            if (!inScope)
+            {
+                ReusesOutOfScope++;
+            }
+#endif
+            return (inScope ? _kept : _own).GetEnumerator();
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+#if BENCH
+    /// <summary>Reused outputs enumerated outside the scope they were kept for: given the call's own output (W-1b's test).</summary>
+    public static long ReusesOutOfScope { get; private set; }
+#endif
+
+    /// <summary>
+    /// A checked reuse: this call's own output (the game's, other mods' postfixes included) for the caller, as far as it
+    /// enumerates, each element compared with the kept output's pulled so far, and its end with the kept one's when known; a
+    /// difference turns the part off for the session. The caller gets exactly the game's output (its exceptions included).
+    /// </summary>
+    private sealed class CheckedOutput : IEnumerable<AbstractModel>
+    {
+        private readonly IEnumerable<AbstractModel> _fresh;
+        private readonly LazyOutput _kept;
+        private readonly (object, object?) _key;
+        private readonly int _scope, _version;
+        private readonly KeptOutput? _entry;
+
+        public CheckedOutput(IEnumerable<AbstractModel> fresh, LazyOutput kept, (object, object?) key, int scope, int version, KeptOutput? entry = null)
+        {
+            _fresh = fresh;
+            _kept = kept;
+            _key = key;
+            _scope = scope;
+            _version = version;
+            _entry = entry;
+        }
+
+        /// <summary>Compared only in the scope and at the state the kept output is for (enumerated later, the state may differ).</summary>
+        private bool Comparable => _scope == _scopeSerial && _version == ListenerCache._version && !_exactScope;
+
+        public IEnumerator<AbstractModel> GetEnumerator()
+        {
+            using IEnumerator<AbstractModel> fresh = _fresh.GetEnumerator();
+            // D1 (re-audit of c2f613b): the check counts as done (the key's Checked) only if its comparison covered everything its
+            // caller read: each element within what the kept output had pulled (or the kept one complete), and, at the fresh
+            // output's end, the kept one's length known and compared. The kept output is never pulled further to compare.
+            bool covered = true;
+            try
+            {
+            for (int i = 0; ; i++)
+            {
+                bool has;
+                bool wasMaterializing = _materializingAugmented;
+                // A walk called by the output's own code gets its own output, as in the game.
+                _materializingAugmented = true;
+                try
+                {
+                    has = fresh.MoveNext();
+                }
+                finally
+                {
+                    _materializingAugmented = wasMaterializing;
+                }
+                if (!has)
+                {
+                    // Its end: the kept output has no more pulled, and ended there if its length is known.
+                    if (Comparable && (_kept.Count > i || (_kept.Complete && _kept.Count != i)))
+                    {
+                        WalkMismatch(_key, $"{i} listeners, the kept one {(_kept.Complete ? "" : "at least ")}{_kept.Count}");
+                    }
+                    covered &= _kept.Complete;
+                    yield break;
+                }
+                AbstractModel model = fresh.Current;
+                if (Comparable && (i < _kept.Count ? !ReferenceEquals(_kept[i], model) : _kept.Complete))
+                {
+                    WalkMismatch(_key, i < _kept.Count ? $"listener {i} differs" : $"more than the kept one's {_kept.Count} listeners");
+                }
+                covered &= i < _kept.Count || _kept.Complete;
+                yield return model;
+            }
+            }
+            finally
+            {
+                if (_entry != null && covered && Comparable)
+                {
+                    _entry.Checked = true;
+                }
+            }
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    /// <summary>
+    /// From here to the end of the outermost scope, no augmented output is kept or reused (a snapshot, a game-state scope, a
+    /// suspension, a dispatch with another mod's handler). Outputs being enumerated go on (their callers' own, as in the game).
+    /// </summary>
+    private static void ExactFromHere()
+    {
+        _exactScope = true;
+        ClearAugmented();
+    }
+
+    /// <summary>
+    /// The CombatStateChanged dispatch's handlers are all the game's (re-audit of the premises, W-1a): another mod's handler
+    /// may walk the real state there (RandomForeseer's prediction refresh) or do more than display; then nothing is reused in
+    /// that dispatch. Cached per delegate (a subscription makes a new one). Never throws: can't tell, not all the game's.
+    /// </summary>
+    private static bool GameHandlersOnly(Action<CombatState> handlers)
+    {
+        try
+        {
+            HandlersVerdict? last = _lastHandlers;
+            if (last != null && last.Handlers.TryGetTarget(out Action<CombatState>? known) && ReferenceEquals(handlers, known))
+            {
+                return last.GameOnly;
+            }
+            string[] foreign = handlers.GetInvocationList().Where(d => d.Method.Module.Assembly != Reflect.Game)
+                .Select(d => $"{d.Method.DeclaringType?.FullName}.{d.Method.Name}").Distinct().ToArray();
+            bool gameOnly = foreign.Length == 0;
+            if (!gameOnly && (last == null || last.GameOnly) && !SelfTesting)
+            {
+                Log.Info($"[{ModEntry.Id}] {Name}: other mods handle CombatStateChanged ({string.Join(", ", foreign.Take(4))}): "
+                    + "no listener walk output is reused in that dispatch");
+            }
+            _lastHandlers = new HandlersVerdict(new WeakReference<Action<CombatState>>(handlers), gameOnly);
+            return gameOnly;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>The last dispatch's verdict, its delegate held weakly (D5, re-audit of c2f613b: it holds the handlers' nodes).</summary>
+    private sealed record HandlersVerdict(WeakReference<Action<CombatState>> Handlers, bool GameOnly);
+
+#if BENCH
+    private static bool SelfTesting => _selfTesting;
+#else
+    private const bool SelfTesting = false;
+#endif
+
+    private static HandlersVerdict? _lastHandlers;
+
+#if BENCH
+    // ---- Self-test of the kept walk outputs (foreignpatch walkreuse selftest; offline harness too: no game state used) ----
+
+    /// <summary>Set while the self-test runs: a difference found is counted here instead of turning the part off.</summary>
+    [ThreadStatic] private static int _selfTestMismatches;
+    [ThreadStatic] private static bool _selfTesting;
+
+    /// <summary>A source counting what the walk's caller makes it do: elements produced, disposals, and the flag seen while producing.</summary>
+    private sealed class CountingSource : IEnumerable<AbstractModel>
+    {
+        private readonly AbstractModel[] _items;
+        private readonly int _throwAt;
+        public int Produced, Disposed, Enumerations, SeenUnmaterializing;
+
+        public CountingSource(AbstractModel[] items, int throwAt = -1)
+        {
+            _items = items;
+            _throwAt = throwAt;
+        }
+
+        public IEnumerator<AbstractModel> GetEnumerator()
+        {
+            Enumerations++;
+            try
+            {
+                for (int i = 0; i < _items.Length; i++)
+                {
+                    if (i == _throwAt)
+                    {
+                        throw new SelfTestException();
+                    }
+                    Produced++;
+                    if (!_materializingAugmented)
+                    {
+                        SeenUnmaterializing++;
+                    }
+                    yield return _items[i];
+                }
+            }
+            finally
+            {
+                Disposed++;
+            }
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    private sealed class SelfTestException : Exception
+    {
+        public SelfTestException() : base("walk output self-test throw")
+        {
+        }
+    }
+
+    /// <summary>
+    /// The kept walk outputs' contract (re-audit of the premises, W-2, W-1b, W-4): pulled only as far as a caller goes and
+    /// interleaved with its loop, replayed and pulled further by later callers, the source disposed at its end or throw only,
+    /// a throw met at the same element by every caller and the key forgotten, a checked reuse finding every difference (and
+    /// none where it can't know), a reuse outside its scope given the call's own output.
+    /// </summary>
+    internal static IReadOnlyList<string> WalkOutputSelfTest()
+    {
+        var lines = new List<string>();
+        var failures = new List<string>();
+        void Expect(bool ok, string what)
+        {
+            lines.Add($"FOREIGN walkreuse selftest {what}: {(ok ? "ok" : "FAILED")}");
+            if (!ok)
+            {
+                failures.Add(what);
+            }
+        }
+        Type concrete = typeof(AbstractModel).Assembly.GetTypes().First(t => !t.IsAbstract && !t.ContainsGenericParameters && typeof(AbstractModel).IsAssignableFrom(t));
+        AbstractModel[] models = Enumerable.Range(0, 6).Select(_ => (AbstractModel)RuntimeHelpers.GetUninitializedObject(concrete)).ToArray();
+        bool wasEnabled = WalkReuseEnabled, wasSafe = _safe;
+        int wasDepth = _refreshDepth;
+        var wasAugmented = _augmented;
+        _selfTesting = true;
+        try
+        {
+            // 1. Lazy: a caller stopping at the second element pulls two; a later caller replays them and pulls the rest.
+            var source = new CountingSource(models);
+            var lazy = new LazyOutput(source, (source, null));
+            bool any = lazy.Take(2).Count() == 2;
+            Expect(any && source.Produced == 2 && source.Disposed == 0, "early stop pulls two, source not disposed");
+            var all = lazy.ToList();
+            Expect(all.SequenceEqual(models) && source.Produced == 6 && source.Enumerations == 1 && source.Disposed == 1, "later caller replays then pulls on, one enumeration, disposed at its end");
+            Expect(lazy.ToList().SequenceEqual(models) && source.Produced == 6, "replay pulls nothing more");
+            Expect(source.SeenUnmaterializing == 0, "the source runs flagged (a walk from inside it gets its own output)");
+
+            // 2. Interleaved: element i is produced when the caller asks for it, not before.
+            var source2 = new CountingSource(models);
+            var lazy2 = new LazyOutput(source2, (source2, null));
+            bool interleaved = true;
+            int index = 0;
+            foreach (AbstractModel model in lazy2)
+            {
+                interleaved &= source2.Produced == index + 1 && ReferenceEquals(model, models[index]);
+                index++;
+            }
+            Expect(interleaved && index == 6, "pulled one element per step of the caller's loop");
+
+            // 3. A throw at element 3: every caller meets it after the same three elements; the key forgotten, the source disposed.
+            var source3 = new CountingSource(models, throwAt: 3);
+            var key3 = ((object)source3, (object?)null);
+            var lazy3 = new LazyOutput(source3, key3);
+            _augmented = new Dictionary<(object, object?), KeptOutput>(new RefComparer()) { [key3] = new KeptOutput(_version, lazy3) };
+            (int seen, Exception? error) Run(IEnumerable<AbstractModel> output)
+            {
+                int n = 0;
+                try
+                {
+                    foreach (AbstractModel _ in output)
+                    {
+                        n++;
+                    }
+                }
+                catch (Exception e)
+                {
+                    return (n, e);
+                }
+                return (n, null);
+            }
+            bool earlyNoThrow;
+            try
+            {
+                earlyNoThrow = lazy3.Take(2).Count() == 2 && source3.Produced == 2;
+            }
+            catch
+            {
+                earlyNoThrow = false;
+            }
+            Expect(earlyNoThrow, "a caller stopping before the throwing element meets no throw (as the game's lazy walk)");
+            var (first, firstError) = Run(lazy3);
+            var (second, secondError) = Run(lazy3);
+            Expect(first == 3 && firstError is SelfTestException && second == 3 && secondError is SelfTestException, "a throw met after the same elements by every caller");
+            Expect(!_augmented.ContainsKey(key3) && source3.Disposed == 1 && source3.Enumerations == 1, "a throw forgets the key and disposes the source once");
+
+            // 4. Checked reuses: every difference found, none where the kept length isn't known.
+            int Check(IEnumerable<AbstractModel> fresh, LazyOutput kept)
+            {
+                int before = _selfTestMismatches;
+                var output = new CheckedOutput(fresh, kept, (kept, null), _scopeSerial, _version);
+                List<AbstractModel> got = output.ToList();
+                if (!got.SequenceEqual(fresh))
+                {
+                    failures.Add("a checked reuse changed the call's own output");
+                }
+                return _selfTestMismatches - before;
+            }
+            LazyOutput Kept(int pulled)
+            {
+                var k = new LazyOutput(models.Take(3).ToArray(), ((object)models, null));
+                if (pulled == 3)
+                {
+                    k.ToList();
+                }
+                else
+                {
+                    k.Take(pulled).Count();
+                }
+                return k;
+            }
+            Expect(Check(models.Take(3).ToArray(), Kept(3)) == 0, "same output: no difference");
+            Expect(Check(models.Take(2).ToArray(), Kept(3)) >= 1, "shorter: found");
+            Expect(Check(models.Take(4).ToArray(), Kept(3)) >= 1, "longer: found");
+            Expect(Check(new[] { models[0], models[4], models[2] }, Kept(3)) >= 1, "another listener: found");
+            Expect(Check(new[] { models[1], models[0], models[2] }, Kept(3)) >= 1, "another order: found");
+            Expect(Check(models.Take(3).ToArray(), Kept(2)) == 0, "longer than a partly pulled kept one: not a difference");
+            Expect(Check(models.Take(1).ToArray(), Kept(2)) >= 1, "shorter than a partly pulled kept one: found");
+            int stale = _selfTestMismatches;
+            new CheckedOutput(models.Take(2).ToArray(), Kept(3), (models, null), _scopeSerial - 1, _version).ToList();
+            new CheckedOutput(models.Take(2).ToArray(), Kept(3), (models, null), _scopeSerial, _version - 1).ToList();
+            Expect(_selfTestMismatches == stale, "enumerated after its scope or state: not compared");
+
+            // 5. A reuse: the kept output inside its scope, the call's own outside it (or after the scope's reuse ended).
+            var own = new CountingSource(models.Skip(3).ToArray());
+            LazyOutput keptAll = Kept(3);
+            _safe = true;
+            _refreshDepth = Math.Max(1, _refreshDepth);
+            bool exact = _exactScope, declined = _mirrorDeclined;
+            _exactScope = false;
+            _mirrorDeclined = false;
+            WalkReuseEnabled = true;
+            List<AbstractModel> inside = new ReusedOutput(keptAll, own, _scopeSerial, _version).ToList();
+            List<AbstractModel> outside = new ReusedOutput(keptAll, own, _scopeSerial - 1, _version).ToList();
+            List<AbstractModel> otherVersion = new ReusedOutput(keptAll, own, _scopeSerial, _version - 1).ToList();
+            // Round 4: a kept output pulled to its second element then closed (a bump, then another walk of its key): a reuse held
+            // from before gives the call's own output, never the two elements pulled.
+            LazyOutput keptClosed = Kept(2);
+            keptClosed.Close();
+            List<AbstractModel> afterClose = new ReusedOutput(keptClosed, own, _scopeSerial, _version).ToList();
+            _exactScope = true;
+            List<AbstractModel> afterExact = new ReusedOutput(keptAll, own, _scopeSerial, _version).ToList();
+            _exactScope = exact;
+            _mirrorDeclined = declined;
+            Expect(inside.SequenceEqual(models.Take(3)) && outside.SequenceEqual(models.Skip(3)) && afterExact.SequenceEqual(models.Skip(3)),
+                "a reuse is the kept output in its scope only");
+            Expect(otherVersion.SequenceEqual(models.Skip(3)) && afterClose.SequenceEqual(models.Skip(3)),
+                "a reuse held across a state version or its kept output's close is the call's own output");
+
+            // 6. W-7: in an outermost display scope, a nested game-value refresh, a suspension (game logic resuming inline), and
+            // another mod's CombatStateChanged handler each end the reuse for the rest of the scope (kept outputs dropped, a reuse
+            // handed out before gives the call's own output); the game's own handlers don't; a reuse enumerated after the scope's
+            // end gives the call's own output.
+            bool ScopeCase(Action inner)
+            {
+                bool wasExact = _exactScope;
+                int wasSnapshot = _snapshotDepth, wasRefresh = _refreshDepth, wasSerial = _scopeSerial;
+                bool wasSuspended = _suspended, wasSafeHere = _safe;
+                try
+                {
+                    _snapshotDepth = 0;
+                    _refreshDepth = 0;
+                    EnterDisplayRefresh(out int outer);
+                    _safe = true;
+                    var key = ((object)models[5], (object?)null);
+                    IEnumerable<AbstractModel> first = Augmented(key, models.Take(3).ToArray());
+                    first.ToList();
+                    Augmented(key, models.Take(3).ToArray()).ToList(); // The first reuse of the scope: checked.
+                    IEnumerable<AbstractModel> reused = Augmented(key, models.Skip(3).ToArray());
+                    bool wasReuse = reused is ReusedOutput && reused.SequenceEqual(models.Take(3));
+                    inner();
+                    bool stopped = _exactScope && (_augmented == null || _augmented.Count == 0) && reused.SequenceEqual(models.Skip(3));
+                    ExitRefresh(null, outer);
+                    return wasReuse && stopped;
+                }
+                finally
+                {
+                    _exactScope = wasExact;
+                    _snapshotDepth = wasSnapshot;
+                    _refreshDepth = wasRefresh;
+                    _scopeSerial = wasSerial;
+                    _suspended = wasSuspended;
+                    _safe = wasSafeHere;
+                }
+            }
+            Expect(ScopeCase(() =>
+            {
+                EnterRefresh();
+                ExitRefresh(null);
+            }), "a game-value refresh nested in a display scope ends the reuse");
+            Expect(ScopeCase(() =>
+            {
+                SuspendPrefix(out int state);
+                ResumeFinalizer(state);
+            }), "a suspension ends the reuse");
+            Expect(ScopeCase(() =>
+            {
+                if (!GameHandlersOnly(_ => { }))
+                {
+                    ExactFromHere();
+                }
+            }), "another mod's CombatStateChanged handler ends the reuse");
+            System.Reflection.MethodInfo? gameHandler = typeof(MegaCrit.Sts2.Core.Nodes.Combat.NEnergyCounter).GetMethod("OnCombatStateChanged",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public,
+                null, new[] { typeof(CombatState) }, null);
+            if (gameHandler != null)
+            {
+                object counter = RuntimeHelpers.GetUninitializedObject(typeof(MegaCrit.Sts2.Core.Nodes.Combat.NEnergyCounter));
+                var game = (Action<CombatState>)Delegate.CreateDelegate(typeof(Action<CombatState>), counter, gameHandler);
+                Expect(GameHandlersOnly(game) && !GameHandlersOnly(game + (_ => { })), "the game's own handlers keep the reuse, one more of another assembly doesn't");
+            }
+            bool afterEnd;
+            {
+                int wasSnapshot = _snapshotDepth, wasRefresh = _refreshDepth, wasSerial = _scopeSerial;
+                bool wasSafeHere = _safe;
+                try
+                {
+                    _snapshotDepth = 0;
+                    _refreshDepth = 0;
+                    EnterDisplayRefresh(out int outer);
+                    _safe = true;
+                    var key = ((object)models[4], (object?)null);
+                    Augmented(key, models.Take(3).ToArray()).ToList();
+                    Augmented(key, models.Take(3).ToArray()).ToList();
+                    IEnumerable<AbstractModel> reused = Augmented(key, models.Skip(3).ToArray());
+                    ExitRefresh(null, outer);
+                    afterEnd = reused.SequenceEqual(models.Skip(3));
+                }
+                finally
+                {
+                    _snapshotDepth = wasSnapshot;
+                    _refreshDepth = wasRefresh;
+                    _scopeSerial = wasSerial;
+                    _safe = wasSafeHere;
+                }
+            }
+            Expect(afterEnd, "a reuse enumerated after its scope ended is the call's own output");
+
+            // 7. Re-audit of c2f613b (D1, D3, D6): a checked reuse after a first caller stopping early doesn't count as checked (the
+            // next reuse is checked again); one covering everything its caller read does; the first walk's output is guarded as the
+            // reuses are; at the scope's end the kept source no caller finished is disposed (its finally blocks run).
+            bool d1, d3, d6;
+            {
+                int wasSnapshot = _snapshotDepth, wasRefresh = _refreshDepth, wasSerial = _scopeSerial;
+                bool wasSafeHere = _safe;
+                try
+                {
+                    _snapshotDepth = 0;
+                    _refreshDepth = 0;
+                    EnterDisplayRefresh(out int outer);
+                    _safe = true;
+                    var key = ((object)models[3], (object?)null);
+                    var source7 = new CountingSource(models.Take(3).ToArray());
+                    IEnumerable<AbstractModel> firstWalk = Augmented(key, source7);
+                    d6 = firstWalk is ReusedOutput;
+                    firstWalk.Take(1).Count(); // The first caller stops at the first element.
+                    IEnumerable<AbstractModel> check1 = Augmented(key, models.Take(3).ToArray());
+                    check1.ToList(); // Reads three, the kept output pulled one: not covered.
+                    IEnumerable<AbstractModel> check2 = Augmented(key, models.Take(3).ToArray());
+                    bool again = check2 is CheckedOutput;
+                    check2.Take(1).Count(); // Within what the kept one pulled: covered.
+                    IEnumerable<AbstractModel> reuse = Augmented(key, models.Skip(3).ToArray());
+                    d1 = again && reuse is ReusedOutput;
+                    int disposedBefore = source7.Disposed;
+                    ExitRefresh(null, outer);
+                    d3 = disposedBefore == 0 && source7.Disposed == 1;
+                }
+                finally
+                {
+                    _snapshotDepth = wasSnapshot;
+                    _refreshDepth = wasRefresh;
+                    _scopeSerial = wasSerial;
+                    _safe = wasSafeHere;
+                }
+            }
+            Expect(d1, "a checked reuse that couldn't compare everything read leaves the key unchecked (D1)");
+            Expect(d6, "the first walk's output is guarded by its scope (D6)");
+            Expect(d3, "at the scope's end a kept source no caller finished is disposed (D3)");
+        }
+        catch (Exception e)
+        {
+            failures.Add("threw: " + e);
+        }
+        finally
+        {
+            _selfTesting = false;
+            // The handlers' verdict cached by the cases above is the test's: the next dispatch works it out (and logs) again.
+            _lastHandlers = null;
+            WalkReuseEnabled = wasEnabled;
+            _safe = wasSafe;
+            _refreshDepth = wasDepth;
+            _augmented = wasAugmented;
+        }
+        if (failures.Count > 0)
+        {
+            throw new InvalidOperationException("walk output self-test: " + string.Join(" | ", failures));
+        }
+        lines.Add($"FOREIGN walkreuse selftest: {lines.Count} cases as expected");
+        return lines;
+    }
+#endif
+
+#if BENCH
+    /// <summary>CombatStateChanged dispatches with another mod's handler: no reuse in them (the effects check of W-1a).</summary>
+    public static long ForeignDispatches { get; private set; }
+#endif
+
+    /// <summary>
+    /// The augmented-walk premise's kept note (bdopt why, the menu's hover): the walks carrying other mods' postfixes whose output
+    /// is reused within a display refresh. Cleared with the shape rules off, the part off, or nothing of the kind there.
+    /// </summary>
+    private static void NoteAugmentedWalks()
+    {
+        try
+        {
+            var walks = new List<MethodBase>();
+            if (PatchSafety.ShapeRules && WalkReuseEnabled && RefreshEnabled && _applied)
+            {
+                if (PatchSafety.HasOtherPatches(_combatIterate) && _combatWalkPostfix != null && PostfixLast(_combatIterate, _combatWalkPostfix, ref _combatLast))
+                {
+                    walks.Add(_combatIterate!);
+                }
+                if (PatchSafety.HasOtherPatches(_runIterate) && _runWalkPostfix != null && PostfixLast(_runIterate, _runWalkPostfix, ref _runLast))
+                {
+                    walks.Add(_runIterate!);
+                }
+            }
+            if (walks.Count == 0)
+            {
+                PatchSafety.ClearKept(WalkReuseName, "walk_reuse");
+                return;
+            }
+            var mods = new List<string>(PatchSafety.OtherModsPatching(walks));
+            foreach (MethodBase walk in walks)
+            {
+                mods.AddRange(HarmonyWatch.HiddenOwners(walk));
+            }
+            string names = string.Join(", ", walks.Select(m => $"{m.DeclaringType?.Name}.{m.Name}"));
+            PatchSafety.Kept(WalkReuseName, "walk_reuse", $"other mods' code on the listener walks ({names}) runs once per display refresh instead of "
+                + "once per walk: its output, enumerated only as far as the game goes, is reused for that refresh's walks (a stated premise: "
+                + "within one display refresh, at one state, it gives the same listeners; each refresh's first reuse of a walk and one in "
+                + $"{WalkVerifyEvery} after it are compared with a fresh call, a difference turns this off; the co-op state check, game-value "
+                + "refreshes, game logic resuming in a refresh and a refresh other mods handle never reuse it)", mods.ToArray());
+        }
+        catch
+        {
+            // Display only.
+        }
     }
 
     /// <summary>The note (back-off preflight) for scopes that can't cache while other mods patch the walks: see <see cref="EnterAny"/>.</summary>
@@ -291,6 +1320,8 @@ public static class ListenerCache
     {
         __state = _suspended ? 2 : 1;
         _suspended = true;
+        // Game logic may change the state from here: no walk output kept before is reused after it (re-audit of the premises, W-5).
+        ExactFromHere();
 #if BENCH
         SuspendedRevalidations++;
 #endif
@@ -408,7 +1439,15 @@ public static class ListenerCache
     /// <summary>Invokes the CombatStateChanged handlers inside one refresh scope.</summary>
     public static void InvokeStateChangedInScope(Action<CombatState> handlers, CombatState state)
     {
-        EnterRefresh();
+        EnterRefresh(display: true);
+        // Only where a walk carries other mods' postfixes (the only case anything is reused).
+        if ((_combatAugmented || _runAugmented) && !GameHandlersOnly(handlers))
+        {
+            ExactFromHere();
+#if BENCH
+            ForeignDispatches++;
+#endif
+        }
         try
         {
             handlers(state);
@@ -557,6 +1596,40 @@ public static class ListenerCache
 #endif
     }
 
+    /// <summary><see cref="Invalidate"/> for the dominion's setters (v0.113; test builds count a dominion set, not cleared).</summary>
+#if BENCH
+    private static void InvalidateDominion(object? value)
+    {
+        Bump();
+        if (value != null)
+        {
+            DominionInvalidations++;
+        }
+    }
+
+    /// <summary>Dominions set (a Dread run: its act entry on the run, each combat built in it), each invalidating (effect counter).</summary>
+    public static long DominionInvalidations { get; private set; }
+#else
+    private static void InvalidateDominion() => Bump();
+#endif
+
+    /// <summary><see cref="Invalidate"/> for the run models' setters (v0.113; test builds count the lists of more than one model).</summary>
+#if BENCH
+    private static void InvalidateRunModels(System.Collections.IEnumerable? value)
+    {
+        Bump();
+        if (value != null && value.Cast<object>().Skip(1).Any())
+        {
+            ModeRunModelInvalidations++;
+        }
+    }
+
+    /// <summary>Run model lists set with a game mode's model (Dread, Blitz: the run's creation, each combat built in it).</summary>
+    public static long ModeRunModelInvalidations { get; private set; }
+#else
+    private static void InvalidateRunModels() => Bump();
+#endif
+
     private static void InvalidateIfOwned(CardModel __instance)
     {
         // Never throws into the setter: unsure, invalidate.
@@ -593,6 +1666,9 @@ public static class ListenerCache
     {
         if (_snapshotDepth + _refreshDepth == 0)
         {
+            _exactScope = false;
+            _augmented?.Clear();
+            _scopeSerial++;
             try
             {
                 // Checked per outermost scope: another mod may patch after we load. A replayed list stands for the whole
@@ -648,6 +1724,7 @@ public static class ListenerCache
                 _kept?.Clear();
                 _fromKept?.Clear();
                 _cache?.Clear();
+                _augmented?.Clear();
             }
             else
             {
@@ -697,6 +1774,8 @@ public static class ListenerCache
             _reuseBlocked = false;
             _fromKept?.Clear();
             _cache?.Clear();
+            ClearAugmented();
+            _exactScope = false;
             ScopeEnded?.Invoke();
         }
         catch (Exception e)
@@ -735,7 +1814,14 @@ public static class ListenerCache
         return entry.Listeners;
     }
 
+#if BENCH
+    /// <summary>Test builds: also when <c>listenercache</c> is armed (<see cref="TestWrong"/>): this reuse is checked, against a wrong kept list.</summary>
+    private static bool VerifyThisReuse() => Reused % ReuseVerifyEvery == 0 || (_wrongKept = TestWrong.Take("listenercache"));
+
+    [ThreadStatic] private static bool _wrongKept;
+#else
     private static bool VerifyThisReuse() => Reused % ReuseVerifyEvery == 0;
+#endif
 
     /// <summary>BaseLib's card modifier base type.</summary>
     private const string CardModifierType = "BaseLib.Abstracts.CardModifier";
@@ -793,6 +1879,14 @@ public static class ListenerCache
         if (kept != null)
         {
             ReuseVerified++;
+#if BENCH
+            if (_wrongKept)
+            {
+                // Test: the kept list missing its last entry, or with the fresh list's first twice (the check must see it).
+                _wrongKept = false;
+                kept = new ReadOnlyCollection<AbstractModel>(kept.Count > 0 ? kept.Take(kept.Count - 1).ToList() : fresh.Take(1).Concat(fresh).ToList());
+            }
+#endif
             if (!kept.SequenceEqual(fresh, RefComparer.Models))
             {
                 ReuseEnabled = false;
@@ -816,6 +1910,7 @@ public static class ListenerCache
         __state = _snapshotDepth + 1;
         EnterAny();
         BlockReuse();
+        ExactFromHere();
         _snapshotDepth++;
     }
 
@@ -834,10 +1929,21 @@ public static class ListenerCache
     /// are always built fresh here, never reused from an earlier scope. For callers pairing it with <c>ExitRefresh(null)</c>
     /// in a try/finally; patches use <see cref="EnterRefreshPatch"/>.
     /// </summary>
-    internal static void EnterRefresh()
+    internal static void EnterRefresh() => EnterRefresh(display: false);
+
+    /// <summary>
+    /// <see cref="EnterRefresh()"/>; <paramref name="display"/>: the CombatStateChanged dispatch (its handlers are the game's
+    /// display, game logic resuming inside it runs vanilla: <see cref="SuspendPrefix"/>), where the augmented walks' outputs may
+    /// still be reused within the scope. Any other caller's pass may feed game state: none reused from there on.
+    /// </summary>
+    private static void EnterRefresh(bool display)
     {
         EnterAny();
         BlockReuse();
+        if (!display)
+        {
+            ExactFromHere();
+        }
         _refreshDepth++;
     }
 
@@ -987,6 +2093,7 @@ public static class ListenerCache
         PatchSafety.Fault(Name);
         _cache?.Clear();
         _kept?.Clear();
+        _augmented?.Clear();
         Log.Error($"[{ModEntry.Id}] {Name} disabled after exception, falling back to vanilla: {e}");
     }
 }

@@ -24,8 +24,11 @@ var mutations = new Dictionary<string, (string What, Action<ModuleDefinition> Ap
         foreach (Instruction i in template.Body.Instructions) added.Body.Instructions.Add(i.Operand is MethodReference r ? Instruction.Create(i.OpCode, r) : Instruction.Create(i.OpCode));
         model.Methods.Insert(0, added);
     }),
-    ["unrelated-body"] = ("a method no patch relies on changed (Log.Info)", m =>
-        Prepend(Method(m, "MegaCrit.Sts2.Core.Logging.Log", "Info"), OpCodes.Ldarg_0, OpCodes.Pop)),
+    // Not Log.Info any more (round 4): RelicFlashMerge's reviewed code sets are the whole game closure of a flash's visuals, the
+    // logger among them (error paths), so a change there rightly leaves the merge off until reviewed. The credits screen's own
+    // code is reached by no patch's set.
+    ["unrelated-body"] = ("a method no patch relies on changed (NCreditsScreen.InitFmod)", m =>
+        Prepend(Method(m, "MegaCrit.Sts2.Core.Nodes.Screens.Credits.NCreditsScreen", "InitFmod"), OpCodes.Ldarg_0, OpCodes.Pop)),
     // --- game, real changes of code a patch mirrors or relies on ---
     ["energy-hook"] = ("Hook.ModifyEnergyCostInCombat changed (HookFilter mirrors it)", m =>
         Prepend(Method(m, "MegaCrit.Sts2.Core.Hooks.Hook", "ModifyEnergyCostInCombat"), OpCodes.Ldarg_2, OpCodes.Pop)),
@@ -157,6 +160,16 @@ var mutations = new Dictionary<string, (string What, Action<ModuleDefinition> Ap
         Prepend(m.GetTypes().Where(t => t.Name == "MultiEnchantment").SelectMany(t => t.Methods).First(x => x.Name == "RecalculateValues"), OpCodes.Ldarg_0, OpCodes.Pop)),
     ["clone-from"] = ("CardModel.FromSerializable changed (LimitlessCloneMemo checks the game's clone chain, GameChain)", m =>
         Prepend(Method(m, "MegaCrit.Sts2.Core.Models.CardModel", "FromSerializable"), OpCodes.Ldarg_0, OpCodes.Pop)),
+    ["execfinished-add"] = ("AbstractModel.add_ExecutionFinished changed (FastListeners caches hooks keeping subscribers only while it knows every writer)", m =>
+        Prepend(Method(m, "MegaCrit.Sts2.Core.Models.AbstractModel", "add_ExecutionFinished"), OpCodes.Ldarg_0, OpCodes.Pop)),
+    ["execfinished-clone"] = ("AbstractModel.AfterCloned changed (it clears a clone's ExecutionFinished subscribers: FastListeners relies on it)", m =>
+        Prepend(Method(m, "MegaCrit.Sts2.Core.Models.AbstractModel", "AfterCloned"), OpCodes.Ldarg_0, OpCodes.Pop)),
+    ["hand-revalidate"] = ("NPlayerHand.RevalidateSelectionAfterStateChange changed (ListenerCache suspends its dispatch scope around what it resumes)", m =>
+        Prepend(Method(m, "MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand", "RevalidateSelectionAfterStateChange"), OpCodes.Ldarg_0, OpCodes.Pop)),
+    ["hand-select"] = ("NPlayerHand.SelectCards (its state machine) changed (ListenerCache relies on how it makes the selection's task)", m =>
+        Prepend(Type(m, "MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand").NestedTypes.First(t => t.Name.Contains("<SelectCards>")).Methods.First(x => x.Name == "MoveNext"), OpCodes.Ldarg_0, OpCodes.Pop)),
+    ["orb-enqueue"] = ("OrbQueue.TryEnqueue changed (ListenerCache invalidates after its first await, which comes after the orb is added)", m =>
+        Prepend(Method(m, "MegaCrit.Sts2.Core.Entities.Orbs.OrbQueue", "TryEnqueue"), OpCodes.Ldarg_0, OpCodes.Pop)),
     ["limitless-getter"] = ("Limitless: MultiEnchantment.EnchantmentsOnCards getter changed (LimitlessHookSkip relies on what it hands out)", m =>
         Prepend(m.GetTypes().Where(t => t.Name == "MultiEnchantment").SelectMany(t => t.Methods).First(x => x.Name == "get_EnchantmentsOnCards" && x.HasBody), OpCodes.Ldarg_0, OpCodes.Pop)),
     ["baselib-plaque"] = ("BaseLib: AddSubtypesToTypePlaquePatch.TryModifyPlaqueText changed (TypePlaqueSkip relies on it)", m =>

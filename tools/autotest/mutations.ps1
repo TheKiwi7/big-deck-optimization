@@ -28,13 +28,13 @@ $Data = Join-Path $GameDir "data_sts2_windows_x86_64"
 $env:PATH = "C:\Program Files\dotnet;$env:PATH"; $env:DOTNET_CLI_TELEMETRY_OPTOUT = "1"
 
 # What leaves when the whole pile tracking does: the listener cache watches the same methods, hook lists are built inside it.
-$PileWriters = "ListenerCache|HookFilter|PileIndex(\.Duplicates)?|CardDbScan|DeckCountMemo(\.Checks)?|FastListeners\.(Cache|Moves)|LimitlessRecalcSkip\.Passes|SnapshotCardReuse\.(Trust|Moved|Dirty|Hooks|Piles|PileBits|Blocks)"
+$PileWriters = "ListenerCache(\.(Creatures|Suspended))?|HookFilter|PileIndex(\.Duplicates)?|CardDbScan|DeckCountMemo(\.Checks)?|FastListeners\.(Cache|Moves)|LimitlessRecalcSkip\.Passes|SnapshotCardReuse\.(Trust|Moved|Dirty|Hooks|Piles|PileBits|Blocks)"
 # Target, pattern every "left vanilla" line must match ("" = nothing may be left vanilla), effects allowed to drop to zero ("" = none).
 $Expected = [ordered]@{
     "renumber-hooks"  = @("game", "", "")
     "new-hook"        = @("game", "", "")
     "unrelated-body"  = @("game", "", "")
-    "energy-hook"     = @("game", "ModifyEnergyCostInCombat", "")
+    "energy-hook"     = @("game", "ModifyEnergyCostInCombat", "CardSortKeys(\.Answers)?")
     "default-hitting" = @("game", "ShouldAllowHitting", "")
     "default-task"    = @("game", "AfterCardPlayed", "")
     "helper-push"     = @("game", "choice context helpers changed|PushModel", "")
@@ -51,8 +51,11 @@ $Expected = [ordered]@{
     "setup-turn"      = @("game", "ExtraScopes|first-turn|SetupPlayerTurn", "ExtraScopes")
     "relic-holder"    = @("game", "RelicFlashMerge|OnRelicFlashed", "")
     "rename-method"   = @("game", "RemoveInternal|AutoTest", $PileWriters)
-    "rename-field"    = @("game", "combat walk left vanilla", "FastListeners\.CombatWalk")
-    "combat-walk"     = @("game", "combat walk left vanilla", "FastListeners\.CombatWalk")
+    # CombatState's getters reading _allies are in HookSkip's per-hook helper sets (fingerprinted): those hooks' helpers go vanilla;
+    # in CardFlightLimit's computed set too (not reviewed: no soul skipped).
+    "rename-field"    = @("game", "combat walk left vanilla|choice context helpers changed", "FastListeners\.CombatWalk|CardFlightLimit")
+    # The walk's iterator is also in CardFlightLimit's computed set (CombatManager.IsEnding walks the listeners): not reviewed, no soul skipped.
+    "combat-walk"     = @("game", "combat walk left vanilla", "FastListeners\.CombatWalk|CardFlightLimit")
     "run-walk"        = @("game", "run walk left vanilla", "FastListeners\.RunWalk")
     "internal-member" = @("game", "HookFilter|GetWithModifiers", "SnapshotCardReuse\.(Release|Piles|Trust|Moved|Dirty|Hooks|Blocks|CardBits|UpgradeBits|PileBits)")
     "signature"       = @("game", "HookFilter|ShouldPlay", "")
@@ -65,9 +68,9 @@ $Expected = [ordered]@{
     "limitless-body"  = @("Limitless", "LimitlessReserialize|LimitlessRecalcSkip|SetSerializableCards", "LimitlessReserialize|LimitlessRecalcSkip\.(Memos|Passes)|SnapshotCardReuse\.Moved|LimitlessCloneMemo|LimitlessHookSkip(\.Saved)?")
     # A changed forwarder: one of the known writers of the inner list (2026-11-15), so HookSkip and the pass skipping go vanilla whole.
     "limitless-forward" = @("Limitless", "LimitlessHookSkip|AfterCardPlayed|inner list|passes not skipped", "LimitlessRecalcSkip\.Passes|LimitlessHookSkip(\.Saved)?")
-    "limitless-writer"  = @("Limitless", "unchanged piles|SerializableEnchantmentsOnCards", "SnapshotCardReuse\.(Trust|Moved|Dirty|Hooks)")
+    "limitless-writer"  = @("Limitless", "unchanged piles|SerializableEnchantmentsOnCards|inner list may also be changed", "SnapshotCardReuse\.(Trust|Moved|Dirty|Hooks)|LimitlessHookSkip(\.Saved)?|LimitlessRecalcSkip\.Passes")
     "limitless-recalc"  = @("Limitless", "LimitlessRecalcSkip|RecalculateValues|not skipped|inner list", "LimitlessRecalcSkip\.(Memos|Passes)|LimitlessHookSkip(\.Saved)?")
-    "limitless-clone" = @("Limitless", "LimitlessCloneMemo|DeepCloneFields", "LimitlessCloneMemo|LimitlessRecalcSkip\.Passes")
+    "limitless-clone" = @("Limitless", "LimitlessCloneMemo|DeepCloneFields", "LimitlessCloneMemo|LimitlessRecalcSkip\.Passes|LimitlessHookSkip(\.Saved)?")
     "limitless-tabs"  = @("Limitless", "EnchantmentTabReuse|UpdateEnchantmentVisuals", "EnchantmentTabReuse")
     "baselib-plaque"  = @("BaseLib", "TypePlaqueSkip|TryModifyPlaqueText", "TypePlaqueSkip")
     # LimitlessCloneMemo checks the game's clone and build chain (GameChain): a changed CardModel.FromSerializable leaves it vanilla,
@@ -75,6 +78,15 @@ $Expected = [ordered]@{
     "clone-from"      = @("game", "LimitlessCloneMemo|LimitlessHookSkip|clone|FromSerializable", "LimitlessCloneMemo|LimitlessHookSkip(\.Saved)?")
     # LimitlessHookSkip relies on what the getter hands out (the inner list only known code changes).
     "limitless-getter" = @("Limitless", "LimitlessHookSkip|LimitlessRecalcSkip|EnchantmentsOnCards", "LimitlessHookSkip(\.Saved)?|LimitlessRecalcSkip(\.Memos|\.Passes)?")
+    # Coverage hardening (2026-11-17): an ExecutionFinished accessor changed, a hand selection or orb queue method changed.
+    # Calibrated on the proof run of 2026-11-17 (v0.107.1): AfterCloned is also the clone chain LimitlessCloneMemo pins (it skips,
+    # LimitlessHookSkip's saved lists with it, as clone-from); orb-enqueue stops ListenerCache's whole Apply, and HookFilter serves
+    # its lists only inside ListenerCache's scopes, SnapshotCardReuse's kept piles only with HookFilter active (ReadsFor).
+    "execfinished-add"   = @("game", "ExecutionFinished", "")
+    "execfinished-clone" = @("game", "ExecutionFinished|AfterCloned", "LimitlessCloneMemo|LimitlessHookSkip(\.Saved)?")
+    "hand-revalidate"    = @("game", "RevalidateSelectionAfterStateChange|dispatch scope", "ListenerCache\.Suspended")
+    "hand-select"        = @("game", "SelectCards|dispatch scope", "ListenerCache\.Suspended")
+    "orb-enqueue"        = @("game", "ListenerCache|TryEnqueue", "ListenerCache(\.\w+)?|HookFilter|SnapshotCardReuse\.(Trust|Moved|Dirty|Hooks)")
 }
 $unknown = @($Only | Where-Object { -not $Expected.Contains($_) })
 if ($unknown.Count) { throw "-Only: no such mutation in the table: $($unknown -join ', ')" }
@@ -128,17 +140,25 @@ try {
     New-ThinCopy $GameDir (Join-Path $thinRoot "reference")
     # The reference: every effect must have fired on the unmodified game, or the check below proves nothing.
     $sessions = @([pscustomobject]@{ Name = "reference"; Script = $scriptPath; Log = Join-Path $Results "mutation-reference.log"; GameDir = Join-Path $thinRoot "reference" })
-    $sessions += foreach ($name in $names) { [pscustomobject]@{ Name = $name; Script = $scriptPath; Log = Join-Path $Results "mutation-$name.log"; GameDir = Join-Path $thinRoot $name } }
+    # Mutated: judge.py --mutated (parlib.ps1's Test-MutatedJob): a part the mutation leaves vanilla compares nothing and counts no
+    # effect there, which this script checks against its table, not judge.py.
+    $sessions += foreach ($name in $names) { [pscustomobject]@{ Name = $name; Script = $scriptPath; Log = Join-Path $Results "mutation-$name.log"; GameDir = Join-Path $thinRoot $name; Mutated = $true } }
     $runs = Invoke-Sessions -Jobs $sessions -GameDir $GameDir -MaxJobs $Jobs -TimeoutSec $TimeoutSec -Label "mutations"
     $Reference = Join-Path $Results "mutation-reference.log"
-    # Co-op only: effects-check, solo, can't make SyncedCardRelease run, nor ReplayStateSkip on v0.107.1 (it checksums solo combats
-    # from v0.111 on). SnapshotCardReuse.Hooks must run (effects-check applies Curious): a mutation losing it is seen.
-    python -I (Join-Path $PSScriptRoot "effects.py") $Reference --allow-zero "^(ReplayStateSkip|SyncedCardRelease)$" | Out-Host
+    # Co-op only: effects-check, solo, can't make SyncedCardRelease run, nor ReplayStateSkip on v0.107.x (the game checksums solo
+    # combats from v0.111 on: there it must run). SnapshotCardReuse.Hooks must run (effects-check applies Curious): a mutation losing
+    # it is seen. (judge.py checks the same from effects-check's '# effects-ran' lines: the reference's problems below.)
+    $allowZero = if ((Get-GameTag $GameDir) -match '^v0\.107\.') { "^(ReplayStateSkip|SyncedCardRelease)$" } else { "^SyncedCardRelease$" }
+    python -I (Join-Path $PSScriptRoot "effects.py") $Reference --allow-zero $allowZero | Out-Host
     # The reference: every effect fired and nothing left unbalanced on the unmodified game, and its comparisons said identical,
     # or the checks below (lost effects, comparisons) prove nothing for what it lacks.
     $referenceOk = $LASTEXITCODE -eq 0
     # bdperf comparisons only (ExtraScopes' first-turn line is the scope's own check, gone when ExtraScopes is the part a mutation leaves vanilla).
-    $IdenticalLine = { param($l) $l -match "OK: identical" -and $l -notmatch "first-turn filter" }
+    # Each comparison prints twice: a one-line log line ('[INFO] [BigDeckOptimization] bdperf ...') and the console echo, whose first
+    # line is '[INFO] ... AutoTest <t>s   ok: ...' and whose other lines carry no prefix; a part not applied prints its "nothing to
+    # compare" line once, in the echo. Count the echo alone ($EchoLine), so each comparison counts once either way.
+    $EchoLine = { param($l) $l -match 'AutoTest\s+[\d.]+s\s+ok: ' -or $l -notmatch '^\[' }
+    $IdenticalLine = { param($l) $l -match "OK: identical" -and $l -notmatch "first-turn filter" -and (& $EchoLine $l) }
     $referenceIdentical = @(Get-Content $Reference | Where-Object { & $IdenticalLine $_ }).Count
     $referenceProblems = @(Invoke-Judge @($Reference)) + @(($runs | Where-Object { $_.Name -eq "reference" }).Failed | Where-Object { $_ -match '^(ended early|froze|test mod )' })
     if (-not $referenceOk) { Write-Output "REFERENCE: an effect never ran (or stayed open) on the unmodified game: what a mutation loses there can't be seen" }
@@ -180,7 +200,7 @@ try {
         $ok = @($text | Where-Object { & $IdenticalLine $_ }).Count
         # A comparison of a part the mutation left vanilla says so ("not applied ...: nothing to compare") instead of "OK"; so does
         # bdperf checksum's row of a part another part's back-off idles ("not compared: filter ...": no list once ListenerCache left).
-        $ok += @($text | Where-Object { $_ -match "not applied.*nothing to compare|not compared: " }).Count
+        $ok += @($text | Where-Object { $_ -match "not applied.*nothing to compare|not compared: " -and (& $EchoLine $_) }).Count
         # Every comparison the reference made must have run and said identical here too (a failed one now ends the session).
         if ($ok -lt $referenceIdentical) { $problems += "$ok comparison(s) said identical, the reference $referenceIdentical" }
         $verdict = if ($problems.Count -eq 0) { "PASS" } else { "FAIL" }

@@ -7,9 +7,12 @@ using System.Reflection.Emit;
 using BigDeckOptimization.Patches;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Hooks;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
+using MegaCrit.Sts2.Core.ValueProps;
 
 namespace BigDeckOptimization.Bench;
 
@@ -36,18 +39,126 @@ namespace BigDeckOptimization.Bench;
 /// machine's entry (accepted: the first turn's filters keep their scope).
 /// <c>foreignpatch iljudge sweep</c>: the prewalk observer and the gated observer on every classified hook of this game (how many the
 /// analysis follows).
+/// The identity bridge (the owner-approved premise of 2026-11-17, Downfall's and Watcher's <c>ModifyDamageInternal</c> shape):
+/// <c>il-damage-bridge squeeze</c> inserts Downfall's run right after the game's <c>stloc</c> of each listener's additive result,
+/// calling a bridge gated on Squeeze that adds 1 for it (counted) and gives the game's value back otherwise (accepted: Squeeze keeps
+/// its iterations, damage +1 per Squeeze listener on both sides: the checksums see a lost one); <c>il-damage-bridge-callfirst</c>
+/// the same with a call before the gate (refused: the hook stays vanilla). The self-test adds the exact insertion (once, and twice
+/// for two mods' bridges in a row) and its near misses: another argument given back, another local stored, the run placed before
+/// the game's store, a local the game didn't read just before, a call before the gate, a static constructor, the listener twice.
 /// </summary>
 public static class IlJudgeShapes
 {
-    public static readonly string[] Shapes = { "il-gated-observer", "il-prewalk-observer", "il-ungated-observer", "il-store-local", "il-game-call", "il-branch", "il-firstturn-outside" };
+    public static readonly string[] Shapes = { "il-gated-observer", "il-prewalk-observer", "il-ungated-observer", "il-store-local", "il-game-call", "il-branch", "il-firstturn-outside",
+        "il-damage-bridge", "il-damage-bridge-callfirst" };
 
     private static readonly ConcurrentDictionary<string, long> _counts = new();
 
     internal static void Count(string key) => _counts.AddOrUpdate(key, 1, (_, n) => n + 1);
 
-    /// <summary>The counts as STATE lines (compared line for line between the on and off sides).</summary>
+    /// <summary>
+    /// The counts as STATE lines (compared line for line between the on and off sides). The damage bridges' calls are compared
+    /// inside the game's damage actions only (<see cref="DamageActions"/>): previews recompute damage at the display's or the clock's
+    /// pace (proof run 2: the game's card, intent and poison previews, 1-2% more or fewer calls with the mod on; proof run 3: another
+    /// mod's preview such as BetterSpire2's DamageTracker, 4 times a second, counted outside the game's previews), so their totals
+    /// are FOREIGN display lines, not compared.
+    /// </summary>
     public static IEnumerable<string> ReportLines(string label) =>
-        _counts.OrderBy(e => e.Key, StringComparer.Ordinal).Select(e => $"STATE foreign {label} {e.Key} {e.Value}");
+        _counts.OrderBy(e => e.Key, StringComparer.Ordinal).Select(e => $"STATE foreign {label} {e.Key} {e.Value}")
+            .Concat(Bridges.SqueezeCalls > 0 ? new[]
+            {
+                $"STATE foreign {label} il-damage-bridge squeeze calls in damage actions {Bridges.SqueezeInActions}",
+                $"FOREIGN display {label} il-damage-bridge squeeze calls {Bridges.SqueezeCalls}",
+            } : Array.Empty<string>())
+            .Concat(Bridges.EveryCall > 0 ? new[]
+            {
+                $"STATE foreign {label} il-damage-bridge-callfirst calls in damage actions {Bridges.EveryInActions}",
+                $"FOREIGN display {label} il-damage-bridge-callfirst every call {Bridges.EveryCall}",
+            } : Array.Empty<string>());
+
+    /// <summary>
+    /// The game's damage actions (the only game methods calling <c>Hook.ModifyDamage</c> for real damage, on v0.107.1 and v0.113.1
+    /// alike: every async <c>CreatureCmd.Damage</c> overload and Thrash's play; the others are previews): a counting scope of the bench
+    /// (<c>bdtest.foreign.damage-actions</c>, a prefix and a finalizer on each state machine's MoveNext, where the synchronous
+    /// <c>Hook.ModifyDamage</c> call runs; installed with the damage bridges, on both sides alike). Any preview, the game's or another
+    /// mod's (BetterSpire2's DamageTracker), stays outside it.
+    /// </summary>
+    private static readonly (string Type, string Method)[] DamageActions =
+    {
+        ("MegaCrit.Sts2.Core.Commands.CreatureCmd", "Damage"),
+        ("MegaCrit.Sts2.Core.Models.Cards.Thrash", "OnPlay"),
+    };
+
+    private static bool _actionsScoped;
+
+    private static void ScopeDamageActions()
+    {
+        if (_actionsScoped)
+        {
+            return;
+        }
+        var harmony = new Harmony("bdtest.foreign.damage-actions");
+        int scoped = 0;
+        foreach ((string type, string method) in DamageActions)
+        {
+            Type declaring = typeof(AbstractModel).Assembly.GetType(type, throwOnError: true)!;
+            foreach (MethodInfo candidate in AccessTools.GetDeclaredMethods(declaring).Where(m => m.Name == method))
+            {
+                if (candidate.GetCustomAttribute<System.Runtime.CompilerServices.AsyncStateMachineAttribute>() == null)
+                {
+                    continue; // A synchronous overload forwards to an async one.
+                }
+                harmony.Patch(AccessTools.AsyncMoveNext(candidate), prefix: new HarmonyMethod(typeof(IlJudgeShapes), nameof(ActionEnter)),
+                    finalizer: new HarmonyMethod(typeof(IlJudgeShapes), nameof(ActionExit)));
+                scoped++;
+            }
+        }
+        if (scoped < 2)
+        {
+            throw new MissingMethodException($"damage actions: {scoped} async state machines found (CreatureCmd.Damage, Thrash.OnPlay)");
+        }
+        _actionsScoped = true;
+    }
+
+    private static void ActionEnter() => Bridges.ActionDepth++;
+
+    private static void ActionExit() => Bridges.ActionDepth--;
+
+    /// <summary>
+    /// The game's damage previews (every other method of the game calling <c>Hook.ModifyDamage</c>): a second scope
+    /// (<c>bdtest.foreign.damage-previews</c>), so a preview the game refreshes synchronously inside an action (a card's label on a
+    /// change) isn't counted as the action's either.
+    /// </summary>
+    private static readonly (string Type, string Method)[] DamagePreviews =
+    {
+        ("MegaCrit.Sts2.Core.Localization.DynamicVars.DamageVar", "UpdateCardPreview"),
+        ("MegaCrit.Sts2.Core.Localization.DynamicVars.CalculatedDamageVar", "UpdateCardPreview"),
+        ("MegaCrit.Sts2.Core.Localization.DynamicVars.OstyDamageVar", "UpdateCardPreview"),
+        ("MegaCrit.Sts2.Core.Models.Powers.PoisonPower", "CalculateTotalDamageNextTurn"),
+        ("MegaCrit.Sts2.Core.MonsterMoves.Intents.AttackIntent", "GetSingleDamage"),
+    };
+
+    private static bool _previewsScoped;
+
+    private static void ScopeDamagePreviews()
+    {
+        if (_previewsScoped)
+        {
+            return;
+        }
+        var harmony = new Harmony("bdtest.foreign.damage-previews");
+        foreach ((string type, string method) in DamagePreviews)
+        {
+            MethodInfo target = AccessTools.DeclaredMethod(typeof(AbstractModel).Assembly.GetType(type, throwOnError: true), method)
+                ?? throw new MissingMethodException(type, method);
+            harmony.Patch(target, prefix: new HarmonyMethod(typeof(IlJudgeShapes), nameof(PreviewEnter)), finalizer: new HarmonyMethod(typeof(IlJudgeShapes), nameof(PreviewExit)));
+        }
+        _previewsScoped = true;
+    }
+
+    private static void PreviewEnter() => Bridges.PreviewDepth++;
+
+    private static void PreviewExit() => Bridges.PreviewDepth--;
 
     /// <summary>The method a shape patches: an async hook's state machine, else the hook itself.</summary>
     public static MethodBase Body(MethodBase hook) =>
@@ -70,11 +181,20 @@ public static class IlJudgeShapes
         {
             throw new ArgumentException(shape + " goes on a MegaCrit.Sts2.Core.Hooks.Hook method");
         }
-        if (shape == "il-gated-observer" && gate != "squeeze")
+        if (shape is "il-gated-observer" or "il-damage-bridge" or "il-damage-bridge-callfirst" && gate != "squeeze")
         {
-            throw new ArgumentException("il-gated-observer gate: squeeze");
+            throw new ArgumentException(shape + " gate: squeeze");
+        }
+        if (shape is "il-damage-bridge" or "il-damage-bridge-callfirst" && hook.Name != "ModifyDamageInternal")
+        {
+            throw new ArgumentException(shape + " goes on MegaCrit.Sts2.Core.Hooks.Hook:ModifyDamageInternal");
         }
         _counts.TryAdd("installed " + shape, 0); // The class initialized here, not at a first gated call.
+        if (shape is "il-damage-bridge" or "il-damage-bridge-callfirst")
+        {
+            ScopeDamageActions();
+            ScopeDamagePreviews();
+        }
         MethodBase body = Body(hook);
         string transpiler = shape switch
         {
@@ -84,6 +204,8 @@ public static class IlJudgeShapes
             "il-store-local" => nameof(StoreLocalTranspiler),
             "il-game-call" => nameof(GameCallTranspiler),
             "il-branch" => nameof(BranchTranspiler),
+            "il-damage-bridge" => nameof(DamageBridgeTranspiler),
+            "il-damage-bridge-callfirst" => nameof(DamageBridgeCallFirstTranspiler),
             _ => throw new ArgumentException("unknown il shape " + shape),
         };
         harmony.Patch(body, transpiler: new HarmonyMethod(typeof(IlJudgeShapes), transpiler) { priority = priority });
@@ -162,6 +284,73 @@ public static class IlJudgeShapes
         return code;
     }
 
+    private static IEnumerable<CodeInstruction> DamageBridgeTranspiler(IEnumerable<CodeInstruction> instructions, MethodBase original) =>
+        WithBridges(instructions.ToList(), original, AccessTools.Method(typeof(Bridges), nameof(Bridges.Additive)));
+
+    private static IEnumerable<CodeInstruction> DamageBridgeCallFirstTranspiler(IEnumerable<CodeInstruction> instructions, MethodBase original) =>
+        WithBridges(instructions.ToList(), original, AccessTools.Method(typeof(Bridges), nameof(Bridges.CallFirst)));
+
+    private static readonly MethodInfo _modifyDamageAdditive = AccessTools.Method(typeof(AbstractModel), nameof(AbstractModel.ModifyDamageAdditive));
+
+    /// <summary>
+    /// Downfall's transpiler (ModifyDamageInternalPatch), the additive call only: after each <c>callvirt ModifyDamageAdditive;
+    /// stloc.s X</c>, <c>&lt;the listener load&gt;; ldloc.s X; ldarg.2; ldloc.0; ldarg.s 5; ldarg.3; ldarg.s 6; ldarg.s 7|ldnull;
+    /// call bridge; stloc.s X</c> (the listener load: the instruction before the call's <c>ldarg.2</c>).
+    /// </summary>
+    private static List<CodeInstruction> WithBridges(List<CodeInstruction> code, MethodBase original, MethodInfo bridge)
+    {
+        int found = 0;
+        bool hasCardPlay = original.GetParameters().Any(p => p.ParameterType == typeof(CardPlay));
+        for (int i = 0; i < code.Count; i++)
+        {
+            if (code[i].opcode != OpCodes.Callvirt || code[i].operand is not MethodInfo m || m != _modifyDamageAdditive || i + 1 >= code.Count
+                || code[i + 1].opcode != OpCodes.Stloc_S || BridgeRun(code, i, hasCardPlay, bridge) is not { } run)
+            {
+                continue;
+            }
+            code.InsertRange(i + 2, run);
+            i += 1 + run.Count;
+            found++;
+        }
+        if (found == 0)
+        {
+            throw new InvalidOperationException("il-damage-bridge: no ModifyDamageAdditive call followed by stloc.s");
+        }
+        return code;
+    }
+
+    /// <summary>Downfall's inserted run for the call at <paramref name="call"/> (its store right after), or null when its listener load isn't found.</summary>
+    private static List<CodeInstruction>? BridgeRun(List<CodeInstruction> code, int call, bool hasCardPlay, MethodInfo bridge, OpCode? exitStore = null)
+    {
+        int arg2 = -1;
+        for (int k = call - 1; k >= 1 && k > call - 10; k--)
+        {
+            if (code[k].opcode == OpCodes.Ldarg_2)
+            {
+                arg2 = k;
+                break;
+            }
+        }
+        if (arg2 < 1)
+        {
+            return null;
+        }
+        object stored = code[call + 1].operand;
+        return new List<CodeInstruction>
+        {
+            code[arg2 - 1].Clone(),
+            new(OpCodes.Ldloc_S, stored),
+            new(OpCodes.Ldarg_2),
+            new(OpCodes.Ldloc_0),
+            new(OpCodes.Ldarg_S, (byte)5),
+            new(OpCodes.Ldarg_3),
+            new(OpCodes.Ldarg_S, (byte)6),
+            hasCardPlay ? new CodeInstruction(OpCodes.Ldarg_S, (byte)7) : new CodeInstruction(OpCodes.Ldnull),
+            new(OpCodes.Call, bridge),
+            exitStore is { } other ? new CodeInstruction(other) : new CodeInstruction(OpCodes.Stloc_S, stored),
+        };
+    }
+
     private static CodeInstruction Call(Type type, string method) => new(OpCodes.Call, AccessTools.Method(type, method));
 
     private static List<CodeInstruction> InsertBefore(IEnumerable<CodeInstruction> instructions, Func<CodeInstruction, bool> at,
@@ -205,6 +394,127 @@ public static class IlJudgeShapes
             {
                 Count("il-gated-observer squeeze with method");
             }
+        }
+    }
+
+    /// <summary>
+    /// Downfall's bridge signature (DMG): gated on Squeeze (+1 to its additive result, counted), else the game's value back as it
+    /// is (<c>ldarg.1; ret</c>). Its near misses for the self-test and the live control.
+    /// </summary>
+    public static class Bridges
+    {
+        /// <summary>No initializer (a static constructor or an impure one would refuse the bridges: the TypeGated rule).</summary>
+        public static long SqueezeCalls, EveryCall, SqueezeInActions, EveryInActions;
+
+        /// <summary>Inside a damage action of the game (<see cref="DamageActions"/>; main thread).</summary>
+        public static int ActionDepth;
+
+        /// <summary>Inside a damage preview of the game (<see cref="DamagePreviews"/>; main thread).</summary>
+        public static int PreviewDepth;
+
+        public static decimal Additive(AbstractModel listener, decimal vanillaNum, Creature target, decimal amount, ValueProp props, Creature dealer, CardModel cardSource, CardPlay? cardPlay)
+        {
+            if (listener is Squeeze)
+            {
+                SqueezeCalls++;
+                if (ActionDepth > 0 && PreviewDepth == 0)
+                {
+                    SqueezeInActions++;
+                }
+                return vanillaNum + 1m;
+            }
+            return vanillaNum;
+        }
+
+        /// <summary>Gives another argument back (the running total): not an identity.</summary>
+        public static decimal OtherArgument(AbstractModel listener, decimal vanillaNum, Creature target, decimal amount, ValueProp props, Creature dealer, CardModel cardSource, CardPlay? cardPlay)
+        {
+            if (listener is Squeeze)
+            {
+                return vanillaNum + 1m;
+            }
+            return amount;
+        }
+
+        /// <summary>A call before the gate (every call counted): not gated.</summary>
+        public static decimal CallFirst(AbstractModel listener, decimal vanillaNum, Creature target, decimal amount, ValueProp props, Creature dealer, CardModel cardSource, CardPlay? cardPlay)
+        {
+            EveryCall++;
+            if (ActionDepth > 0 && PreviewDepth == 0)
+            {
+                EveryInActions++;
+            }
+            if (listener is Squeeze)
+            {
+                return vanillaNum + 1m;
+            }
+            return vanillaNum;
+        }
+
+        /// <summary>A write on the no-op path after the gate (a static counter): not an identity exit.</summary>
+        public static decimal SideEffect(AbstractModel listener, decimal vanillaNum, Creature target, decimal amount, ValueProp props, Creature dealer, CardModel cardSource, CardPlay? cardPlay)
+        {
+            if (listener is Squeeze)
+            {
+                return vanillaNum + 1m;
+            }
+            EveryCall++;
+            return vanillaNum;
+        }
+
+        /// <summary>An identity of another type than the local stored (an int given back into a decimal local).</summary>
+        public static int OtherType(AbstractModel listener, int vanillaNum, Creature target, decimal amount, ValueProp props, Creature dealer, CardModel cardSource, CardPlay? cardPlay)
+        {
+            if (listener is Squeeze)
+            {
+                return vanillaNum + 1;
+            }
+            return vanillaNum;
+        }
+
+        /// <summary>The stored local by reference (its address taken).</summary>
+        public static decimal ByRef(AbstractModel listener, ref decimal vanillaNum, Creature target, decimal amount, ValueProp props, Creature dealer, CardModel cardSource, CardPlay? cardPlay)
+        {
+            if (listener is Squeeze)
+            {
+                return vanillaNum + 1m;
+            }
+            return vanillaNum;
+        }
+
+        /// <summary>The same identity shape on <c>Hook.ModifyBlock</c>'s additive result, in the game's argument order (the scope's control).</summary>
+        public static decimal Block(AbstractModel listener, decimal vanillaNum, Creature target, decimal amount, ValueProp props, CardModel cardSource, CardPlay? cardPlay)
+        {
+            if (listener is Squeeze)
+            {
+                return vanillaNum + 1m;
+            }
+            return vanillaNum;
+        }
+
+        /// <summary>The listener passed twice.</summary>
+        public static decimal TwoListeners(AbstractModel listener, decimal vanillaNum, AbstractModel again)
+        {
+            if (listener is Squeeze)
+            {
+                return vanillaNum + 1m;
+            }
+            return vanillaNum;
+        }
+    }
+
+    /// <summary>The identity bridge in a class with a static constructor (refused).</summary>
+    public static class CctorBridges
+    {
+        private static readonly long Started = Environment.TickCount64;
+
+        public static decimal Additive(AbstractModel listener, decimal vanillaNum, Creature target, decimal amount, ValueProp props, Creature dealer, CardModel cardSource, CardPlay? cardPlay)
+        {
+            if (listener is Squeeze)
+            {
+                return vanillaNum + Started;
+            }
+            return vanillaNum;
         }
     }
 
@@ -275,6 +585,24 @@ public static class IlJudgeShapes
                 }
             }
         }
+        // Re-audit of the premises (DMG-1): the identity bridge's scope, two cases whose game code differs from the loop above's.
+        foreach ((string name, MethodBase scopeBody, List<CodeInstruction>? scopeOriginal, List<CodeInstruction>? scopeVariant) in ScopeVariants())
+        {
+            if (scopeOriginal == null || scopeVariant == null)
+            {
+                failures.Add($"FOREIGN iljudge {name}: its insertion point not found");
+                continue;
+            }
+            cases++;
+            string? why = TranspilerJudge.JudgeCode(scopeBody, scopeOriginal.Select(TranspilerJudge.Ins.From).ToList(), scopeVariant.Select(TranspilerJudge.Ins.From).ToList(),
+                IsWalk, out _, out _, out _);
+            string line = $"FOREIGN iljudge {HookName(scopeBody)} {name}: {(why == null ? "accepted" : "refused (" + why + ")")}";
+            lines.Add(line);
+            if (why == null)
+            {
+                failures.Add(line + " (expected refused)");
+            }
+        }
         // ExtraScopes' first turn: other mods' transpilers on SetupPlayerTurn's state machine, judged by what feeds the queries.
         MethodBase setup = FirstTurnBody();
         List<CodeInstruction> setupCode = PatchProcessor.GetOriginalInstructions(setup, out ILGenerator setupGenerator);
@@ -300,6 +628,46 @@ public static class IlJudgeShapes
         }
         lines.Add($"FOREIGN iljudge selftest: {cases} cases as expected");
         return lines;
+    }
+
+    /// <summary>
+    /// The identity bridge's scope (DMG-1), each expected refused: (1) Downfall's run where the game's instruction after the store
+    /// carries a label (the same game code with that label on both sides: a path joining there never ran the store); (2) the same
+    /// shape on <c>Hook.ModifyBlock</c>'s additive result (another hook: outside the premise's scope).
+    /// </summary>
+    private static IEnumerable<(string Name, MethodBase Body, List<CodeInstruction>? Original, List<CodeInstruction>? Variant)> ScopeVariants()
+    {
+        MethodBase damage = HookBody("ModifyDamageInternal");
+        List<CodeInstruction> o = PatchProcessor.GetOriginalInstructions(damage, out ILGenerator generator);
+        int additive = o.FindIndex(c => c.opcode == OpCodes.Callvirt && c.operand is MethodInfo m && m == _modifyDamageAdditive);
+        bool hasCardPlay = damage.GetParameters().Any(p => p.ParameterType == typeof(CardPlay));
+        List<CodeInstruction>? labeled = null, labeledVariant = null;
+        if (additive >= 0 && additive + 2 < o.Count && o[additive + 1].opcode == OpCodes.Stloc_S
+            && BridgeRun(o, additive, hasCardPlay, AccessTools.Method(typeof(Bridges), nameof(Bridges.Additive))) is { } run)
+        {
+            labeled = new List<CodeInstruction>(o);
+            CodeInstruction after = Copy(o[additive + 2]);
+            after.labels.Add(generator.DefineLabel());
+            labeled[additive + 2] = after;
+            labeledVariant = Insert(labeled, additive + 2, run.ToArray());
+        }
+        yield return ("bridge-label-after-store", damage, labeled, labeledVariant);
+
+        MethodBase block = AccessTools.Method(typeof(Hook), "ModifyBlock") ?? throw new MissingMethodException("Hook.ModifyBlock");
+        List<CodeInstruction> b = PatchProcessor.GetOriginalInstructions(block, out _);
+        int call = b.FindIndex(c => c.opcode == OpCodes.Callvirt && c.operand is MethodInfo m && m.Name == "ModifyBlockAdditive");
+        List<CodeInstruction>? blockVariant = null;
+        if (call >= 6 && call + 1 < b.Count && b[call + 1].opcode == OpCodes.Stloc_S && b[call].operand is MethodInfo additiveBlock
+            && additiveBlock.GetParameters().Length == 5)
+        {
+            // The game's own argument loads (listener, target, num, props, cardSource, cardPlay), the stored value second.
+            var blockRun = new List<CodeInstruction> { b[call - 6].Clone(), new(OpCodes.Ldloc_S, b[call + 1].operand) };
+            blockRun.AddRange(b.GetRange(call - 5, 5).Select(c => c.Clone()));
+            blockRun.Add(new CodeInstruction(OpCodes.Call, AccessTools.Method(typeof(Bridges), nameof(Bridges.Block))));
+            blockRun.Add(new CodeInstruction(OpCodes.Stloc_S, b[call + 1].operand));
+            blockVariant = Insert(b, call + 2, blockRun.ToArray());
+        }
+        yield return ("bridge-other-hook", block, b, blockVariant);
     }
 
     private static IEnumerable<(string Name, bool Accept, string? Gate, List<CodeInstruction>? Code)> Variants(MethodBase body, List<CodeInstruction> o,
@@ -331,6 +699,66 @@ public static class IlJudgeShapes
         }
         else if (listenerLoad != null)
         {
+            // The identity bridge (DMG) where the game has Downfall's insertion point (ModifyDamageInternal).
+            int additive = o.FindIndex(c => c.opcode == OpCodes.Callvirt && c.operand is MethodInfo m && m == _modifyDamageAdditive);
+            if (additive >= 0 && additive + 1 < o.Count && o[additive + 1].opcode == OpCodes.Stloc_S)
+            {
+                bool hasCardPlay = body.GetParameters().Any(p => p.ParameterType == typeof(CardPlay));
+                MethodInfo Bridge(string name) => AccessTools.Method(typeof(Bridges), name);
+                List<CodeInstruction>? Bridged(MethodInfo bridge, int at, OpCode? store = null) =>
+                    BridgeRun(o, additive, hasCardPlay, bridge, store) is { } run ? Insert(o, at, run.ToArray()) : null;
+                yield return ("identity-bridge", true, "Squeeze", Bridged(Bridge(nameof(Bridges.Additive)), additive + 2));
+                List<CodeInstruction>? twice = BridgeRun(o, additive, hasCardPlay, Bridge(nameof(Bridges.Additive))) is { } first
+                    && BridgeRun(o, additive, hasCardPlay, AccessTools.Method(typeof(Bridges), nameof(Bridges.Additive))) is { } second
+                    ? Insert(o, additive + 2, first.Concat(second).ToArray()) : null;
+                yield return ("identity-bridge-twice", true, "Squeeze", twice);
+                yield return ("bridge-other-exit", false, null, Bridged(Bridge(nameof(Bridges.OtherArgument)), additive + 2));
+                yield return ("bridge-other-local", false, null, Bridged(Bridge(nameof(Bridges.Additive)), additive + 2, OpCodes.Stloc_0));
+                yield return ("bridge-before-store", false, null, Bridged(Bridge(nameof(Bridges.Additive)), additive + 1));
+                yield return ("bridge-call-first", false, null, Bridged(Bridge(nameof(Bridges.CallFirst)), additive + 2));
+                yield return ("bridge-cctor", false, null, Bridged(AccessTools.Method(typeof(CctorBridges), nameof(CctorBridges.Additive)), additive + 2));
+                // A local the game didn't read just before (the modifiers list) in place of the running total.
+                List<CodeInstruction>? unread = Bridged(Bridge(nameof(Bridges.Additive)), additive + 2);
+                if (unread != null)
+                {
+                    unread[additive + 2 + 3] = new CodeInstruction(OpCodes.Ldloc_1);
+                }
+                yield return ("bridge-unread-local", false, null, unread);
+                yield return ("bridge-two-listeners", false, null, BridgeRun(o, additive, hasCardPlay, Bridge(nameof(Bridges.Additive))) is { } plain
+                    ? Insert(o, additive + 2, plain[0].Clone(), plain[1].Clone(), plain[0].Clone(), new CodeInstruction(OpCodes.Call, Bridge(nameof(Bridges.TwoListeners))), plain[^1].Clone())
+                    : null);
+                // Re-audit of the premises (DMG-1): the multiplicative and v0.113's late loops; the near misses the scope must refuse.
+                int Store(string name) => o.FindIndex(c => c.opcode == OpCodes.Callvirt && c.operand is MethodInfo m && m.Name == name
+                    && m.DeclaringType == typeof(AbstractModel)) is int k && k >= 0 && k + 1 < o.Count && o[k + 1].opcode == OpCodes.Stloc_S ? k : -1;
+                int multiplicative = Store("ModifyDamageMultiplicative"), late = Store("ModifyDamageMultiplicativeLate");
+                yield return ("identity-bridge-multiplicative", true, "Squeeze", multiplicative < 0 ? null
+                    : BridgeRun(o, multiplicative, hasCardPlay, Bridge(nameof(Bridges.Additive))) is { } mul ? Insert(o, multiplicative + 2, mul.ToArray()) : null);
+                yield return ("identity-bridge-late", true, "Squeeze", late < 0 ? null
+                    : BridgeRun(o, late, hasCardPlay, Bridge(nameof(Bridges.Additive))) is { } lat ? Insert(o, late + 2, lat.ToArray()) : null);
+                // R3-4 (re-audit round 3): an accept case per remaining store of the scope, the additive one found as the others are
+                // (Store) and the cap's.
+                int additiveStore = Store("ModifyDamageAdditive"), cap = Store("ModifyDamageCap");
+                yield return ("identity-bridge-additive-store", true, "Squeeze", additiveStore < 0 ? null
+                    : BridgeRun(o, additiveStore, hasCardPlay, Bridge(nameof(Bridges.Additive))) is { } add ? Insert(o, additiveStore + 2, add.ToArray()) : null);
+                // The cap loop reads no running total before its call: the bridge's `amount` is the hook's `damage` argument there
+                // (argument 4 on v0.107.1 to v0.113.1, never written by the game's code).
+                List<CodeInstruction>? capRun = cap < 0 ? null : BridgeRun(o, cap, hasCardPlay, Bridge(nameof(Bridges.Additive)));
+                if (capRun != null)
+                {
+                    capRun[3] = new CodeInstruction(OpCodes.Ldarg_S, (byte)4);
+                }
+                yield return ("identity-bridge-cap", true, "Squeeze", capRun == null ? null : Insert(o, cap + 2, capRun.ToArray()));
+                yield return ("bridge-side-effect", false, null, Bridged(Bridge(nameof(Bridges.SideEffect)), additive + 2));
+                yield return ("bridge-pair-second-not-identity", false, null, BridgeRun(o, additive, hasCardPlay, Bridge(nameof(Bridges.Additive))) is { } good
+                    && BridgeRun(o, additive, hasCardPlay, Bridge(nameof(Bridges.OtherArgument))) is { } bad ? Insert(o, additive + 2, good.Concat(bad).ToArray()) : null);
+                yield return ("bridge-other-type", false, null, Bridged(Bridge(nameof(Bridges.OtherType)), additive + 2));
+                List<CodeInstruction>? byRef = Bridged(Bridge(nameof(Bridges.ByRef)), additive + 2);
+                if (byRef != null)
+                {
+                    byRef[additive + 2 + 1] = new CodeInstruction(OpCodes.Ldloca_S, o[additive + 1].operand);
+                }
+                yield return ("bridge-address-taken", false, null, byRef);
+            }
             yield return ("gated-observer", true, "Squeeze", Insert(o, listenerStore + 1, listenerLoad.Clone(), Call(typeof(Gated), nameof(Gated.Squeeze))));
             yield return ("ungated-observer", false, null, Insert(o, listenerStore + 1, listenerLoad.Clone(), Call(typeof(Plain), nameof(Plain.Every))));
             yield return ("in-loop-plain-observer", false, null, Insert(o, listenerStore + 1, new CodeInstruction(OpCodes.Ldstr, "selftest"), Call(typeof(Plain), nameof(Plain.PreWalk))));

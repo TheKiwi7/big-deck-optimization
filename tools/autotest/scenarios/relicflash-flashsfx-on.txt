@@ -1,0 +1,31 @@
+# RelicFlashMerge next to another mod's patch on one game relic's FlashSfx override (A/B, mod on; 0bc4113, re-audit round 2 B):
+# a counting prefix on CentennialPuzzle.FlashSfx, in the sound set (every game override of RelicModel.FlashSfx is a root).
+# Bing Bong's flashes are still merged and replay their sound (SoundsReplayed grows); STATE and CHECKSUM lines as mod off
+# (relicflash-flashsfx-off). Discriminating only without combat hook subscriptions: run it with BDTEST_MODS=none (BaseLib's
+# subscription alone makes every merged flash replay its sound; FOREIGN combat hook subscriptions says which).
+timeout 1200
+expect EFFECTCHECK RelicFlashMerge grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK RelicFlashMerge\.SoundsReplayed grew since 'start': [0-9]+ -> [1-9]
+expect FOREIGN combat hook subscriptions
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+foreignpatch count-prefix MegaCrit.Sts2.Core.Models.Relics.CentennialPuzzle::get_FlashSfx()
+checksum before
+state before optional
+effects start
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+checksum after
+state after optional
+foreignpatch report end
+effects end
+effectcheck RelicFlashMerge grew start
+effectcheck RelicFlashMerge.SoundsReplayed grew start
+cmd bdopt why
+foreignpatch remove
+quit

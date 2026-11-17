@@ -49,8 +49,14 @@ internal static class EffectCounters
         (typeof(PooledCardRelease), nameof(PooledCardRelease.Released)), (typeof(SyncedCardRelease), nameof(SyncedCardRelease.Released)),
         (typeof(SavedPropertyLookup), nameof(SavedPropertyLookup.Served)), (typeof(RelicStateReuse), nameof(RelicStateReuse.Reused)),
         (typeof(RelicStateReuse), nameof(RelicStateReuse.ScalarReused)), (typeof(RichTextEnvRelease), nameof(RichTextEnvRelease.Released)),
-        (typeof(RichTextEnvRelease), nameof(RichTextEnvRelease.Untracked)), (typeof(InlineGuard), nameof(InlineGuard.Protected)),
+        (typeof(RichTextEnvRelease), nameof(RichTextEnvRelease.Untracked)), (typeof(InlineGuard), nameof(InlineGuard.Protected)), (typeof(InlineGuard), nameof(InlineGuard.Refreshed)),
         (typeof(CardSortKeys), nameof(CardSortKeys.Sorts)), (typeof(CardSortKeys), nameof(CardSortKeys.Answered)),
+        (typeof(SnapshotVerifier), nameof(SnapshotVerifier.Verified)), (typeof(ListenerCache), nameof(ListenerCache.Reused)),
+        (typeof(FastListeners), nameof(FastListeners.SkippedModifierWalks)), (typeof(HookSkip), nameof(HookSkip.BaseLibWalks)),
+        (typeof(HookSkip), nameof(HookSkip.NoBadgeWalks)), (typeof(HookSkip), nameof(HookSkip.EmptiedWalks)), (typeof(FastListeners), nameof(FastListeners.FirstKept)),
+        (typeof(ExtraScopes), nameof(ExtraScopes.BetterSpireScopes)), (typeof(CardDbScan), nameof(CardDbScan.Verified)),
+        (typeof(FastListeners), nameof(FastListeners.DominionTails)), (typeof(FastListeners), nameof(FastListeners.ModeRunModelTails)),
+        (typeof(ListenerCache), nameof(ListenerCache.DominionInvalidations)), (typeof(ListenerCache), nameof(ListenerCache.ModeRunModelInvalidations)),
     };
 
     /// <summary>Each counter's getter and setter (private setters included), resolved once.</summary>

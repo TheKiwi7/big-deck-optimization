@@ -1,6 +1,17 @@
 # Release checklist bdperf comparisons (vanilla first, so ~935 cards: the reference run once with its relics):
 # checksum, refresh, grid and pile must all say OK: identical; sortkeys too on game v0.113+ (not applied before: nothing to compare).
+# The expect lines say so (judge.py: one never seen is a problem, as is any comparison that compared nothing). The checksum's
+# cache row compares nothing when HookSkip's filtered walks answer every hook (the filter row after it compares them).
+# uncompared: ^cache row: nothing served \(HookSkip's filtered walks answered every hook\)
 timeout 1200
+expect ^\s+OK: identical checksums
+expect ^\s+OK: identical state
+expect ^\s+sort \(\d+ orders\): .*OK: identical orders
+expect ^\s+tabs \(.*OK: identical tabs
+expect ^\s+pool free \(.*OK: identical connections
+expect ^\s+OK: identical piles
+expect ok: OK: identical listeners
+expect ok: (SORTKEYS .*: OK: identical orders|CardSortKeys not applied \(not needed on this game version\))
 newrun NECROBINDER
 waitfor run 120
 wait 2
@@ -15,4 +26,11 @@ cmd bdperf grid
 cmd bdperf pile
 cmd bdperf listeners 10
 cmd bdperf sortkeys
+# The comparisons above freeze the effect counters: the parts they compared must also have run in the game's own calls
+# (a part not applied says "nothing to compare" and succeeds).
+effects end
+effectcheck ListenerCache ran
+effectcheck FastListeners.CombatWalk ran
+effectcheck PileIndex ran
+effectcheck CardDbScan ran
 quit

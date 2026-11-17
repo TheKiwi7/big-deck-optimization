@@ -714,9 +714,15 @@ public static class LimitlessHookSkip
         _sampledHooks = hooks;
     }
 
+    // Order-free (no argument, void, never skipping the hook, only reading state: OrderFreePrefixAttribute's fourth case):
+    // HookSkip's rule A counts them as this mod's own allowed patches on these Hook methods (HookSkip.OwnPatchesOnly).
+    [OrderFreePrefix]
     private static void Sample0() => Sample(0);
+    [OrderFreePrefix]
     private static void Sample1() => Sample(1);
+    [OrderFreePrefix]
     private static void Sample2() => Sample(2);
+    [OrderFreePrefix]
     private static void Sample3() => Sample(3);
 
     private static void Sample(int hook)
@@ -756,6 +762,13 @@ public static class LimitlessHookSkip
                     break;
                 }
             }
+#if BENCH
+            if (why == null && inner.Count > 0 && TestWrong.Take("hookskip"))
+            {
+                // Test: checked against its inner cards with the last one missing (the check must see the forwarder would rebuild).
+                inner = inner.Take(inner.Count - 1).ToList();
+            }
+#endif
             if (why == null && !LimitlessReserialize.WouldKeep((EnchantmentModel)multi, inner))
             {
                 why = "its forwarder would have rebuilt its saved list";

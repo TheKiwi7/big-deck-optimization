@@ -10,6 +10,8 @@
 # three AfterPreventing* ones, whose walk goes to Contains, isn't understood, or when one of those three becomes understood).
 timeout 2400
 expect FOREIGN iljudge selftest: [0-9]+ cases as expected
+expect FOREIGN iljudge \S*ModifyDamageInternal identity-bridge-cap: accepted \(.*gates Squeeze
+expect FOREIGN iljudge \S*ModifyDamageInternal identity-bridge-additive-store: accepted \(.*gates Squeeze
 expect FOREIGN iljudge sweep: [0-9]+ of [0-9]+ hooks with a walk accept both shapes, the 3 known exceptions aside
 expect FOREIGN iljudge Hook\.BeforeCardPlayed: accepted \([0-9]+ insertion\(s\), gates Squeeze\)
 expect FOREIGN iljudge Hook\.AfterEnergySpent: accepted \([0-9]+ insertion\(s\)\)
@@ -39,7 +41,6 @@ newrun NECROBINDER
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 enemyhp 999999
 # The judge on instruction lists built from the game's code (nothing patched), and over every hook of this game.
 foreignpatch iljudge selftest

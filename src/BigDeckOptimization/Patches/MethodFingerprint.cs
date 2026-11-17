@@ -618,7 +618,10 @@ public static class MethodFingerprint
     /// The method's own instructions in order (<see cref="PatchSafety"/>'s shape checks of other mods' patch methods). Tokens
     /// that don't resolve give a null operand rather than a throw; a switch's operand is its absolute targets.
     /// </summary>
-    public static List<Instruction> Instructions(MethodBase method)
+    public static List<Instruction> Instructions(MethodBase method) => Instructions(method, strict: false);
+
+    /// <summary><see cref="Instructions(MethodBase)"/>; <paramref name="strict"/>: a token that doesn't resolve throws.</summary>
+    public static List<Instruction> Instructions(MethodBase method, bool strict)
     {
         MethodBody body = method.GetMethodBody() ?? throw new ArgumentException($"{method} has no body");
         byte[] il = body.GetILAsByteArray() ?? Array.Empty<byte>();
@@ -684,6 +687,17 @@ public static class MethodFingerprint
                     pos = end;
                     break;
                 case OperandType.InlineString:
+                    // The literal (PatchSafety's name gates read it: round 4, it was left null and no name gate was ever found).
+                    try
+                    {
+                        operand = method.Module.ResolveString(BitConverter.ToInt32(il, pos));
+                    }
+                    catch (Exception e) when (e is ArgumentException or InvalidOperationException or BadImageFormatException)
+                    {
+                        operand = null;
+                    }
+                    pos += 4;
+                    break;
                 case OperandType.InlineSig:
                     pos += 4;
                     break;
@@ -692,7 +706,7 @@ public static class MethodFingerprint
                     {
                         operand = method.Module.ResolveMember(BitConverter.ToInt32(il, pos), typeArgs, methodArgs);
                     }
-                    catch (Exception e) when (e is ArgumentException or MissingMemberException or TypeLoadException or BadImageFormatException)
+                    catch (Exception e) when (!strict && (e is ArgumentException or MissingMemberException or TypeLoadException or BadImageFormatException))
                     {
                         operand = null;
                     }
@@ -702,6 +716,318 @@ public static class MethodFingerprint
             list.Add(new Instruction(start, op, pos, operand));
         }
         return list;
+    }
+
+    /// <summary>
+    /// The game's methods a method's code may call (its generated code included: lambdas, local functions, state machines), as
+    /// their definitions (an open generic type's or method's own), in first-use order: call, callvirt, newobj, ldftn, ldvirtftn
+    /// targets in <paramref name="game"/>; a callvirt/ldvirtftn of a virtual or interface method adds every implementation in
+    /// the game's assembly (every instantiation of a generic interface, default interface methods included); a game type whose
+    /// static members or constructor the code uses adds its type initializer (it may run then). Shared by tools/fpdiff (HookSkip's
+    /// helper sets) and the patches computing what a skipped call leaves out (RelicFlashMerge, CardFlightLimit).
+    /// Strict: an operand that doesn't resolve throws (a callee this can't see would go unchecked), and so does a delegate's
+    /// Invoke when <paramref name="delegates"/> is null (code reached through a delegate isn't known here); with a list, each
+    /// such call is added to it (the delegate type's Invoke) for the caller to judge. Not seen (C5/C7, re-audit round 2): calli
+    /// and jmp, and game methods the runtime, Godot or SmartFormat call back (comparers, signal handlers, format extensions,
+    /// engine-called node methods unless their class is a root). Generic members are named by their open
+    /// definitions, while Harmony patches a closed instantiation's own method: a patch on one instantiation is seen on the
+    /// definition only if Harmony lists it there (theoretical: no generic member is in a set the patches rely on today).
+    /// </summary>
+    public static List<MethodBase> GameCallees(Assembly game, MethodBase method, List<MethodInfo>? delegates = null, bool initializers = true, bool dispatch = true,
+        List<(MethodInfo Callee, List<MethodBase> Implementations)>? dispatches = null)
+    {
+        var found = new List<MethodBase>();
+        var seen = new HashSet<MethodBase>();
+        void Add(MethodBase m)
+        {
+            MethodBase definition = Definition(m);
+            if (definition.Module.Assembly == game && definition.GetMethodBody() != null && seen.Add(definition))
+            {
+                found.Add(definition);
+            }
+        }
+        void Initializer(Type? type)
+        {
+            if (initializers && type != null && !type.IsGenericParameter && type.Module.Assembly == game)
+            {
+                Type definition = type.IsGenericType ? type.GetGenericTypeDefinition() : type;
+                if (definition.TypeInitializer is { } cctor)
+                {
+                    Add(cctor);
+                }
+            }
+        }
+        foreach (MethodBase code in new[] { method }.Concat(GeneratedCode(method)))
+        {
+            if (code.GetMethodBody() == null)
+            {
+                continue;
+            }
+            foreach (Instruction ins in Instructions(code, strict: true))
+            {
+                if (ins.Operand is FieldInfo { IsStatic: true } staticField)
+                {
+                    Initializer(staticField.DeclaringType);
+                    continue;
+                }
+                if (ins.Operand is not MethodBase callee || !(ins.Op == OpCodes.Call || ins.Op == OpCodes.Callvirt || ins.Op == OpCodes.Newobj
+                    || ins.Op == OpCodes.Ldftn || ins.Op == OpCodes.Ldvirtftn))
+                {
+                    continue;
+                }
+                if (callee.IsStatic || ins.Op == OpCodes.Newobj)
+                {
+                    Initializer(callee.DeclaringType);
+                }
+                if (callee.Name == "Invoke" && callee.DeclaringType is { } delegateType && typeof(MulticastDelegate).IsAssignableFrom(delegateType)
+                    && delegateType != typeof(MulticastDelegate))
+                {
+                    if (delegates == null)
+                    {
+                        throw new InvalidOperationException($"{MemberName(code)} invokes a delegate ({TypeName(delegateType)}): its targets aren't known here");
+                    }
+                    delegates.Add((MethodInfo)callee);
+                    continue;
+                }
+                if (callee.Module.Assembly == game)
+                {
+                    Add(callee);
+                }
+                if ((dispatch || callee.Module.Assembly == game) && (ins.Op == OpCodes.Callvirt || ins.Op == OpCodes.Ldvirtftn)
+                    && callee is MethodInfo { IsVirtual: true, IsFinal: false } dispatched)
+                {
+                    List<MethodBase> implementations = Implementations(game, dispatched);
+                    foreach (MethodBase implementation in implementations)
+                    {
+                        Add(implementation);
+                    }
+                    dispatches?.Add((dispatched, implementations.Select(Definition).Distinct().ToList()));
+                }
+            }
+        }
+        return found;
+    }
+
+    /// <summary>
+    /// The transitive closure of <see cref="GameCallees"/> from <paramref name="roots"/> (the roots included, whatever their
+    /// assembly: a mod's override reached by a virtual call is followed into the game's code it calls), at most
+    /// <paramref name="limit"/> methods (more throws: a caller then backs off rather than check a set it can't bound).
+    /// <paramref name="dispatches"/>: each virtual or interface call made (the callee as called, its game implementations), an
+    /// abstract or interface callee included although it has no body (CodeSet: another assembly's implementation of it runs
+    /// in its place). <paramref name="stopAt"/>: methods neither added nor followed (a subtree the caller judges on its own).
+    /// </summary>
+    public static List<MethodBase> GameClosure(Assembly game, IEnumerable<MethodBase> roots, int limit, List<MethodInfo>? delegates = null, Dictionary<MethodBase, MethodBase>? parents = null,
+        bool initializers = true, bool dispatch = true, List<(MethodInfo Callee, List<MethodBase> Implementations)>? dispatches = null,
+        ICollection<MethodBase>? stopAt = null)
+    {
+        var found = new List<MethodBase>();
+        var seen = new HashSet<MethodBase>();
+        var queue = new Queue<MethodBase>();
+        foreach (MethodBase root in roots)
+        {
+            if (seen.Add(root))
+            {
+                found.Add(root);
+                queue.Enqueue(root);
+            }
+        }
+        while (queue.Count > 0)
+        {
+            MethodBase caller = queue.Dequeue();
+            foreach (MethodBase callee in GameCallees(game, caller, delegates, initializers, dispatch, dispatches))
+            {
+                if (stopAt != null && stopAt.Contains(callee))
+                {
+                    continue;
+                }
+                if (seen.Add(callee))
+                {
+                    if (parents != null)
+                    {
+                        parents[callee] = caller;
+                    }
+                    if (found.Count >= limit)
+                    {
+                        throw new InvalidOperationException($"more than {limit} game methods reached (at {MemberName(callee)})");
+                    }
+                    found.Add(callee);
+                    queue.Enqueue(callee);
+                }
+            }
+        }
+        return found;
+    }
+
+    /// <summary>
+    /// One fingerprint for a set of methods (a closure): their names and code fingerprints, and the delegates it invokes, sorted.
+    /// Pinned per game version by a patch relying on what the set is (CodeSet; tools/fingerprint prints it: <c>closure</c>).
+    /// </summary>
+    public static string SetFingerprint(IEnumerable<MethodBase> methods, IEnumerable<string>? delegates = null)
+    {
+        string text = string.Join("\n", methods.Select(m => MemberName(m) + " " + Of(m))
+            .Concat((delegates ?? Enumerable.Empty<string>()).Select(d => "delegate " + d)).Distinct().OrderBy(line => line, StringComparer.Ordinal));
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)))[..16];
+    }
+
+    private static readonly Dictionary<Assembly, Type[]> _gameTypes = new();
+
+    private static Type[] TypesOf(Assembly game)
+    {
+        lock (_gameTypes)
+        {
+            if (!_gameTypes.TryGetValue(game, out Type[]? types))
+            {
+                try
+                {
+                    types = game.GetTypes();
+                }
+                catch (ReflectionTypeLoadException e)
+                {
+                    types = e.Types.Where(t => t != null).ToArray()!;
+                }
+                _gameTypes[game] = types;
+            }
+            return types;
+        }
+    }
+
+    /// <summary>
+    /// Every implementation in the game's assembly a virtual call to <paramref name="target"/> may reach: overrides in derived
+    /// classes; for an interface method, each implementing class's target for every instantiation of the interface (default
+    /// interface methods included, wherever declared).
+    /// </summary>
+    public static List<MethodBase> Implementations(Assembly game, MethodInfo target)
+    {
+        var found = new List<MethodBase>();
+        Type declaring = target.DeclaringType!;
+        Type? openDeclaring = declaring.IsGenericType ? declaring.GetGenericTypeDefinition() : null;
+        MethodInfo baseDefinition = target.GetBaseDefinition();
+        const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
+        foreach (Type type in TypesOf(game))
+        {
+            if (type == declaring || type.IsInterface)
+            {
+                continue; // An interface's default methods are reached through the implementing classes' maps.
+            }
+            try
+            {
+                if (declaring.IsInterface)
+                {
+                    foreach (Type implemented in type.GetInterfaces())
+                    {
+                        // A closed instantiation on a closed type: the implementations a call through it reaches (variance
+                        // included); a call or an implementing type still naming generic parameters (generic code, a generic
+                        // class whose instances may be of any instantiation): every instantiation of the interface.
+                        if (declaring.ContainsGenericParameters || implemented.ContainsGenericParameters
+                            ? !(openDeclaring != null && implemented.IsGenericType && implemented.GetGenericTypeDefinition() == openDeclaring)
+                            : !declaring.IsAssignableFrom(implemented))
+                        {
+                            continue;
+                        }
+                        InterfaceMapping map = type.GetInterfaceMap(implemented);
+                        for (int i = 0; i < map.InterfaceMethods.Length; i++)
+                        {
+                            // The game's own code only (a target inherited from a runtime base class isn't the game's).
+                            if (map.InterfaceMethods[i].Name == target.Name && map.TargetMethods[i] is { } implementation
+                                && map.InterfaceMethods[i].GetParameters().Length == target.GetParameters().Length && implementation.Module.Assembly == game)
+                            {
+                                found.Add(implementation);
+                            }
+                        }
+                    }
+                }
+                else if (DerivesFrom(type, openDeclaring ?? declaring))
+                {
+                    foreach (MethodInfo m in type.GetMethods(all))
+                    {
+                        if (m.Name == target.Name && m.GetBaseDefinition() is { } root && root.MetadataToken == baseDefinition.MetadataToken && root.Module == baseDefinition.Module)
+                        {
+                            found.Add(m);
+                        }
+                    }
+                }
+            }
+            catch (Exception e) when (e is TypeLoadException or NotSupportedException or ArgumentException or InvalidOperationException)
+            {
+                // A type that can't be inspected (another version's dependency missing): not an implementation the game runs here.
+            }
+        }
+        return found;
+    }
+
+    private static bool DerivesFrom(Type type, Type baseType)
+    {
+        for (Type? t = type.BaseType; t != null; t = t.BaseType)
+        {
+            if (t == baseType || (t.IsGenericType && t.GetGenericTypeDefinition() == baseType))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// The key <see cref="Resolve"/> finds a method by: <c>Namespace.Type::Name(ParamType,...)</c> of its definition, parameter
+    /// types by short name (tools/fpdiff checks each key it prints round-trips).
+    /// </summary>
+    public static string Key(MethodBase method)
+    {
+        MethodBase definition = Definition(method);
+        return $"{TypeName(definition.DeclaringType)}::{definition.Name}({string.Join(",", definition.GetParameters().Select(p => p.ParameterType.Name))})";
+    }
+
+    /// <summary>
+    /// The methods a virtual call in <paramref name="caller"/>'s code (its generated code included) named <paramref name="callee"/>
+    /// (<see cref="MemberName"/>) may reach in the game: the keys of its implementations, sorted, joined with '|' (what tools/fpdiff
+    /// prints as a Dispatch line). Null when the caller makes no such call.
+    /// </summary>
+    public static string? DispatchTargets(Assembly game, MethodBase caller, string callee) => DispatchCallee(caller, callee) is { } target
+        ? string.Join("|", Implementations(game, target).Select(Key).Distinct().OrderBy(k => k, StringComparer.Ordinal))
+        : null;
+
+    /// <summary>The virtual method a callvirt/ldvirtftn in <paramref name="caller"/>'s code (generated code included) names <paramref name="callee"/>, or null.</summary>
+    public static MethodInfo? DispatchCallee(MethodBase caller, string callee)
+    {
+        foreach (MethodBase code in new[] { caller }.Concat(GeneratedCode(caller)))
+        {
+            if (code.GetMethodBody() == null)
+            {
+                continue;
+            }
+            foreach (Instruction ins in Instructions(code, strict: true))
+            {
+                if ((ins.Op == OpCodes.Callvirt || ins.Op == OpCodes.Ldvirtftn) && ins.Operand is MethodInfo { IsVirtual: true, IsFinal: false } target
+                    && MemberName(target) == callee)
+                {
+                    return target;
+                }
+            }
+        }
+        return null;
+    }
+
+    /// <summary>A method as declared (an open generic type's or method's own definition), whatever instantiation the IL named.</summary>
+    public static MethodBase Definition(MethodBase m)
+    {
+        try
+        {
+            if (m is MethodInfo { IsGenericMethod: true } generic)
+            {
+                m = generic.GetGenericMethodDefinition();
+            }
+            if (m.DeclaringType is { IsGenericType: true, IsGenericTypeDefinition: false } constructed)
+            {
+                Type open = constructed.GetGenericTypeDefinition();
+                const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
+                return open.GetMethods(all).Cast<MethodBase>().Concat(open.GetConstructors(all)).First(d => d.MetadataToken == m.MetadataToken);
+            }
+            return m;
+        }
+        catch (Exception e) when (e is InvalidOperationException or NotSupportedException)
+        {
+            return m;
+        }
     }
 
     /// <summary>

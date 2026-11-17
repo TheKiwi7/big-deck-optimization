@@ -1,5 +1,11 @@
 # Audit: co-op, the client dies on its second turn (cmd die) and the host plays on alone: the dead player's cards leave the hooks
 # (IsActiveForHooks), the caches with them. Peers must agree on every enemy state. See audit-coopdeath-client.txt.
+# Not pace-dependent (parcoop -OnOff compares it with its mod-off twin): in round 1 the host plays, then the client (barriers);
+# the client dies at the start of round 2 before the host plays it (barrier r2dead); rounds by number (waitfor round), not turn.
+# After the death (round 3 on), with the bench checks on: every cached pile walk compared with a fresh one (segments verify
+# all), the listener lists compared with the game's own walks (bdperf listeners: co-op allows it, not refresh or checksum,
+# which replay game code), the snapshot verifier on every snapshot (verify all), and checksums: the dead player's piles out of
+# the walks must leave the same lists as vanilla.
 timeout 2400
 mplobby NECROBINDER 2
 waitfor run 240
@@ -14,27 +20,39 @@ waitfor idle 900
 cmd bdperf combatstart
 state t1
 play 5
+barrier r1host 900
+barrier r1client 900
 endturn
-waitfor turn 300
+waitfor round 2 300
 state t2
+barrier r2dead 900
 play 5
 endturn
-waitfor turn 300
+waitfor round 3 300
 state t3
+cmd bdperf checks on
+cmd bdperf segments verify all
+cmd bdperf verify all
+cmd bdperf listeners 10
+checksum after death
 play 5
 endturn
-waitfor turn 300
+waitfor round 4 300
 state t4
 play 5
 endturn
-waitfor turn 300
+waitfor round 5 300
 state t5
+cmd bdperf listeners 10
+checksum t5
 play 5
 endturn
-waitfor turn 300
+waitfor round 6 300
 state t6
 play 5
 endturn
-waitfor turn 300
+waitfor round 7 300
+cmd bdperf verify check
+counters end
 wait 20
 quit

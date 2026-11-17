@@ -11,13 +11,16 @@ immortal until 9
 waitfor combat 900
 waitfor idle 900
 state t1
+barrier r1host 900
 play 3
+barrier r1client 900
 endturn
-waitfor turn 300
+waitfor round 2 300
 state t2
 cmd die
 wait 3
 state dead optional
+barrier r2dead 900
 waitfor round 3 900
 state t3 optional
 waitfor round 4 900

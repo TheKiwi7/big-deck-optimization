@@ -3,6 +3,8 @@
 # leave RunState._allCards. Two combat starts. Fights end by playing cards (enemies at 300 HP, immortal for 3 rounds), never
 # by 'kill all' (the host alone checksums it: a false divergence). Both peers: effects end, and every peer must see
 # SyncedCardRelease and ReplayStateSkip above 0 (tools/autotest/effects.py on each log).
+# judge.py checks it on each peer's log (every runner):
+# effects-ran: ^(SyncedCardRelease|ReplayStateSkip)$
 # 'waitfor round n' (both peers ended the turn), not 'waitfor turn': a mod-on/mod-off pair (parcoop -OnOff) must play the same cards in the same rounds whatever each peer's pace.
 # Players take turns within a round (barriers): played at once, their actions interleave in the shared queue at each peer's pace, and random targets land differently between a mod-on and a mod-off session (same total, v0.107.1). Concurrent play stays covered by the peers' checksums after every action.
 timeout 2400
@@ -98,4 +100,7 @@ wait 5
 checksum fight 2 end
 effects end
 wait 20
+# What only co-op runs, above zero on this peer (the header's promise; effects.py lists the rest).
+effectcheck SyncedCardRelease ran
+effectcheck ReplayStateSkip ran
 quit

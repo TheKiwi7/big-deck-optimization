@@ -1,6 +1,7 @@
 # Audit: the back-offs revived or added on 2026-11-13: another mod on what the snapshot memo, the saved-list comparison, the card ids,
 # the combat hook walk, the keyword reads, the pile owner lookup and idle buttons skip. Each falls back to the game's code: the lines must
 # match ab-2k-off, and the log names each back-off ("also patched by bdtest.fakeconflict").
+# compare-with: ab-2k-off
 timeout 2400
 # Each back-off the log names (positive controls: a refactor breaking one still matches ab-2k-off). The ToSerializable and
 # GetKeywordsWithSources back-offs log no line in a solo combat: not asserted here.
@@ -17,7 +18,7 @@ newrun NECROBINDER
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
+cmd bigdeck import ref 1 cards
 enemyhp 999999
 fakeconflict MegaCrit.Sts2.Core.Models.CardModel:ToSerializable
 fakeconflict MegaCrit.Sts2.Core.Models.EnchantmentModel:ToSerializable

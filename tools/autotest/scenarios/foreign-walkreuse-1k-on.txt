@@ -1,0 +1,59 @@
+# The augmented-walk premise (Walks Tier 2, A/B, mod on; DESIGN "Owner-approved premises", 2026-11-17): RitsuLib's lazy
+# expansion (walk-expand-postfix on CombatState.IterateHookListeners) and EnchantLib's snapshot-filter-repeat (walk-filter-repeat
+# on RunState.IterateHookListeners). Inside display refreshes (the CombatStateChanged dispatch, card visuals), the walks' outputs
+# after those postfixes are kept and reused for the refresh's walks (effectcheck ListenerCache.Walks grew), one reuse in 16
+# compared with a fresh call (ListenerCache.Walks.Verified grew, no difference logged), never in the co-op state check or a
+# game-value refresh. The kept note names the walks. CHECKSUM and STATE identical with foreign-walkreuse-1k-off; the expansion never
+# ran on its own output (require nodouble). ~945 cards.
+expect FOREIGN kept ListenerCache\.Walks: other mods' code on the listener walks \(.*CombatState\.IterateHookListeners.*\) runs once per display refresh instead of once per walk
+expect EFFECTCHECK ListenerCache\.Walks grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK ListenerCache\.Walks\.Verified grew since 'start': [0-9]+ -> [1-9]
+expect FOREIGN walk-expand-postfix never ran on its own output
+timeout 1500
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+foreignpatch walk-expand-postfix MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners
+foreignpatch walk-filter-repeat MegaCrit.Sts2.Core.Runs.RunState:IterateHookListeners
+effects start
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+play 4
+waitfor idle 120
+checksum t3 plays
+endturn
+waitfor idle 300
+checksum t3 end
+state t3
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+foreignpatch report end
+effects end
+effectcheck ListenerCache.Walks grew start
+effectcheck ListenerCache.Walks.Verified grew start
+foreignpatch require nodouble
+cmd bdopt why
+counters end
+foreignpatch remove
+quit

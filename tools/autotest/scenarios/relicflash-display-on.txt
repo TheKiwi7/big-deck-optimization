@@ -1,0 +1,77 @@
+# RelicFlashMerge under the relic-flash display premise (A/B, mod on; DESIGN "Owner-approved premises", 2026-11-17): counting
+# prefixes of "another mod" on the visual code a merged flash leaves out: the relic bar's NRelicInventoryHolder.DoFlash (ARAM's
+# shape) and its flash scene's script NVfxParticleSystem._Ready (strict in re-audit round 2, under the premise since the merge
+# with it; still strict with the shape rules off), the creature effect's NRelicFlashVfx.Create and RelicModel.get_Icon
+# (RitsuLib's and Orchis-NecrobinderSkin's texture patches). Creature.GetVfxContainer is strict since the premises audit (A1:
+# Creature's members; relicflash-ctl's container phase). Flashes are still merged, of both effects (F2: effectcheck
+# RelicFlashMerge.Holder and .Creature grew), the patches named in the kept note (not a back-off), the merged flashes' calls left
+# out (FOREIGN display lines: fewer than mod off by design, not compared). CHECKSUM and STATE lines identical with
+# relicflash-display-off. ~945 cards, a campfire clone (Bing Bong): out of combat the creature effect makes no node
+# (Creature.GetVfxContainer is null, the game's ?. skips NRelicFlashVfx.Create), its merges are the "no node" ones (R3-1, re-audit
+# round 3: RelicFlashMerge.NoNode grew, no scene refusal). Then a combat and a burst of 50 flashes of the first relic in one frame
+# (bdperf relicflash): the creature effect's node is made (NRelicFlashVfx.Create counted), checked and merged with
+# (RelicFlashMerge.Creature grew since 'combat', NoNode same, no scene refusal).
+timeout 1200
+expect bigdeck trim: [0-9]+ cards removed, deck 900
+expect FOREIGN kept RelicFlashMerge: other mods' code on game code a relic flash's visuals may reach \(.*NRelicInventoryHolder\.DoFlash.*\) doesn't run for the flashes merged where it would have: taken as display only, with no effect on the game's state \(a stated premise
+expect FOREIGN kept RelicFlashMerge: other mods' code on game code a relic flash's visuals may reach \(.*NRelicFlashVfx\.Create.*\)
+expect FOREIGN kept RelicFlashMerge: other mods' code on game code a relic flash's visuals may reach \(.*NVfxParticleSystem\._Ready.*\)
+expect FOREIGN kept RelicFlashMerge: other mods' code on game code a relic flash's visuals may reach \(.*RelicModel\.get_Icon.*\)
+expect FOREIGN display combat NRelicFlashVfx\.Create [1-9]
+expect FOREIGN display end NRelicInventoryHolder\.DoFlash [1-9]
+expect FOREIGN display end NVfxParticleSystem\._Ready [1-9]
+expect EFFECTCHECK RelicFlashMerge grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK RelicFlashMerge\.Holder grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK RelicFlashMerge\.Creature grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK RelicFlashMerge\.SceneRefusals zero: 0
+expect EFFECTCHECK RelicFlashMerge\.NoNode grew since 'start': [0-9]+ -> [1-9]
+expect RELICFLASH .* x50 in combat True: merged \+[1-9][0-9]*, creature \+[1-9][0-9]*, holder \+[1-9][0-9]*, no node \+0, scene refusals \+0
+expect EFFECTCHECK RelicFlashMerge\.Creature grew since 'combat': [0-9]+ -> [1-9]
+expect EFFECTCHECK RelicFlashMerge\.NoNode same since 'combat'
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+foreignpatch display-count-prefix MegaCrit.Sts2.Core.Nodes.Relics.NRelicInventoryHolder:DoFlash
+foreignpatch display-count-prefix MegaCrit.Sts2.Core.Nodes.Vfx.Utilities.NVfxParticleSystem:_Ready
+foreignpatch display-count-prefix MegaCrit.Sts2.Core.Nodes.Vfx.NRelicFlashVfx::Create(RelicModel,Creature)
+foreignpatch display-count-prefix MegaCrit.Sts2.Core.Models.RelicModel:get_Icon
+checksum before
+state before optional
+effects start
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+checksum after
+state after optional
+foreignpatch report end
+effects end
+effectcheck RelicFlashMerge grew start
+effectcheck RelicFlashMerge.Holder grew start
+effectcheck RelicFlashMerge.Creature grew start
+effectcheck RelicFlashMerge.NoNode grew start
+# The clone left ~3,225 cards: mod off, the game's own combat start there outlasts par's stall limit on v0.113.1 (its
+# quadratic shuffle sort; the session STALLED at 267 s). Trimmed to 900 first (bigdeck trim: the game's removal), both sides.
+cmd bigdeck trim 900
+waitfor deckcount 120
+wait 1
+checksum trimmed
+state trimmed optional
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+effects combat
+cmd bdperf relicflash 50
+wait 1
+checksum combat
+state combat optional
+effects combat end
+effectcheck RelicFlashMerge.Creature grew combat
+effectcheck RelicFlashMerge.NoNode same combat
+effectcheck RelicFlashMerge.SceneRefusals zero
+foreignpatch report combat
+cmd bdopt why
+foreignpatch remove
+quit

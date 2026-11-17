@@ -1,0 +1,51 @@
+# HookSkip next to patches on PlayerChoiceContext.PushModel and PopModel gated on their `model` (A/B, mod on), installed at the
+# launch (launchforeign model-gated-pushpop: before this mod applies and before any caller of theirs is compiled, as another
+# mod patching at its load). PushModel is small enough to inline (32 bytes of IL): installed this early, the game's callers and
+# this mod's replacements are all compiled after it, so on and off see every call (foreign-helpers-2k-on patches it
+# mid-session, where the game's own JIT had inlined it in some callers: that count isn't compared there). The patches stand
+# (TypeGated on `model`), the hooks pushing models stay filtered (Squeeze kept), every push and pop seen: the counts (STATE lines
+# at t2, before any line that can fail, and at the end) identical with foreign-helpers-load-2k-off, as CHECKSUM and STATE. Proof
+# 4: no equality of pushes and pops within a session (the game never pops a new context's own first push: 348,912 vs 324,560
+# mod off on v0.113.1). ~945 cards.
+launchforeign model-gated-pushpop
+expect LAUNCHFOREIGN model-gated-pushpop
+expect STATE foreign end model-gated-postfix squeeze PlayerChoiceContext\.PushModel [1-9]
+expect STATE foreign end model-gated-prefix squeeze PlayerChoiceContext\.PopModel [1-9]
+expect STATE foreign t2 model-gated-postfix squeeze PlayerChoiceContext\.PushModel [1-9]
+expect STATE foreign t2 model-gated-prefix squeeze PlayerChoiceContext\.PopModel [1-9]
+expect FOREIGN walks Hook\.AfterCardPlayed: [1-9][0-9]* since the mark, [1-9][0-9]* filtered
+timeout 1800
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+foreignpatch walks mark
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+foreignpatch report t2
+foreignpatch require filtered AfterCardPlayed,AfterCardDrawn
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+foreignpatch report end
+cmd bdopt why
+quit

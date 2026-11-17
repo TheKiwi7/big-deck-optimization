@@ -459,7 +459,15 @@ public static class ExtraScopes
             return;
         }
         __state = Enter(display: true, BetterSpireName);
+#if BENCH
+        BetterSpireScopes++;
+#endif
     }
+
+#if BENCH
+    /// <summary>BetterSpire2 scopes opened (test builds: effect <c>ExtraScopes.BetterSpire2</c>).</summary>
+    public static long BetterSpireScopes;
+#endif
 
     /// <summary>
     /// Closes the scope the prefix opened. 0: the prefix never ran (another mod's prefix threw first; Harmony's default

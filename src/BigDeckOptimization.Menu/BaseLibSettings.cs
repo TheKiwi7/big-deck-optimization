@@ -505,10 +505,13 @@ public sealed class BaseLibSettings : SimpleModConfig
                     // of it doesn't run (PartlyOff) and/or is vanilla because of another mod (Conflict): both lines when both hold,
                     // so the mods the summary names show on their options' hover.
                     string? partly = Settings.PartlyOff(option, language), conflict = Settings.Conflict(option, language);
+                    // What keeps running next to other mods on a stated premise (not a back-off): under the description, no colour.
+                    string? kept = Settings.Kept(option, language);
                     texts[$"{Prefix}-{slug}.hover.desc"] = WithReason(
                         Settings.Why(option, language)
                         ?? Settings.InactiveWhy(option, language, states.TryGetValue(option.Key, out Settings.PartState state) ? state : Settings.PartState.Healthy)
-                        ?? (partly != null && conflict != null ? partly + "\n" + conflict : partly ?? conflict), description);
+                        ?? (partly != null && conflict != null ? partly + "\n" + conflict : partly ?? conflict),
+                        kept != null ? description + "\n" + kept : description);
                 }
                 table.MergeWith(texts);
             }

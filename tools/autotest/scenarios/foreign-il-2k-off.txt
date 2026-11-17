@@ -7,7 +7,6 @@ newrun NECROBINDER
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 cmd bdperf checks off
 enemyhp 999999
 # (1) accepted on the on side: a call gated on Squeeze before each InvokeExecutionFinished, a counting call before each walk.

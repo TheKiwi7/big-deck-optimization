@@ -1,12 +1,15 @@
 # Audit: the whole of ab-2k with the listeners option off (hook_skip on: its walks go through the game's own). Must match ab-2k-off, stacked enchantments included.
+# HookSkip must still filter walks with the listeners option off (effectcheck HookSkip grew).
+# compare-with: ab-2k-off
 timeout 2400
 newrun NECROBINDER
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
+cmd bigdeck import ref 1 cards
 enemyhp 999999
 cmd bdopt listeners off
+effects start
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 1
@@ -83,4 +86,5 @@ checksum after combat
 state after combat
 effects end
 counters end
+effectcheck HookSkip grew start
 quit

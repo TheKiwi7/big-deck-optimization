@@ -1,0 +1,21 @@
+# RelicFlashMerge next to the default test mods (A/B, mod off): see relicflash-mods-on; CHECKSUM and STATE lines must match
+# line for line.
+timeout 1200
+cmd bdopt off
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+checksum before
+state before optional
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+checksum after
+state after optional
+foreignpatch report end
+cmd bdopt on
+quit

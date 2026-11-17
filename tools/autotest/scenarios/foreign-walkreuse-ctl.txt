@@ -1,0 +1,33 @@
+# The augmented-walk premise's control (mod on; DESIGN "Owner-approved premises", 2026-11-17): a postfix of "another mod" on
+# CombatState.IterateHookListeners whose output differs from call to call at one state (every third call without its last
+# listener: display only here, the co-op state check and game-value refreshes never reuse a kept output). The 1-in-16 check must
+# find a reused output different: the reuse turned off for the session, logged, the part faulted. ~945 cards.
+# effects-zero-ok: ListenerCache\.Walks
+expect ListenerCache: a kept listener walk output \(other mods' postfixes included\) differs from a fresh one
+timeout 1500
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+foreignpatch walk-unstable-postfix MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+cmd bdopt why
+foreignpatch remove
+quit

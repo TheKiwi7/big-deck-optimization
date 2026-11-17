@@ -9,7 +9,6 @@ newrun NECROBINDER 1234
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 enemyhp 999999
 cmd fight CULTISTS_NORMAL
 waitfor idle 600

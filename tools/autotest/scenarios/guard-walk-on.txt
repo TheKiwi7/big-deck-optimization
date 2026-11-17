@@ -1,0 +1,30 @@
+# FastListeners' walk fallback (AddCombatGuarded / AddRunGuarded): a filtered mirror walk throws once after its verdicts,
+# outside the pile entry cache (bdperf fault walk), typically inside an async hook. The walk must be redone unfiltered (the
+# vanilla superset) and FastListeners and HookSkip turn off (bdopt), and every CHECKSUM/STATE line must match guard-async-ref
+# (same script without the fault).
+# compare-with: guard-async-ref
+expect FastListeners disabled after exception, falling back to vanilla: .*simulated error in a filtered walk's verdicts
+timeout 1200
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+cmd bdperf fault walk
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 3
+waitfor idle 120
+checksum t2 plays
+state t2
+cmd bdopt
+quit

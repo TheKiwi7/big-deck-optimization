@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
+using HarmonyLib;
 using MegaCrit.Sts2.Core.Logging;
 
 namespace BigDeckOptimization.Patches;
@@ -34,6 +35,12 @@ public static partial class PatchSafety
         public readonly Func<IEnumerable<(MethodBase? Method, MethodInfo[]? Allowed)>>? Pairs;
         /// <summary>The tolerance the runtime check passes (<see cref="PatchTolerance"/>).</summary>
         public readonly PatchTolerance Tolerance;
+        /// <summary>
+        /// The tolerance worked out as the runtime check works it out (HookSkip's hook methods: TranspiledOnly or SurroundingOnly
+        /// from this mod's own patches there), asked at each preflight instead of <see cref="Tolerance"/>: the display never
+        /// answers with another tolerance than the runtime.
+        /// </summary>
+        public Func<PatchTolerance>? ToleranceOf;
         /// <summary>
         /// Unregistered (<see cref="Unwatch"/>) after a preflight already took it: that preflight's later steps skip it, so it
         /// doesn't record again what Unwatch forgot. Main thread only (the preflight and the late patch batches).
@@ -175,6 +182,33 @@ public static partial class PatchSafety
                 if (_watchedKeys.Add((patch, method, (object?)allowed ?? lazyAllowed, tolerance)))
                 {
                     _watched.Add(new Watched(patch, method, allowed, lazyAllowed, null, null, tolerance));
+                }
+            }
+        }
+        catch
+        {
+            // Display only.
+        }
+    }
+
+    /// <summary>
+    /// <see cref="Watch(string, MethodBase?, PatchTolerance, MethodInfo[]?, Func{MethodInfo[]}?)"/> for a runtime check whose
+    /// tolerance depends on the moment (<paramref name="tolerance"/>: the same function it calls): the preflight asks it at each
+    /// check. Never throws.
+    /// </summary>
+    internal static void Watch(string patch, MethodBase? method, Func<PatchTolerance>? tolerance, Func<MethodInfo[]>? lazyAllowed)
+    {
+        try
+        {
+            if (method == null || patch == null || tolerance == null)
+            {
+                return;
+            }
+            lock (_watched)
+            {
+                if (_watchedKeys.Add((patch, method, (tolerance, lazyAllowed), PatchTolerance.None)))
+                {
+                    _watched.Add(new Watched(patch, method, null, lazyAllowed, null, null, PatchTolerance.None) { ToleranceOf = tolerance });
                 }
             }
         }
@@ -331,6 +365,55 @@ public static partial class PatchSafety
             Config.Settings.NotifyStatesChanged();
         }
     }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Patch, string Key), (string Text, string[] Mods)> _kept = new();
+
+    /// <summary>
+    /// Records what <paramref name="patch"/> keeps running next to other mods on a premise it states, rather than backing off
+    /// (CardFlightLimit: other mods' code on a flying card's own visuals, taken as display only): <paramref name="text"/>,
+    /// English, for bdopt why and the log; <paramref name="mods"/> the mods concerned. Not a back-off: the menu's colours don't
+    /// change, its hover names the mods (<see cref="Config.Settings.Kept"/>). Logged once per change. Never throws.
+    /// </summary>
+    internal static void Kept(string patch, string key, string text, string[] mods)
+    {
+        try
+        {
+            string[] sorted = mods.Where(m => !string.IsNullOrEmpty(m)).Distinct().OrderBy(m => m, StringComparer.OrdinalIgnoreCase).ToArray();
+            if (_kept.TryGetValue((patch, key), out var known) && known.Text == text && known.Mods.SequenceEqual(sorted))
+            {
+                return;
+            }
+            _kept[(patch, key)] = (text, sorted);
+            Log.Info($"[{ModEntry.Id}] {patch}: {text}" + (sorted.Length > 0 ? $" ({string.Join(", ", sorted)})" : "") + ": kept");
+            Config.Settings.NotifyStatesChanged();
+        }
+        catch
+        {
+            // Display only.
+        }
+    }
+
+    /// <summary>The kept note no longer holds (nothing logged).</summary>
+    internal static void ClearKept(string patch, string key)
+    {
+        if (_kept.TryRemove((patch, key), out _))
+        {
+            Config.Settings.NotifyStatesChanged();
+        }
+    }
+
+    /// <summary>A kept note (<see cref="Kept"/>): the patch, its text and the mods it names.</summary>
+    public readonly record struct KeptNote(string Patch, string Key, string Text, string[] Mods);
+
+    /// <summary>Every kept note recorded now, sorted by patch then text.</summary>
+    public static IReadOnlyList<KeptNote> KeptNotes() =>
+        _kept.Select(entry => new KeptNote(entry.Key.Patch, entry.Key.Key, entry.Value.Text, entry.Value.Mods))
+            .OrderBy(k => k.Patch, StringComparer.Ordinal).ThenBy(k => k.Text, StringComparer.Ordinal).ToList();
+
+    /// <summary>The mods (display names, as back-off lines give them) with any patch on these methods.</summary>
+    internal static string[] OtherModsPatching(IEnumerable<MethodBase?> methods) =>
+        ModNames(methods.Where(m => m != null).Select(m => Harmony.GetPatchInfo(m!)).Where(info => info != null)
+            .SelectMany(info => AllPatches(info!)).Where(p => !PatchGuard.IsOurs(p.owner)));
 
     /// <summary>Patches all of whose method back-offs keep the whole patch vanilla (<see cref="WholePatch"/>).</summary>
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _wholePatches = new(StringComparer.Ordinal);
@@ -560,7 +643,8 @@ public static partial class PatchSafety
                     MethodInfo[]? allowed = listed != null && Array.IndexOf(listed, null) >= 0 ? listed.Where(a => a != null).ToArray() : listed;
                     try
                     {
-                        _ = entry.Tolerance != PatchTolerance.None ? CheckTolerant(method, allowed ?? Array.Empty<MethodInfo>(), entry.Tolerance, entry.Patch, out _)
+                        PatchTolerance tolerance = entry.ToleranceOf?.Invoke() ?? entry.Tolerance;
+                        _ = tolerance != PatchTolerance.None ? CheckTolerant(method, allowed ?? Array.Empty<MethodInfo>(), tolerance, entry.Patch, out _)
                             : allowed == null ? CheckPatched(method, entry.Patch) : CheckPatched(method, allowed, entry.Patch);
                         checks.Value++;
                     }
@@ -655,6 +739,7 @@ public static partial class PatchSafety
             {
                 return;
             }
+            HarmonyWatch.Revalidate();
             FinishStartup();
             var checks = new Counter();
             foreach (bool _ in PreflightSteps(checks))

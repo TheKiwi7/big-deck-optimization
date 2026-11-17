@@ -1,0 +1,114 @@
+# HookSkip's choice-context helpers: the positive controls (mod on; DESIGN "Needless back-offs made safe"). (1) Near misses of
+# RitsuLib's constructor postfix that must not count as a gate on the listener: the test on `combatState`, on `__instance` (the
+# context: a helper's instance isn't the listener), the gated shape in a class with an explicit static constructor (not
+# beforefieldinit), and `combatState` read and stored before the test. The hooks constructing contexts go vanilla, the others
+# stay filtered. (2) An ungated postfix on PlayerChoiceContext.PushModel: every hook whose iterations push a model goes vanilla
+# (AfterCardPlayed, AfterCardDrawn, the constructing hooks: the constructor pushes its source), those that don't stay filtered
+# (AfterCardChangedPiles, BeforeCardPlayed). Hook names of the other game version are skipped by `require` (listed).
+# (3) 2026-11-17 (fixes 1, 2, 4): a void prefix gated on PushModel's `model` must back off (PushModel creates the model stack
+# a prefix could read: null where the game has an empty one), every hook pushing a model going vanilla; and RitsuLib's
+# constructor shape in a beforefieldinit class whose initializer reads the clock (when it runs matters) must back off too.
+# Since the verification audit (P1, P2): one whose initializer looks a method up by name (it can throw), and one with no
+# initializer reaching another class's static whose beforefieldinit initializer reads the clock: both back off.
+# (4) fix 3: an ungated postfix on CardModel.Owner (called by the constructor for a card listener) and on Player.Creature (a chain
+# getter v0.107.1's BeforeFlush passes): the hooks constructing contexts go vanilla.
+timeout 1200
+expect FOREIGN classify HookPlayerChoiceContext\.\.ctor: bdtest\.foreign\.ctor-combatstate-gated-squeeze Postfix .*TypeGated backs off \(postfix not provably gated on the listener's type \(its argument source\)\)
+expect FOREIGN classify HookPlayerChoiceContext\.\.ctor: bdtest\.foreign\.ctor-instance-gated-squeeze Postfix .*TypeGated backs off \(postfix not provably gated on the listener's type \(its argument source\)\)
+expect FOREIGN classify HookPlayerChoiceContext\.\.ctor: bdtest\.foreign\.ctor-cctor-gated-squeeze Postfix .*TypeGated backs off \(postfix gated, but its class SourceCctorGate has a static initializer that could run at another time with this mod
+expect FOREIGN classify HookPlayerChoiceContext\.\.ctor: bdtest\.foreign\.ctor-read-then-gated-squeeze Postfix .*TypeGated backs off \(postfix not provably gated on the listener's type \(its argument source\)\)
+expect HookSkip: HookPlayerChoiceContext\.\.ctor is also patched by .*bdtest\.foreign\.ctor-cctor-gated-squeeze.* \(patches gated on the listener's type not enough\): normal game for that part
+expect FOREIGN runtime HookSkip HookPlayerChoiceContext\.\.ctor \(TypeGated\) kept 0 backed off [1-9]
+expect FOREIGN walks Hook\.BeforeSideTurnStart: [1-9][0-9]* since the mark, 0 filtered
+expect HookSkip: PlayerChoiceContext\.PushModel is also patched by bdtest\.foreign\.count-postfix \(patches gated on the listener's type not enough\): normal game for that part
+expect FOREIGN walks Hook\.AfterCardPlayed: [1-9][0-9]* since the mark, 0 filtered
+expect FOREIGN walks Hook\.AfterCardChangedPiles: [1-9][0-9]* since the mark, [1-9][0-9]* filtered
+expect FOREIGN classify PlayerChoiceContext\.PushModel: bdtest\.foreign\.model-gated-prefix-squeeze Prefix .*TypeGated backs off \(void prefix \(no prefix gated on the listener stands on this helper
+expect HookSkip: PlayerChoiceContext\.PushModel is also patched by bdtest\.foreign\.model-gated-prefix-squeeze \(patches gated on the listener's type not enough\): normal game for that part
+expect HookSkip: CardModel\.get_Owner is also patched by bdtest\.foreign\.count-postfix: normal game for that part
+expect FOREIGN classify HookPlayerChoiceContext\.\.ctor: bdtest\.foreign\.ctor-impure-cctor-gated-squeeze Postfix .*TypeGated backs off \(postfix gated, but its class SourceImpureGate has a static initializer that could run at another time
+expect FOREIGN classify HookPlayerChoiceContext\.\.ctor: bdtest\.foreign\.ctor-throwing-cctor-gated-squeeze Postfix .*TypeGated backs off \(postfix gated, but its class SourceThrowingGate has a static initializer
+expect FOREIGN classify HookPlayerChoiceContext\.\.ctor: bdtest\.foreign\.ctor-reach-gated-squeeze Postfix .*TypeGated backs off \(postfix gated, but it reaches ImpureClock, whose static initializer
+expect FOREIGN classify HookPlayerChoiceContext\.\.ctor: bdtest\.foreign\.ctor-lambda-gated-squeeze Postfix .*TypeGated tolerated, gates Squeeze
+expect FOREIGN classify HookPlayerChoiceContext\.\.ctor: bdtest\.foreign\.ctor-accesstools-gated-squeeze Postfix .*TypeGated tolerated, gates Squeeze
+expect FOREIGN classify HookPlayerChoiceContext\.\.ctor: bdtest\.foreign\.ctor-capacity-cctor-gated-squeeze Postfix .*TypeGated backs off \(postfix gated, but its class SourceCapacityGate has a static initializer
+expect FOREIGN classify HookPlayerChoiceContext\.\.ctor: bdtest\.foreign\.ctor-helper-reach-gated-squeeze Postfix .*TypeGated backs off \(postfix gated, but it reaches ImpureClock, whose static initializer
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+enemyhp 999999
+foreignpatch ctor-combatstate-gated MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext::.ctor(AbstractModel,UInt64,ICombatState,GameActionType) squeeze
+foreignpatch ctor-instance-gated MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext::.ctor(AbstractModel,UInt64,ICombatState,GameActionType) squeeze
+foreignpatch ctor-cctor-gated MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext::.ctor(AbstractModel,UInt64,ICombatState,GameActionType) squeeze
+foreignpatch ctor-read-then-gated MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext::.ctor(AbstractModel,UInt64,ICombatState,GameActionType) squeeze
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+foreignpatch walks mark
+play 3
+waitfor idle 120
+endturn
+waitfor idle 300
+foreignpatch require vanilla BeforeSideTurnStart,BeforeFlush,BeforeSideTurnEnd,AfterSideTurnEnd,BeforeTurnEnd,AfterTurnEnd
+foreignpatch require filtered AfterCardPlayed,AfterCardDrawn,AfterCardChangedPiles
+foreignpatch report constructor
+foreignpatch remove
+# (2) An ungated postfix on PushModel.
+foreignpatch count-postfix MegaCrit.Sts2.Core.GameActions.Multiplayer.PlayerChoiceContext:PushModel
+foreignpatch walks mark
+play 3
+waitfor idle 120
+endturn
+waitfor idle 300
+foreignpatch require vanilla AfterCardPlayed,AfterCardDrawn,BeforeSideTurnStart
+foreignpatch require filtered AfterCardChangedPiles,BeforeCardPlayed
+foreignpatch report pushmodel
+foreignpatch remove
+# (3) A prefix gated on PushModel's listener argument: refused (it would run before the stack the skipped calls create).
+foreignpatch model-gated-prefix MegaCrit.Sts2.Core.GameActions.Multiplayer.PlayerChoiceContext:PushModel squeeze
+foreignpatch walks mark
+play 3
+waitfor idle 120
+endturn
+waitfor idle 300
+foreignpatch require vanilla AfterCardPlayed,AfterCardDrawn,BeforeSideTurnStart
+foreignpatch require filtered AfterCardChangedPiles,BeforeCardPlayed
+foreignpatch report pushmodel-prefix
+foreignpatch remove
+# The constructor shape with a time-dependent beforefieldinit initializer: refused.
+foreignpatch ctor-impure-cctor-gated MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext::.ctor(AbstractModel,UInt64,ICombatState,GameActionType) squeeze
+foreignpatch ctor-throwing-cctor-gated MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext::.ctor(AbstractModel,UInt64,ICombatState,GameActionType) squeeze
+foreignpatch ctor-reach-gated MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext::.ctor(AbstractModel,UInt64,ICombatState,GameActionType) squeeze
+# Re-audit round 2: a non-capturing lambda and AccessTools on the gated path stand; a throwing collection initializer and an
+# own-class helper reaching the clock back off.
+foreignpatch ctor-lambda-gated MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext::.ctor(AbstractModel,UInt64,ICombatState,GameActionType) squeeze
+foreignpatch ctor-accesstools-gated MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext::.ctor(AbstractModel,UInt64,ICombatState,GameActionType) squeeze
+foreignpatch ctor-capacity-cctor-gated MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext::.ctor(AbstractModel,UInt64,ICombatState,GameActionType) squeeze
+foreignpatch ctor-helper-reach-gated MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext::.ctor(AbstractModel,UInt64,ICombatState,GameActionType) squeeze
+foreignpatch walks mark
+play 3
+waitfor idle 120
+endturn
+waitfor idle 300
+foreignpatch require vanilla BeforeSideTurnStart,BeforeFlush,BeforeSideTurnEnd,AfterSideTurnEnd,BeforeTurnEnd,AfterTurnEnd
+foreignpatch require filtered AfterCardPlayed,AfterCardDrawn,AfterCardChangedPiles
+foreignpatch report impure-cctor
+foreignpatch remove
+# (4) fix 3: a game method the constructor calls for a listener (CardModel.Owner: the v0.107.1 constructor inlines the owner
+# lookup, v0.113.1's GetOwner calls it), and v0.107.1's chain getter Player.Creature (BeforeFlush passes player.Creature.CombatState):
+# strict, so the hooks constructing contexts go vanilla, the others stay filtered.
+foreignpatch count-postfix MegaCrit.Sts2.Core.Models.CardModel:get_Owner
+foreignpatch count-postfix MegaCrit.Sts2.Core.Entities.Players.Player:get_Creature
+foreignpatch walks mark
+play 3
+waitfor idle 120
+endturn
+waitfor idle 300
+foreignpatch require vanilla BeforeSideTurnStart,BeforeFlush,BeforeSideTurnEnd,AfterSideTurnEnd,BeforeTurnEnd,AfterTurnEnd
+foreignpatch require filtered AfterCardPlayed,AfterCardDrawn,AfterCardChangedPiles
+foreignpatch report callees
+cmd bdopt why
+foreignpatch remove
+quit

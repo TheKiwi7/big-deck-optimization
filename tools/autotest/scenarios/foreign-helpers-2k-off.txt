@@ -1,0 +1,61 @@
+# HookSkip's choice-context helpers (A/B, mod off): the same synthetic patches of "another mod" as foreign-helpers-2k-on (see
+# there); CHECKSUM and STATE lines must match line for line. The on side's own checks (expect, effects, walks) left out.
+timeout 2400
+cmd bdopt off
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+enemyhp 999999
+# (1) RitsuLib's constructor postfix shape, gated on the listener argument.
+foreignpatch ctor-source-gated MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext::.ctor(AbstractModel,UInt64,ICombatState,GameActionType) squeeze
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+foreignpatch report gated
+# (2) An ungated postfix on the same constructor.
+foreignpatch count-postfix MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext::.ctor(AbstractModel,UInt64,ICombatState,GameActionType)
+play 4
+waitfor idle 120
+checksum t3 plays
+endturn
+waitfor idle 300
+checksum t3 end
+state t3
+# (3) 2026-11-17: patches gated on PushModel's / PopModel's listener argument `model` (a postfix on PushModel, a prefix
+# on PopModel) stand: the hooks pushing models stay filtered (Squeeze kept), their hits the same as mod off (STATE).
+foreignpatch model-gated-postfix MegaCrit.Sts2.Core.GameActions.Multiplayer.PlayerChoiceContext:PushModel squeeze background
+foreignpatch model-gated-prefix MegaCrit.Sts2.Core.GameActions.Multiplayer.PlayerChoiceContext:PopModel squeeze
+play 4
+waitfor idle 120
+checksum t4 plays
+endturn
+waitfor idle 300
+checksum t4 end
+state t4
+foreignpatch report t4
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+foreignpatch report end
+foreignpatch remove
+cmd bdopt on
+quit

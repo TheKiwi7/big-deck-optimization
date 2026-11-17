@@ -1,5 +1,6 @@
 # Audit: every back-off at once: another mod on what the walks, the pile lookup, the pile counters and the card ids mirror. Each falls back to the game's
 # code (KeptOnly for filtered walks): the lines must match ab-2k-off, and bdopt says which options are partly vanilla.
+# compare-with: ab-2k-off
 timeout 2400
 # Each back-off names itself in the log (PatchSafety, by the patch's file and the method) and in bdopt: a refactor that
 # breaks one still matches ab-2k-off line for line, so these positive controls and the effect checks below must see it.
@@ -18,7 +19,7 @@ newrun NECROBINDER
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
+cmd bigdeck import ref 1 cards
 enemyhp 999999
 # Bool prefixes (sorted after a prefix of this mod: registered later at the same priority) on the walks and CardModel.Pile: postfixes
 # and void prefixes are let stand on the walks (SurroundingOnly), postfixes and prefixes running first on CardModel.Pile

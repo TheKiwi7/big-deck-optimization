@@ -10,8 +10,10 @@ using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
+using MegaCrit.Sts2.Core.Nodes.Vfx;
 using MegaCrit.Sts2.Core.Runs;
 
 namespace BigDeckOptimization.Bench;
@@ -60,6 +62,22 @@ namespace BigDeckOptimization.Bench;
 /// <c>renamed-gated-postfix</c> (the gate read from <c>[HarmonyArgument("card")] __instance</c>, on a default taking a card),
 /// <c>gated-patched-postfix</c> (a gated postfix whose own method gets a no-op postfix), <c>cctor-gated-postfix</c> (a gated postfix
 /// in a class with a static constructor).</item>
+/// <item>HookSkip's choice-context helpers and CardFlightLimit's soul (2026-11-16, RitsuLib's shapes; "Needless back-offs made safe"):
+/// a helper target may be given by its fingerprint key (<c>Namespace.Type::Method(ArgTypes)</c>, the constructor
+/// <c>MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext::.ctor(AbstractModel,UInt64,ICombatState,GameActionType)</c>).
+/// <c>count-postfix</c> there is the ungated counting postfix (only the hooks constructing contexts back off). <c>ctor-source-gated</c>
+/// with gate <c>squeeze</c> (RitsuLib's constructor postfix: <c>if (source is Squeeze)</c> in a <c>beforefieldinit</c> class with a
+/// static field, the hits counted as STATE lines) and its controls, which must back off: <c>ctor-combatstate-gated</c> (the test on
+/// <c>combatState</c>), <c>ctor-instance-gated</c> (on <c>__instance</c>, the context), <c>ctor-cctor-gated</c> (a class with an explicit
+/// static constructor), <c>ctor-read-then-gated</c> (<c>combatState</c> read and stored before the test). On
+/// <c>NCardFlyShuffleVfx.Create</c>: <c>create-null-gated-postfix</c> (RitsuLib's start-position postfix: nothing for a null result;
+/// it counts the souls it sees, compared by <c>foreignpatch require souls</c> with the souls the scene tree got) and its control
+/// <c>create-nearmiss-postfix</c> (a static read before the null test). On <c>NCardTrailVfx.Create</c>: <c>trail-replacing-prefix</c>
+/// (RitsuLib's trail override: a bool prefix building the trail itself and returning false, for every trail; install it at
+/// priority 800). Their counts are FOREIGN lines (a skipped soul makes none of them: they differ with the mod off).</item>
+/// <item>Per hook, HookSkip's walks: <c>foreignpatch walks mark</c>, then <c>foreignpatch require filtered|vanilla Hook1,Hook2</c>
+/// (each hook this game has: some walk filtered since the mark, or walks made since the mark and none filtered; names of another
+/// game version are listed and skipped, at least one must be there).</item>
 /// </list>
 /// Arguments: <c>foreignpatch &lt;shape&gt; &lt;Namespace.Type:Method&gt; [gate] [priority N]</c>; <c>foreignpatch remove</c> takes every
 /// one away; <c>foreignpatch report [label]</c>; <c>foreignpatch require tolerated</c> fails unless a check let a patch stand;
@@ -68,6 +86,98 @@ namespace BigDeckOptimization.Bench;
 /// </summary>
 public static class ForeignPatches
 {
+#if BENCH
+    /// <summary>
+    /// <c>foreignpatch namegate selftest</c> (offline harness too): a name gate's types (PatchSafety.TypesNamed) refuse a closed
+    /// generic's name and a type still being built in a dynamic assembly, and find a type emitted later into a dynamic assembly
+    /// already loaded once the loaded-code key moves (sampled every 2 s: this waits 2.1 s, on the main thread in game).
+    /// </summary>
+    /// <summary>The first loaded assembly whose types can't all be read, or null.</summary>
+    private static string? Unreadable()
+    {
+        foreach (Assembly a in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            try
+            {
+                a.GetTypes();
+            }
+            catch (ReflectionTypeLoadException)
+            {
+                // Its loadable types are listed (TypesNamed takes them since proof run 2): readable for name gates.
+            }
+            catch
+            {
+                return a.GetName().Name ?? "?";
+            }
+        }
+        return null;
+    }
+
+    public static IReadOnlyList<string> NameGateSelfTest()
+    {
+        var lines = new List<string>();
+        var failures = new List<string>();
+        void Expect(bool ok, string what)
+        {
+            lines.Add($"FOREIGN namegate selftest {what}: {(ok ? "ok" : "FAILED")}");
+            if (!ok)
+            {
+                failures.Add(what);
+            }
+        }
+        // The IL shape itself (round 4: ldstr's literal was never decoded, so no name gate was ever found in game).
+        foreach (string gated in new[] { nameof(Gates.SqueezeNameGatedPostfix), nameof(Gates.SqueezeFullNameGatedPostfix) })
+        {
+            MethodInfo patch = typeof(Gates).GetMethod(gated, BindingFlags.Public | BindingFlags.Static)!;
+            bool gate = PatchSafety.TypeGates(patch, PatchSafety.PatchKind.Postfix) is { Length: > 0 };
+            // Offline, an assembly whose types can't all be read refuses every name gate (by design: see below).
+            Expect(gate || Unreadable() != null, $"{gated}'s name test read as a gate" + (gate ? "" : $" (refused: {PatchSafety.TypesNamedFailure ?? "the IL shape"})"));
+        }
+        MethodInfo nearMiss = typeof(Gates).GetMethod(nameof(Gates.SqueezeNameNearMissPostfix), BindingFlags.Public | BindingFlags.Static)!;
+        Expect(PatchSafety.TypeGates(nearMiss, PatchSafety.PatchKind.Postfix) == null, "a call before the name test: no gate");
+        Expect(PatchSafety.TypesNamedForTest(true, "System.Collections.Generic.List`1[[System.Int32, System.Private.CoreLib]]") == null, "a closed generic's FullName refused");
+        Expect(PatchSafety.TypesNamedForTest(false, "List`1") == null, "a generic arity's name refused");
+        Type[]? none = PatchSafety.TypesNamedForTest(false, "BdoNoSuchTypeName");
+        if (Unreadable() is { } unreadableNow)
+        {
+            Expect(none == null, $"a name no type has: refused while {unreadableNow}'s types can't be read (by design)");
+        }
+        else
+        {
+            Expect(none is { Length: 0 }, "a name no type has: no type (gates on nothing)"
+                + (none == null ? $" (refused: {PatchSafety.TypesNamedFailure ?? "no failure recorded"})" : ""));
+        }
+        string unique = "BdoNameGateSelfTest" + Environment.TickCount64.ToString("X");
+        var assembly = System.Reflection.Emit.AssemblyBuilder.DefineDynamicAssembly(new AssemblyName(unique), System.Reflection.Emit.AssemblyBuilderAccess.Run);
+        System.Reflection.Emit.ModuleBuilder module = assembly.DefineDynamicModule(unique);
+        module.DefineType(unique + "First", TypeAttributes.Public | TypeAttributes.Class).CreateType();
+        System.Threading.Thread.Sleep(2100);
+        System.Reflection.Emit.TypeBuilder building = module.DefineType(unique + "Later", TypeAttributes.Public | TypeAttributes.Class);
+        Expect(PatchSafety.TypesNamedForTest(false, unique + "Later") == null || PatchSafety.TypesNamedForTest(false, unique + "Later") is { Length: 0 },
+            "a type being built: refused, or not listed yet (no gate made from it)");
+        Type? created = building.CreateType();
+        System.Threading.Thread.Sleep(2100);
+        Type[]? found = PatchSafety.TypesNamedForTest(false, unique + "Later");
+        if (Unreadable() is { } unreadable)
+        {
+            // Offline (the harness): an assembly whose types can't all be read here (Steamworks.NET without its native library)
+            // makes every name gate refused, by design: this case can't be told apart then.
+            Expect(found == null, $"a type emitted later: refused while {unreadable}'s types can't be read (by design; not testable here)");
+        }
+        else
+        {
+            Expect(found is { Length: 1 } && found[0] == created, "a type emitted later into a loaded dynamic assembly found once the key moves"
+                + (found is { Length: 1 } && found[0] == created ? "" : $" (found {(found == null ? "null" : found.Length.ToString())})"));
+        }
+        if (failures.Count > 0)
+        {
+            throw new InvalidOperationException("name gate self-test: " + string.Join(" | ", failures));
+        }
+        lines.Add($"FOREIGN namegate selftest: {lines.Count} cases as expected");
+        return lines;
+    }
+#endif
+
     public const string IdPrefix = "bdtest.foreign.";
 
     private static readonly List<(string Id, MethodBase Target)> _installed = new();
@@ -85,7 +195,21 @@ public static class ForeignPatches
         "cctor-gated-postfix",
         "walk-expand-postfix", "walk-filter-repeat", "pile-prefix-narrow", "piles-postfix", "byref-arg-prefix", "byref-out-postfix",
         "byref-write-postfix",
+        "ctor-source-gated", "ctor-combatstate-gated", "ctor-instance-gated", "ctor-cctor-gated", "ctor-read-then-gated",
+        "ctor-impure-cctor-gated", "ctor-throwing-cctor-gated", "ctor-reach-gated",
+        "ctor-lambda-gated", "ctor-accesstools-gated", "ctor-capacity-cctor-gated", "ctor-helper-reach-gated", "model-gated-postfix", "model-gated-prefix",
+        "hook-replacing-prefix", "hook-out-write-postfix", "hook-args-prefix", "noop-finalizer", "sfx-observer-prefix",
+        "create-null-gated-postfix", "create-nearmiss-postfix", "create-null-gated-reach-postfix", "trail-replacing-prefix",
+        "skip-prefix", "skip-and-add-prefix", "display-count-prefix",
+        "name-gated-postfix", "fullname-gated-postfix", "name-nearmiss-postfix", "name-othervar-postfix", "walk-unstable-postfix",
+        "flash-script-postfix", "energy-cost-postfix", "energy-cost-unstable-postfix",
     };
+
+    /// <summary>
+    /// Calls counted by the display shapes (<c>display-count-prefix</c>): other mods' code an owner-approved display premise
+    /// leaves out for the calls this mod merges or reuses. FOREIGN lines, never STATE: they differ with the mod off by design.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, long> _displayCounts = new();
 
     /// <summary>
     /// The shapes whose patch changes game state on the peer that installs it (Squeeze's keywords or cost, cards moved between
@@ -93,7 +217,8 @@ public static class ForeignPatches
     /// </summary>
     public static bool ChangesState(string arg) =>
         arg.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() is "keyword-prefix" or "cost-postfix" or "nested-postfix"
-            or "byref-arg-prefix" or "pilecard";
+            or "byref-arg-prefix" or "pilecard" or "skip-prefix" or "skip-and-add-prefix" or "hook-replacing-prefix" or "hook-out-write-postfix"
+            or "il-damage-bridge" or "il-damage-bridge-callfirst";
 
     /// <summary>Runs one <c>foreignpatch</c> line; returns the lines to log.</summary>
     public static IReadOnlyList<string> Run(string arg)
@@ -107,6 +232,17 @@ public static class ForeignPatches
         {
             case "remove":
                 return Remove();
+            case "statechanged" when parts.Length > 1 && parts[1] == "subscribe":
+                // Another mod's CombatStateChanged handler walking the real state (RandomForeseer's prediction refresh; re-audit of
+                // the premises, W-1a): no walk output may be reused in a dispatch it handles. Counted (calls, listeners seen: STATE
+                // lines, the same on and off); removed by "foreignpatch remove".
+                MegaCrit.Sts2.Core.Combat.CombatStateTracker tracker = MegaCrit.Sts2.Core.Combat.CombatManager.Instance.StateTracker;
+                if (_stateTracker == null)
+                {
+                    tracker.CombatStateChanged += OnStateChangedForTest;
+                    _stateTracker = tracker;
+                }
+                return new[] { "FOREIGN statechanged subscriber added" };
             case "report":
                 return Report(parts.Length > 1 ? string.Join(" ", parts.Skip(1)) : "");
             case "require" when parts.Length > 1 && parts[1] == "tolerated":
@@ -119,6 +255,8 @@ public static class ForeignPatches
 #else
                 return Array.Empty<string>();
 #endif
+            case "require" when parts.Length > 1 && parts[1] == "pushpop":
+                return RequirePushPop();
             case "require" when parts.Length > 1 && parts[1] == "nodouble":
                 // A walk postfix let stand runs once per call on the unpatched stream: never on its own output (a list kept with it).
                 if (_counts.TryGetValue("walk-expand-postfix applied twice", out long twice) && twice > 0)
@@ -126,6 +264,12 @@ public static class ForeignPatches
                     throw new InvalidOperationException($"walk-expand-postfix ran on its own output {twice} time(s): a cached list held another mod's postfix output");
                 }
                 return new[] { "FOREIGN walk-expand-postfix never ran on its own output" };
+            case "require" when parts.Length > 2 && parts[1] is "filtered" or "vanilla":
+                return RequireWalks(parts[1] == "filtered", parts[2]);
+            case "require" when parts.Length > 1 && parts[1] == "souls":
+                return RequireSouls();
+            case "walks" when parts.Length > 1 && parts[1] == "mark":
+                return MarkWalks();
             case "narrow":
                 return Narrow(parts.Length > 1 ? parts[1] : "");
             case "pilecard":
@@ -133,12 +277,39 @@ public static class ForeignPatches
             case "classify" when parts.Length > 1:
                 MethodBase classified = Target(parts[1]);
                 return Classification(classified);
+            case "spiretarget" when parts.Length > 1:
+                // Rule E: whether an interface key of a SavedSpireField counts as on cards (a loaded card or enchantment type
+                // implements it). irunstate: CardAscension's key (no card is a run state); icomparable: IComparable<AbstractModel>,
+                // which every card implements (the control).
+                Type spireKey = parts[1] switch
+                {
+                    "irunstate" => typeof(IRunState),
+                    "icomparable" => typeof(IComparable<AbstractModel>),
+                    _ => throw new ArgumentException("foreignpatch spiretarget irunstate|icomparable"),
+                };
+#if BENCH
+                return new[] { $"FOREIGN spiretarget {parts[1]}: on cards {BaseLibTypes.MayBeOnCardsForTest(spireKey)}" };
+#else
+                return Array.Empty<string>();
+#endif
             case "modname" when parts.Length > 1:
                 // The name back-off lines give a loaded assembly's mod, and whether the game's own mod entry gave it.
                 Assembly? named = PatchSafety.LoadedAssembly(parts[1]);
                 return new[] { $"FOREIGN modname {parts[1]}: " + (named == null ? "not loaded"
                     : $"{PatchSafety.ModNameOf(named) ?? "none"} ({(PatchSafety.ModEntryNameOf(named) != null ? "mod entry" : "no mod entry")})") };
         }
+#if BENCH
+        // The augmented walks' kept outputs (ListenerCache): lazy pulls, replays, throws, checks, scope (no game state used).
+        if (parts[0] == "walkreuse" && parts.Length > 1 && parts[1] == "selftest")
+        {
+            return ListenerCache.WalkOutputSelfTest();
+        }
+        // The name gates' resolution (re-audit of the premises, P-1): closed generic names, types being built, types emitted later.
+        if (parts[0] == "namegate" && parts.Length > 1 && parts[1] == "selftest")
+        {
+            return NameGateSelfTest();
+        }
+#endif
         // Transpilers on the Hook methods HookSkip filters, judged by their IL (IlJudgeShapes.cs).
         if (parts[0] == "iljudge")
         {
@@ -185,6 +356,12 @@ public static class ForeignPatches
             case "count-prefix":
                 harmony.Patch(target, prefix: Fix(nameof(CountPrefix)));
                 break;
+            case "display-count-prefix":
+                // A void prefix counting calls an owner-approved premise lets run fewer times (RelicFlashMerge's visual sets,
+                // HoverTipReuse's panel methods, CardSortKeys' cost chain): its counts are FOREIGN lines (they differ with the mod
+                // off by design).
+                harmony.Patch(target, prefix: Fix(nameof(DisplayCountPrefix)));
+                break;
             case "nested-postfix":
                 RequirePileMethod(target, nameof(CardPile.AddInternal));
                 harmony.Patch(target, postfix: Fix(nameof(NestedPostfix)));
@@ -222,6 +399,21 @@ public static class ForeignPatches
             case "runoriginal-postfix":
                 harmony.Patch(target, postfix: Fix(nameof(RunOriginalPostfix)));
                 break;
+            case "skip-prefix" or "skip-and-add-prefix":
+                // A bool prefix returning false for Squeeze on CardPile.AddInternal / RemoveInternal (gate squeeze): the original
+                // skipped, the pile left as it was ("skip-prefix") or changed by the prefix itself, its list written directly
+                // ("skip-and-add-prefix": the card added, or removed, without the pile's events), as a mod replacing the method
+                // does. PileIndex's and CardDbScan's !__runOriginal branches judge both. Changes the game's state: same with this
+                // mod on or off (an off twin installs it too).
+                Gate("squeeze");
+                if (target.DeclaringType != typeof(CardPile) || target.Name is not (nameof(CardPile.AddInternal) or nameof(CardPile.RemoveInternal)))
+                {
+                    throw new ArgumentException($"{shape} goes on CardPile:AddInternal or CardPile:RemoveInternal");
+                }
+                bool adds = target.Name == nameof(CardPile.AddInternal);
+                harmony.Patch(target, prefix: Fix(shape == "skip-prefix" ? nameof(SkipSqueezePrefix)
+                    : adds ? nameof(SkipAndAddSqueezePrefix) : nameof(SkipAndRemoveSqueezePrefix)));
+                break;
             case "byref-postfix":
                 if (target.DeclaringType != typeof(CardPile))
                 {
@@ -256,6 +448,30 @@ public static class ForeignPatches
                 Gate("squeeze");
                 harmony.Patch(target, prefix: Gated(nameof(Gates.SqueezeGatedPrefix)));
                 break;
+            case "name-gated-postfix":
+            case "fullname-gated-postfix":
+            case "name-nearmiss-postfix":
+            case "name-othervar-postfix":
+                // The reflection-reads premise (2026-11-17, Skin Changer's shape): a name test on the instance's runtime type
+                // (GetType().Name / FullName against a literal), and its controls: a call before the test (every call counted), a
+                // name test on another argument (the drawn card of AfterCardDrawn: counted when it is a Squeeze).
+                Gate("squeeze");
+                if (typeof(Squeeze).FullName != Gates.SqueezeFullName)
+                {
+                    throw new InvalidOperationException($"Squeeze's full name is {typeof(Squeeze).FullName}, the shape tests {Gates.SqueezeFullName}");
+                }
+                if (shape == "name-othervar-postfix" && target.Name != nameof(AbstractModel.AfterCardDrawn))
+                {
+                    throw new ArgumentException(shape + " goes on MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardDrawn");
+                }
+                harmony.Patch(target, postfix: Gated(shape switch
+                {
+                    "name-gated-postfix" => nameof(Gates.SqueezeNameGatedPostfix),
+                    "fullname-gated-postfix" => nameof(Gates.SqueezeFullNameGatedPostfix),
+                    "name-nearmiss-postfix" => nameof(Gates.SqueezeNameNearMissPostfix),
+                    _ => nameof(Gates.SqueezeNameOtherArgumentPostfix),
+                }));
+                break;
             case "gated-or-postfix":
                 Gate("squeeze-relic");
                 harmony.Patch(target, postfix: Gated(nameof(Gates.SqueezeOrRelicGatedPostfix)));
@@ -284,6 +500,34 @@ public static class ForeignPatches
             case "walk-expand-postfix":
                 RequireWalk(target);
                 harmony.Patch(target, postfix: Fix(target.DeclaringType == typeof(MegaCrit.Sts2.Core.Runs.RunState) ? nameof(WalkExpandRunPostfix) : nameof(WalkExpandPostfix)));
+                break;
+            case "energy-cost-postfix" or "energy-cost-unstable-postfix":
+                // CardSortKeys' sort-cost premise (re-audit of the premises, F4/F5): RitsuLib's by-ref postfix on
+                // CardEnergyCost.GetWithModifiers, here +1 for Squeeze (the same at every read: the premise holds; counted, FOREIGN
+                // display lines), and its violating twin, +1 on every other read of any card's cost (the positive control: the
+                // sort's check must find an answer that differs from the game's and turn the part off).
+                if (target.DeclaringType != typeof(MegaCrit.Sts2.Core.Entities.Cards.CardEnergyCost) || target.Name != "GetWithModifiers")
+                {
+                    throw new ArgumentException(shape + " goes on MegaCrit.Sts2.Core.Entities.Cards.CardEnergyCost:GetWithModifiers");
+                }
+                _energyCostCard ??= AccessTools.FieldRefAccess<MegaCrit.Sts2.Core.Entities.Cards.CardEnergyCost, CardModel>("_card");
+                harmony.Patch(target, postfix: Fix(shape == "energy-cost-postfix" ? nameof(EnergyCostPostfix) : nameof(EnergyCostUnstablePostfix)));
+                break;
+            case "flash-script-postfix":
+                // RelicFlashMerge's scene check control (re-audit of the premises, B1/F3): a postfix of "another mod" on the creature
+                // effect's factory giving the node it returns a child carrying another script (an in-memory GDScript: no resource
+                // path). The check on the node the frame's first flash created must find it: no creature-effect merge at all.
+                if (target.DeclaringType != typeof(NRelicFlashVfx) || target.Name != nameof(NRelicFlashVfx.Create) || target.GetParameters().Length != 2)
+                {
+                    throw new ArgumentException("flash-script-postfix goes on MegaCrit.Sts2.Core.Nodes.Vfx.NRelicFlashVfx::Create(RelicModel,Creature)");
+                }
+                harmony.Patch(target, postfix: Fix(nameof(FlashScriptPostfix)));
+                break;
+            case "walk-unstable-postfix":
+                // The augmented-walk premise's control (2026-11-17): a postfix whose output changes from call to call at one state
+                // (every third call without its last listener): a kept output reused must be found to differ (the 1-in-16 check).
+                RequireWalk(target);
+                harmony.Patch(target, postfix: Fix(nameof(WalkUnstablePostfix)));
                 break;
             case "walk-filter-repeat":
                 RequireWalk(target);
@@ -318,6 +562,151 @@ public static class ForeignPatches
                     throw new ArgumentException(shape + " goes on MegaCrit.Sts2.Core.Hooks.Hook:ModifyHpLost");
                 }
                 harmony.Patch(target, postfix: Fix(shape == "byref-out-postfix" ? nameof(ModifiersReadPostfix) : nameof(ModifiersWritePostfix)));
+                break;
+            case "ctor-source-gated":
+                RequireChoiceConstructor(target);
+                Gate("squeeze");
+                harmony.Patch(target, postfix: new HarmonyMethod(typeof(SourceGate), nameof(SourceGate.Postfix)) { priority = priority });
+                break;
+            case "ctor-combatstate-gated":
+            case "ctor-instance-gated":
+            case "ctor-read-then-gated":
+                RequireChoiceConstructor(target);
+                Gate("squeeze");
+                harmony.Patch(target, postfix: new HarmonyMethod(typeof(SourceGate), shape switch
+                {
+                    "ctor-combatstate-gated" => nameof(SourceGate.CombatStateGatedPostfix),
+                    "ctor-instance-gated" => nameof(SourceGate.InstanceGatedPostfix),
+                    _ => nameof(SourceGate.ReadThenGatedPostfix),
+                }) { priority = priority });
+                break;
+            case "hook-replacing-prefix":
+                // EnchantLib's shape on Hook.ModifyBlock (rule A): a bool prefix answering for the hook itself (ref __result, the out
+                // modifiers written) and skipping it, for an even block; true otherwise. Changes the game's state: same with this
+                // mod on or off (an off twin installs it too).
+                if (target.Name != "ModifyBlock")
+                {
+                    throw new ArgumentException(shape + " goes on MegaCrit.Sts2.Core.Hooks.Hook:ModifyBlock");
+                }
+                harmony.Patch(target, prefix: new HarmonyMethod(typeof(HookShapes), nameof(HookShapes.ReplaceBlockPrefix)) { priority = priority });
+                break;
+            case "hook-out-write-postfix":
+                // Zone's / EnchantLib's shapes (rule A): a postfix writing an out parameter and __result. On Hook.ModifyHpLost a
+                // monster loses 1 HP more and the modifiers are written back (a copy); on Hook.ShouldAllowTargeting the preventer is
+                // written back (the same value) and counted.
+                harmony.Patch(target, postfix: new HarmonyMethod(typeof(HookShapes), target.Name switch
+                {
+                    "ModifyHpLost" => nameof(HookShapes.HpLostWritePostfix),
+                    "ShouldAllowTargeting" => nameof(HookShapes.TargetingWritePostfix),
+                    _ => throw new ArgumentException(shape + " goes on MegaCrit.Sts2.Core.Hooks.Hook:ModifyHpLost or :ShouldAllowTargeting"),
+                }) { priority = priority });
+                break;
+            case "hook-args-prefix":
+                // A void prefix taking __args (Harmony writes the array back into the arguments): only reads it, counted per target.
+                harmony.Patch(target, prefix: new HarmonyMethod(typeof(HookShapes), nameof(HookShapes.ArgsPrefix)) { priority = priority });
+                break;
+            case "sfx-observer-prefix":
+                // ARAM's / RegentFX's shape on SfxCmd.Play(string, float) (rule D): a bool prefix counting the relic sounds per sfx
+                // and suppressing the general relic flash sound (returns false for it). Sound only: no game state.
+                if (target.DeclaringType?.Name != "SfxCmd" || target.Name != "Play" || target.GetParameters().Length != 2)
+                {
+                    throw new ArgumentException(shape + " goes on MegaCrit.Sts2.Core.Commands.SfxCmd::Play(String,Single)");
+                }
+                harmony.Patch(target, prefix: new HarmonyMethod(typeof(HookShapes), nameof(HookShapes.SfxObserverPrefix)) { priority = priority });
+                break;
+            case "noop-finalizer":
+                // A void finalizer (the control of rule A: finalizers on a hook still back off).
+                harmony.Patch(target, finalizer: new HarmonyMethod(typeof(HookShapes), nameof(HookShapes.NoOpFinalizer)) { priority = priority });
+                break;
+            case "ctor-impure-cctor-gated":
+                // The source-gated shape in a beforefieldinit class whose initializer reads the clock: when it runs matters.
+                RequireChoiceConstructor(target);
+                Gate("squeeze");
+                harmony.Patch(target, postfix: new HarmonyMethod(typeof(SourceImpureGate), nameof(SourceImpureGate.Postfix)) { priority = priority });
+                break;
+            case "ctor-throwing-cctor-gated":
+                // P1 (2026-11-17): the source-gated shape in a beforefieldinit class whose initializer looks a method up by name
+                // (AccessTools.Method: an ambiguous name throws, at whatever time the runtime runs it).
+                RequireChoiceConstructor(target);
+                Gate("squeeze");
+                harmony.Patch(target, postfix: new HarmonyMethod(typeof(SourceThrowingGate), nameof(SourceThrowingGate.Postfix)) { priority = priority });
+                break;
+            case "ctor-reach-gated":
+                // P2 (2026-11-17): the source-gated shape in a class with no initializer, reaching (on its gated path) a static of a
+                // beforefieldinit class whose initializer reads the clock: compiling the postfix may run it.
+                RequireChoiceConstructor(target);
+                Gate("squeeze");
+                harmony.Patch(target, postfix: new HarmonyMethod(typeof(SourceReachGate), nameof(SourceReachGate.Postfix)) { priority = priority });
+                break;
+            case "ctor-lambda-gated":
+            case "ctor-accesstools-gated":
+            case "ctor-capacity-cctor-gated":
+            case "ctor-helper-reach-gated":
+                // Re-audit round 2 of 2026-11-17: the source-gated shape with (B2) a non-capturing lambda (Roslyn's <>c class, its
+                // initializer `newobj; stsfld`): stands; (B3) a call to HarmonyLib's AccessTools.Field on its gated path: stands;
+                // (A3) its class's initializer creating a ConcurrentDictionary with concurrency level 0 (throws): backs off; (A2) an
+                // own-class helper it calls (the JIT may inline it) reading ImpureClock: backs off.
+                RequireChoiceConstructor(target);
+                Gate("squeeze");
+                harmony.Patch(target, postfix: new HarmonyMethod(shape switch
+                {
+                    "ctor-lambda-gated" => typeof(SourceLambdaGate),
+                    "ctor-accesstools-gated" => typeof(SourceAccessToolsGate),
+                    "ctor-capacity-cctor-gated" => typeof(SourceCapacityGate),
+                    _ => typeof(SourceHelperReachGate),
+                }, "Postfix") { priority = priority });
+                break;
+            case "model-gated-postfix":
+            case "model-gated-prefix":
+                // Gated on the listener argument `model` of PlayerChoiceContext.PushModel / PopModel (HookSkip's helpers): the
+                // postfix stands on both, the prefix only on PopModel (PushModel creates the stack a prefix could read).
+                if (target.DeclaringType != typeof(PlayerChoiceContext) || target.Name is not ("PushModel" or "PopModel"))
+                {
+                    throw new ArgumentException(shape + " goes on MegaCrit.Sts2.Core.GameActions.Multiplayer.PlayerChoiceContext:PushModel or :PopModel");
+                }
+                Gate("squeeze");
+                void PatchModel() => harmony.Patch(target, prefix: shape == "model-gated-prefix" ? new HarmonyMethod(typeof(ModelGate), nameof(ModelGate.Prefix)) { priority = priority } : null,
+                    postfix: shape == "model-gated-postfix" ? new HarmonyMethod(typeof(ModelGate), nameof(ModelGate.Postfix)) { priority = priority } : null);
+                if (parts.Contains("background"))
+                {
+                    // A mod patching from another thread (re-audit of b64e896, A5): InlineGuard queues its rebuild to the main thread.
+                    System.Threading.Tasks.Task.Run(PatchModel).GetAwaiter().GetResult();
+                }
+                else
+                {
+                    PatchModel();
+                }
+                break;
+            case "ctor-cctor-gated":
+                RequireChoiceConstructor(target);
+                Gate("squeeze");
+                harmony.Patch(target, postfix: new HarmonyMethod(typeof(SourceCctorGate), nameof(SourceCctorGate.Postfix)) { priority = priority });
+                break;
+            case "create-null-gated-postfix":
+            case "create-nearmiss-postfix":
+            case "create-null-gated-reach-postfix":
+                if (target.DeclaringType != typeof(NCardFlyShuffleVfx) || target.Name != nameof(NCardFlyShuffleVfx.Create))
+                {
+                    throw new ArgumentException(shape + " goes on MegaCrit.Sts2.Core.Nodes.Vfx.NCardFlyShuffleVfx:Create");
+                }
+                // create-null-gated-reach-postfix (B1, re-audit round 2 of 2026-11-17): RitsuLib's null-gated shape in a class whose
+                // beforefieldinit initializer reads the clock, reaching another such class on its non-null path (RitsuLib's
+                // ModCardPileRegistry): NullSkipped judges no initializer (the postfix runs at every call, skipped or not), so it stands.
+                harmony.Patch(target, postfix: shape == "create-null-gated-reach-postfix"
+                    ? new HarmonyMethod(typeof(SoulReachShape), nameof(SoulReachShape.Postfix)) { priority = priority }
+                    : new HarmonyMethod(typeof(SoulShapes), shape == "create-null-gated-postfix"
+                        ? nameof(SoulShapes.NullGatedPostfix) : nameof(SoulShapes.NearMissPostfix)) { priority = priority });
+                if (shape == "create-null-gated-postfix")
+                {
+                    SoulShapes.WatchTree();
+                }
+                break;
+            case "trail-replacing-prefix":
+                if (target.DeclaringType != typeof(NCardTrailVfx) || target.Name != nameof(NCardTrailVfx.Create))
+                {
+                    throw new ArgumentException(shape + " goes on MegaCrit.Sts2.Core.Nodes.Vfx.NCardTrailVfx:Create");
+                }
+                harmony.Patch(target, prefix: new HarmonyMethod(typeof(SoulShapes), nameof(SoulShapes.TrailPrefix)) { priority = priority });
                 break;
         }
         lock (_installed)
@@ -370,8 +759,86 @@ public static class ForeignPatches
         }
     }
 
+    /// <summary>A method by <c>Namespace.Type:Method</c>, or any member (a constructor too) by its fingerprint key <c>Namespace.Type::Method(ArgTypes)</c>.</summary>
     private static MethodBase Target(string spec) =>
-        AccessTools.Method(spec) ?? throw new ArgumentException("no method " + spec + " (Namespace.Type:Method)");
+        (spec.Contains("::", StringComparison.Ordinal) ? MethodFingerprint.Resolve(typeof(AbstractModel).Assembly, spec) : AccessTools.Method(spec))
+        ?? throw new ArgumentException("no method " + spec + " (Namespace.Type:Method, or Namespace.Type::Method(ArgTypes))");
+
+    private static void RequireChoiceConstructor(MethodBase target)
+    {
+        ParameterInfo[] parameters = target.GetParameters();
+        if (target.DeclaringType != typeof(HookPlayerChoiceContext) || !target.IsConstructor || parameters.Length != 4 || parameters[0].Name != "source")
+        {
+            throw new ArgumentException("this shape goes on MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext::.ctor(AbstractModel,UInt64,ICombatState,GameActionType)");
+        }
+    }
+
+    /// <summary>Per hook name, HookSkip's walk calls and filtered walks at the last <c>foreignpatch walks mark</c>.</summary>
+    private static readonly Dictionary<string, (long Calls, long Filtered)> _walkMark = new();
+
+    private static IReadOnlyList<string> MarkWalks()
+    {
+#if BENCH
+        _walkMark.Clear();
+        foreach (string hook in typeof(MegaCrit.Sts2.Core.Hooks.Hook).GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic).Select(m => m.Name).Distinct())
+        {
+            _walkMark[hook] = (HookSkip.WalkCallsOf(hook), HookSkip.FilteredWalksOf(hook));
+        }
+        return new[] { $"FOREIGN walks marked ({_walkMark.Count} hook names)" };
+#else
+        return Array.Empty<string>();
+#endif
+    }
+
+    /// <summary>
+    /// <c>foreignpatch require filtered|vanilla Hook1,Hook2</c>: since the mark, each hook this game has ran some walk filtered
+    /// (filtered), or made walks and none filtered (vanilla: it ran, the game's whole walk each time). Names of another game
+    /// version are listed and skipped; at least one name must be this game's.
+    /// </summary>
+    private static IReadOnlyList<string> RequireWalks(bool filtered, string hooks)
+    {
+#if BENCH
+        var lines = new List<string>();
+        int present = 0;
+        foreach (string hook in hooks.Split(',', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (!HookSkip.HasHook(hook))
+            {
+                lines.Add($"FOREIGN walks Hook.{hook}: not a hook of this game version, skipped");
+                continue;
+            }
+            present++;
+            (long calls0, long filtered0) = _walkMark.TryGetValue(hook, out var mark) ? mark : (0, 0);
+            long calls = HookSkip.WalkCallsOf(hook) - calls0, ran = HookSkip.FilteredWalksOf(hook) - filtered0;
+            lines.Add($"FOREIGN walks Hook.{hook}: {calls} since the mark, {ran} filtered");
+            if (filtered ? ran == 0 : calls == 0 || ran > 0)
+            {
+                throw new InvalidOperationException($"Hook.{hook}: {calls} walks since the mark, {ran} filtered (expected {(filtered ? "some filtered" : "some, none filtered")})");
+            }
+        }
+        if (present == 0)
+        {
+            throw new InvalidOperationException($"none of {hooks} is a hook of this game version");
+        }
+        return lines;
+#else
+        return Array.Empty<string>();
+#endif
+    }
+
+    /// <summary>
+    /// <c>foreignpatch require souls</c> (with create-null-gated-postfix installed): the souls that postfix saw (non-null results)
+    /// equal the souls the scene tree got since the install, and at least one; it never saw a skipped one (null) as a soul.
+    /// </summary>
+    private static IReadOnlyList<string> RequireSouls()
+    {
+        long seen = SoulShapes.SoulsSeen, added = SoulShapes.SoulsAdded;
+        if (seen == 0 || seen != added)
+        {
+            throw new InvalidOperationException($"create-null-gated-postfix saw {seen} souls, the scene tree got {added}");
+        }
+        return new[] { $"FOREIGN souls: create-null-gated-postfix saw {seen}, the scene tree got {added}, null results {SoulShapes.NullResults}, trails built by trail-replacing-prefix {SoulShapes.TrailsBuilt}" };
+    }
 
     private static string Name(MethodBase method) => $"{method.DeclaringType?.Name}.{method.Name}";
 
@@ -411,6 +878,13 @@ public static class ForeignPatches
             new Harmony(id).Unpatch(target, HarmonyPatchType.All, id);
             lines.Add($"FOREIGN removed {id} from {Name(target)}");
         }
+        SoulShapes.UnwatchTree();
+        if (_stateTracker != null)
+        {
+            _stateTracker.CombatStateChanged -= OnStateChangedForTest;
+            _stateTracker = null;
+            lines.Add("FOREIGN removed the statechanged subscriber");
+        }
         return lines.Count > 0 ? lines : new[] { "FOREIGN nothing to remove" };
     }
 
@@ -420,6 +894,17 @@ public static class ForeignPatches
     /// </summary>
     private static IReadOnlyList<string> Report(string label)
     {
+        // The kept notes are worked out at each preflight (WatchNote): run one first, as bdopt runs it, so the notes name the
+        // patches installed since the last one (proof run 2: the kept-note expectations of relicflash-display, foreign-walkreuse,
+        // hover-tips-display only matched in bdopt why's later output). Display bookkeeping only.
+        try
+        {
+            Config.Settings.RefreshConflicts();
+        }
+        catch
+        {
+            // The report goes on with the notes as they are.
+        }
         var lines = _counts.OrderBy(e => e.Key, StringComparer.Ordinal).Select(e => $"STATE foreign {label} {e.Key} {e.Value}").ToList();
         lines.AddRange(IlJudgeShapes.ReportLines(label));
         if (Gates.NearMissCalls > 0)
@@ -430,16 +915,47 @@ public static class ForeignPatches
         lines.Add($"FOREIGN tolerated checks {PatchSafety.ToleratedChecks}, gate analyses {PatchSafety.GateAnalyses} ({PatchSafety.GatedMethods} gated)");
         lines.Add($"FOREIGN listener scopes with walk patches {ListenerCache.AugmentedScopes}, walks served {ListenerCache.Served}, "
             + $"mirrored combat {FastListeners.CombatWalks} run {FastListeners.RunWalks}, pile lookups fast {PileIndex.Fast} verified {PileIndex.Verified}");
+        lines.Add($"FOREIGN walk reuse kept {ListenerCache.WalksMaterialized}, reused {ListenerCache.WalksReused}, checked {ListenerCache.WalksVerified}, "
+            + $"mismatches {ListenerCache.WalkMismatches}, foreign dispatches {ListenerCache.ForeignDispatches}, out of scope {ListenerCache.ReusesOutOfScope}, "
+            + $"suspended {ListenerCache.SuspendedRevalidations}, on {ListenerCache.WalkReuseEnabled}");
         lines.AddRange(PatchSafety.RuntimeReport().Select(t => "FOREIGN runtime " + t));
         lines.AddRange(HookSkip.GatedWalkReport().Select(t => "FOREIGN gated walks " + t));
+        lines.AddRange(HookSkip.FilteredWalkReport().Select(t => "FOREIGN filtered walks " + t));
         lines.AddRange(HookSkip.JudgedWalkReport().Select(t => "FOREIGN judged walks " + t));
         lines.AddRange(TranspilerJudge.Report().Select(t => "FOREIGN iljudge " + t));
 #endif
         lines.AddRange(PatchSafety.ToleratedReport().Select(t => "FOREIGN tolerated " + t));
+        lines.AddRange(PatchSafety.KeptNotes().Select(k => $"FOREIGN kept {k.Patch}: {k.Text} <- {string.Join(", ", k.Mods)}"));
+        // Whether combat hook subscriptions exist (BaseLib's, say): every merged relic flash replays its sound then, and the
+        // combat-end walk counts as another mod's code for CardFlightLimit (re-audit round 2).
+        lines.Add($"FOREIGN combat hook subscriptions {(GameHookDelegates.Subscribed() ? "present" : "none")}");
+        if (SoulReachShape.Seen > 0)
+        {
+            lines.Add($"FOREIGN souls seen by create-null-gated-reach-postfix {SoulReachShape.Seen}");
+        }
+        lines.AddRange(_displayCounts.OrderBy(e => e.Key, StringComparer.Ordinal).Select(e => $"FOREIGN display {label} {e.Key} {e.Value}"));
+        if (SoulShapes.SoulsSeen + SoulShapes.NullResults + SoulShapes.TrailsBuilt > 0)
+        {
+            lines.Add($"FOREIGN souls seen {SoulShapes.SoulsSeen}, added to the tree {SoulShapes.SoulsAdded}, null results {SoulShapes.NullResults}, trails built {SoulShapes.TrailsBuilt}");
+        }
         return lines;
     }
 
     private static void Count(string key) => _counts.AddOrUpdate(key, 1, (_, n) => n + 1);
+
+    private static MegaCrit.Sts2.Core.Combat.CombatStateTracker? _stateTracker;
+
+    /// <summary>The statechanged subscriber: a walk of the combat's listeners in each dispatch, as RandomForeseer's refresh makes.</summary>
+    private static void OnStateChangedForTest(MegaCrit.Sts2.Core.Combat.CombatState state)
+    {
+        Count("statechanged-subscriber calls");
+        long listeners = 0;
+        foreach (AbstractModel _ in state.IterateHookListeners())
+        {
+            listeners++;
+        }
+        _counts.AddOrUpdate("statechanged-subscriber listeners", listeners, (_, n) => n + listeners);
+    }
 
     /// <summary>The local player in a combat (the narrow and pilecard lines), or why not.</summary>
     private static Player LocalPlayerInCombat()
@@ -495,7 +1011,15 @@ public static class ForeignPatches
     [ThreadStatic] private static CardPile? _narrowPile;
 
     /// <summary>The extra pile <see cref="PilesPostfix"/> appends to each player's piles (made by <see cref="PileCard"/>).</summary>
-    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Player, CardPile> _extraPiles = new();
+    /// <summary>
+    /// The tables of game objects the shapes keep, in their own class: ForeignPatches' own initializer stays one PatchSafety
+    /// accepts (P2, 2026-11-17: the gated shapes call Count, so compiling them may run it), these two being collections of game types.
+    /// </summary>
+    private static class Tables
+    {
+        public static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Player, CardPile> ExtraPiles = new();
+        public static readonly System.Runtime.CompilerServices.ConditionalWeakTable<AbstractModel, object> ExpandedInCombat = new();
+    }
 
     /// <summary>
     /// <c>foreignpatch pilecard [label]</c> (with piles-postfix installed): the draw pile's first card moves (silently, the game's
@@ -510,7 +1034,7 @@ public static class ForeignPatches
         {
             throw new InvalidOperationException("the draw pile is empty");
         }
-        CardPile extra = _extraPiles.GetValue(me, _ => new CardPile(PileType.None));
+        CardPile extra = Tables.ExtraPiles.GetValue(me, _ => new CardPile(PileType.None));
         CardModel card = draw.Cards[0];
         draw.RemoveInternal(card, silent: true);
         extra.AddInternal(card, -1, silent: true);
@@ -549,6 +1073,60 @@ public static class ForeignPatches
     private static void CountPostfix(MethodBase __originalMethod) => Count("count-postfix " + Name(__originalMethod));
 
     private static void CountPrefix(MethodBase __originalMethod) => Count("count-prefix " + Name(__originalMethod));
+
+    private static void DisplayCountPrefix(MethodBase __originalMethod) => _displayCounts.AddOrUpdate(Name(__originalMethod), 1, (_, n) => n + 1);
+
+    private static AccessTools.FieldRef<MegaCrit.Sts2.Core.Entities.Cards.CardEnergyCost, CardModel>? _energyCostCard;
+    private static long _unstableReads;
+
+    /// <summary>RitsuLib's shape: a by-ref postfix on the cost, the same at every read (+1 for Squeeze).</summary>
+    private static void EnergyCostPostfix(MegaCrit.Sts2.Core.Entities.Cards.CardEnergyCost __instance, ref int __result)
+    {
+        _displayCounts.AddOrUpdate("energy-cost-postfix reads", 1, (_, n) => n + 1);
+        if (_energyCostCard!(__instance) is Squeeze)
+        {
+            __result += 1;
+        }
+    }
+
+    /// <summary>The premise violated: every other read of any card's cost is one more (inconsistent within one sort).</summary>
+    private static void EnergyCostUnstablePostfix(ref int __result)
+    {
+        _displayCounts.AddOrUpdate("energy-cost-unstable-postfix reads", 1, (_, n) => n + 1);
+        if ((++_unstableReads & 1) == 0)
+        {
+            __result += 1;
+        }
+    }
+
+    /// <summary>The script flash-script-postfix attaches (made once: <c>extends Node</c>, no resource path).</summary>
+    private static Godot.Script? _flashScript;
+
+    private static void FlashScriptPostfix(NRelicFlashVfx? __result)
+    {
+        if (__result == null)
+        {
+            return;
+        }
+        try
+        {
+            if (_flashScript == null)
+            {
+                var script = new Godot.GDScript { SourceCode = "extends Node\n" };
+                script.Reload();
+                _flashScript = script;
+            }
+            var child = new Godot.Node { Name = "BdTestScripted" };
+            child.SetScript(_flashScript);
+            __result.AddChild(child);
+            _displayCounts.AddOrUpdate("flash-script-postfix added", 1, (_, n) => n + 1);
+        }
+        catch (Exception e)
+        {
+            _displayCounts.AddOrUpdate("flash-script-postfix failed", 1, (_, n) => n + 1);
+            MegaCrit.Sts2.Core.Logging.Log.Warn($"bdtest flash-script-postfix: {e.Message}");
+        }
+    }
 
     [ThreadStatic] private static bool _nesting;
 
@@ -631,6 +1209,40 @@ public static class ForeignPatches
 
     private static bool TruePrefix() => true;
 
+    /// <summary>skip-prefix: the original skipped for Squeeze, nothing done instead (counted per target).</summary>
+    private static bool SkipSqueezePrefix(CardModel card, MethodBase __originalMethod)
+    {
+        if (card is not Squeeze)
+        {
+            return true;
+        }
+        Count("skip-prefix " + __originalMethod.Name);
+        return false;
+    }
+
+    /// <summary>skip-and-add-prefix on AddInternal: Squeeze put at the end of the pile's list directly (no event), the original skipped.</summary>
+    private static bool SkipAndAddSqueezePrefix(CardModel card, List<CardModel> ____cards)
+    {
+        if (card is not Squeeze || ____cards.Contains(card))
+        {
+            return true;
+        }
+        ____cards.Add(card);
+        Count("skip-and-add-prefix AddInternal");
+        return false;
+    }
+
+    /// <summary>skip-and-add-prefix on RemoveInternal: Squeeze taken out of the pile's list directly (no event), the original skipped.</summary>
+    private static bool SkipAndRemoveSqueezePrefix(CardModel card, List<CardModel> ____cards)
+    {
+        if (card is not Squeeze || !____cards.Remove(card))
+        {
+            return true;
+        }
+        Count("skip-and-add-prefix RemoveInternal");
+        return false;
+    }
+
     private static string RefPrefixFor(MethodBase target)
     {
         Type returned = target is MethodInfo m ? m.ReturnType : typeof(void);
@@ -697,7 +1309,6 @@ public static class ForeignPatches
     private static void WalkExpandRunPostfix(ref IEnumerable<AbstractModel> __result) => __result = ExpandWalk(__result, nested: true);
 
     /// <summary>The Squeezes the combat walk's expansion yielded twice: the run walk's input holds them as pairs (its child combat walk).</summary>
-    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<AbstractModel, object> _expandedInCombat = new();
 
     /// <summary>
     /// Each Squeeze yielded twice (it reacts to no hook). A second application on its own output is counted. The combat walk's
@@ -715,7 +1326,7 @@ public static class ForeignPatches
         {
             repeated = ReferenceEquals(previous, model) ? repeated + 1 : 1;
             if (repeated > 1 && model is Squeeze
-                && (!nested || repeated > 2 || !_expandedInCombat.TryGetValue(model, out _)))
+                && (!nested || repeated > 2 || !Tables.ExpandedInCombat.TryGetValue(model, out _)))
             {
                 Count("walk-expand-postfix applied twice");
             }
@@ -723,9 +1334,9 @@ public static class ForeignPatches
             yield return model;
             if (model is Squeeze)
             {
-                if (!nested && !_expandedInCombat.TryGetValue(model, out _))
+                if (!nested && !Tables.ExpandedInCombat.TryGetValue(model, out _))
                 {
-                    _expandedInCombat.AddOrUpdate(model, model);
+                    Tables.ExpandedInCombat.AddOrUpdate(model, model);
                 }
                 yield return model;
             }
@@ -733,6 +1344,32 @@ public static class ForeignPatches
     }
 
     /// <summary>EnchantLib's walk shape: the stream snapshotted at once, Squeezes moved to its end (not per-item, not lazy).</summary>
+    private static long _unstableCalls;
+
+    private static void WalkUnstablePostfix(ref IEnumerable<AbstractModel> __result)
+    {
+        if (++_unstableCalls % 3 == 0)
+        {
+            IEnumerable<AbstractModel> walk = __result;
+            __result = DropLast(walk);
+        }
+    }
+
+    private static IEnumerable<AbstractModel> DropLast(IEnumerable<AbstractModel> walk)
+    {
+        AbstractModel? held = null;
+        bool any = false;
+        foreach (AbstractModel model in walk)
+        {
+            if (any)
+            {
+                yield return held!;
+            }
+            held = model;
+            any = true;
+        }
+    }
+
     private static void WalkFilterRepeatPostfix(ref IEnumerable<AbstractModel> __result)
     {
         List<AbstractModel> all = __result.ToList();
@@ -753,7 +1390,7 @@ public static class ForeignPatches
     /// <summary>RitsuLib's mod piles shape: an extra pile appended to the player's piles.</summary>
     private static void PilesPostfix(Player __instance, ref IEnumerable<CardPile> __result)
     {
-        if (_extraPiles.TryGetValue(__instance, out CardPile? extra))
+        if (Tables.ExtraPiles.TryGetValue(__instance, out CardPile? extra))
         {
             __result = __result.Concat(new[] { extra });
         }
@@ -821,6 +1458,47 @@ public static class ForeignPatches
             return true;
         }
 
+        /// <summary>Squeeze's full name, as the full-name shape tests it (checked against the type at installation).</summary>
+        public const string SqueezeFullName = "MegaCrit.Sts2.Core.Models.Cards.Squeeze";
+
+        public static void SqueezeNameGatedPostfix(AbstractModel __instance, MethodBase __originalMethod)
+        {
+            if (__instance.GetType().Name != "Squeeze")
+            {
+                return;
+            }
+            Count("name-gated-postfix squeeze " + Name(__originalMethod));
+        }
+
+        public static void SqueezeFullNameGatedPostfix(AbstractModel __instance, MethodBase __originalMethod)
+        {
+            if (__instance.GetType().FullName == SqueezeFullName)
+            {
+                Count("fullname-gated-postfix squeeze " + Name(__originalMethod));
+            }
+        }
+
+        /// <summary>A call before the name test: it runs for every instance, so it isn't gated (every call counted, a STATE line).</summary>
+        public static void SqueezeNameNearMissPostfix(AbstractModel __instance, MethodBase __originalMethod)
+        {
+            Count("name-nearmiss-postfix every call " + Name(__originalMethod));
+            if (__instance.GetType().Name != "Squeeze")
+            {
+                return;
+            }
+            Count("name-nearmiss-postfix squeeze " + Name(__originalMethod));
+        }
+
+        /// <summary>The name test on another argument (the drawn card), not the listener: not gated on the listener.</summary>
+        public static void SqueezeNameOtherArgumentPostfix(AbstractModel __instance, CardModel card, MethodBase __originalMethod)
+        {
+            if (card.GetType().Name != "Squeeze")
+            {
+                return;
+            }
+            Count("name-othervar-postfix squeeze card " + Name(__originalMethod));
+        }
+
         public static void SqueezeOrRelicGatedPostfix(AbstractModel __instance, MethodBase __originalMethod)
         {
             if (__instance is Squeeze || __instance is RelicModel)
@@ -874,6 +1552,448 @@ public static class ForeignPatches
             if (__instance is Squeeze)
             {
                 Count("cctor-gated-postfix squeeze " + (Started != 0));
+            }
+        }
+    }
+    /// <summary>
+    /// RitsuLib's choice-context constructor postfix and its near misses (HookSkip's helpers): the accepted one in a class with a
+    /// static field initializer and no static constructor, which C# marks <c>beforefieldinit</c> (ECMA-335 II.10.5.3.2).
+    /// </summary>
+    private static class SourceGate
+    {
+        /// <summary>A field initializer: a type initializer, run at or before the first read of a static field (beforefieldinit).</summary>
+        private static readonly string Key = "ctor-source-gated squeeze";
+
+        /// <summary>The control ctor-read-then-gated's store (no initializer).</summary>
+        public static bool LastHadCombat;
+
+        /// <summary>RitsuLib's shape: nothing unless the listener (source) is of the gate type.</summary>
+        public static void Postfix(HookPlayerChoiceContext __instance, AbstractModel source, MegaCrit.Sts2.Core.Combat.ICombatState? combatState)
+        {
+            if (source is Squeeze)
+            {
+                Count(Key);
+            }
+        }
+
+        /// <summary>The test on combatState, not the listener: not a listener gate.</summary>
+        public static void CombatStateGatedPostfix(AbstractModel source, MegaCrit.Sts2.Core.Combat.ICombatState? combatState)
+        {
+            if (combatState is MegaCrit.Sts2.Core.Combat.CombatState)
+            {
+                Count("ctor-combatstate-gated combat");
+            }
+        }
+
+        /// <summary>The test on __instance (the context), the listener taken too: a helper's instance isn't the listener.</summary>
+        public static void InstanceGatedPostfix(object __instance, AbstractModel source)
+        {
+            if (__instance is Squeeze)
+            {
+                Count("ctor-instance-gated squeeze");
+            }
+        }
+
+        /// <summary>combatState read and stored before the test: it runs for every listener.</summary>
+        public static void ReadThenGatedPostfix(AbstractModel source, MegaCrit.Sts2.Core.Combat.ICombatState? combatState)
+        {
+            LastHadCombat = combatState != null;
+            if (source is Squeeze)
+            {
+                Count("ctor-read-then-gated squeeze");
+            }
+        }
+    }
+
+    /// <summary>The source-gated shape in a class with an explicit static constructor (not beforefieldinit): its first call runs it.</summary>
+    private static class SourceCctorGate
+    {
+        private static readonly long Started;
+
+        static SourceCctorGate()
+        {
+            Started = Environment.TickCount64;
+        }
+
+        public static void Postfix(AbstractModel source)
+        {
+            if (source is Squeeze)
+            {
+                Count("ctor-cctor-gated squeeze " + (Started != 0));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Rule A's shapes (2026-11-17) on HookSkip's Hook methods, which this mod only transpiles: every prefix and postfix stands
+    /// there. Counted per target (STATE lines: the same with this mod on or off); no initializer.
+    /// </summary>
+    private static class HookShapes
+    {
+        public static bool ReplaceBlockPrefix(decimal block, ref IEnumerable<AbstractModel> modifiers, ref decimal __result)
+        {
+            if (decimal.Truncate(block) % 2 != 0 || block <= 0)
+            {
+                return true;
+            }
+            __result = block + 1;
+            modifiers = Array.Empty<AbstractModel>();
+            Count("hook-replacing-prefix ModifyBlock replaced");
+            return false;
+        }
+
+        public static void HpLostWritePostfix(Creature target, ref IEnumerable<AbstractModel> modifiers, ref decimal __result)
+        {
+            modifiers = modifiers?.ToList() ?? new List<AbstractModel>();
+            if (target.IsMonster && __result > 0)
+            {
+                __result += 1;
+                Count("hook-out-write-postfix ModifyHpLost monster hp losses");
+            }
+        }
+
+        public static void TargetingWritePostfix(ref AbstractModel? preventer, bool __result)
+        {
+            AbstractModel? same = preventer;
+            preventer = same;
+            Count("hook-out-write-postfix ShouldAllowTargeting " + __result);
+        }
+
+        public static void ArgsPrefix(object[] __args, MethodBase __originalMethod) => Count($"hook-args-prefix {Name(__originalMethod)} {__args.Length}");
+
+        public static void NoOpFinalizer(Exception? __exception)
+        {
+        }
+
+        /// <summary>Counts each relic sound (sfx naming a relic) with its volume; suppresses the general relic flash sound.</summary>
+        public static bool SfxObserverPrefix(string sfx, float volume)
+        {
+            if (sfx == null || !sfx.Contains("relic", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            Count($"sfx-observer-prefix {sfx} volume {volume}");
+            if (sfx == "event:/sfx/ui/relic_activate_general")
+            {
+                Count("sfx-observer-prefix suppressed");
+                return false;
+            }
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// The source-gated shape in a beforefieldinit class (no explicit static constructor) whose field initializer reads the clock:
+    /// a time-dependent initializer the runtime may run at another time with this mod. Must back off (fix 2, 2026-11-17).
+    /// </summary>
+    private static class SourceImpureGate
+    {
+        private static readonly long Started = Environment.TickCount64;
+
+        public static void Postfix(AbstractModel source)
+        {
+            if (source is Squeeze)
+            {
+                Count("ctor-impure-cctor-gated squeeze " + (Started != 0));
+            }
+        }
+    }
+
+    /// <summary>
+    /// The source-gated shape in a beforefieldinit class whose initializer looks a method up by name (P1: AccessTools.Method can
+    /// throw on an ambiguous name, at whatever time the runtime runs the initializer). Must back off.
+    /// </summary>
+    private static class SourceThrowingGate
+    {
+        private static readonly MethodInfo? Lookup = AccessTools.Method(typeof(Squeeze), "OnUpgrade");
+
+        public static void Postfix(AbstractModel source)
+        {
+            if (source is Squeeze)
+            {
+                Count("ctor-throwing-cctor-gated squeeze " + (Lookup != null));
+            }
+        }
+    }
+
+    /// <summary>B2: the source-gated shape using a non-capturing lambda on its gated path (Roslyn's cached <c>&lt;&gt;c</c> delegate). Stands.</summary>
+    private static class SourceLambdaGate
+    {
+        public static void Postfix(AbstractModel source)
+        {
+            if (source is Squeeze)
+            {
+                Func<string, string> name = text => "ctor-lambda-gated " + text;
+                Count(name("squeeze"));
+            }
+        }
+    }
+
+    /// <summary>B3: the source-gated shape calling HarmonyLib's AccessTools on its gated path (initialized by Harmony itself). Stands.</summary>
+    private static class SourceAccessToolsGate
+    {
+        public static void Postfix(AbstractModel source)
+        {
+            if (source is Squeeze)
+            {
+                Count("ctor-accesstools-gated squeeze " + (AccessTools.Field(typeof(Squeeze), "_nonexistent") == null));
+            }
+        }
+    }
+
+    /// <summary>
+    /// A3: the source-gated shape in a beforefieldinit class whose initializer throws (concurrency level 0). Backs off. Its gated path
+    /// catches the TypeInitializationException (proof run 3: uncaught, it threw out of HookPlayerChoiceContext's constructor, as it
+    /// would without this mod, and killed the combat's turn loop at the next end of turn): the initializer is judged the same.
+    /// </summary>
+    private static class SourceCapacityGate
+    {
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> Table = new(0, 4);
+
+        public static void Postfix(AbstractModel source)
+        {
+            if (source is Squeeze)
+            {
+                string count;
+                try
+                {
+                    count = Table.Count.ToString();
+                }
+                catch (TypeInitializationException)
+                {
+                    count = "initializer threw";
+                }
+                Count("ctor-capacity-cctor-gated squeeze " + count);
+            }
+        }
+    }
+
+    /// <summary>A2: the source-gated shape calling an own-class helper that reads <see cref="ImpureClock"/> (inlining). Backs off.</summary>
+    private static class SourceHelperReachGate
+    {
+        public static void Postfix(AbstractModel source)
+        {
+            if (source is Squeeze)
+            {
+                Count("ctor-helper-reach-gated squeeze " + Started());
+            }
+        }
+
+        private static bool Started() => ImpureClock.Started != 0;
+    }
+
+    /// <summary>The clock read by a beforefieldinit initializer, reached by <see cref="SourceReachGate"/>'s gated path.</summary>
+    private static class ImpureClock
+    {
+        public static readonly long Started = Environment.TickCount64;
+    }
+
+    /// <summary>
+    /// B1 (re-audit round 2 of 2026-11-17): the null-gated postfix shape on NCardFlyShuffleVfx.Create in a beforefieldinit class
+    /// whose initializer reads the clock, its non-null path reading <see cref="ImpureClock"/> (RitsuLib's start-position postfix
+    /// reaching ModCardPileRegistry, whose initializer creates a Lock and dictionaries of mod types). Stands as NullSkipped:
+    /// counted per real soul (FOREIGN lines: a skipped soul makes none).
+    /// </summary>
+    private static class SoulReachShape
+    {
+        private static readonly long Started = Environment.TickCount64;
+
+        public static long Seen;
+
+        public static void Postfix(ref NCardFlyShuffleVfx? __result)
+        {
+            if (__result != null && Started + ImpureClock.Started != 0)
+            {
+                Seen++;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The source-gated shape in a class with no initializer, reading another class's static whose beforefieldinit initializer
+    /// reads the clock (P2: compiling the postfix may run that initializer). Must back off.
+    /// </summary>
+    private static class SourceReachGate
+    {
+        public static void Postfix(AbstractModel source)
+        {
+            if (source is Squeeze)
+            {
+                Count("ctor-reach-gated squeeze " + (ImpureClock.Started != 0));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Gates on PushModel's / PopModel's listener argument (HookSkip's helpers), no initializer. Counted per method: the same
+    /// with this mod on or off where they stand. Proof run 2: PushModel (32 bytes of IL) patched mid-session, after the game's
+    /// JIT compiled callers with its body inlined, is missed by those callers in the game itself (83,399 of 119,397 calls with
+    /// the mod off) while this mod's replacements see every call (InlineGuard); so a late PushModel postfix's count is a FOREIGN
+    /// display line (not compared), checked on the mod's side against PopModel's (<c>require pushpop</c>), and the same patches
+    /// installed at the launch (<c>launchforeign model-gated-pushpop</c>, before any caller is compiled) are STATE lines.
+    /// Proof run 3: the game itself doesn't pop every push. A new context's own first push (HookPlayerChoiceContext's constructor
+    /// pushes its source, BranchingPlayerChoiceContext's creator its card or potion, v0.113) is never popped: the context is
+    /// dropped (mod off at the launch: 348,912 pushes, 324,560 pops). Those pushes are counted apart (<see cref="OpensContext"/>).
+    /// </summary>
+    private static class ModelGate
+    {
+        public static void Postfix(object __instance, AbstractModel model, MethodBase __originalMethod)
+        {
+            if (model is Squeeze)
+            {
+                string key = "model-gated-postfix squeeze " + Name(__originalMethod) + (OpensContext(__instance, __originalMethod) ? " opening a context" : "");
+                if (__originalMethod.Name == "PushModel" && !AtLaunch)
+                {
+                    _displayCounts.AddOrUpdate(key, 1, (_, n) => n + 1);
+                }
+                else
+                {
+                    Count(key);
+                }
+            }
+        }
+
+        public static void Prefix(AbstractModel model, MethodBase __originalMethod)
+        {
+            if (model is Squeeze)
+            {
+                Count("model-gated-prefix squeeze " + Name(__originalMethod));
+            }
+        }
+
+        /// <summary>Installed at the launch (<see cref="InstallAtLaunch"/>): every count a STATE line.</summary>
+        public static bool AtLaunch;
+    }
+
+    /// <summary>
+    /// <c>launchforeign model-gated-pushpop</c> (ForeignLaunch): the PushModel postfix and the PopModel prefix gated on their
+    /// <c>model</c>, in before this mod applies and before any caller of theirs is compiled: on and off see the same calls.
+    /// </summary>
+    internal static void InstallModelGatesAtLaunch(Harmony harmony)
+    {
+        ModelGate.AtLaunch = true;
+        MethodInfo push = AccessTools.DeclaredMethod(typeof(PlayerChoiceContext), "PushModel") ?? throw new MissingMethodException(nameof(PlayerChoiceContext), "PushModel");
+        MethodInfo pop = AccessTools.DeclaredMethod(typeof(PlayerChoiceContext), "PopModel") ?? throw new MissingMethodException(nameof(PlayerChoiceContext), "PopModel");
+        harmony.Patch(push, postfix: new HarmonyMethod(typeof(ModelGate), nameof(ModelGate.Postfix)));
+        harmony.Patch(pop, prefix: new HarmonyMethod(typeof(ModelGate), nameof(ModelGate.Prefix)));
+    }
+
+    /// <summary>
+    /// <c>require pushpop</c>: the PushModel postfix saw as many Squeeze pushes as the PopModel prefix saw pops (every call seen;
+    /// both installed at one script line or both at the launch, between game actions), a new context's own first push aside (the
+    /// game never pops it: <see cref="ModelGate"/>).
+    /// </summary>
+    private static string[] RequirePushPop()
+    {
+        const string pushKey = "model-gated-postfix squeeze PlayerChoiceContext.PushModel", popKey = "model-gated-prefix squeeze PlayerChoiceContext.PopModel";
+        const string openKey = pushKey + " opening a context";
+        long Get(string key) => _counts.TryGetValue(key, out long c) ? c : _displayCounts.TryGetValue(key, out long d) ? d : 0;
+        long push = Get(pushKey), opened = Get(openKey);
+        long pop = _counts.TryGetValue(popKey, out long q) ? q : 0;
+        if (push == 0 || push != pop)
+        {
+            throw new InvalidOperationException($"PushModel's gated postfix saw {push} Squeeze pushes (and {opened} opening a context, never popped), PopModel's gated prefix {pop} pops: not every call seen");
+        }
+        return new[] { $"FOREIGN pushpop PushModel {push} = PopModel {pop}: every call seen ({opened} pushes opening a context aside)" };
+    }
+
+    /// <summary>The context's model stack field (read by <see cref="OpensContext"/>; set at its first use: no initializer).</summary>
+    private static FieldInfo? _modelStackField;
+
+    /// <summary>
+    /// A push that is a new context's own first one (never popped by the game): PushModel on a HookPlayerChoiceContext or a
+    /// BranchingPlayerChoiceContext whose stack holds only that model after it. Later pushes on such a context find its first
+    /// model below (the game never pops it), and other contexts' first pushes are popped (a card's play, a potion's use).
+    /// </summary>
+    private static bool OpensContext(object instance, MethodBase original)
+    {
+        if (original.Name != "PushModel" || instance is not PlayerChoiceContext context
+            || context.GetType().Name is not ("HookPlayerChoiceContext" or "BranchingPlayerChoiceContext"))
+        {
+            return false;
+        }
+        _modelStackField ??= AccessTools.Field(typeof(PlayerChoiceContext), "_modelStack");
+        return _modelStackField?.GetValue(context) is System.Collections.ICollection { Count: 1 };
+    }
+
+    /// <summary>
+    /// The trail field reference trail-replacing-prefix writes, in its own class: a FieldRefAccess initializer isn't one
+    /// PatchSafety.InitializerFree accepts (it can throw, at whatever time the runtime runs it), and SoulShapes holds the
+    /// accepted null-gated postfix (its class's initializer must stay a plain constant store).
+    /// </summary>
+    private static class SoulTrail
+    {
+        public static readonly AccessTools.FieldRef<NCardTrailVfx, Godot.Control> NodeToFollow =
+            AccessTools.FieldRefAccess<NCardTrailVfx, Godot.Control>("_nodeToFollow");
+    }
+
+    /// <summary>
+    /// CardFlightLimit's soul shapes (RitsuLib's start-position postfix and trail override) and the counts a scenario checks.
+    /// FOREIGN lines only: a skipped soul makes none of them, so they differ with the mod off.
+    /// </summary>
+    private static class SoulShapes
+    {
+        public static long SoulsSeen, SoulsAdded, NullResults, TrailsBuilt;
+
+        /// <summary>A static read before the null test (the control): on a null result it still runs that read.</summary>
+        public static bool Enabled = true;
+
+        private static Godot.SceneTree? _tree;
+
+
+        /// <summary>RitsuLib's shape: nothing for a null result (a skipped soul, as in the game's test mode).</summary>
+        public static void NullGatedPostfix(ref NCardFlyShuffleVfx? __result)
+        {
+            if (__result != null)
+            {
+                SoulsSeen++;
+            }
+        }
+
+        /// <summary>The control: a static field read before the null test.</summary>
+        public static void NearMissPostfix(ref NCardFlyShuffleVfx? __result)
+        {
+            if (Enabled && __result == null)
+            {
+                NullResults++;
+            }
+        }
+
+        /// <summary>RitsuLib's trail override: the trail built here from the same scene for every card, the original skipped.</summary>
+        public static bool TrailPrefix(Godot.Control card, string characterTrailPath, ref NCardTrailVfx? __result)
+        {
+            NCardTrailVfx trail = MegaCrit.Sts2.Core.Assets.PreloadManager.Cache.GetScene(characterTrailPath)
+                .Instantiate<NCardTrailVfx>(Godot.PackedScene.GenEditState.Disabled);
+            SoulTrail.NodeToFollow(trail) = card;
+            __result = trail;
+            TrailsBuilt++;
+            return false;
+        }
+
+        /// <summary>Counts the souls entering the scene tree from now on (a signal, not a patch: no other mod's patch to judge).</summary>
+        public static void WatchTree()
+        {
+            if (_tree == null && Godot.Engine.GetMainLoop() is Godot.SceneTree tree)
+            {
+                _tree = tree;
+                tree.NodeAdded += OnNodeAdded;
+            }
+        }
+
+        public static void UnwatchTree()
+        {
+            if (_tree != null)
+            {
+                _tree.NodeAdded -= OnNodeAdded;
+                _tree = null;
+            }
+        }
+
+        private static void OnNodeAdded(Godot.Node node)
+        {
+            if (node is NCardFlyShuffleVfx)
+            {
+                SoulsAdded++;
             }
         }
     }

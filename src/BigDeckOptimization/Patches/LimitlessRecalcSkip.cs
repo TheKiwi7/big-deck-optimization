@@ -562,11 +562,21 @@ public static class LimitlessRecalcSkip
             {
                 return true;
             }
+#if BENCH
+            // Test: checked now against the memo's cards with its last one missing (the check must see the list would change).
+            List<CardModel>? wrongCards = memo.Cards is { Count: > 0 } && TestWrong.Take("recalc") ? memo.Cards.Take(memo.Cards.Count - 1).ToList() : null;
+            if (++_sinceVerify >= VerifyEvery || wrongCards != null)
+#else
             if (++_sinceVerify >= VerifyEvery)
+#endif
             {
                 _sinceVerify = 0;
                 Verified++;
+#if BENCH
+                if (!LimitlessReserialize.WouldKeep(__instance, wrongCards ?? memo.Cards))
+#else
                 if (!LimitlessReserialize.WouldKeep(__instance, memo.Cards))
+#endif
                 {
                     Mismatches++;
                     Disable("a skipped recalculation would have changed the saved list", $"{__instance.Id} on {__instance.Card?.Id}");

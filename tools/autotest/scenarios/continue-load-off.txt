@@ -1,0 +1,39 @@
+# Session 3 of tools/autotest/continue-check.ps1: continue-save's run continued in a fresh game, the mod off from its launch
+# (launchoff: --bdoff), the reference of continue-load-on (see it). There, with the mod on, nothing of the mod
+# carries over from the session that built it: LimitlessReserialize compares lists of SerializableCards read from the save's
+# JSON (BaseLib's data on them), LimitlessHookSkip notes stacked enchantments from saved pairs with no pair seen yet,
+# LimitlessCloneMemo and LimitlessRecalcSkip start from empty memos. Each must still run (effectcheck); CHECKSUM and STATE lines
+# must match continue-load-off (the same save, the mod off from the launch) line for line.
+# compare-with: continue-load-on
+launchoff
+timeout 900
+selector ui
+continuerun 600
+wait 3
+runstate after load
+effects loaded
+enemyhp 1
+autoroom 900
+runstate room done
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+state start
+play 3
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 3
+waitfor idle 120
+checksum t2 plays
+state t2
+cmd kill all
+waitfor nocombat 300
+wait 2
+checksum after combat
+quit

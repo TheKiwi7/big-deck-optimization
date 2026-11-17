@@ -1,0 +1,50 @@
+# CardSortKeys' back-off (game v0.113+: before, the game's comparison is cheap and the part not needed): another mod on
+# CardModel.CompareTo, which it computes once per card instead of per comparison. Each sort (the combat start's, the
+# reshuffle after pilemove) must be the game's own: CHECKSUM and STATE lines must match wrong-1k-off line for line. On v0.107.1
+# requiregame logs SKIPPED and the session ends there (its first line: the expect lines after it never run there, judge.py
+# doesn't require them; compare.py says SKIPPED).
+# compare-with: wrong-1k-off
+requiregame v0.113
+expect CardSortKeys: CardModel\.CompareTo is also patched by bdtest\.fakeconflict
+expect COUNTERS end:.*CardSortKeys sorts \d+, answered \d+, refused [1-9]\d* \(last: another mod patches CardModel\.CompareTo\)
+timeout 900
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+fakeconflict MegaCrit.Sts2.Core.Models.CardModel:CompareTo
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+state start
+play 3
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 3
+waitfor idle 120
+checksum t2 plays
+pilemove draw discard 2
+wait 1
+checksum moved
+endturn
+waitfor idle 300
+checksum reshuffle
+state reshuffle
+play 3
+waitfor idle 120
+checksum t3 plays
+state t3
+cmd kill all
+waitfor nocombat 300
+wait 2
+checksum after combat
+state after combat
+counters end
+runtimebackoff CardSortKeys CardModel.CompareTo
+quit

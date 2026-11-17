@@ -11,7 +11,9 @@
 # patches' counts ('STATE foreign', foreignpatch report), over what both ran (a shorter control compares its own length). -OnOff:
 # every scenario also runs as its own mod-off twin (<x>-autooff: launched with the mod off, 'launchoff', so the co-op join lists
 # and the run's creation are the game's own too, without its bdperf, bdopt, counters, effects and expect lines), compared the same
-# way.
+# way. No twin for a scenario that is a mod-off side itself (its host launched off, 'launchoff'; a name ending off or van), nor for
+# one whose own mod-off pair (<x>off, <x>-off, <x>van) is in -Names: it is compared with that one. The mod-off sides start first
+# (the longest by far at these deck sizes).
 param([Parameter(Mandatory)][string[]]$Names, [string]$GameDir = "", [int]$Jobs = 6, [int]$TimeoutSec = 900, [int]$StallSec = 240, [switch]$Plain, [switch]$Instant, [switch]$OnOff)
 $Names = @($Names | ForEach-Object { $_ -split "," } | Where-Object { $_ })
 $copy = $GameDir
@@ -54,8 +56,18 @@ function New-OffTwin([string]$source, [string]$target) {
     if (-not $placed) { throw "$source has no 'mplobby' line: no place for its mod-off twin's 'launchoff'" }
     [IO.File]::WriteAllText($target, ($lines -join "`n") + "`n")
 }
+# Whether -OnOff makes this scenario's -autooff twin: not for a mod-off side, nor when its explicit mod-off pair runs too.
+function Test-NeedsTwin([string]$name) {
+    if ($name -match '(off|van|vanilla)$') { return $false }
+    $hostScript = Join-Path $Scenarios "$name-host.txt"
+    if ((Test-Path $hostScript) -and (Select-String -Path $hostScript -Pattern '^\s*launchoff\s*$' -Quiet)) { return $false }
+    foreach ($suffix in "off", "-off", "van") { if ($Names -contains "$name$suffix") { return $false } }
+    $true
+}
 $groups = @(foreach ($name in $Names) {
-    foreach ($twin in $(if ($OnOff) { @($false, $true) } else { @($false) })) {
+    $makeTwin = $OnOff -and (Test-NeedsTwin $name)
+    if ($OnOff -and -not $makeTwin) { Write-Host "-OnOff: no $name-autooff twin ($name is a mod-off side, or its own mod-off pair is in -Names)" }
+    foreach ($twin in $(if ($makeTwin) { @($false, $true) } else { @($false) })) {
         $scripts = @{}
         $groupName = if ($twin) { "$name-autooff" } else { $name }
         foreach ($role in "host", "client") {
@@ -76,10 +88,12 @@ $groups = @(foreach ($name in $Names) {
         [pscustomobject]@{ Name = $groupName; Scripts = $scripts; Port = 0; HostLog = Join-Path $out "$groupName-host.log"; ClientLog = Join-Path $out "$groupName-client.log" }
     }
 })
-foreach ($group in $groups) { $waiting.Enqueue($group) }
-# Mod on / mod off pairs: <x> with <x>off, <x>-off (scenarios) or <x>-autooff (-OnOff).
+# The mod-off sides first: several times longer than the mod-on ones, a long one starting last would set the series' length.
+$modOffSide = '(-autooff|off|van|vanilla)$'
+foreach ($group in @($groups | Where-Object { $_.Name -match $modOffSide }) + @($groups | Where-Object { $_.Name -notmatch $modOffSide })) { $waiting.Enqueue($group) }
+# Mod on / mod off pairs: <x> with <x>off, <x>-off, <x>van (scenarios) or <x>-autooff (-OnOff).
 $pairs = @(foreach ($group in $groups) {
-    foreach ($suffix in "off", "-off", "-autooff") {
+    foreach ($suffix in "off", "-off", "van", "-autooff") {
         $twin = $groups | Where-Object { $_.Name -eq "$($group.Name)$suffix" } | Select-Object -First 1
         if ($twin) { [pscustomobject]@{ On = $group; Off = $twin } }
     }
@@ -162,7 +176,7 @@ foreach ($entry in $done) {
         # judge.py: not ended, a failed line, an error or a difference this mod found itself, a positive control that saw nothing...
         # A mod-off side (-autooff twin, *off / *van pair): launched off ('launchoff', never saved), or a hand-run 'bdopt off' saved
         # in the slot both peers share, so a peer may start with the mod off, the game's own code: no problem there.
-        $modOff = $entry.Group.Name -match '(-autooff|off|van|vanilla)$'
+        $modOff = $entry.Group.Name -match $modOffSide
         Invoke-Judge @($log) -ModOff:$modOff | Select-Object -First 3 | ForEach-Object { $problems += "$role`: " + ($_ -replace '^PROBLEM [^:]+: ', '') }
         Select-String -Path $log -CaseSensitive -Pattern "State divergence" -ErrorAction SilentlyContinue | Select-Object -First 1 | ForEach-Object { $problems += "$role`: state divergence" }
         # The Workshop mods its game must have found (none with -Plain): a mods_STEAMTEST emptied by another series would go unseen.
@@ -204,13 +218,64 @@ function Get-PairLines([string]$log, [string[]]$checksums) {
     if ($checksums.Count) { $pattern += "|CHECKSUM (" + (($checksums | ForEach-Object { [regex]::Escape($_) }) -join "|") + "): " }
     @(Select-String -Path $log -Pattern $pattern -ErrorAction SilentlyContinue | ForEach-Object { ($_.Line -replace '^.*?((STATE|CHECKSUM) )', '$1') -replace '^(CHECKSUM [^:]+: \w+).*$', '$1' })
 }
+# Limitless's per-player combat RNG on v0.107.x (Patch_PerPlayerCombatRng: RunRngSet.GetRng's prefix picks the RNG slot from the
+# running action's OwnerId, an AsyncLocal): the game's end of turn (phase two, the enemy turn, the next turn's start) runs inside
+# whichever player's ReadyToBeginEnemyTurnAction executed last (CombatManager.SetReadyToBeginEnemyTurn -> TaskHelper.RunSafely), a
+# network race, so a random draw there (Parrying Shield's target) comes from another slot when the last ready player differs
+# between the sides. v0.113 resumes the turn loop in its own context. Returns, per "floor F round N" in order, the owner of the
+# last ReadyToBeginEnemyTurnAction before that round's first "STATE floor F round N Enemy" line; empty when the game isn't v0.107.x
+# or the log hasn't Limitless's "per-player combat rng prefix: ACTIVE" line.
+function Get-LastReadyOwners([string]$log) {
+    $owners = [ordered]@{}
+    if (-not (Test-Path $log)) { return $owners }
+    $lines = Get-Content $log
+    if (-not ($lines | Select-String -SimpleMatch -Quiet "release=v0.107.") -or -not ($lines | Select-String -SimpleMatch -Quiet "per-player combat rng prefix: ACTIVE")) { return $owners }
+    $last = $null
+    foreach ($line in $lines) {
+        if ($line -match 'Executing action: ReadyToBeginEnemyTurnAction (\d+)') { $last = $Matches[1]; continue }
+        if ($line -match 'STATE floor (\d+) round (\d+) Enemy: ') {
+            $key = "floor $($Matches[1]) round $($Matches[2])"
+            if (-not $owners.Contains($key)) { $owners[$key] = $last }
+            $last = $null
+        }
+    }
+    $owners
+}
+
+# The first round whose last ready player differs between the two host logs (the key "floor F round N"), or $null.
+function Get-PaceRound([string]$onHost, [string]$offHost) {
+    $on = Get-LastReadyOwners $onHost
+    $off = Get-LastReadyOwners $offHost
+    foreach ($key in $on.Keys) {
+        if ($off.Contains($key) -and $on[$key] -ne $off[$key]) { return $key }
+    }
+    $null
+}
+
+# The lines before the first "STATE <key> Enemy" line (what the race can't have touched yet).
+function Select-BeforeRound([string[]]$lines, [string]$key) {
+    $cut = "STATE $key Enemy:"
+    $kept = @()
+    foreach ($line in $lines) {
+        if ($line.StartsWith($cut)) { break }
+        $kept += $line
+    }
+    $kept
+}
+
 foreach ($pair in $pairs) {
+    $paceRound = Get-PaceRound $pair.On.HostLog $pair.Off.HostLog
     foreach ($role in "host", "client") {
         $onLog = if ($role -eq "host") { $pair.On.HostLog } else { $pair.On.ClientLog }
         $offLog = if ($role -eq "host") { $pair.Off.HostLog } else { $pair.Off.ClientLog }
         $checksums = @(Get-SettledChecksums $pair.On.Scripts[$role])
         $on = @(Get-PairLines $onLog $checksums)
         $off = @(Get-PairLines $offLog $checksums)
+        $fullOn = $on.Count; $fullOff = $off.Count
+        if ($paceRound) {
+            $on = @(Select-BeforeRound $on $paceRound)
+            $off = @(Select-BeforeRound $off $paceRound)
+        }
         $common = [Math]::Min($on.Count, $off.Count)
         $first = -1
         for ($i = 0; $i -lt $common; $i++) { if ($on[$i] -ne $off[$i]) { $first = $i; break } }
@@ -218,10 +283,13 @@ foreach ($pair in $pairs) {
         # at its end (a combat over a turn sooner), which a comparison of the common lines alone would call identical.
         $sameScript = $pair.Off.Name -eq "$($pair.On.Name)-autooff"
         $verdict = if ($common -eq 0) { "NOT COMPARED" } elseif ($first -ge 0) { "DIFFERENT" } elseif ($sameScript -and $on.Count -ne $off.Count) { "DIFFERENT LENGTHS" } else { "IDENTICAL" }
-        $note = if ($on.Count -ne $off.Count) { " (compared the first $common`: $($on.Count) lines mod on, $($off.Count) mod off)" } else { "" }
+        # Everything before the round whose last ready player differs is identical: the rest is the race's (not a problem).
+        if ($paceRound -and $verdict -eq "IDENTICAL") { $verdict = "PACE (Limitless per-player RNG: last ready player differs from $paceRound)" }
+        $note = if ($paceRound) { " (compared up to $paceRound's enemy turn: $common of $fullOn lines mod on, $fullOff mod off)" }
+            elseif ($on.Count -ne $off.Count) { " (compared the first $common`: $($on.Count) lines mod on, $($off.Count) mod off)" } else { "" }
         Write-Output ("{0} vs {1} ({2}): {3} lines, {4}{5}" -f $pair.On.Name, $pair.Off.Name, $role, $common, $verdict, $note)
         if ($first -ge 0) { Write-Output "    on : $($on[$first])"; Write-Output "    off: $($off[$first])" }
-        if ($verdict -ne "IDENTICAL") { $bad++ }
+        if ($verdict -ne "IDENTICAL" -and -not $verdict.StartsWith("PACE ")) { $bad++ }
     }
 }
 Write-Output ("done in {0:F1} min, {1} with problems, logs in {2}" -f ((Get-Date) - $started).TotalMinutes, $bad, $out)

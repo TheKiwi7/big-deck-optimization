@@ -1,0 +1,40 @@
+# CardFlightLimit next to another mod's code in the combat-end check (A/B, mod off): the same steps as foreign-flights-end-2k-on
+# (see there); CHECKSUM and STATE lines must match line for line. Every soul flies here.
+timeout 1200
+cmd bdopt off
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+enemyhp 999999
+speed fast
+immortal
+foreignpatch count-postfix MegaCrit.Sts2.Core.Hooks.Hook::ShouldStopCombatFromEnding(ICombatState)
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+wait 6
+checksum mid
+state mid
+foreignpatch report mid
+cmd power STOCK_POWER 1 0
+wait 1
+cmd kill all
+waitfor idle 300
+wait 2
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+wait 6
+checksum ending
+state ending
+foreignpatch report ending
+foreignpatch remove
+quit

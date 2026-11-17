@@ -1,0 +1,31 @@
+# RelicFlashMerge next to another mod's patch deeper in the game's sound call (A/B, mod on; DESIGN "Needless back-offs made
+# safe", rule D, 2026-11-17 audit R1): a counting prefix on NonInteractiveMode.IsActive, which SfxCmd.Play(string, float)
+# reads at every call (the sound set computed from the game's code, CodeSet). A merged flash replays its sound then, as for
+# a patch on SfxCmd.Play itself (relicflash-sfx): the prefix sees the same calls as mod off (STATE lines, compared with
+# relicflash-deep-off), flashes are still merged and their sounds replayed. A campfire clone at ~945 cards (Bing Bong).
+timeout 1200
+expect STATE foreign end count-prefix NonInteractiveMode\.get_IsActive [1-9]
+expect EFFECTCHECK RelicFlashMerge grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK RelicFlashMerge\.SoundsReplayed grew since 'start': [0-9]+ -> [1-9]
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+foreignpatch count-prefix MegaCrit.Sts2.Core.Helpers.NonInteractiveMode::get_IsActive()
+checksum before
+state before optional
+effects start
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+checksum after
+state after optional
+foreignpatch report end
+effects end
+effectcheck RelicFlashMerge grew start
+effectcheck RelicFlashMerge.SoundsReplayed grew start
+cmd bdopt why
+foreignpatch remove
+quit

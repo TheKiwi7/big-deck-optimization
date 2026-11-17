@@ -23,6 +23,17 @@ namespace BigDeckOptimization.Patches;
 /// screen (every field of each tip: title, description with its numbers, icon, debuff look...). Only when they are all
 /// identical, the panel shown is still the one built for them and everything the game places it from is unchanged
 /// (see <see cref="Placement"/>) is the rebuild skipped; any difference rebuilds it like the game does. UI only.
+///
+/// The hover-tip display premise (owner-approved 2026-11-17; DESIGN "Owner-approved premises"): other mods' patches on the
+/// panel's own methods a reuse doesn't run (<see cref="SkippedNames"/>, <c>NHoverTipSet</c> only: building, placing, registering
+/// and freeing the panel) only change what the tips show; a reused panel keeps what they added when it was built (a decoration
+/// that depends on state outside the tips may stay as it was until the tips change: taken as display). What a reuse also leaves
+/// out, under the same premise (re-audit of the premises, D1): what building the panel runs besides those methods, the panel's
+/// constructor and <c>_Ready</c>, the scripts of the tip scenes it instantiates (<c>hover_tip.tscn</c>), <c>AddChildSafely</c> and the
+/// labels' <c>SetTextAutoSize</c>. Strict still: the handler <c>NCreature.ShowCreatureHoverTips</c>,
+/// <c>NCreature.ShowHoverTips</c>/<c>HideHoverTips</c>, the fingerprints, the comparison, the "seen" marks the build makes for a tip
+/// of a card, relic or potion (<see cref="_marks"/>: the game's are idempotent, another mod's patch on them is a save write a
+/// reuse would leave out: such a panel is rebuilt), and every one of these methods with <see cref="PatchSafety.ShapeRules"/> off.
 /// </summary>
 public static class HoverTipReuse
 {
@@ -85,7 +96,52 @@ public static class HoverTipReuse
     private static readonly ConditionalWeakTable<NCreature, Shown> _shown = new();
     private static Func<Dictionary<Control, NHoverTipSet>>? _activeHoverTips;
     private static MethodInfo? _handler;
+    /// <summary>What a reuse skips calling, strict whatever the premise: the creature's own show and hide.</summary>
     private static MethodBase[] _skipped = Array.Empty<MethodBase>();
+    /// <summary>The panel's methods a reuse skips (<see cref="SkippedNames"/>): under the display premise with the shape rules on.</summary>
+    private static MethodBase[] _panel = Array.Empty<MethodBase>();
+
+    /// <summary>
+    /// The "seen" marks <c>NHoverTipSet.Init</c> makes for each tip whose canonical model is a card, relic or potion
+    /// (<c>SaveManager.Mark*AsSeen</c>, the progress manager's and <c>ProgressState</c>'s they call, every version). The game's own
+    /// only add an id once (a second call does nothing), so a reuse of equal tips leaves out no-ops; another mod's patch there
+    /// (RandomForeseer's prefix on <c>MarkCardAsSeen</c>) may decide otherwise at another time: a panel with such a tip is rebuilt.
+    /// </summary>
+    private static MethodBase[] _marks = Array.Empty<MethodBase>();
+
+    /// <summary>A tip of this panel would be marked seen by the build, and another mod patches a mark (or one can't be found).</summary>
+    private static bool MarksPatched(List<HoverTip> tips)
+    {
+        bool marked = false;
+        foreach (HoverTip tip in tips)
+        {
+            if (((IHoverTip)tip).CanonicalModel is MegaCrit.Sts2.Core.Models.CardModel or MegaCrit.Sts2.Core.Models.RelicModel or MegaCrit.Sts2.Core.Models.PotionModel)
+            {
+                marked = true;
+                break;
+            }
+        }
+        if (!marked)
+        {
+            return false;
+        }
+        if (_marks.Length == 0)
+        {
+            return true;
+        }
+        foreach (MethodBase method in _marks)
+        {
+            // No tolerance: a save write a reuse leaves out.
+            if (PatchSafety.IsPatchedByOthers(method))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>The methods checked strictly now: the creature's show and hide, and the panel's with the shape rules off.</summary>
+    private static MethodBase[] Strict() => PatchSafety.ShapeRules ? _skipped : _skipped.Concat(_panel).ToArray();
 
     private static bool SkippedPatched()
     {
@@ -95,6 +151,17 @@ public static class HoverTipReuse
             if (PatchSafety.IsPatchedByOthers(method))
             {
                 return true;
+            }
+        }
+        if (!PatchSafety.ShapeRules)
+        {
+            // As before the premise: the panel's methods strict too.
+            foreach (MethodBase method in _panel)
+            {
+                if (PatchSafety.IsPatchedByOthers(method))
+                {
+                    return true;
+                }
             }
         }
         return false;
@@ -126,15 +193,33 @@ public static class HoverTipReuse
             }
         }
         _handler = handler;
-        // What a reuse skips calling: another mod's patch there (e.g. adding content to the tips, or placing them) keeps the rebuilds.
+        // What a reuse skips calling: another mod's patch on the creature's show or hide keeps the rebuilds; on the panel's own
+        // methods (adding content to the tips, or placing them) too with the shape rules off, under the display premise with them.
         _skipped = new MethodBase[]
             {
                 Reflect.Method(typeof(NCreature), nameof(NCreature.ShowHoverTips))!,
                 Reflect.Method(typeof(NCreature), nameof(NCreature.HideHoverTips))!,
-            }
-            .Concat(typeof(NHoverTipSet).GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly)
-                .Where(m => SkippedNames.Contains(m.Name)))
-            .ToArray();
+            };
+        _panel = typeof(NHoverTipSet).GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+            .Where(m => SkippedNames.Contains(m.Name)).Cast<MethodBase>().ToArray();
+        // All of them found, or none trusted (MarksPatched answers true for a marked tip then).
+        MethodBase?[] marks =
+        {
+            Reflect.Method(typeof(MegaCrit.Sts2.Core.Saves.SaveManager), "MarkCardAsSeen"),
+            Reflect.Method(typeof(MegaCrit.Sts2.Core.Saves.SaveManager), "MarkRelicAsSeen"),
+            Reflect.Method(typeof(MegaCrit.Sts2.Core.Saves.SaveManager), "MarkPotionAsSeen"),
+            Reflect.Method(typeof(MegaCrit.Sts2.Core.Saves.Managers.ProgressSaveManager), "MarkCardAsSeen"),
+            Reflect.Method(typeof(MegaCrit.Sts2.Core.Saves.Managers.ProgressSaveManager), "MarkRelicAsSeen"),
+            Reflect.Method(typeof(MegaCrit.Sts2.Core.Saves.Managers.ProgressSaveManager), "MarkPotionAsSeen"),
+            Reflect.Method(typeof(MegaCrit.Sts2.Core.Saves.ProgressState), "MarkCardAsSeen"),
+            Reflect.Method(typeof(MegaCrit.Sts2.Core.Saves.ProgressState), "MarkRelicAsSeen"),
+            Reflect.Method(typeof(MegaCrit.Sts2.Core.Saves.ProgressState), "MarkPotionAsSeen"),
+        };
+        _marks = marks.All(m => m != null) ? marks.Cast<MethodBase>().ToArray() : Array.Empty<MethodBase>();
+        if (_marks.Length == 0)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: the hover tips' seen marks not found: panels with a card, relic or potion tip are rebuilt");
+        }
         var field = Reflect.Field(typeof(NHoverTipSet), "_activeHoverTips") ?? throw new MissingFieldException("NHoverTipSet._activeHoverTips");
         var active = (Dictionary<Control, NHoverTipSet>)field.GetValue(null)!;
         _activeHoverTips = () => active;
@@ -142,9 +227,41 @@ public static class HoverTipReuse
         Applied = true;
         // What Prefix asks about (display only).
         PatchSafety.Watch(Name, handler);
-        PatchSafety.Watch(Name, _skipped);
+        PatchSafety.Watch(Name, Strict());
         // Display only: one gate in front of all it does, any of these back-offs keeps the whole patch vanilla (the menu's red title).
         PatchSafety.WholePatch(Name);
+        // Other mods' patches on the panel's methods let stand by the premise: a kept note (bdopt why, the menu's hover).
+        PatchSafety.WatchNote(Name, NoteDisplay);
+    }
+
+    /// <summary>
+    /// The kept note of the display premise: which other mods' patches (or hidden IL hooks) on the panel's methods don't run
+    /// when a creature's unchanged tips are kept on screen. Cleared with the shape rules off, when there is none, and while the
+    /// handler or a strict method backs off (no reuse then: the back-off shows instead).
+    /// </summary>
+    private static void NoteDisplay()
+    {
+        var patched = new List<MethodBase>();
+        // Only while panels can be reused (G, re-audit of the premises): not once faulted (with the mod off: what would run once on).
+        if (PatchSafety.ShapeRules && Applied && !PatchSafety.IsFaulted(Name) && _handler != null && !PatchSafety.HasOtherPatches(_handler) && !_skipped.Any(PatchSafety.HasOtherPatches))
+        {
+            patched.AddRange(_panel.Where(PatchSafety.HasOtherPatches));
+        }
+        if (patched.Count == 0)
+        {
+            PatchSafety.ClearKept(Name, "tips_display");
+            return;
+        }
+        var mods = new List<string>(PatchSafety.OtherModsPatching(patched));
+        foreach (MethodBase method in patched)
+        {
+            mods.AddRange(HarmonyWatch.HiddenOwners(method));
+        }
+        string names = string.Join(", ", patched.Select(m => $"{m.DeclaringType?.Name}.{m.Name}").Distinct());
+        PatchSafety.Kept(Name, "tips_display", $"other mods' code on the hover-tip panel ({names}) doesn't run while a creature's unchanged "
+            + "tips are kept on screen, nor what building the panel runs (its nodes' scripts and setup, their text sizing, adding it to the "
+            + "screen): taken as display only (a stated premise: what other mods add to hover tips is display; it may stay as it was until the "
+            + "tips change; a panel whose tips would be marked seen is rebuilt while another mod patches those marks)", mods.ToArray());
     }
 
     /// <summary>Where the game would place the panel from now; null when it couldn't (no game node: never reused).</summary>
@@ -156,7 +273,7 @@ public static class HoverTipReuse
     private static bool Prefix(NCreature __instance)
     {
         // Asked at each call: a mod loading later may patch it too.
-        // No tolerance: the handler's rebuild is skipped.
+        // No tolerance on the handler and the creature's show and hide (the panel's methods: the display premise).
         if (!Enabled || PatchSafety.IsPatchedByOthers(_handler) || SkippedPatched())
         {
             return true;
@@ -184,7 +301,7 @@ public static class HoverTipReuse
             if (text != null && placement is { } now && _shown.TryGetValue(__instance, out Shown? shown) && shown.Alignment == alignment
                 && shown.Placement == now
                 && _activeHoverTips!().TryGetValue(hitbox, out NHoverTipSet? panel) && panel == shown.Panel
-                && GodotObject.IsInstanceValid(panel) && shown.Tips.SequenceEqual(text))
+                && GodotObject.IsInstanceValid(panel) && shown.Tips.SequenceEqual(text) && !MarksPatched(text))
             {
                 Reused++;
                 return false;

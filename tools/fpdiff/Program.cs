@@ -41,6 +41,24 @@ string[] HookHelpers =
     "MegaCrit.Sts2.Core.Models.AbstractModel::InvokeExecutionFinished()",
     "MegaCrit.Sts2.Core.Helpers.TaskHelper::WhenAny(Task[])",
 };
+// The getters of the auto-property chains classify.py's REVIEWED_CHAINS lets hooks pass to their listeners (vanilla calls them
+// once per listener): pinned (Getter lines) and checked strictly in those hooks' helper sets. Keep in step with REVIEWED_CHAINS.
+string[] ChainGetters =
+{
+    "MegaCrit.Sts2.Core.Entities.Creatures.Creature::get_CombatState()",
+    "MegaCrit.Sts2.Core.Entities.Players.Player::get_Creature()",
+};
+// Edges of the helpers' call graph (hookfps' Calls lines) a dropped listener's call never takes, left out of the graph:
+// tools/hookskip/classify.py checks each against the decompiled caller (NEVER_TAKEN there: the same pairs, with the proof)
+// and stops on a Skipped line it has no proof for. Keep the two lists in step.
+(string Caller, string Callee)[] NeverTaken =
+{
+    // PopModel's error branch: a listener's PopModel(VAR) follows its own PushModel(VAR) on the same context with only a
+    // default's no-op between (classify.py's pair rule), so the stack's top is that model and the branch never runs.
+    ("MegaCrit.Sts2.Core.GameActions.Multiplayer.PlayerChoiceContext::PopModel(AbstractModel)", "MegaCrit.Sts2.Core.Logging.Log::Error(String,Int32)"),
+    // The same branch's first use of Log: its type initializer (MethodFingerprint.GameCallees lists the initializers a call may run).
+    ("MegaCrit.Sts2.Core.GameActions.Multiplayer.PlayerChoiceContext::PopModel(AbstractModel)", "MegaCrit.Sts2.Core.Logging.Log::.cctor()"),
+};
 const BindingFlags All = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
 
 string Option(string name) { int i = Array.IndexOf(args, name); return i >= 0 && i + 1 < args.Length ? args[i + 1] : ""; }
@@ -241,6 +259,43 @@ HashSet<string> Callees(MethodBase m)
     return set;
 }
 
+// The key MethodFingerprint.Resolve finds this method by (HookSkip resolves the helper sets' keys at runtime with it): checked
+// to round-trip, else this stops (a key resolving to nothing or to another method would leave a callee unchecked).
+string ResolveKey(Assembly game, MethodBase m)
+{
+    MethodBase definition = Definition(m);
+    string key = MethodFingerprint.Key(definition);
+    MethodBase? back = MethodFingerprint.Resolve(game, key);
+    if (back == null || back.MetadataToken != definition.MetadataToken || back.Module != definition.Module)
+    {
+        throw new Exception($"{key} ({Key(definition)}): MethodFingerprint.Resolve finds {(back == null ? "nothing" : Key(back))}: make the key unique");
+    }
+    return key;
+}
+
+// A method as declared (an open generic type's or method's own definition), whatever instantiation the IL named.
+MethodBase Definition(MethodBase m)
+{
+    try
+    {
+        if (m is MethodInfo { IsGenericMethod: true } generic)
+        {
+            m = generic.GetGenericMethodDefinition();
+        }
+        if (m.DeclaringType is { IsGenericType: true, IsGenericTypeDefinition: false } constructed)
+        {
+            Type open = constructed.GetGenericTypeDefinition();
+            return open.GetMethods(All).Cast<MethodBase>().Concat(open.GetConstructors(All)).First(d => d.MetadataToken == m.MetadataToken);
+        }
+        return m;
+    }
+    catch
+    {
+        return m;
+    }
+}
+
+
 if (args.Length == 0) { Console.WriteLine("usage: review <old> <new> [...] | list <dir> | hookfps <dir> | deps <dll> <dir> | fieldusers <dir> <type> <field> | describe <dir> <type> <method|*>"); return 1; }
 
 switch (args[0])
@@ -266,6 +321,76 @@ switch (args[0])
         {
             MethodBase? m = MethodFingerprint.Resolve(game, helper);
             Console.WriteLine($"Helper.{helper}: {(m == null ? "-" : MethodFingerprint.Of(m))}");
+        }
+        foreach (string getter in ChainGetters)
+        {
+            MethodBase? m = MethodFingerprint.Resolve(game, getter);
+            Console.WriteLine($"Getter.{getter}: {(m == null ? "-" : MethodFingerprint.Of(m))}");
+        }
+        // Calls lines (2026-11-17): the call graph, inside the game's assembly, from each helper: every method its code may call
+        // (its state machine and lambdas included; a virtual or interface call: every implementation the game has), then theirs,
+        // up to the other helpers (listed on their own). A dropped listener skips those calls too: classify.py closes over them
+        // (minus the edges it reviewed as never taken by a dropped listener's call), pins them and adds them to the helper sets.
+        var helperMethods = HookHelpers.Select(h => MethodFingerprint.Resolve(game, h)).Where(h => h != null).Select(h => h!).ToHashSet();
+        var printed = new HashSet<string>();
+        var queue = new Queue<MethodBase>(helperMethods);
+        var expanded = new HashSet<MethodBase>();
+        while (queue.Count > 0)
+        {
+            MethodBase caller = queue.Dequeue();
+            if (!expanded.Add(caller))
+            {
+                continue;
+            }
+            string callerKey = ResolveKey(game, caller);
+            // MethodFingerprint.GameCallees (shared with the patches' CodeSet, 2026-11-17 audit C): strict on operands that don't
+            // resolve (this stops), every instantiation a closed generic interface call reaches, default interface methods,
+            // type initializers (a class whose statics or constructor the code uses: listed, pinned and checked, not followed:
+            // their own callees run once per process), and the delegates invoked (Invokes lines, judged by classify.py).
+            var invoked = new List<MethodInfo>();
+            var dispatches = new List<(MethodInfo Callee, List<MethodBase> Implementations)>();
+            foreach (MethodBase callee in MethodFingerprint.GameCallees(game, caller, invoked, dispatches: dispatches))
+            {
+                string calleeKey = ResolveKey(game, callee);
+                if (NeverTaken.Contains((callerKey, calleeKey)))
+                {
+                    if (printed.Add("skip " + callerKey + " -> " + calleeKey))
+                    {
+                        Console.WriteLine($"Skipped.{callerKey} -> {calleeKey}");
+                    }
+                    continue;
+                }
+                if (printed.Add(callerKey + " -> " + calleeKey))
+                {
+                    Console.WriteLine($"Calls.{callerKey} -> {calleeKey}: {(callee.GetMethodBody() == null ? "-" : MethodFingerprint.Of(callee))}");
+                }
+                if (!helperMethods.Contains(callee) && callee.Name != ".cctor")
+                {
+                    queue.Enqueue(callee);
+                }
+            }
+            // A2 (verification audit of 2026-11-17): each virtual or interface call's implementers in the game, pinned per version by
+            // classify.py (HookSkip recomputes them at load: MethodFingerprint.DispatchTargets), and the virtual/final flag of each
+            // method in the graph (Flags lines: a method turning virtual could dispatch elsewhere with the same IL).
+            foreach ((MethodInfo callee, List<MethodBase> implementations) in dispatches)
+            {
+                string targets = string.Join("|", implementations.Select(i => ResolveKey(game, i)).Distinct().OrderBy(k => k, StringComparer.Ordinal));
+                if (printed.Add("dispatch " + callerKey + " -> " + MethodFingerprint.MemberName(callee)))
+                {
+                    Console.WriteLine($"Dispatch.{callerKey} -> {MethodFingerprint.MemberName(callee)}: {targets}");
+                }
+            }
+            if (printed.Add("flags " + callerKey))
+            {
+                Console.WriteLine($"Flags.{callerKey}: {(caller is MethodInfo { IsVirtual: true, IsFinal: false } ? "virtual" : "-")}");
+            }
+            foreach (string d in invoked.Select(d => MethodFingerprint.TypeName(d.DeclaringType)).Distinct().OrderBy(d => d, StringComparer.Ordinal))
+            {
+                if (printed.Add("invokes " + callerKey + " -> " + d))
+                {
+                    Console.WriteLine($"Invokes.{callerKey} -> {d}");
+                }
+            }
         }
         return 0;
     }

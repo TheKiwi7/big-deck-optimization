@@ -1,0 +1,47 @@
+# RelicFlashMerge's scene check, negative control (mod on; re-audit of the premises, B1/F3): a postfix of "another mod" on the
+# creature effect's factory NRelicFlashVfx.Create(RelicModel, Creature) gives each node it returns a child carrying another script
+# (an in-memory GDScript, no resource path). In combat (a burst of 50 flashes of the first relic in one frame, bdperf relicflash)
+# the check on the node the frame's first flash actually created must find it: no creature effect merged (effectcheck
+# RelicFlashMerge.Creature same since 'combat'), the refusal logged and counted (SceneRefusals grew), the relic bar's flashes
+# still merged (their node is the game's: effectcheck RelicFlashMerge.Holder grew). Before it, ~945 cards and a campfire clone
+# (Bing Bong): out of combat the game makes no creature effect node (Creature.GetVfxContainer is null, NRelicFlashVfx.Create not
+# called: the postfix adds nothing there), so the creature merges are the "no node" ones (R3-1, re-audit round 3: NoNode grew,
+# no scene refusal yet). No off twin: what is compared is that the control stops the in-combat creature merges.
+timeout 1200
+expect RelicFlashMerge: the effect of res://scenes/vfx/relic_flash_vfx\.tscn isn't the code reviewed \(a built-in script\)
+expect FOREIGN display combat flash-script-postfix added [1-9]
+expect EFFECTCHECK RelicFlashMerge\.NoNode grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK RelicFlashMerge\.SceneRefusals zero: 0
+expect RELICFLASH .* x50 in combat True: .*creature \+0, holder \+[1-9][0-9]*, no node \+0, scene refusals \+[1-9]
+expect EFFECTCHECK RelicFlashMerge\.Creature same since 'combat'
+expect EFFECTCHECK RelicFlashMerge\.SceneRefusals grew since 'combat': [0-9]+ -> [1-9]
+expect EFFECTCHECK RelicFlashMerge\.Holder grew since 'combat': [0-9]+ -> [1-9]
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+foreignpatch flash-script-postfix MegaCrit.Sts2.Core.Nodes.Vfx.NRelicFlashVfx::Create(RelicModel,Creature)
+effects start
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+foreignpatch report end
+effects end
+effectcheck RelicFlashMerge.NoNode grew start
+effectcheck RelicFlashMerge.SceneRefusals zero
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+effects combat
+cmd bdperf relicflash 50
+wait 1
+effects combat end
+foreignpatch report combat
+effectcheck RelicFlashMerge.Creature same combat
+effectcheck RelicFlashMerge.SceneRefusals grew combat
+effectcheck RelicFlashMerge.Holder grew combat
+cmd bdopt why
+foreignpatch remove
+quit

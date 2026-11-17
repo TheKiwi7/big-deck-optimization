@@ -53,12 +53,33 @@ internal static class BaseLibTypes
                 }
             };
         }
+#if BENCH
+        if (AssumedForTest.Contains(baseTypeName))
+        {
+            return false;
+        }
+#endif
         return _none.GetOrAdd(baseTypeName, name => !AnyDefined(name));
     }
+
+#if BENCH
+    /// <summary>
+    /// Test builds (<c>bdperf baselibtypes assume &lt;BaseLib type&gt;</c>): answer as if a loaded mod defined a concrete type deriving
+    /// from it, so the branch for that case runs (the subscriber walk BaseLib's card modifiers need, the type plaque walk) without a
+    /// test assembly referencing BaseLib (this DLL must not; a dynamic one isn't looked at). The walks then find nothing, as the game.
+    /// </summary>
+    internal static readonly System.Collections.Generic.HashSet<string> AssumedForTest = new();
+#endif
 
     /// <summary>True when some loaded assembly defines one, or the BaseLib type is missing (can't tell).</summary>
     public static bool AnyDefined(string baseTypeName)
     {
+#if BENCH
+        if (AssumedForTest.Contains(baseTypeName))
+        {
+            return true;
+        }
+#endif
         try
         {
             return Reflect.TypeByName(baseTypeName) == null
@@ -324,6 +345,8 @@ internal static class BaseLibTypes
     }
 
     private static int _spireNotesCounted = -1;
+    /// <summary>The loaded assemblies when the notes were worked out: a new one may bring a card implementing an interface key.</summary>
+    private static long _spireNotesAssemblies = -1;
     private static (string[] Fields, string[] Mods, bool AllCards) _spireNotes = (Array.Empty<string>(), Array.Empty<string>(), false);
 
     /// <summary>
@@ -340,9 +363,14 @@ internal static class BaseLibTypes
         }
         lock (_spireLock)
         {
-            if (fields.Count == _spireNotesCounted)
+            long loaded = LoadedKey();
+            if (fields.Count == _spireNotesCounted && loaded == _spireNotesAssemblies)
             {
                 return _spireNotes;
+            }
+            if (loaded != _spireNotesAssemblies)
+            {
+                _interfaceOnCards.Clear();
             }
             var names = new System.Collections.Generic.List<string>();
             var assemblies = new System.Collections.Generic.List<Assembly?>();
@@ -370,15 +398,102 @@ internal static class BaseLibTypes
             }
             _spireNotes = (names.ToArray(), PatchSafety.ModNamesOf(assemblies), allCards);
             _spireNotesCounted = fields.Count;
+            _spireNotesAssemblies = loaded;
             return _spireNotes;
         }
     }
 
     /// <summary>
-    /// An interface key: a card or enchantment type may implement it (counted without looking for one: the note is display
-    /// only, and the runtime's own test, <see cref="SpireFieldTargets"/>, is per type).
+    /// What the loaded code is, for the notes' cache: the assemblies loaded, and the types a dynamic assembly made so far (a mod
+    /// emitting types at run time adds them to an assembly already counted). Display only; a dynamic assembly that can't list
+    /// its types makes every call a new key (worked out again).
     /// </summary>
-    private static bool MayBeOnCards(Type target) => target.IsInterface;
+    private static long LoadedKey()
+    {
+        Assembly[] assemblies = AppDomain.CurrentDomain.GetAssemblies();
+        long key = assemblies.Length;
+        foreach (Assembly assembly in assemblies)
+        {
+            if (!assembly.IsDynamic)
+            {
+                continue;
+            }
+            try
+            {
+                key += (long)assembly.GetTypes().Length << 20;
+            }
+            catch
+            {
+                return System.Threading.Interlocked.Increment(ref _unknownKey) | long.MinValue;
+            }
+        }
+        return key;
+    }
+
+    private static long _unknownKey;
+
+    /// <summary>
+    /// An interface key some loaded card or enchantment type implements (rule E, 2026-11-17): only then can BaseLib put that field
+    /// on a card or enchantment (it applies a field to the models implementing its key). Before, any interface key counted, so
+    /// CardAscension's ten <c>SavedSpireField&lt;IRunState, ...&gt;</c> gave three false notes (LimitlessReserialize,
+    /// LimitlessRecalcSkip, SnapshotCardReuse). Worked out per interface, again when an assembly loads (SpireFieldsOnCards'
+    /// cache); generic definitions, and types that can't be listed, count as implementing it (a type load error: conservative).
+    /// Display only (the notes): the runtime's own test, <see cref="SpireFieldTargets"/>, is per type.
+    /// </summary>
+    private static bool MayBeOnCards(Type target) => target.IsInterface && _interfaceOnCards.GetOrAdd(target, AnyCardImplements);
+
+#if BENCH
+    /// <summary>The test tooling's view of <see cref="MayBeOnCards"/> (foreignpatch spiretarget).</summary>
+    internal static bool MayBeOnCardsForTest(Type target) => MayBeOnCards(target);
+#endif
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, bool> _interfaceOnCards = new();
+
+    private static bool AnyCardImplements(Type target)
+    {
+        try
+        {
+            Type card = typeof(MegaCrit.Sts2.Core.Models.CardModel), enchantment = typeof(MegaCrit.Sts2.Core.Models.EnchantmentModel);
+            Type? open = target.IsGenericType ? target.GetGenericTypeDefinition() : null;
+            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                Type?[] types;
+                try
+                {
+                    types = assembly.GetTypes();
+                }
+                catch (ReflectionTypeLoadException e)
+                {
+                    types = e.Types;
+                    if (types.Any(t => t == null))
+                    {
+                        // Some types of this assembly can't be loaded: one of them could be a card implementing the key.
+                        if (types.Any(t => t != null && (card.IsAssignableFrom(t) || enchantment.IsAssignableFrom(t))))
+                        {
+                            return true;
+                        }
+                    }
+                }
+                foreach (Type? type in types)
+                {
+                    if (type == null || type.IsInterface || !(card.IsAssignableFrom(type) || enchantment.IsAssignableFrom(type)
+                        || (type.IsGenericTypeDefinition && (type.IsSubclassOf(card) || type.IsSubclassOf(enchantment)))))
+                    {
+                        continue;
+                    }
+                    if (target.IsAssignableFrom(type) || (open != null && type.GetInterfaces().Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == open)))
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+        catch
+        {
+            return true; // Can't tell: counted.
+        }
+    }
 
     /// <summary>
     /// Records (or clears) the note of a patch whose shortcut skips cards and enchantments a SavedSpireField targets

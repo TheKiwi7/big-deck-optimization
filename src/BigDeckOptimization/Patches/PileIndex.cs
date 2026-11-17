@@ -634,8 +634,19 @@ public static class PileIndex
     /// nested call, counted there); anything else changed the pile unseen, or by a nested move of another card this can't tell
     /// apart from it (a fault: kept strict).
     /// </summary>
+#if BENCH
+    /// <summary>Adds and removes judged after another mod's prefix skipped their original (test builds: <c>counters</c>).</summary>
+    public static long JudgedSkips;
+#endif
+
     private static void Judge(CardPile pile, CardModel card, Saved state, bool add, bool threw)
     {
+#if BENCH
+        if (!threw)
+        {
+            JudgedSkips++;
+        }
+#endif
         if (!state.Known)
         {
             return; // The watch prefix didn't run: the patch isn't fully applied, nothing to judge with.
@@ -1001,7 +1012,17 @@ public static class PileIndex
                 answer = OwnsPile(owner, entry.Pile) ? entry.Pile : null;
             }
             Fast++;
+#if BENCH
+            // Test: a fast answer made wrong (no pile for a card in one), checked against the scan now.
+            bool wrong = answer != null && TestWrong.Take("pile");
+            if (wrong)
+            {
+                answer = null;
+            }
+            if (Fast % VerifyEvery == 0 || wrong)
+#else
             if (Fast % VerifyEvery == 0)
+#endif
             {
                 Verified++;
                 // With other mods' patches let stand on the getter, the original's own scan: what PilePrefix answers for (the

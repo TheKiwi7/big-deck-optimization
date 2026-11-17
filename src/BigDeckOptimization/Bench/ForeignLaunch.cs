@@ -22,6 +22,8 @@ namespace BigDeckOptimization.Bench;
 /// for every mod. This mod's lookups go through the runtime (Reflect) and its mod names through the game's own field, so:
 /// every hook row matches (no "left vanilla" from a substituted hook), the substitutions are logged as such, and mods keep their
 /// names (<c>foreignpatch modname</c>).</item>
+/// <item><c>model-gated-pushpop</c>: the PushModel postfix and PopModel prefix gated on their <c>model</c> (Squeeze), at the launch:
+/// patched before any caller is compiled, on and off must count the same calls (foreign-helpers-load-2k-on/off).</item>
 /// </list>
 /// </summary>
 public static class ForeignLaunch
@@ -60,8 +62,11 @@ public static class ForeignLaunch
                 harmony.Patch(typeof(AccessTools).GetMethod(nameof(AccessTools.Field), new[] { typeof(Type), typeof(string) }),
                     postfix: new HarmonyMethod(typeof(ForeignLaunch), nameof(FieldAnswer)));
                 break;
+            case "model-gated-pushpop":
+                ForeignPatches.InstallModelGatesAtLaunch(harmony);
+                break;
             default:
-                throw new ArgumentException($"unknown launch shape '{shape}' (reflection-intercept)");
+                throw new ArgumentException($"unknown launch shape '{shape}' (reflection-intercept, model-gated-pushpop)");
         }
         _installed.Add(shape);
         Log.Info($"[{ModEntry.Id}] FOREIGN launch shape {shape} installed as {ForeignPatches.IdPrefix + shape}");

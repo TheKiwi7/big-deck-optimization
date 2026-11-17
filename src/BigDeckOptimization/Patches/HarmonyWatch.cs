@@ -39,7 +39,13 @@ public static class HarmonyWatch
     /// <summary>Patch and Unpatch calls seen so far (any mod's): a cache built at one epoch may be stale at another.</summary>
     public static int Epoch => Volatile.Read(ref _epoch);
 
+    /// <summary>
+    /// The finalizer is on UpdateWrapper (checked again at each preflight, <see cref="Revalidate"/>: another mod's
+    /// <c>UnpatchAll()</c> with no owner removes it, and the caches then fall back to their timed rechecks).
+    /// </summary>
     public static bool Applied { get; private set; }
+
+    private static MethodInfo? _update;
 
     private static readonly object _lock = new();
     /// <summary>Owners of patches on Harmony's or MonoMod's own methods (hidden IL hooks), per patched internal method.</summary>
@@ -69,7 +75,35 @@ public static class HarmonyWatch
         ScanAtLoad();
         // No PatchGuard: a finalizer of Harmony's own method, which catches everything itself.
         harmony.Patch(update, finalizer: new HarmonyMethod(typeof(HarmonyWatch), nameof(Changed)) { priority = Priority.First });
+        _update = update;
         Applied = true;
+    }
+
+    /// <summary>
+    /// Whether the finalizer is still on UpdateWrapper (another mod's <c>Harmony.UnpatchAll()</c> without an owner id removes
+    /// every patch, this one too): when it is gone, <see cref="Applied"/> turns false, so the caches keyed on <see cref="Epoch"/>
+    /// fall back to their timed rechecks (HookSkip's own-patch answer each second, PatchSafety's 2 s). Run at each preflight
+    /// (the menu, bdopt), main thread; never throws.
+    /// </summary>
+    internal static void Revalidate()
+    {
+        try
+        {
+            if (!Applied || _update == null)
+            {
+                return;
+            }
+            bool present = Harmony.GetPatchInfo(_update)?.Finalizers.Any(p => PatchSafety.PatchMethodOf(p) is { } m && m.DeclaringType == typeof(HarmonyWatch) && m.Name == nameof(Changed)) == true;
+            if (!present)
+            {
+                Applied = false;
+                Log.Warn($"[{ModEntry.Id}] {Name}: its finalizer on Harmony's UpdateWrapper was removed (another mod's UnpatchAll?): other mods' later patches are seen by the timed rechecks only");
+            }
+        }
+        catch
+        {
+            // Display and cache freshness only: the timed rechecks stand either way.
+        }
     }
 
     /// <summary>Hidden IL hooks already there when this mod loads, and (if any) the patched methods listing no patch at all.</summary>
@@ -123,6 +157,10 @@ public static class HarmonyWatch
             {
                 return;
             }
+            // Harmony.GetPatchInfo still gives the list from before this call: none at all on the method's first patch ever, the
+            // one where MonoMod sets its no-inlining flag (a method patched before has had it since).
+            bool firstPatch = __exception == null && __1 != null && AllPatches(__1).Any() && !IsHarmonyInternal(original)
+                && Harmony.GetPatchInfo(original) == null;
             lock (_lock)
             {
                 // The list being built (after this Patch, or after this Unpatch's removal), not the one Harmony still holds. Only
@@ -152,6 +190,13 @@ public static class HarmonyWatch
                     _checkScheduled = true;
                     Godot.Callable.From(CheckPending).CallDeferred();
                 }
+            }
+            // Outside the lock: compiles this mod's replacements that may have inlined the method again, now, before this Patch
+            // call returns (InlineGuard.AfterForeignFirstPatch; it never throws).
+            if (firstPatch)
+            {
+                InlineGuard.AfterForeignFirstPatch(original, () => string.Join(", ", AllPatches(__1!).Where(p => !PatchGuard.IsOurs(p.owner))
+                    .Select(p => PatchSafety.ModNameOf(p.PatchMethod?.DeclaringType?.Assembly) ?? p.owner).Distinct()));
             }
         }
         catch (Exception)

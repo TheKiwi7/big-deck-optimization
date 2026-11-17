@@ -1,4 +1,4 @@
-# ~1,900 cards variant of pile-cards-off (1 import of the reference run + 1 of its cards instead of 9): same plays and checks, a few times faster; the 8,400-card one stays for the pre-release run.
+# ~945 cards variant of pile-cards-off (1 import of the reference run instead of 9): same plays and checks, a few times faster; the 8,400-card one stays for the pre-release run.
 # Every playable card that looks through card piles (draw/discard/exhaust/hand), played one by one at ~8,400 cards
 # with the optimizations off, each made free first (energy 5 kept for Cascade's X): per-card time ('played X in N ms'),
 # every card play (CARDPLAY lines, auto-plays included) and the combat checksum after each, to compare with
@@ -9,7 +9,6 @@ newrun NECROBINDER
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 cmd bdperf checks off
 enemyhp 999999
 immortal

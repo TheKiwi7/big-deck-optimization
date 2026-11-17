@@ -1,0 +1,100 @@
+# Co-op at <= 490 cards per player (client): see coopsample-host.txt.
+# 'waitfor round n' (both peers ended the turn), not 'waitfor turn': a mod-on/mod-off pair (parcoop -OnOff) must play the same cards in the same rounds whatever each peer's pace.
+# Players take turns within a round (barriers): played at once, their actions interleave in the shared queue at each peer's pace, and random targets land differently between a mod-on and a mod-off session (same total, v0.107.1). Concurrent play stays covered by the peers' checksums after every action.
+timeout 2400
+mplobby IRONCLAD 2
+waitfor run 240
+wait 14
+cmd bigdeck import ref all cards {hash:ref}
+wait 5
+cmd bigdeck trim 450
+enemyhp 300
+immortal until 4
+waitfor combat 900
+waitfor idle 900
+state t1
+barrier f1r1host 900
+play 3
+barrier f1r1client 900
+endturn
+waitfor round 2 300
+state t2
+barrier f1r2host 900
+play 3
+barrier f1r2client 900
+endturn
+waitfor round 3 300
+state t3
+barrier f1r3host 900
+play 3
+barrier f1r3client 900
+endturn
+waitfor round 4 300
+state t4
+barrier f1r4host 900
+play 3
+barrier f1r4client 900
+endturn
+waitfor round 5 300
+state t5
+barrier f1r5host 900
+play 3
+barrier f1r5client 900
+endturn
+waitfor round 6 300
+state t6
+barrier f1r6host 900
+play 3
+barrier f1r6client 900
+endturn
+waitfor round 7 300
+waitfor nocombat 600
+wait 5
+checksum fight 1 end
+waitfor combat 900
+waitfor idle 900
+state f2t1
+barrier f2r1host 900
+play 3
+barrier f2r1client 900
+endturn
+waitfor round 2 300
+state f2t2
+barrier f2r2host 900
+play 3
+barrier f2r2client 900
+endturn
+waitfor round 3 300
+state f2t3
+barrier f2r3host 900
+play 3
+barrier f2r3client 900
+endturn
+waitfor round 4 300
+state f2t4
+barrier f2r4host 900
+play 3
+barrier f2r4client 900
+endturn
+waitfor round 5 300
+state f2t5
+barrier f2r5host 900
+play 3
+barrier f2r5client 900
+endturn
+waitfor round 6 300
+state f2t6
+barrier f2r6host 900
+play 3
+barrier f2r6client 900
+endturn
+waitfor round 7 300
+waitfor nocombat 600
+wait 5
+checksum fight 2 end
+effects end
+cmd bdperf verify
+# The verifier's sampled re-checks ran (combat cards under its 1,000) and found nothing (a mismatch is an error line).
+effectcheck SnapshotVerifier ran
+wait 10
+quit

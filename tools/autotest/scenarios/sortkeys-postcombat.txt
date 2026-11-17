@@ -1,0 +1,33 @@
+# CardSortKeys after a combat (R3-2, re-audit round 3; game v0.113+). A deck sort after the combat ended (WarHammer's
+# AfterCombatVictory stable-shuffles the deck's upgradable cards; Creature.CombatState still points to the ended combat) while
+# the player holds an impure cost listener (Brilliant Scarf, added). R3-2 answers it only when the reads CardModel.CombatState
+# makes are the game's alone; the owner's decision (2026-11-17): another mod's patch on PlayerCombatState.get_AllPiles (BaseLib's
+# transpiler, RitsuLib's postfix) keeps it strict (A3's superset). The test slots always load BaseLib, so the deck sorts, in
+# combat and after it, must be refused with that cause named and give the game's order (bdperf sortkeys deck: the game's sort and
+# this part's from three starts; without BaseLib the same command requires them answered instead, but no expect line says so:
+# a scenario can't choose its mods, BDTEST_MODS applies to a whole series). Controls: in combat the combat piles' sort with that
+# listener is left to the game (bdperf sortkeys: "may change a cost"). Then bdperf sortkeys counters (R3-4): every answered sort's
+# first answer was compared with the game's (checks >= sorts). On v0.107.1 requiregame logs SKIPPED and the session ends.
+# uncompared: may change a cost
+requiregame v0.113
+expect left this sort to the game \(.*may change a cost\)
+expect SORTKEYS deck \d+ cards, combat in progress, impure cost listener [A-Z]\w*, narrow judgment off \(another mod patches PlayerCombatState\.get_AllPiles\): answered 0, refused 3, .*OK: left to the game as expected \([A-Z]\w* may change a cost\), identical orders
+expect SORTKEYS deck \d+ cards, ended combat, impure cost listener [A-Z]\w*, narrow judgment off \(another mod patches PlayerCombatState\.get_AllPiles\): answered 0, refused 3, .*OK: left to the game as expected \([A-Z]\w* may change a cost\), identical orders
+expect SORTKEYS counters sorts \d+, answered \d+, checks \d+, mismatches 0: OK: every sort checked
+timeout 900
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd relic add BRILLIANT_SCARF
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd bdperf sortkeys
+cmd bdperf sortkeys deck
+cmd kill all
+waitfor nocombat 300
+wait 2
+cmd bdperf sortkeys deck
+cmd bdperf sortkeys counters
+quit

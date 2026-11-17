@@ -1256,6 +1256,16 @@ public static class SnapshotCardReuse
             int listVersion = _trustPiles ? _listVersion!(_pileCards!(pile)) : 0;
             bool trusted = _trustPiles && previous != null && last.WritesAt == last.Writes && last.StampAt == reads.Stamp && reads.Stamp >= 0
                 && last.ListVersion == listVersion && SameListeners(last.ListenersAt, reads.Listeners) && LiveSame(cards, last, previous, reads);
+#if BENCH
+            // Taken only for a pile whose kept states can be made wrong (two different ones at least: an empty or one-card pile
+            // can't), else the take would change nothing and the control see nothing.
+            if (trusted && TestWrong.IsArmed("reuse.trusted") && WrongStates(previous!) is { } wrongStates && TestWrong.Take("reuse.trusted"))
+            {
+                // Test: the kept states, one of them another card's, and this pile's full read due now (it must see the difference).
+                previous = wrongStates;
+                _sincePileCheck = PileVerifyEvery;
+            }
+#endif
             if (trusted && ++_sincePileCheck < PileVerifyEvery)
             {
                 PilesTrusted++;
@@ -1297,6 +1307,12 @@ public static class SnapshotCardReuse
                 PilesWithHooks++;
             }
             bool verifyMoved = moved && ++_sincePileCheck >= PileVerifyEvery;
+#if BENCH
+            // Test: the first card of this moved pile kept from before is given another card's state and checked at once (it must
+            // see it). Taken there only, at a card that is really reused with another state to give: a moved pile whose cards all
+            // came from elsewhere keeps it armed for the next one.
+            bool wrongMoved = moved && previous!.Count > 1 && TestWrong.IsArmed("reuse.moved");
+#endif
             if (verifyMoved)
             {
                 _sincePileCheck = 0;
@@ -1339,7 +1355,16 @@ public static class SnapshotCardReuse
                 {
                     state = previous[was];
                     MovedReused++;
-                    if (verifyMoved)
+                    bool verifyCard = verifyMoved;
+#if BENCH
+                    if (wrongMoved && OtherState(previous!, was) is { } other && TestWrong.Take("reuse.moved"))
+                    {
+                        wrongMoved = false;
+                        state = other;
+                        verifyCard = true;
+                    }
+#endif
+                    if (verifyCard)
                     {
                         Last? fresh = entry;
                         NetFullCombatState.CardState read = CardFrom(card, ref fresh, reads);
@@ -1948,7 +1973,7 @@ public static class SnapshotCardReuse
 #endif
                 if (kept || composed)
                 {
-                    if (++_sincePileBits < PileVerifyEvery)
+                    if (++_sincePileBits < PileVerifyEvery && !PileBitsCheckForced())
                     {
                         _reserveBits!(writer, last.BitCount);
                         int position = writer.BitPosition;
@@ -1988,6 +2013,14 @@ public static class SnapshotCardReuse
         }
     }
 
+#if BENCH
+    /// <summary>Test builds: <c>pilebits</c> armed (<see cref="TestWrong"/>): the next kept or composed pile is compared now, not
+    /// in <see cref="PileVerifyEvery"/> (a session reuses a pile's bits a few times only: the sampled compare might never come).</summary>
+    private static bool PileBitsCheckForced() => TestWrong.IsArmed("pilebits");
+#else
+    private static bool PileBitsCheckForced() => false;
+#endif
+
     /// <summary>
     /// Keeps what the game's method just wrote; when bits were kept for this list (in this epoch), they must be the same. The game's method
     /// still writes each card through <see cref="CardSerializePrefix"/>, so this checks the pile's header and how its bits were put together
@@ -2011,8 +2044,17 @@ public static class SnapshotCardReuse
             int bits = writer.BitPosition - __state;
             byte[] taken = new byte[(bits + 7) >> 3];
             ExtractBits(writer.Buffer, __state, taken, bits);
+            byte[]? keptBits = last.Bits;
+#if BENCH
+            if (ReferenceEquals(last.BitsFor, __instance.cards) && last.BitsEpoch == epoch && keptBits is { Length: > 0 } && TestWrong.Take("pilebits"))
+            {
+                // Test: the kept bits compared with one bit flipped (the bits written were the game's: only the check is under test).
+                keptBits = (byte[])keptBits.Clone();
+                keptBits[0] ^= 1;
+            }
+#endif
             if (ReferenceEquals(last.BitsFor, __instance.cards) && last.BitsEpoch == epoch
-                && (last.BitCount != bits || !taken.AsSpan().SequenceEqual(last.Bits.AsSpan(0, taken.Length))))
+                && (last.BitCount != bits || !taken.AsSpan().SequenceEqual(keptBits.AsSpan(0, taken.Length))))
             {
                 Mismatches++;
                 Disable("the bits kept for a pile differ from the game's", $"{__instance.pileType} ({last.BitCount} vs {bits} bits)");
@@ -2624,6 +2666,17 @@ public static class SnapshotCardReuse
                 if (_last.TryGetValue(card, out last) && !LimitlessReserialize.PatchedByOthers()
                     && LimitlessReserialize.SameSerialized(card, last.Saved, last.Data))
                 {
+#if BENCH
+                    // Taken only when the other card's snapshot serializes differently (two copies of a card serialize alike, and
+                    // a take that compared equal bits would prove nothing).
+                    if (_otherSaved != null && !ReferenceEquals(_otherSaved, last.Saved) && TestWrong.IsArmed("reuse.card")
+                        && !SerializeSame(_otherSaved, last.Saved) && TestWrong.Take("reuse.card"))
+                    {
+                        _sinceVerify = 0;
+                        return Verify(card, last, _otherSaved);
+                    }
+                    _otherSaved = last.Saved;
+#endif
                     if (++_sinceVerify >= VerifyEvery)
                     {
                         _sinceVerify = 0;
@@ -2674,7 +2727,10 @@ public static class SnapshotCardReuse
     /// The reused object serialized next to a fresh one: the fresh one when they differ. Equal, the reused one stays: a new
     /// object here would change the pile's state list, and with it every unchanged pile would be rebuilt at every checksum.
     /// </summary>
-    private static SerializableCard Verify(CardModel card, Last last)
+    private static SerializableCard Verify(CardModel card, Last last) => Verify(card, last, last.Saved);
+
+    /// <summary><see cref="Verify(CardModel, Last)"/> of <paramref name="reused"/> (test builds: another card's, the positive control).</summary>
+    private static SerializableCard Verify(CardModel card, Last last, SerializableCard reused)
     {
         SerializableCard fresh = card.ToSerializable();
         Verified++;
@@ -2682,7 +2738,7 @@ public static class SnapshotCardReuse
         _freshWriter ??= new() { WarnOnGrow = false };
         _reusedWriter.Reset();
         _freshWriter.Reset();
-        last.Saved.Serialize(_reusedWriter);
+        reused.Serialize(_reusedWriter);
         fresh.Serialize(_freshWriter);
         // Bit lengths too: a write ends with its byte's higher bits zeroed, so bytes alone don't see 1 to 7 more zero bits at the end,
         // which shift every later bit of the checksum's stream.
@@ -2695,6 +2751,50 @@ public static class SnapshotCardReuse
         }
         return last.Saved;
     }
+
+#if BENCH
+    /// <summary>The last reused snapshot of a card (test: another card's, for <c>reuse.card</c>).</summary>
+    private static SerializableCard? _otherSaved;
+
+    /// <summary>Whether two snapshots serialize to the same bits (test: <c>reuse.card</c> only takes a different one). Uses
+    /// <see cref="Verify(CardModel, Last, SerializableCard)"/>'s writers, which it resets before each use.</summary>
+    private static bool SerializeSame(SerializableCard a, SerializableCard b)
+    {
+        _reusedWriter ??= new() { WarnOnGrow = false };
+        _freshWriter ??= new() { WarnOnGrow = false };
+        _reusedWriter.Reset();
+        _freshWriter.Reset();
+        a.Serialize(_reusedWriter);
+        b.Serialize(_freshWriter);
+        return _reusedWriter.BitPosition == _freshWriter.BitPosition
+            && _reusedWriter.Buffer.AsSpan(0, _reusedWriter.BytePosition).SequenceEqual(_freshWriter.Buffer.AsSpan(0, _freshWriter.BytePosition));
+    }
+
+    /// <summary>A copy of <paramref name="states"/> with its first state replaced by another card's, or null when all are the same.</summary>
+    private static List<NetFullCombatState.CardState>? WrongStates(List<NetFullCombatState.CardState> states)
+    {
+        if (OtherState(states, 0) is not { } other)
+        {
+            return null;
+        }
+        var copy = new List<NetFullCombatState.CardState>(states);
+        copy[0] = other;
+        return copy;
+    }
+
+    /// <summary>A state of <paramref name="states"/> different from the one at <paramref name="at"/>, or null.</summary>
+    private static NetFullCombatState.CardState? OtherState(List<NetFullCombatState.CardState> states, int at)
+    {
+        for (int i = 0; i < states.Count; i++)
+        {
+            if (i != at && !SameState(states[i], states[at]))
+            {
+                return states[i];
+            }
+        }
+        return null;
+    }
+#endif
 
     private static void Disable(string why, string details)
     {

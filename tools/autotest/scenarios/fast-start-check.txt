@@ -28,6 +28,11 @@ enemyhp 999999
 cmd fight CULTISTS_NORMAL
 waitfor idle 400
 state fast-t1
+# The pace is the game's after the combat start: no wait skipped in the enemies' turn and the next player turn.
+effects fast-t1
+endturn
+waitfor idle 600
+effectcheck FastCombatStart same fast-t1
 cmd kill all
 waitfor nocombat 300
 cmd bdperf roomleft

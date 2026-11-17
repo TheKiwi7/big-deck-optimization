@@ -6,6 +6,9 @@ $SteamExe = (Get-ItemProperty "HKCU:\Software\Valve\Steam" -ErrorAction Silently
 $Workshop = Join-Path (Split-Path -Parent (Split-Path -Parent $GameDir)) "workshop\content\$AppId"
 # A game copy outside Steam's library (STS2_GAME_DIR, e.g. C:\Games\StS2-beta-0.113.1): Steam's own Workshop folder.
 if (-not (Test-Path $Workshop) -and $SteamExe) { $Workshop = Join-Path (Split-Path -Parent $SteamExe) "steamapps\workshop\content\$AppId" }
+# BDTEST_WORKSHOP: another folder of Workshop items (a SteamCMD download folder, steamapps\workshop\content\<appid>), for mods the
+# account isn't subscribed to; test sessions copy what they need from it into a copy's mods_STEAMTEST, never into the Steam install.
+if ($env:BDTEST_WORKSHOP) { $Workshop = $env:BDTEST_WORKSHOP }
 $UserData = Join-Path $env:APPDATA "SlayTheSpire2"
 $Scenarios = Join-Path $PSScriptRoot "scenarios"
 $Results = Join-Path $PSScriptRoot "results"
@@ -50,11 +53,13 @@ function Save-VersionedLog([string]$log, [string]$dir) {
 
 # judge.py's verdict on logs (one rule for every runner): Show-Judgment its "PROBLEM <log>: <text>" and "expected" lines, Invoke-Judge
 # the PROBLEM lines alone. A judge that crashed or never ran prints no JUDGED line: that is a problem too, never "no problem".
-# -NoEnd: a session not expected to end by itself.
-function Show-Judgment([string[]]$Logs, [switch]$NoEnd, [switch]$ModOff) {
+# -NoEnd: a session not expected to end by itself. -Mutated: a session on a game mutations.ps1 modified (judge.py --mutated: the
+# parts the mutation leaves vanilla compare nothing and count no effect there; mutations.ps1 checks those against its table).
+function Show-Judgment([string[]]$Logs, [switch]$NoEnd, [switch]$ModOff, [switch]$Mutated) {
     $arguments = @("-I", (Join-Path $PSScriptRoot "judge.py"))
     if ($NoEnd) { $arguments += "--no-end" }
     if ($ModOff) { $arguments += "--mod-off" }
+    if ($Mutated) { $arguments += "--mutated" }
     $out = @(& python @arguments @Logs 2>&1 | ForEach-Object { "$_" })
     $out | Where-Object { $_ -like "PROBLEM *" -or $_ -like "expected *" }
     if (-not ($out | Where-Object { $_ -match '^JUDGED \d+ problem' })) {
@@ -62,8 +67,8 @@ function Show-Judgment([string[]]$Logs, [switch]$NoEnd, [switch]$ModOff) {
     }
 }
 
-function Invoke-Judge([string[]]$Logs, [switch]$NoEnd, [switch]$ModOff) {
-    @(Show-Judgment $Logs -NoEnd:$NoEnd -ModOff:$ModOff) | Where-Object { $_ -like "PROBLEM *" }
+function Invoke-Judge([string[]]$Logs, [switch]$NoEnd, [switch]$ModOff, [switch]$Mutated) {
+    @(Show-Judgment $Logs -NoEnd:$NoEnd -ModOff:$ModOff -Mutated:$Mutated) | Where-Object { $_ -like "PROBLEM *" }
 }
 
 # The game a test launched through Steam (no process handle comes back from Steam): the newest SlayTheSpire2 started after $after

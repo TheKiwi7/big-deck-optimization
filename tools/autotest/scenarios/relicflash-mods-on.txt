@@ -1,0 +1,29 @@
+# RelicFlashMerge next to the default test mods (A/B, mod on; DESIGN "Owner-approved premises", 2026-11-17, the relic-flash
+# display premise): BaseLib (postfixes on ModelDb.GetEntry and ModelDb.AllCharacters, a prefix on RelicModel.PackedIconPath)
+# and Limitless (TweenHelper.AwaitFinished, NCard.OnFreedToPool...) patch game code the computed visual sets reach, which left
+# every flash to the game before the premise. No synthetic patch: flashes are merged (effectcheck RelicFlashMerge grew), the
+# kept note names their patched members and mods, CHECKSUM and STATE identical with relicflash-mods-off. ~945 cards, a campfire
+# clone (Bing Bong).
+timeout 1200
+expect EFFECTCHECK RelicFlashMerge grew since 'start': [0-9]+ -> [1-9]
+expect FOREIGN kept RelicFlashMerge: other mods' code on game code a relic flash's visuals may reach \(.*ModelDb\.GetEntry.*\) doesn't run for the flashes merged.* <- .*BaseLib
+expect FOREIGN kept RelicFlashMerge: other mods' code on game code a relic flash's visuals may reach \(.*(TweenHelper\.AwaitFinished|NCard\.OnFreedToPool).*\) .* <- .*Limitless
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+effects start
+checksum before
+state before optional
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+checksum after
+state after optional
+foreignpatch report end
+effects end
+effectcheck RelicFlashMerge grew start
+cmd bdopt why
+quit

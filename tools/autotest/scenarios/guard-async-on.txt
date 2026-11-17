@@ -1,6 +1,7 @@
 # FastListeners' fallback (v0.7.0): the pile entry cache throws once during a filtered walk (bdperf fault piles,
 # guard-async-on only), typically inside an async hook. The walk must complete like vanilla, FastListeners and HookSkip
 # turn off (bdopt), and every CHECKSUM/STATE line must match guard-async-ref (same script without the fault).
+# compare-with: guard-async-ref
 expect FastListeners disabled after exception, falling back to vanilla: .*simulated error
 timeout 1200
 newrun NECROBINDER

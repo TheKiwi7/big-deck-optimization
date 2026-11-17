@@ -1,4 +1,4 @@
-# Outside combat at ~1,900 cards with the reference run's 368 relics, A/B (off; with outside-2k-on): every STATE line must match.
+# Outside combat at ~945 cards with the reference run's 368 relics, A/B (off; with outside-2k-on): every STATE line must match.
 # The game's own auto player plays each room (autoroom) and card choices go through the game's screens (selector ui, the deck
 # grids): rewards after a combat, the map, a shop with card removal, rest sites (smith on the deck grid, then the auto player's
 # pick), a treasure, events that remove, transform, upgrade or enchant cards, deck views on the map, act 2, the run saved, left
@@ -10,7 +10,6 @@ newrun NECROBINDER 1234
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 cmd bdperf checks off
 cmd gold 5000
 enemyhp 1

@@ -1,11 +1,11 @@
 # Audit: deckcount-on with FastListeners faulted part way: DeckCountMemo must stop answering (kept and updated stop growing: "bdperf deckcount answers-same" fails otherwise). Lines must match deckcount-off.
+# compare-with: deckcount-off
 expect FastListeners disabled after exception, falling back to vanilla: .*simulated error
 timeout 2400
 newrun NECROBINDER
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 cmd bdperf checks off
 enemyhp 999999
 immortal

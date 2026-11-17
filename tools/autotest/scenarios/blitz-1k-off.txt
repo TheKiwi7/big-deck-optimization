@@ -1,0 +1,66 @@
+# Blitz mode A/B (off; with blitz-1k-on): its merchants (MerchantInventory.CreateForBlitzMerchant: enchant and enchanted-card
+# entries) and its rewards at ~935 cards (the reference run once, with its relics). Game v0.113+ only: on v0.107.1 newrun logs
+# "SKIPPED: ... has no blitz mode" and the session ends there (both sides alike). BlitzRunModel sits in the run's models: the
+# mirrored walks' run-model tail (FastListeners.ModeRunModels) and ListenerCache's invalidation on set_RunModels
+# (ListenerCache.ModeRunModels) must run. The game's own auto player plays each room (autoroom), card choices go through the
+# game's screens (selector ui); every STATE line must match blitz-1k-off.
+# Blitz moves into the next room by itself after a room's proceed, and with 1-HP enemies the relics' combat-start effects win
+# each fight before a turn: every runstate waits for that fight's end ('waitfor nocombat' after a pause for the next room's
+# combat to start), else it reads mod on (FastCombatStart) a fight already won and mod off one still starting (the two
+# sides then differed at 'checksum start' and after the fight with identical game logic; checked 2026-11-17 on v0.113.1).
+# The game rolls a won fight's rewards (the rewards RNG) after the fight's end animations: the 'wait 8' after each fight's end
+# keeps a 'cmd room' jump from cutting that roll mod off only (it did: the next shop's stock differed, by 3 enchanted cards).
+# No automap: Blitz's map screen leaves AutoSlay's map handler waiting (the session stalled there).
+timeout 2400
+requiregame v0.113
+# Blitz's top bar reads act 1's Ancient (NBlitzTopBarMapPoint.UpdateIcon): the test profile has no Neow epoch revealed, so
+# act 1 has none and RoomSet.Ancient throws. Revealed in the slot's progress (mirrored from yours at each session start).
+cmd unlock epochs NEOW_EPOCH
+newrun NECROBINDER 1234 blitz
+waitfor run 120
+wait 2
+cmd bdopt off
+cmd bigdeck import ref all all
+cmd bdperf checks off
+cmd gold 5000
+enemyhp 1
+selector ui
+runstate start
+dominion
+effects start
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+waitfor nocombat 300
+wait 8
+runstate combat over
+autoroom 900
+wait 10
+waitfor nocombat 300
+wait 8
+runstate after fight
+cmd room Shop
+waitfor room Shop
+autoroom remove optional 900
+wait 10
+waitfor nocombat 300
+wait 8
+runstate shop 1
+cmd gold 5000
+cmd room Shop
+waitfor room Shop
+autoroom 900
+wait 10
+waitfor nocombat 300
+wait 8
+runstate shop 2
+cmd gold 5000
+cmd room Shop
+waitfor room Shop
+autoroom 900
+wait 10
+waitfor nocombat 300
+wait 8
+runstate shop 3
+deckview 2
+cmd bdopt on
+quit

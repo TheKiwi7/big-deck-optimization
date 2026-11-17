@@ -1,0 +1,21 @@
+# Session 1 of tools/autotest/continue-check.ps1 (not a pair of par.ps1): a run at ~945 cards with the reference run's relics and
+# stacked enchantments, a fight played by the game's auto player through its rewards, the map's next room entered (the game
+# saves the run there), then back to the main menu: the slot keeps the save for continue-load-on and continue-load-off.
+timeout 900
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+enemyhp 1
+selector ui
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+runstate after fight
+automap
+wait 3
+runstate before save
+tomenu
+wait 3
+quit

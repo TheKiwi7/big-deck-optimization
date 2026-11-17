@@ -1,0 +1,44 @@
+# FastListeners' move journal over its limit at 945 cards: the limit lowered to 16 (bdperf movecap; 4,096 otherwise, only 4,000+
+# card combats reach it), so the combat start's moves alone overflow it. A/B with movecap-1k-off: CHECKSUM and STATE lines must
+# match line for line; the on side must show overflows (expect).
+timeout 1200
+expect MOVECAP limit 16, overflows [1-9]
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf movecap 16
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+play 4
+waitfor idle 120
+checksum t3 plays
+endturn
+waitfor idle 300
+checksum t3 end
+state t3
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+cmd bdperf movecap
+counters end
+quit

@@ -1,8 +1,12 @@
 # Foreign patches judged by their shape (A/B, mod on): the same synthetic patches of "another mod" (Harmony ids bdtest.foreign.*, Bench/ForeignPatches.cs) as foreign-shapes-2k-off; CHECKSUM and STATE lines (the foreign patches' call counts, cost reads and near-miss calls included; keyword and cost changes in the checksums) must match line for line. ab-2k-on otherwise.
 # The mod side must also let the tolerated ones stand and back off from the others where each rule says, at run time: the FOREIGN runtime and FOREIGN gated walks lines come from the runtime checks only (the preflight isn't counted), the "kept" lines may come from either.
+# Hook methods: TranspiledOnly since 2026-11-17 (rule A), except where a postfix of this mod's test build is there: BeforeCombatStart
+# and AfterRoomEntered (CombatStartTimer), AfterCombatEnd and AfterCombatVictory (PerfProbe, when probing) keep SurroundingOnly
+# (HookSkip.MethodTolerance). LimitlessHookSkip's sampling prefixes (AfterCardPlayed, AfterCardDrawn, BeforeFlush,
+# AfterAutoPrePlayPhaseEntered, Release too) are order-free: TranspiledOnly there, at run time and in the preflight alike.
 timeout 2400
 expect HookSkip: Hook\.AfterCardDrawn is also patched by .*bdtest\.foreign\.noop-postfix.*: kept
-expect HookSkip: Hook\.AfterCardPlayed is also patched by bdtest\.foreign\.count-postfix \(postfixes and void prefixes: run around
+expect HookSkip: Hook\.AfterCardPlayed is also patched by bdtest\.foreign\.count-postfix \(prefixes and postfixes around the transpiled body: run around
 expect PileIndex: CardPile\.AddInternal is also patched by .*bdtest\.foreign\.probe-prefix.* \(postfixes and void prefixes: run around
 expect PileIndex: CardPile\.RemoveInternal is also patched by bdtest\.foreign\.noop-prefix \(postfixes and void prefixes
 expect FastListeners: CardPile\.AddInternal is also patched by .*bdtest\.foreign\.probe-prefix.* \(postfixes
@@ -11,9 +15,9 @@ expect HookFilter: Hook\.ShouldPlay is also patched by bdtest\.foreign\.noop-pre
 expect HookFilter: Hook\.ModifyKeywordsInCombat is also patched by bdtest\.foreign\.keyword-prefix-squeeze \(void prefixes: run around
 expect HookFilter: CardCostHelper\.TryModifyEnergyCostWithHooks is also patched by bdtest\.foreign\.noop-prefix \(void prefixes: run around
 expect HookFilter: Hook\.ModifyEnergyCostInCombat is also patched by bdtest\.foreign\.cost-postfix-squeeze \(void prefixes not enough\): normal game for that part
-expect HookSkip: Hook\.ModifyEnergyCostInCombat is also patched by bdtest\.foreign\.cost-postfix-squeeze \(postfixes and void prefixes: run around
+expect HookSkip: Hook\.ModifyEnergyCostInCombat is also patched by bdtest\.foreign\.cost-postfix-squeeze \(prefixes and postfixes around the transpiled body: run around
 expect SnapshotCardReuse: Hook\.ModifyKeywordsInCombat is also patched by bdtest\.foreign\.keyword-prefix-squeeze: normal game for that part
-expect HookSkip: AbstractModel\.AfterCardPlayed is also patched by bdtest\.foreign\.gated-postfix-squeeze \(patches gated on the listener's type: Squeeze treated as overriding it\): kept
+expect HookSkip: AbstractModel\.AfterCardPlayed is also patched by bdtest\.foreign\.gated-postfix-squeeze \(patches gated on the listener's type: Squeeze treated as overriding it, gated on the instance\): kept
 expect HookSkip: AbstractModel\.AfterCardDrawn is also patched by bdtest\.foreign\.gated-prefix-squeeze \(patches gated
 expect HookSkip: AbstractModel\.BeforeCardPlayed is also patched by bdtest\.foreign\.gated-or-postfix-squeeze-relic \(patches gated on the listener's type: Squeeze, RelicModel treated
 expect HookSkip: AbstractModel\.AfterSideTurnEnd is also patched by bdtest\.foreign\.nearmiss-postfix-squeeze \(patches gated on the listener's type not enough\)
@@ -22,7 +26,7 @@ expect STATE foreign end nested-postfix moves [1-9]
 expect STATE foreign end probe-prefix reads [1-9]
 expect STATE foreign end count-prefix Hook\.BeforeCardPlayed [1-9]
 expect STATE foreign end state-prefix growth [1-9]
-expect FOREIGN runtime HookSkip Hook\.BeforeCardPlayed \(SurroundingOnly\) kept [1-9]
+expect FOREIGN runtime HookSkip Hook\.BeforeCardPlayed \(TranspiledOnly\) kept [1-9]
 expect STATE foreign end probe-postfix reads [1-9]
 expect STATE foreign end gated-postfix squeeze AbstractModel\.AfterCardPlayed [1-9]
 expect STATE foreign end gated-postfix relic AbstractModel\.AfterCardPlayedLate [1-9]
@@ -32,8 +36,8 @@ expect STATE foreign end gated-postfix relic AbstractModel\.AfterPlayerTurnStart
 expect STATE foreign end gated-postfix squeeze AbstractModel\.AfterPlayerTurnStartEarly [1-9]
 expect STATE foreign end nearmiss-postfix every call [1-9]
 expect FOREIGN tolerated checks [1-9]
-expect FOREIGN runtime HookSkip Hook\.AfterCardPlayed \(SurroundingOnly\) kept [1-9]
-expect FOREIGN runtime HookSkip Hook\.ModifyEnergyCostInCombat \(SurroundingOnly\) kept [1-9]
+expect FOREIGN runtime HookSkip Hook\.AfterCardPlayed \(TranspiledOnly\) kept [1-9]
+expect FOREIGN runtime HookSkip Hook\.ModifyEnergyCostInCombat \(TranspiledOnly\) kept [1-9]
 expect FOREIGN runtime HookSkip AbstractModel\.AfterCardPlayed \(TypeGated\) kept [1-9]
 expect FOREIGN runtime HookSkip AbstractModel\.AfterPlayerTurnStartLate \(TypeGated\) kept [1-9]
 expect FOREIGN runtime HookSkip AbstractModel\.AfterSideTurnEnd \(TypeGated\) kept 0 backed off [1-9]
@@ -55,7 +59,6 @@ newrun NECROBINDER
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 enemyhp 999999
 # (1) no-op postfix and void prefixes: tolerated, the optimizations keep running.
 foreignpatch noop-postfix MegaCrit.Sts2.Core.Hooks.Hook:AfterCardDrawn

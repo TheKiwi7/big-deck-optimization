@@ -1,0 +1,50 @@
+# SnapshotCardReuse's fallback to the game's own pile read when the game's code throws while a pile is read (GameCallException):
+# bdperf snapgameerror 3 makes the next 3 card reads throw as the game's would. The game's From runs instead, the part stays on
+# (its effects grow after it), and CHECKSUM and STATE lines must match wrong-1k-off line for line. ~945 cards, SnapshotVerifier off.
+# compare-with: wrong-1k-off
+expect SnapshotCardReuse: the game's own code threw while a pile's snapshot was read, the game's call made instead \(stays on\)
+expect COUNTERS end:.*SnapshotCardReuse [^;]*game exceptions [1-9]
+timeout 900
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+cmd bdperf verify off
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd bdperf snapgameerror 3
+checksum start
+state start
+play 3
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+effects after errors
+state t1
+play 3
+waitfor idle 120
+checksum t2 plays
+pilemove draw discard 2
+wait 1
+checksum moved
+endturn
+waitfor idle 300
+checksum reshuffle
+state reshuffle
+play 3
+waitfor idle 120
+checksum t3 plays
+state t3
+cmd kill all
+waitfor nocombat 300
+wait 2
+checksum after combat
+state after combat
+counters end
+effects end
+effectcheck SnapshotCardReuse.Cards grew after errors
+quit

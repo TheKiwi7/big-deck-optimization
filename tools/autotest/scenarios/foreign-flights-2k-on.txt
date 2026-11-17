@@ -1,0 +1,56 @@
+# CardFlightLimit next to other mods' patches on a card flight (A/B, mod on; DESIGN "Needless back-offs made safe", class 3):
+# the same synthetic patches of "another mod" (Bench/ForeignPatches.cs) as foreign-flights-2k-off; CHECKSUM and STATE lines must
+# match line for line. RitsuLib's shapes: a postfix on NCardFlyShuffleVfx.Create doing nothing for a null result (its
+# start-position postfix: stands as NullSkipped, a no-op on the souls skipped) and a bool prefix replacing every
+# NCardTrailVfx.Create at priority 800 (its trail override: the soul's own display, kept by the premise and shown as a kept note).
+# A reshuffle of ~945 cards: souls skipped (effectcheck), the postfix saw exactly the souls the scene tree got (require souls).
+timeout 1200
+expect FOREIGN classify NCardFlyShuffleVfx\.Create: bdtest\.foreign\.create-null-gated-postfix Postfix .*NullSkipped tolerated
+expect CardFlightLimit: NCardFlyShuffleVfx\.Create is also patched by .*bdtest\.foreign\.create-null-gated-postfix.* \(postfixes doing nothing for a null result: no-ops on the calls this mod skips.*\): kept
+expect FOREIGN runtime CardFlightLimit NCardFlyShuffleVfx\.Create \(NullSkipped\) kept [1-9]
+expect CardFlightLimit: other mods' code on a flying card's own visuals \(.*NCardTrailVfx\.Create.*\) doesn't run for the cards that don't fly: taken as display only \(.*bdtest\.foreign\.trail-replacing-prefix.*\): kept
+expect FOREIGN kept CardFlightLimit: other mods' code on a flying card's own visuals
+expect FOREIGN kept CardFlightLimit: other mods' code on a flying card's own visuals \(.*NCardTrailVfx\._Process.*\) .*a stated premise
+expect EFFECTCHECK CardFlightLimit grew since 'start': [0-9]+ -> [1-9]
+expect FOREIGN souls: create-null-gated-postfix saw [1-9][0-9]*, the scene tree got [1-9]
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+enemyhp 999999
+speed fast
+immortal
+foreignpatch create-null-gated-postfix MegaCrit.Sts2.Core.Nodes.Vfx.NCardFlyShuffleVfx:Create
+foreignpatch trail-replacing-prefix MegaCrit.Sts2.Core.Nodes.Vfx.NCardTrailVfx:Create priority 800
+foreignpatch noop-postfix MegaCrit.Sts2.Core.Nodes.Vfx.NCardTrailVfx:_Process
+cmd bdopt why
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+effects start
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+checksum after shuffle
+state after shuffle
+play 3
+waitfor idle 300
+checksum plays
+state plays
+endturn
+waitfor idle 300
+checksum t2
+state t2
+# The souls kept land within a few seconds.
+wait 6
+effects end
+effectcheck CardFlightLimit grew start
+foreignpatch require souls
+cmd bdopt why
+foreignpatch report end
+counters end
+foreignpatch remove
+quit

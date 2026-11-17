@@ -665,6 +665,13 @@ public static class LimitlessReserialize
         {
             card.ToSerializable().Serialize(_freshWriter);
         }
+#if BENCH
+        if (_keptWriter.BytePosition > 0 && TestWrong.Take("reserialize"))
+        {
+            // Test: one bit of the kept list's serialization flipped (the check must see it; Limitless then rebuilds the list).
+            _keptWriter.Buffer[0] ^= 1;
+        }
+#endif
         if (_keptWriter.BitPosition == _freshWriter.BitPosition
             && _keptWriter.Buffer.AsSpan(0, _keptWriter.BytePosition).SequenceEqual(_freshWriter.Buffer.AsSpan(0, _freshWriter.BytePosition)))
         {

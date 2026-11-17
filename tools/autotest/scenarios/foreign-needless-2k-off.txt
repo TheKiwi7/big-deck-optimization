@@ -6,7 +6,6 @@ newrun NECROBINDER
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 cmd bdperf checks off
 enemyhp 999999
 # One pile answer in 64 compared with the getter's own scan (through the patched Player.Piles), both sides alike.

@@ -37,7 +37,7 @@ namespace BigDeckOptimization.Bench;
 ///   newrun &lt;CHARACTER&gt; [seed]   mplobby &lt;CHARACTER&gt; [players] [seed]   wait &lt;s&gt;   timeout &lt;s&gt;   log &lt;text&gt;   quit   onfail continue
 ///   waitfor menu|run|combat|nocombat|idle|turn|round &lt;n&gt;|room &lt;type&gt;|event|restsite|deckcount [timeout s]   barrier &lt;label&gt; [timeout s]
 ///   cmd &lt;console command&gt;   play &lt;n&gt;   playcard &lt;ID&gt;   handselect &lt;ID&gt; [hold &lt;s&gt;] [free]   endturn   avoid ID,ID   enemyhp &lt;hp&gt;   immortal [off | until &lt;round&gt;]
-///   state [label]   checksum [label]   runstate [label]   effects [label]   effectcheck ...   counters [label]   gcfull [label]   leakcheck [label]
+///   state [label]   checksum [label] [vanilla|same]   runstate [label]   effects [label]   effectcheck all ran [except re] | &lt;Effect&gt; zero|ran|same|grew [label]   counters [label]   gcfull [label]   leakcheck [label]
 ///   autoroom ...   automap   autoslay &lt;seed&gt;   sweep ...   eventoption ...   restsite ...   fpsstat [label]   marker &lt;text&gt;   selector ui|auto|local
 ///   {hash:NAME} anywhere = hash of the shared run file NAME   speed normal|fast|instant (default fast)
 /// </summary>
@@ -522,6 +522,40 @@ public static partial class AutoTest
     /// </summary>
     private static int _handSelects;
 
+    /// <summary>
+    /// Effects listed only in sessions whose script names them in an <c>effectcheck &lt;Effect&gt; ...</c> line: finer counters of
+    /// parts the other effects already cover, or paths only some scenarios reach (SnapshotVerifier's Sample mode skips combats over
+    /// 1,000 cards, which most scenarios are; HookFilter's mirrors one by one; BaseLib's paths). Listed everywhere, they would read
+    /// as effects lost in sessions that never could run them.
+    /// </summary>
+    private static readonly HashSet<string> _optIn = new();
+
+    private static (string Name, long Count)[] OptInCounts()
+    {
+        var all = new List<(string, long)>
+        {
+            (SnapshotVerifier.Name, SnapshotVerifier.Verified), (ListenerCache.Name + ".Reused", ListenerCache.Reused),
+            (FastListeners.Name + ".ModifierSkip", FastListeners.SkippedModifierWalks), (HookSkip.Name + ".BaseLib", HookSkip.BaseLibWalks),
+            // The model stack premise made exact (A4): the badge guard's fallbacks, filtered walks emptied (0 expected), KeptOnly's first listeners kept.
+            (HookSkip.Name + ".NoBadge", HookSkip.NoBadgeWalks), (HookSkip.Name + ".Emptied", HookSkip.EmptiedWalks), (FastListeners.Name + ".FirstKept", FastListeners.FirstKept),
+            (ExtraScopes.Name + ".BetterSpire2", ExtraScopes.BetterSpireScopes), (CardDbScan.Name + ".Verified", CardDbScan.Verified),
+            (RelicFlashMerge.Name + ".SoundsReplayed", RelicFlashMerge.SoundsReplayed),
+            (CardFlightLimit.Name + ".KeptAtCombatEnd", CardFlightLimit.KeptAtCombatEnd),
+            (ListenerCache.WalkReuseName, ListenerCache.WalksReused), (ListenerCache.WalkReuseName + ".Verified", ListenerCache.WalksVerified),
+            (ListenerCache.WalkReuseName + ".Kept", ListenerCache.WalksMaterialized), (ListenerCache.WalkReuseName + ".ForeignDispatches", ListenerCache.ForeignDispatches),
+            (ListenerCache.WalkReuseName + ".OutOfScope", ListenerCache.ReusesOutOfScope),
+            (RelicFlashMerge.Name + ".Holder", RelicFlashMerge.MergedHolder), (RelicFlashMerge.Name + ".Creature", RelicFlashMerge.MergedCreature),
+            (RelicFlashMerge.Name + ".SceneRefusals", RelicFlashMerge.SceneRefusals), (RelicFlashMerge.Name + ".NoNode", RelicFlashMerge.MergedNoNode),
+            // Only where another mod patches a small method after this mod's load (foreign-helpers-2k-on).
+            ("InlineGuard.Refreshed", InlineGuard.Refreshed),
+        };
+        for (int i = 0; i < HookFilter.MirrorNames.Length; i++)
+        {
+            all.Add((HookFilter.Name + "." + HookFilter.MirrorNames[i], HookFilter.MirrorAnswers[i]));
+        }
+        return all.Where(e => _optIn.Contains(e.Item1)).ToArray();
+    }
+
     /// <summary>Each optimization's effect counter (the <c>effects</c> line), by name.</summary>
     /// Keep in step with Bench/EffectCounters.cs (the counters a bdperf bench puts back).
     private static (string Name, long Count)[] EffectCounts() => new (string, long)[]
@@ -542,7 +576,10 @@ public static partial class AutoTest
         (DeckCountMemo.Name, DeckCountMemo.Kept + DeckCountMemo.Updated), (DeckCountMemo.Name + ".Checks", DeckCountMemo.Checks), (LimitlessHookSkip.Name, LimitlessHookSkip.Dropped), (LimitlessHookSkip.Name + ".Saved", LimitlessHookSkip.NotesFromSaved), (LimitlessCloneMemo.Name, LimitlessCloneMemo.Reused), (TextPoolReuse.Name, TextPoolReuse.Served), (ThemeColorSkip.Name, ThemeColorSkip.Skipped), (ReplayStateSkip.Name, ReplayStateSkip.Skipped),
         (GcPacing.Name, GcPacing.Regions), (RelicFlashMerge.Name, RelicFlashMerge.Merged), (CardFlightLimit.Name, CardFlightLimit.Skipped), (TypePlaqueSkip.Name, TypePlaqueSkip.Skipped),
         (ControllerActionSkip.Name, ControllerActionSkip.Skipped), (RoomCollect.Name, RoomCollect.Background), (PooledCardRelease.Name, PooledCardRelease.Released), (SyncedCardRelease.Name, SyncedCardRelease.Released), (SavedPropertyLookup.Name, SavedPropertyLookup.Served), (RelicStateReuse.Name, RelicStateReuse.Reused), (RelicStateReuse.ScalarName, RelicStateReuse.ScalarReused), (RichTextEnvRelease.Name, RichTextEnvRelease.Released), (RichTextEnvRelease.Name + ".Untracked", RichTextEnvRelease.Untracked), ("InlineGuard", InlineGuard.Protected - _benchProtected),
-    }.Concat(_handSelects > 0 ? new (string, long)[] { (ListenerCache.Name + ".Suspended", ListenerCache.SuspendedRevalidations) } : Array.Empty<(string, long)>()).Concat(CardSortKeys.Applied || (!CardSortKeys.NotNeeded && !ModEntry.StartedOff) ? new (string, long)[] { (CardSortKeys.Name, CardSortKeys.Sorts), (CardSortKeys.Name + ".Answers", CardSortKeys.Answered) } : Array.Empty<(string, long)>()).ToArray();
+    }.Concat(_handSelects > 0 ? new (string, long)[] { (ListenerCache.Name + ".Suspended", ListenerCache.SuspendedRevalidations) } : Array.Empty<(string, long)>())
+        .Concat(OptInCounts())
+        // A Dread or Blitz run (v0.113+) started in this session: the walks' tails and invalidations only those modes reach.
+        .Concat(_modeRun ? new (string, long)[] { (FastListeners.Name + ".Dominion", FastListeners.DominionTails), (FastListeners.Name + ".ModeRunModels", FastListeners.ModeRunModelTails), (ListenerCache.Name + ".Dominion", ListenerCache.DominionInvalidations), (ListenerCache.Name + ".ModeRunModels", ListenerCache.ModeRunModelInvalidations) } : Array.Empty<(string, long)>()).Concat(CardSortKeys.Applied || (!CardSortKeys.NotNeeded && !ModEntry.StartedOff) ? new (string, long)[] { (CardSortKeys.Name, CardSortKeys.Sorts), (CardSortKeys.Name + ".Answers", CardSortKeys.Answered) } : Array.Empty<(string, long)>()).ToArray();
 
     /// <summary>
     /// The game starts its "Common" preload at the main menu without awaiting it. A run started meanwhile (a script's newrun 0.4 s
@@ -600,21 +637,40 @@ public static partial class AutoTest
     /// </summary>
     private static void EffectCheck(string arg)
     {
+        if (ModEntry.StartedOff || !Config.Settings.Master)
+        {
+            // The mod-off twin of a scenario (launchoff, --bdvanilla, parcoop -OnOff's autooff, bdopt off): nothing of it runs, and
+            // the script's steps must stay those of the mod-on side.
+            Say($"  EFFECTCHECK {arg} skipped: the mod is off");
+            return;
+        }
+        System.Text.RegularExpressions.Match all = System.Text.RegularExpressions.Regex.Match(arg, @"^all\s+ran(?:\s+except\s+(\S.*))?$");
+        if (all.Success)
+        {
+            EffectCheckAllRan(all.Groups[1].Success ? all.Groups[1].Value.Trim() : null);
+            return;
+        }
         string[] parts = arg.Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length == 2 && parts[1] == "zero")
+        if (parts.Length == 2 && parts[1] is "zero" or "ran")
         {
             // A counter its optimization resets (FastCombatStart's, at each combat room entered) can't be compared with an earlier line.
-            long count = EffectCounts().First(e => e.Name == parts[0]).Count;
-            Say($"  EFFECTCHECK {parts[0]} zero: {count}");
-            if (count != 0)
+            // "ran": above zero now (what a scenario is there to make run, without an earlier effects line).
+            (string Name, long Count)[] counts = EffectCounts();
+            if (!counts.Any(e => e.Name == parts[0]))
             {
-                throw new InvalidOperationException($"{parts[0]} is {count}, not 0");
+                throw new ArgumentException($"no effect {parts[0]} in this session (effects: {string.Join(", ", counts.Select(e => e.Name))})");
+            }
+            long count = counts.First(e => e.Name == parts[0]).Count;
+            Say($"  EFFECTCHECK {parts[0]} {parts[1]}: {count}");
+            if (parts[1] == "zero" ? count != 0 : count == 0)
+            {
+                throw new InvalidOperationException(parts[1] == "zero" ? $"{parts[0]} is {count}, not 0" : $"{parts[0]} never ran (0)");
             }
             return;
         }
         if (parts.Length < 3 || parts[1] is not ("same" or "grew"))
         {
-            throw new ArgumentException("effectcheck <Effect> zero | <Effect> same|grew <label of an earlier 'effects' line>");
+            throw new ArgumentException("effectcheck all ran [except <regex>] | <Effect> zero|ran | <Effect> same|grew <label of an earlier 'effects' line>");
         }
         if (!_effectsAt.TryGetValue(parts[2], out Dictionary<string, long>? then) || !then.TryGetValue(parts[0], out long before))
         {
@@ -626,6 +682,31 @@ public static partial class AutoTest
         if (!ok)
         {
             throw new InvalidOperationException($"{parts[0]} {(parts[1] == "same" ? "grew" : "didn't grow")} since 'effects {parts[2]}': {before} -> {now}");
+        }
+    }
+
+    /// <summary>
+    /// Script <c>effectcheck all ran [except &lt;regex&gt;]</c>: every effect counter of this session (the <c>effects</c> line's) above
+    /// zero, or the line fails naming those at zero: what tools/autotest/effects.py checks, in the session itself (no runner reads
+    /// effects.py's verdict but mutations.ps1). The regex (searched, so anchor it) names the effects allowed at zero, matched
+    /// against the effect's name and against <c>&lt;name&gt;@&lt;game version&gt;</c> (<c>ReplayStateSkip@v0.107.1</c>): an
+    /// exception for one game version only reads <c>^ReplayStateSkip@v0\.107\.</c>. The effect counts are logged as <c>EFFECT</c>
+    /// lines would be, with the verdict.
+    /// </summary>
+    private static void EffectCheckAllRan(string? except)
+    {
+        System.Text.RegularExpressions.Regex? allowed = except == null ? null : new System.Text.RegularExpressions.Regex(except);
+        string version = Reflect.GameVersion() ?? "unknown";
+        var counts = EffectCounts();
+        var zero = counts.Where(e => e.Count == 0).Select(e => e.Name).ToList();
+        var allowedZero = zero.Where(name => allowed != null && (allowed.IsMatch(name) || allowed.IsMatch(name + "@" + version))).ToList();
+        var never = zero.Except(allowedZero).ToList();
+        Say($"  EFFECTCHECK all ran ({version}): {counts.Length - zero.Count}/{counts.Length} ran"
+            + (allowedZero.Count > 0 ? $", allowed at zero: {string.Join(", ", allowedZero)}" : "")
+            + (never.Count > 0 ? $", NEVER RAN: {string.Join(", ", never)}" : ""));
+        if (never.Count > 0)
+        {
+            throw new InvalidOperationException($"effects at zero: {string.Join(", ", never)}");
         }
     }
 
@@ -1008,6 +1089,78 @@ public static partial class AutoTest
     }
 
     /// <summary>
+    /// A fakeconflict target, <c>Namespace.Type[+Nested]:Method</c>, in the game or any loaded mod (Limitless, BaseLib): an
+    /// overloaded name takes its first declared overload (said in the line), <c>Method#n</c> the overload with n parameters,
+    /// <c>Method(IPoolable)</c> the one with those parameter types (short names),
+    /// <c>Prefix*</c> the one method whose name starts so (a compiler-named lambda: <c>MultiEnchantment+&lt;&gt;c:&lt;DeepCloneFields&gt;*</c>).
+    /// </summary>
+    private static MethodInfo ConflictTarget(string spec)
+    {
+        int colon = spec.LastIndexOf(':');
+        if (colon <= 0)
+        {
+            throw new ArgumentException("fakeconflict <Namespace.Type:Method> [boolprefix]");
+        }
+        Type type = AccessTools.TypeByName(spec[..colon]) ?? throw new InvalidOperationException("no type " + spec[..colon] + " (its mod not loaded?)");
+        string name = spec[(colon + 1)..];
+        string[]? parameterTypes = null;
+        if (name.IndexOf('(') is int open and > 0 && name.EndsWith(')'))
+        {
+            // Method(TypeName,TypeName): the overload whose parameter types have these short names.
+            parameterTypes = name[(open + 1)..^1].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            name = name[..open];
+        }
+        int? arity = null;
+        if (name.LastIndexOf('#') is int hash and > 0 && int.TryParse(name[(hash + 1)..], out int n))
+        {
+            arity = n;
+            name = name[..hash];
+        }
+        bool prefix = name.EndsWith('*');
+        string wanted = prefix ? name[..^1] : name;
+        MethodInfo[] found = AccessTools.GetDeclaredMethods(type)
+            .Where(m => (prefix ? m.Name.StartsWith(wanted, StringComparison.Ordinal) : m.Name == wanted) && (arity == null || m.GetParameters().Length == arity)
+                && (parameterTypes == null || m.GetParameters().Select(p => p.ParameterType.Name).SequenceEqual(parameterTypes)))
+            .ToArray();
+        if (found.Length == 0)
+        {
+            throw new InvalidOperationException("no method " + spec);
+        }
+        if (found.Length > 1 && (prefix || arity != null || parameterTypes != null))
+        {
+            throw new InvalidOperationException($"{spec} names {found.Length} methods: {string.Join(", ", found.Select(m => m.Name + "#" + m.GetParameters().Length))}");
+        }
+        if (found.Length > 1)
+        {
+            Say($"  {spec}: {found.Length} overloads, the first declared taken ({found[0].GetParameters().Length} parameters; Method#n picks one)");
+        }
+        return found[0];
+    }
+
+    /// <summary>
+    /// Script <c>requiregame v0.113</c>: the rest of the scenario needs this game version or a later one (a patch or mode only it
+    /// has): on an earlier one the line logs SKIPPED and the script ends as finished (<see cref="SkipRest"/>).
+    /// </summary>
+    private static void RequireGame(string wanted)
+    {
+        string? running = Reflect.GameVersion();
+        if (!Version.TryParse(wanted.TrimStart('v'), out Version? need))
+        {
+            throw new ArgumentException("requiregame v<major.minor[.patch]>");
+        }
+        if (running == null || !Version.TryParse(running.TrimStart('v').Split('-', '+', ' ')[0], out Version? have))
+        {
+            throw new InvalidOperationException($"the game's version is unknown ({running ?? "none"}): can't tell whether {wanted} is met");
+        }
+        if (have < need)
+        {
+            SkipRest($"game {running} is older than {wanted}");
+            return;
+        }
+        Say($"  game {running}: {wanted} or later");
+    }
+
+    /// <summary>
     /// Script <c>runtimebackoff &lt;Patch&gt; &lt;Type.Method&gt; [none]</c>: the optimization's own runtime check backed off from that
     /// method (another mod's patch there), counted apart from the preflight bdopt and the menu run
     /// (<see cref="PatchSafety.RuntimeCounts"/>); with <c>none</c>, that it never did (a preflight-only session).
@@ -1151,7 +1304,7 @@ public static partial class AutoTest
             // After ending a turn it goes straight to its next one while the phase is still Play: with nothing playable, its limit of
             // 100 turns is gone in a moment, however fast the session, and nobody plays the fight any more ("Combat did not end").
             Func<bool> started = condition;
-            condition = () => !CombatManager.Instance.IsInProgress || (started() && !CombatManager.Instance.IsPlayerReadyToEndTurn(Me()));
+            condition = () => !CombatManager.Instance.IsInProgress || (started() && (Me() is not { } me || !CombatManager.Instance.IsPlayerReadyToEndTurn(me)));
         }
     }
 
@@ -1228,7 +1381,8 @@ public static partial class AutoTest
             Say($"FAILED line 'autoslayfirst {line}': {e.Message}");
             if (!_continueOnFail)
             {
-                Say("ABORT: first failed line (a scenario expecting failures says 'onfail continue')");
+                // The autoslay line awaiting this room is the one running: it and what follows it are left.
+                Say($"ABORT: first failed line (a scenario expecting failures says 'onfail continue') [lines left {LinesLeft(_scriptLine)}]");
                 Quit();
             }
         }
@@ -1251,8 +1405,18 @@ public static partial class AutoTest
         };
         CombatManager.Instance.CombatEnded += _ => _combatOpen = false;
         string[] lines = File.ReadAllLines(_script!);
+        _scriptLines = lines;
         Say($"script {_script} ({lines.Length} lines)");
+        // Every expect line of the script, before any runs: one an ABORT leaves unrun is still known (tools/autotest/judge.py).
+        foreach (string expectLine in lines.Select(l => l.Trim()).Where(l => l.StartsWith("expect ", StringComparison.OrdinalIgnoreCase)))
+        {
+            Say("  EXPECTDECL " + expectLine["expect ".Length..].Trim());
+        }
         _handSelects = lines.Count(l => l.TrimStart().StartsWith("handselect ", StringComparison.OrdinalIgnoreCase));
+        foreach (string effectLine in lines.Select(l => l.Trim()).Where(l => l.StartsWith("effectcheck ", StringComparison.OrdinalIgnoreCase)))
+        {
+            _optIn.Add(effectLine.Split(' ', StringSplitOptions.RemoveEmptyEntries)[1]);
+        }
         await Until(tree, () => NGame.Instance?.MainMenu != null && ModEntry.Ready, 300, "menu");
         await Frames(tree, 60);
         if (!await WaitCommonPreload(tree))
@@ -1273,8 +1437,10 @@ public static partial class AutoTest
         Say($"  display: max fps {Engine.MaxFps} (0 = uncapped), vsync {DisplayServer.WindowGetVsyncMode()}");
         // Test profiles start at Normal speed; players with huge decks play in Fast.
         SetSpeed(FastModeType.Fast);
-        foreach (string raw in lines)
+        for (int lineIndex = 0; lineIndex < lines.Length; lineIndex++)
         {
+            string raw = lines[lineIndex];
+            _scriptLine = lineIndex;
             // {hash:NAME} = hash of the shared run file NAME (co-op imports need it; each machine computes its own).
             string? missingShared = null;
             string line = System.Text.RegularExpressions.Regex.Replace(raw.Trim(), @"\{hash:([\w.-]+)\}",
@@ -1282,6 +1448,10 @@ public static partial class AutoTest
             if (line.Length == 0 || line.StartsWith('#'))
             {
                 continue;
+            }
+            if (_skipRest)
+            {
+                break;
             }
             if (_clock.Elapsed.TotalSeconds > _deadline)
             {
@@ -1343,7 +1513,7 @@ public static partial class AutoTest
                     // tolerance lets that stand, BeforeReplace included, for a method whose checks let postfixes stand): the
                     // optimization using it must back off and report it. Other shapes: foreignpatch (ForeignPatches).
                     string[] conflictArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                    MethodInfo conflictTarget = AccessTools.Method(conflictArgs[0]) ?? throw new InvalidOperationException("no method " + conflictArgs[0]);
+                    MethodInfo conflictTarget = ConflictTarget(conflictArgs[0]);
                     bool boolPrefix = conflictArgs.Length > 1 && conflictArgs[1] == "boolprefix";
                     if (boolPrefix)
                     {
@@ -1378,6 +1548,9 @@ public static partial class AutoTest
                     break;
                 case "runtimebackoff":
                     CheckRuntimeBackOff(arg);
+                    break;
+                case "requiregame":
+                    RequireGame(arg.Trim());
                     break;
                 case "selector" when arg.Trim() is "ui" or "auto":
                     // ui: no automatic selector, the game opens its card choice screens (deck grids) and autoroom's handlers answer them.
@@ -1500,7 +1673,22 @@ public static partial class AutoTest
                     {
                         LogTurnStates();
                     }
-                    StartAutoSlayer(slayArgs[0]);
+                    // autoslay <seed> [state] [dread|blitz]: the game's mode (v0.113+; skipped where its auto player has none).
+                    string? slayMode = slayArgs.Skip(1).FirstOrDefault(a => a is not "state");
+                    if (slayMode != null && ParseGameMode(slayMode) is null)
+                    {
+                        SkipRest($"game {Reflect.GameVersion() ?? "version unknown"} has no {slayMode} mode");
+                        break;
+                    }
+                    if (!StartAutoSlayer(slayArgs[0], slayMode?.ToLowerInvariant()))
+                    {
+                        SkipRest($"the auto player of game {Reflect.GameVersion() ?? "version unknown"} has no mode");
+                        break;
+                    }
+                    _modeRun |= slayMode != null && !slayMode.Equals("standard", StringComparison.OrdinalIgnoreCase);
+                    break;
+                case "dominion":
+                    LogDominion(arg.Trim());
                     break;
                 case "tomenu":
                     // Leaves the run as the game does; the next gcfull says how many of the left runs something still holds.
@@ -1571,7 +1759,9 @@ public static partial class AutoTest
                         + $"segments rebuilt {FastListeners.SegmentRebuilds} (versions {FastListeners.RebuiltVersions}, pile version {FastListeners.PileVersion}), "
                         + $"extended {FastListeners.SegmentExtends}, kept across moves {FastListeners.SegmentMoveHits}, snapshot catch-ups {FastListeners.SnapshotCatchUps}, rebuilds {FastListeners.SnapshotRebuilds}, move checks {FastListeners.MoveChecks}, mismatches {FastListeners.MoveMismatches}, hits {FastListeners.SegmentHits}, uncached walks {FastListeners.UncachedWalks}; "
                         + $"{HookFilter.Name} walk checks {HookFilter.WalkChecks}, mismatches {HookFilter.WalkMismatches}, cost color checks {HookFilter.CostColorChecks / 64}, mismatches {HookFilter.CostColorMismatches}; {RelicFlashMerge.Name} merged {RelicFlashMerge.Merged}; {CardFlightLimit.Name} skipped {CardFlightLimit.Skipped}; {ReplayStateSkip.Name} skipped {ReplayStateSkip.Skipped}; {ThemeColorSkip.Name} skipped {ThemeColorSkip.Skipped}, set {ThemeColorSkip.Set}; {GcPacing.Name} regions {GcPacing.Regions}, refused {GcPacing.RegionsRefused}, exhausted {GcPacing.Exhausted}, {GcPacing.RegionMs:F0} ms, collections {GcPacing.Collections} (full {GcPacing.Fulls}) in {GcPacing.CollectMs:F0} ms, worst {GcPacing.WorstCollectMs:F0} ms; {PileIndex.Name} duplicate checks fast {PileIndex.FastDuplicateChecks}, slow {PileIndex.SlowDuplicateChecks}, fast ContainsCard {PileIndex.FastContainsCards}, nested-move self-check faults {PileIndex.NestedMoveFaults}; {HookSkip.Name} pending filters dropped {HookSkip.PendingFiltersDropped}; subscriber checks {FastListeners.SubscriberChecks} in {FastListeners.SubscriberCheckTicks * 1000.0 / Stopwatch.Frequency:F1} ms; "
-                        + $"{CardSortKeys.Name} sorts {CardSortKeys.Sorts}, answered {CardSortKeys.Answered}, refused {CardSortKeys.Refused} (last: {CardSortKeys.LastRefusal ?? "none"}), checks {CardSortKeys.Checks}, mismatches {CardSortKeys.Mismatches}");
+                        + $"{CardSortKeys.Name} sorts {CardSortKeys.Sorts}, answered {CardSortKeys.Answered}, refused {CardSortKeys.Refused} (last: {CardSortKeys.LastRefusal ?? "none"}), checks {CardSortKeys.Checks}, mismatches {CardSortKeys.Mismatches}; "
+                        + $"{CardDbScan.Name} walks {CardDbScan.Walks}, skipped {CardDbScan.Skipped}, verified {CardDbScan.Verified}, overflows {CardDbScan.Overflows}, failed adds dropped {CardDbScan.DroppedFailedAdds}, skipped originals {CardDbScan.SkippedAdds} (pile changed {CardDbScan.SkippedAddsChanged}); "
+                        + $"{PileIndex.Name} skipped originals judged {PileIndex.JudgedSkips}; {SnapshotVerifier.Name} snapshots {SnapshotVerifier.Snapshots}, verified {SnapshotVerifier.Verified}, skipped (too large) {SnapshotVerifier.SkippedTooLarge}");
                     break;
                 case "effects":
                     // What each optimization really did so far: tools/autotest/effects.py checks none stayed at zero. Kept per
@@ -1720,7 +1910,7 @@ public static partial class AutoTest
                 if (!_continueOnFail)
                 {
                     // What follows a failed line rarely means anything, and each later wait would time out in turn.
-                    Say("ABORT: first failed line (a scenario expecting failures says 'onfail continue')");
+                    Say($"ABORT: first failed line (a scenario expecting failures says 'onfail continue') [lines left {LinesLeft(lineIndex + 1)}]");
                     Quit();
                     return;
                 }
@@ -1730,6 +1920,27 @@ public static partial class AutoTest
         Say("script finished");
         Quit();
     }
+
+    /// <summary>A line found this game version can't run the scenario (<see cref="SkipRest"/>): the script ends there.</summary>
+    private static bool _skipRest;
+
+    /// <summary>
+    /// The scenario doesn't apply to this game version (a game mode it lacks): <c>SKIPPED: &lt;why&gt;</c>, and the script ends
+    /// as finished (<c>script finished</c>), nothing after this line run. Both sides of an A/B skip at the same line.
+    /// </summary>
+    private static void SkipRest(string why)
+    {
+        Say($"SKIPPED: {why}: the rest of this scenario doesn't apply to this game version [lines left {LinesLeft(_scriptLine + 1)}]");
+        _skipRest = true;
+    }
+
+    /// <summary>The script's lines and the index of the one running (for <see cref="LinesLeft"/>).</summary>
+    private static string[] _scriptLines = Array.Empty<string>();
+    private static int _scriptLine;
+
+    /// <summary>The script lines from <paramref name="from"/> on that would run (neither blank nor comments): the ABORT line's
+    /// <c>[lines left N]</c>, so a runner knows whether an expected failure was the script's last line.</summary>
+    private static int LinesLeft(int from) => _scriptLines.Skip(Math.Max(0, from)).Count(l => l.Trim() is { Length: > 0 } t && !t.StartsWith('#'));
 
     private static Task Frames(SceneTree tree, int count)
     {
@@ -2341,22 +2552,108 @@ public static partial class AutoTest
         Say($"  moved {_hovered.Entity} to {_hovered.Position}, hitbox at {_hovered.Hitbox.GlobalPosition}");
     }
 
+    /// <summary>The last <c>checksum</c> line of this session: its label, whether it was a plain one, its value.</summary>
+    private static (string Label, bool Plain, uint Value)? _lastChecksum;
+
     /// <summary>
-    /// Script <c>checksum [label] [vanilla]</c>: the full combat state checksum (what co-op peers compare after every
+    /// Script <c>checksum [label] [vanilla|same]</c>: the full combat state checksum (what co-op peers compare after every
     /// action). Two sessions running the same script must log the same values. By default through the game's path with
     /// this mod's optimizations (verified identical, ~40 ms); "vanilla" turns the whole mod off for it, as <c>bdopt off</c>
-    /// does (tens of seconds with huge decks).
+    /// does (tens of seconds with huge decks), and fails the line unless the immediately preceding checksum line was the plain
+    /// <c>checksum &lt;label&gt;</c> with the same value (nothing else compares the two lines of one session: labels repeat across
+    /// fights, so only the preceding line counts). "same" computes it as a plain line does and fails unless the immediately
+    /// preceding checksum line had the same label and value (a switch flipped between the two, as snapcheckcoop does).
+    /// The CARDIDS line after it (<see cref="LogCardIds"/>): the card ids this mod's CardDbScan maps, compared between the sides.
     /// </summary>
     private static void LogChecksum(string arg)
     {
-        bool vanilla = arg.EndsWith(" vanilla", StringComparison.Ordinal);
-        string label = vanilla ? arg[..^" vanilla".Length] : arg;
+        bool vanilla = arg.EndsWith(" vanilla", StringComparison.Ordinal) || arg == "vanilla";
+        bool same = arg.EndsWith(" same", StringComparison.Ordinal) || arg == "same";
+        string label = vanilla || same ? arg[..^(vanilla ? "vanilla" : "same").Length].TrimEnd() : arg;
         RunState state = RunManager.Instance.DebugOnlyGetState() ?? throw new InvalidOperationException("no run");
         Func<uint> compute = () => RunManager.Instance.ChecksumTracker.GenerateChecksum(
             MegaCrit.Sts2.Core.Entities.Multiplayer.NetFullCombatState.FromRun(state, null));
         long start = Stopwatch.GetTimestamp();
         uint checksum = vanilla ? PerfConsoleCmd.Vanilla(compute) : compute();
         Say($"  CHECKSUM {label}: {checksum:X8} ({Stopwatch.GetElapsedTime(start).TotalMilliseconds:F0} ms)");
+        (string Label, bool Plain, uint Value)? previous = _lastChecksum;
+        _lastChecksum = (label, !vanilla && !same, checksum);
+        LogCardIds(label);
+        if (vanilla || same)
+        {
+            string kind = vanilla ? "vanilla" : "same";
+            if (previous is not { } before || before.Label != label || (vanilla && !before.Plain))
+            {
+                throw new InvalidOperationException($"'checksum {label} {kind}' must follow a {(vanilla ? "plain " : "")}'checksum {label}' line (the line before was {(previous is { } p ? $"'checksum {p.Label}{(p.Plain ? "" : " ...")}'" : "none")})");
+            }
+            Say($"  CHECKSUMPAIR {label} {kind}: {before.Value:X8} vs {checksum:X8} {(before.Value == checksum ? "identical" : "DIFFERENT")}");
+            if (before.Value != checksum)
+            {
+                throw new InvalidOperationException($"checksum '{label}' {kind} {checksum:X8} differs from the line before ({before.Value:X8})");
+            }
+        }
+    }
+
+    /// <summary>
+    /// After each <c>checksum</c> line: <c>STATE &lt;label&gt;: cardids &lt;hash&gt; (&lt;n&gt; ids, next &lt;id&gt;, &lt;m&gt; without)</c>, the network
+    /// ids NetCombatCardDb gave the cards of every player's combat piles (players in the run's order, piles in AllPiles order,
+    /// cards in pile order; a card without one counts apart). The checksum doesn't cover them (NetFullCombatState carries no card
+    /// id) though co-op actions name cards by them: what CardDbScan changes is only visible here. A STATE line, which
+    /// tools/autotest/compare.py compares line for line between the two sides; no timing in it. Outside a combat: 0 ids.
+    /// </summary>
+    private static void LogCardIds(string label)
+    {
+        try
+        {
+            var db = MegaCrit.Sts2.Core.GameActions.Multiplayer.NetCombatCardDb.Instance;
+            uint hash = 2166136261;
+            void Mix(uint value)
+            {
+                for (int b = 0; b < 4; b++)
+                {
+                    hash = (hash ^ ((value >> (8 * b)) & 0xFF)) * 16777619;
+                }
+            }
+            int ids = 0, without = 0;
+            RunState? state = RunManager.Instance.DebugOnlyGetState();
+            if (state != null && CombatManager.Instance.IsInProgress)
+            {
+                uint playerIndex = 0;
+                foreach (Player player in state.Players)
+                {
+                    Mix(0xA0000000u | playerIndex++);
+                    if (player.PlayerCombatState == null)
+                    {
+                        continue;
+                    }
+                    uint pileIndex = 0;
+                    foreach (CardPile pile in player.PlayerCombatState.AllPiles)
+                    {
+                        Mix(0xB0000000u | pileIndex++);
+                        foreach (CardModel card in pile.Cards)
+                        {
+                            if (db.TryGetCardId(card, out uint id))
+                            {
+                                ids++;
+                                Mix(id);
+                            }
+                            else
+                            {
+                                without++;
+                                Mix(0xFFFFFFFFu);
+                            }
+                        }
+                    }
+                }
+            }
+            object? next = AccessTools.Field(db.GetType(), "_nextId")?.GetValue(db);
+            Say($"  STATE {label}: cardids {hash:X8} ({ids} ids, next {next ?? "?"}, {without} without)");
+        }
+        catch (Exception e)
+        {
+            // Same line on both sides when the game's API differs: compared as equal, said here.
+            Say($"  STATE {label}: cardids not read ({e.GetType().Name}: {e.Message})");
+        }
     }
 
     private static double _gcWall;
@@ -2402,6 +2699,18 @@ public static partial class AutoTest
         string[] parts = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         CharacterModel character = ModelDb.GetById<CharacterModel>(new ModelId(ModelId.SlugifyCategory<CharacterModel>(), parts[0].ToUpperInvariant()));
         string seed = parts.Length > 1 ? parts[1] : "BDTEST";
+        GameMode mode = GameMode.Standard;
+        if (parts.Length > 2)
+        {
+            // newrun <CHARACTER> <seed> dread|blitz|standard: Dread and Blitz from game v0.113 only.
+            if (ParseGameMode(parts[2]) is not { } parsed)
+            {
+                SkipRest($"game {Reflect.GameVersion() ?? "version unknown"} has no {parts[2]} mode");
+                return;
+            }
+            mode = parsed;
+            _modeRun |= !mode.ToString().Equals("Standard", StringComparison.Ordinal);
+        }
         if (!_uiSelection)
         {
             _selector ??= PushSelector(new FirstCardsSelector());
@@ -2411,8 +2720,8 @@ public static partial class AutoTest
         // The character select screen stops the menu music before starting a run; without it, it keeps playing under
         // the act music.
         MegaCrit.Sts2.Core.Nodes.Audio.NAudioManager.Instance?.StopMusic();
-        await StartSingleplayerRun(game, character, seed);
-        Say($"  run started: {character.Id.Entry}, seed {seed}");
+        await StartSingleplayerRun(game, character, seed, mode);
+        Say($"  run started: {character.Id.Entry}, seed {seed}{(parts.Length > 2 ? ", mode " + mode : "")}");
     }
 
     /// <summary>

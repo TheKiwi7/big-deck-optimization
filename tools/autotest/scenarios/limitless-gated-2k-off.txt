@@ -1,5 +1,5 @@
 # A type-gated patch of another mod on the Limitless clone chain's card methods (CardModel.AddKeyword, a prefix doing nothing
-# unless the card is a Squeeze: Bench/ForeignPatches.cs gated-prefix), three combat starts at ~1,900 cards (the reference deck,
+# unless the card is a Squeeze: Bench/ForeignPatches.cs gated-prefix), three combat starts at ~945 cards (the reference deck,
 # Limitless stacked enchantments). Mod off. Compare limitless-gated-2k-off and -on: CHECKSUM/STATE identical.
 timeout 1500
 cmd bdopt off
@@ -7,7 +7,6 @@ newrun NECROBINDER 1234
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 # Priority 800: sorted before this mod's own prefix there (SnapshotCardReuse's write mark, default priority), as a mod patching
 # at its load is (before this mod's deferred batches). Installed here at run time at the default priority, it sorted after that
 # prefix and TypeGated rightly refused it (a gated prefix running after the mark could serialize the card before the write).

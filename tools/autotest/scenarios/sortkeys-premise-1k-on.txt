@@ -1,0 +1,61 @@
+# CardSortKeys under the sort-cost premise (A/B, mod on; game v0.113+: before, the game's comparison is cheap and the part not
+# needed; DESIGN "Owner-approved premises", 2026-11-17). Other mods' patches on the cost chain a sort reads once per card:
+# RitsuLib's shapes (re-audit of the premises, F4: a transpiler and a by-ref postfix on CardEnergyCost.GetWithModifiers, the
+# postfix +1 for Squeeze at every read, and a prefix on CardModel.Pile: counting, FOREIGN lines, fewer calls with the mod on by
+# design, not compared) and PengoTarot's (a bool prefix on Hook.ModifyEnergyCostInCombat). Sorts are still
+# answered (COUNTERS: sorts and answers > 0, mismatches 0; the combat start's and the reshuffle's), the patches named in the kept
+# note, and CHECKSUM and STATE lines identical with sortkeys-premise-1k-off. On v0.107.1 requiregame logs SKIPPED and the session
+# ends there (its first line: the expect lines after it never run there, judge.py doesn't require them).
+requiregame v0.113
+expect FOREIGN kept CardSortKeys: other mods' code on a card's cost \(.*CardEnergyCost\.GetWithModifiers.*\) runs once per card in a reshuffle's sort instead of once per comparison: taken as harmless \(a stated premise
+expect COUNTERS end:.*CardSortKeys sorts [1-9]\d*, answered [1-9]\d*, refused \d+ \(last: [^)]*\), checks \d+, mismatches 0
+expect FOREIGN display end energy-cost-postfix reads [1-9]
+expect SORTKEYS counters sorts [1-9]\d*, answered [1-9]\d*, checks \d+, mismatches 0: OK: every sort checked
+expect EFFECTCHECK CardSortKeys grew since 'start': [0-9]+ -> [1-9]
+timeout 900
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+foreignpatch identity-transpiler MegaCrit.Sts2.Core.Entities.Cards.CardEnergyCost:GetWithModifiers
+foreignpatch energy-cost-postfix MegaCrit.Sts2.Core.Entities.Cards.CardEnergyCost:GetWithModifiers
+foreignpatch display-count-prefix MegaCrit.Sts2.Core.Models.CardModel:get_Pile
+foreignpatch bool-prefix MegaCrit.Sts2.Core.Hooks.Hook:ModifyEnergyCostInCombat
+effects start
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+state start
+play 3
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+pilemove draw discard 2
+wait 1
+checksum moved
+endturn
+waitfor idle 300
+checksum reshuffle
+state reshuffle
+play 3
+waitfor idle 120
+checksum t3 plays
+state t3
+cmd kill all
+waitfor nocombat 300
+wait 2
+checksum after combat
+state after combat
+effects end
+effectcheck CardSortKeys grew start
+foreignpatch report end
+counters end
+cmd bdperf sortkeys counters
+cmd bdopt why
+foreignpatch remove
+quit

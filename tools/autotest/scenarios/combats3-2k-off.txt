@@ -1,4 +1,4 @@
-# Three combat starts in a row at ~1,900 cards (the reference deck, Limitless stacked enchantments): what a combat start clones
+# Three combat starts in a row at ~945 cards (the reference deck, Limitless stacked enchantments): what a combat start clones
 # (LimitlessCloneMemo from the second start on) and plays, mod off. Compare combats3-2k-off and -on: CHECKSUM/STATE identical.
 timeout 1500
 cmd bdopt off
@@ -6,7 +6,6 @@ newrun NECROBINDER 1234
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 enemyhp 999999
 immortal
 cmd fight CULTISTS_NORMAL

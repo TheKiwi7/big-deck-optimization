@@ -1,0 +1,100 @@
+# CardFlightLimit next to other mods' patches: the positive controls (mod on; DESIGN "Needless back-offs made safe", class 3).
+# (1) A postfix on NCardFlyShuffleVfx.Create reading a static field before its null test: not a no-op for a null result, so
+# every soul flies (CardFlightLimit's Skipped stays the same over a reshuffle of ~1,900 cards). (2) A postfix on the game's sound
+# command SfxCmd.PlayCardSwooshSfx: a control until 2026-11-17, now under the premise (the owner's option (a): everything a skip
+# removes, the swoosh included): souls are still skipped, the patch is named in the kept note.
+# (3) 2026-11-17 (fix 5): a postfix on the pile's CardPile.InvokeCardAddFinished: souls are still skipped, but each skipped card's
+# pile button gets its own event (no merged count: a patch there would see one call for several cards).
+# (4) 2026-11-17 audit (C): a postfix on MegaLabel.SetTextAutoSize, which the pile button's AddCard calls (the merged count's
+# computed set): the same as (3), souls skipped, one event per card.
+# (5) Re-audit round 2 of 2026-11-17 (B1): RitsuLib's null-gated postfix shape on NCardFlyShuffleVfx.Create in a class whose
+# beforefieldinit initializer reads the clock, reaching another such class on its non-null path: NullSkipped judges no initializer
+# (the postfix runs at every call, a skipped one too, and the first call is never a skip): it stands, souls are still skipped,
+# and it sees real souls.
+timeout 1200
+expect FOREIGN classify NCardFlyShuffleVfx\.Create: bdtest\.foreign\.create-nearmiss-postfix Postfix .*NullSkipped backs off \(postfix not provably a no-op for a null result\)
+expect CardFlightLimit: NCardFlyShuffleVfx\.Create is also patched by bdtest\.foreign\.create-nearmiss-postfix \(postfixes doing nothing for a null result not enough\): normal game for that part
+expect FOREIGN runtime CardFlightLimit NCardFlyShuffleVfx\.Create \(NullSkipped\) kept 0 backed off [1-9]
+expect EFFECTCHECK CardFlightLimit same since 'start'
+expect EFFECTCHECK CardFlightLimit grew since 'sound': [0-9]+ -> [1-9]
+expect FOREIGN kept CardFlightLimit: other mods' code on a flying card's own visuals \(.*SfxCmd\.PlayCardSwooshSfx.*\)
+expect CardFlightLimit: CardPile\.InvokeCardAddFinished is also patched by bdtest\.foreign\.noop-postfix: normal game for that part
+expect EFFECTCHECK CardFlightLimit grew since 'event': [0-9]+ -> [1-9]
+expect CardFlightLimit: MegaLabel\.SetTextAutoSize is also patched by bdtest\.foreign\.noop-postfix: normal game for that part
+expect EFFECTCHECK CardFlightLimit grew since 'label': [0-9]+ -> [1-9]
+expect FOREIGN classify NCardFlyShuffleVfx\.Create: bdtest\.foreign\.create-null-gated-reach-postfix Postfix .*NullSkipped tolerated
+expect CardFlightLimit: NCardFlyShuffleVfx\.Create is also patched by .*bdtest\.foreign\.create-null-gated-reach-postfix.* \(postfixes doing nothing for a null result: no-ops on the calls this mod skips\): kept
+expect EFFECTCHECK CardFlightLimit grew since 'reach': [0-9]+ -> [1-9]
+expect FOREIGN souls seen by create-null-gated-reach-postfix [1-9]
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 999999
+speed fast
+immortal
+foreignpatch create-nearmiss-postfix MegaCrit.Sts2.Core.Nodes.Vfx.NCardFlyShuffleVfx:Create
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+effects start
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+wait 6
+effects shuffled
+effectcheck CardFlightLimit same start
+foreignpatch report nearmiss
+foreignpatch remove
+# (2) The game's swoosh sound command (under the premise since 2026-11-17).
+foreignpatch count-postfix MegaCrit.Sts2.Core.Commands.SfxCmd:PlayCardSwooshSfx
+effects sound
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+wait 6
+effects sound end
+effectcheck CardFlightLimit grew sound
+cmd bdopt why
+foreignpatch report sound
+foreignpatch remove
+# (3) The pile's event method (strict for the merged count only).
+foreignpatch noop-postfix MegaCrit.Sts2.Core.Entities.Cards.CardPile:InvokeCardAddFinished
+effects event
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+wait 6
+effects event end
+effectcheck CardFlightLimit grew event
+cmd bdopt why
+foreignpatch remove
+# (4) What the pile button's AddCard calls (strict for the merged count only).
+foreignpatch noop-postfix MegaCrit.Sts2.addons.mega_text.MegaLabel:SetTextAutoSize
+effects label
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+wait 6
+effects label end
+effectcheck CardFlightLimit grew label
+foreignpatch remove
+# (5) A null-gated postfix with impure initializers, its own and one it reaches (B1).
+foreignpatch create-null-gated-reach-postfix MegaCrit.Sts2.Core.Nodes.Vfx.NCardFlyShuffleVfx:Create
+effects reach
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+wait 6
+effects reach end
+effectcheck CardFlightLimit grew reach
+foreignpatch report reach
+foreignpatch remove
+quit

@@ -1,5 +1,6 @@
 # HookSkip A/B (on): run hookskip-off then hookskip-on; the CHECKSUM and STATE lines must match line for line
 # (same seed, deck, encounter and plays), fps/GC per phase compare the speed. ~8,400 cards + 368 relics.
+# compare-with: turns-off
 timeout 1200
 newrun NECROBINDER
 waitfor run 120
@@ -90,5 +91,8 @@ waitfor nocombat 300
 wait 3
 checksum after combat
 state after combat
+# A4: no filtered walk ended with nothing kept where the game's walk yields some; the badge guard never needed in a real run.
+effectcheck HookSkip.Emptied zero
+effectcheck HookSkip.NoBadge zero
 cmd bdopt hook_skip on
 quit

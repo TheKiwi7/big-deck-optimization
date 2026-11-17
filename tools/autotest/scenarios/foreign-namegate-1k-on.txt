@@ -1,0 +1,69 @@
+# The reflection-reads premise (A/B, mod on; DESIGN "Owner-approved premises", 2026-11-17): postfixes of "another mod" on
+# AbstractModel defaults gated by a name test on the instance's runtime type (Skin Changer's shape, GetType().Name != "..."):
+# name-gated-postfix (Name, on AfterCardPlayed) and fullname-gated-postfix (FullName, on AfterPlayerTurnStartEarly) are recognized
+# as gated on Squeeze (every loaded type of that name), HookSkip keeps filtering those hooks, Squeeze keeps its calls (STATE counts
+# identical with foreign-namegate-1k-off). Controls that must back off: a call before the name test (name-nearmiss-postfix on
+# AfterSideTurnEnd: every call counted) and a name test on another argument (name-othervar-postfix on AfterCardDrawn: the drawn
+# card). CHECKSUM and STATE lines identical. ~945 cards.
+expect HookSkip: AbstractModel\.AfterCardPlayed is also patched by bdtest\.foreign\.name-gated-postfix-squeeze \(patches gated on the listener's type: Squeeze treated as overriding it
+expect HookSkip: AbstractModel\.AfterPlayerTurnStartEarly is also patched by bdtest\.foreign\.fullname-gated-postfix-squeeze \(patches gated on the listener's type: Squeeze treated as overriding it
+expect HookSkip: AbstractModel\.AfterSideTurnEnd is also patched by bdtest\.foreign\.name-nearmiss-postfix-squeeze \(patches gated on the listener's type not enough\)
+expect HookSkip: AbstractModel\.AfterCardDrawn is also patched by bdtest\.foreign\.name-othervar-postfix-squeeze \(patches gated on the listener's type not enough\)
+expect FOREIGN runtime HookSkip AbstractModel\.AfterCardPlayed \(TypeGated\) kept [1-9]
+expect FOREIGN runtime HookSkip AbstractModel\.AfterPlayerTurnStartEarly \(TypeGated\) kept [1-9]
+expect FOREIGN runtime HookSkip AbstractModel\.AfterSideTurnEnd \(TypeGated\) kept 0 backed off [1-9]
+expect FOREIGN runtime HookSkip AbstractModel\.AfterCardDrawn \(TypeGated\) kept 0 backed off [1-9]
+expect FOREIGN gated walks Hook\.AfterCardPlayed [1-9]
+expect STATE foreign end name-gated-postfix squeeze AbstractModel\.AfterCardPlayed [1-9]
+expect STATE foreign end fullname-gated-postfix squeeze AbstractModel\.AfterPlayerTurnStartEarly [1-9]
+expect STATE foreign end name-nearmiss-postfix every call AbstractModel\.AfterSideTurnEnd [1-9]
+expect FOREIGN namegate selftest: \d+ cases as expected
+timeout 1500
+newrun NECROBINDER 1234
+waitfor run 120
+foreignpatch namegate selftest
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+foreignpatch name-gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardPlayed squeeze
+foreignpatch fullname-gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterPlayerTurnStartEarly squeeze
+foreignpatch name-nearmiss-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterSideTurnEnd squeeze
+foreignpatch name-othervar-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardDrawn squeeze
+effects start
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+play 4
+waitfor idle 120
+checksum t3 plays
+endturn
+waitfor idle 300
+checksum t3 end
+state t3
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+foreignpatch report end
+effects end
+effectcheck HookSkip grew start
+cmd bdopt why
+counters end
+foreignpatch remove
+quit

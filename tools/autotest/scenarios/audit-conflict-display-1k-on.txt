@@ -1,0 +1,63 @@
+# Audit: the snapshot and display parts' runtime back-offs (another mod on what they mirror or skip), each named by its runtime
+# check (runtimebackoff: counted per call site, apart from the preflight): SnapshotCardReuse (CombatPileState.From), and the
+# display parts HoverTipReuse (a creature hovered), PoolSignalScan (NodePool.Free), ThemeColorSkip (AddThemeColorOverride);
+# then ReplayStateSkip (CombatReplayWriter.RecordChecksum: the game records a solo combat's checksums from v0.111 only, so
+# its line runs after requiregame v0.111, last). CHECKSUM and STATE lines must match wrong-1k-off line for line.
+# compare-with: wrong-1k-off
+expect SnapshotCardReuse: CombatPileState\.From is also patched by bdtest\.fakeconflict
+expect HoverTipReuse: NCreature\.ShowCreatureHoverTips is also patched by bdtest\.fakeconflict
+expect PoolSignalScan: NodePool\.Free is also patched by bdtest\.fakeconflict
+expect ThemeColorSkip: Control\.AddThemeColorOverride is also patched by bdtest\.fakeconflict
+timeout 900
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+fakeconflict MegaCrit.Sts2.Core.Entities.Multiplayer.NetFullCombatState+CombatPileState:From
+fakeconflict MegaCrit.Sts2.Core.Nodes.Combat.NCreature:ShowCreatureHoverTips
+fakeconflict MegaCrit.Sts2.Core.Nodes.Pooling.NodePool:Free(IPoolable)
+fakeconflict Godot.Control:AddThemeColorOverride
+fakeconflict MegaCrit.Sts2.Core.Multiplayer.Replay.CombatReplayWriter:RecordChecksum
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+state start
+hover 0
+wait 1
+play 3
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 3
+waitfor idle 120
+checksum t2 plays
+pilemove draw discard 2
+wait 1
+checksum moved
+endturn
+waitfor idle 300
+checksum reshuffle
+state reshuffle
+play 3
+waitfor idle 120
+checksum t3 plays
+state t3
+cmd kill all
+waitfor nocombat 300
+wait 2
+checksum after combat
+state after combat
+counters end
+cmd bdopt
+runtimebackoff SnapshotCardReuse CombatPileState.From
+runtimebackoff HoverTipReuse NCreature.ShowCreatureHoverTips
+runtimebackoff PoolSignalScan NodePool.Free
+runtimebackoff ThemeColorSkip Control.AddThemeColorOverride
+requiregame v0.111
+runtimebackoff ReplayStateSkip CombatReplayWriter.RecordChecksum
+quit

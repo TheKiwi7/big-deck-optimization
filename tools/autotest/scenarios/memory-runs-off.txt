@@ -1,11 +1,10 @@
-# Memory check across fights and runs (mod off), ~1,900 cards: the reference of memory-runs-on.
+# Memory check across fights and runs (mod off), ~945 cards: the reference of memory-runs-on.
 timeout 900
 cmd bdopt off
 newrun NECROBINDER 1234
 waitfor run 60
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 cmd bdperf checks off
 enemyhp 999999
 gcfull run1 start
@@ -37,7 +36,6 @@ newrun NECROBINDER 1234
 waitfor run 60
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 enemyhp 999999
 cmd fight CULTISTS_NORMAL
 waitfor idle 60
@@ -66,7 +64,6 @@ newrun NECROBINDER 1234
 waitfor run 60
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 enemyhp 999999
 cmd fight CULTISTS_NORMAL
 waitfor idle 60
@@ -95,7 +92,6 @@ newrun NECROBINDER 1234
 waitfor run 60
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 enemyhp 999999
 cmd fight CULTISTS_NORMAL
 waitfor idle 60

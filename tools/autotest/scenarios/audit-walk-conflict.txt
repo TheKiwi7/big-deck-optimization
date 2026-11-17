@@ -1,6 +1,6 @@
-# Audit: another mod patching CombatState/RunState.IterateHookListeners. FastListeners' own prefix backs off from it; do HookSkip's filtered walks?
-# They go through the game's own walk (KeptOnly): FastListeners.CombatWalk stays at 0. FastListeners.Cache still grows from the
-# run walk, which has no conflict here (DESIGN "Other mods on the walks").
+# Audit: another mod patching CombatState/RunState.IterateHookListeners. FastListeners keeps serving the walk through the game's
+# call (the postfix stands); do HookSkip's filtered walks back off? They go through the game's own walk (KeptOnly). FastListeners.Cache
+# still grows from the run walk, which has no conflict here (DESIGN "Other mods on the walks", "Needless back-offs made safe").
 timeout 600
 expect FastListeners: CombatState\.IterateHookListeners is also patched by bdtest\.fakeconflict
 expect \[hook_skip\]: on \(partly vanilla because of bdtest\.fakeconflict\)
@@ -21,9 +21,13 @@ waitfor idle 120
 play 3
 waitfor idle 120
 effects end
-# The combat walk backs off whole (FastListeners' own and HookSkip's filtered walks): it never ran. The run walk, not
-# conflicted here, keeps using the cache (FastListeners.Cache grows by design).
-effectcheck FastListeners.CombatWalk zero
+# Since v1.1.0 ("Needless back-offs made safe" in DESIGN) the fake postfix, by value with no argument, is let stand on the walk
+# served through the game's call (CombatPrefix, counted here): Harmony runs it after this mod's prefix as without this mod. The
+# filtered walks (HookSkip's, called directly) stay strict: the game's call (KeptOnly), the runtime back-off below. The run walk,
+# not conflicted here, keeps using the cache (FastListeners.Cache grows by design).
+effectcheck FastListeners.CombatWalk grew start
+# A4: the filtered walks over the game's own walk (KeptOnly) keep its first listener; none ends with nothing kept.
+effectcheck HookSkip.Emptied zero
 # The back-offs' log lines and bdopt's 'partly vanilla' lines above also come from the preflight bdopt and the menu run (the
 # same check, the same text): these lines count the optimizations' own runtime checks only (PatchSafety.RuntimeCounts).
 runtimebackoff FastListeners CombatState.IterateHookListeners

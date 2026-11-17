@@ -20,6 +20,80 @@ AssemblyLoadContext.Default.Resolving += (ctx, name) =>
     return null;
 };
 Assembly asm = Assembly.LoadFrom(args[0]);
+if (args[1] == "closure")
+{
+    // closure <dll> closure <limit> <root>...: the game methods reached from the roots (MethodFingerprint.GameClosure), each
+    // with its fingerprint, the delegates invoked, and the set's fingerprint (MethodFingerprint.SetFingerprint). A root is a
+    // Resolve key (Namespace.Type::Name(ParamType,...)), or Namespace.Type::* for every method and constructor the type declares.
+    // "!Key": a method the closure neither adds nor follows (CodeSet's stopAt).
+    const BindingFlags declared = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
+    var roots = new List<MethodBase>();
+    var stops = new HashSet<MethodBase>();
+    foreach (string key in args.Skip(3))
+    {
+        if (key.StartsWith('!'))
+        {
+            stops.Add(MethodFingerprint.Resolve(asm, key[1..]) ?? throw new Exception("not found: " + key));
+            continue;
+        }
+        if (key.EndsWith("::*"))
+        {
+            Type t = asm.GetType(key[..^3], true)!;
+            roots.AddRange(t.GetMethods(declared).Cast<MethodBase>().Concat(t.GetConstructors(declared)).Where(m => m.GetMethodBody() != null));
+            continue;
+        }
+        // "+Key": the method and every implementation the game has of it (a virtual getter a call may reach on any subclass).
+        MethodBase root = MethodFingerprint.Resolve(asm, key.TrimStart('+')) ?? throw new Exception("not found: " + key);
+        roots.Add(root);
+        if (key.StartsWith('+') && root is MethodInfo virtualRoot)
+        {
+            roots.AddRange(MethodFingerprint.Implementations(asm, virtualRoot));
+        }
+    }
+    var delegates = new List<MethodInfo>();
+    var parents = new Dictionary<MethodBase, MethodBase>();
+    var dispatches = new List<(MethodInfo Callee, List<MethodBase> Implementations)>();
+    var watch = System.Diagnostics.Stopwatch.StartNew();
+    List<MethodBase> closure;
+    try
+    {
+        // FP_ROOTSONLY=1: the roots alone, not followed (RelicFlashMerge's scene scripts: their own code, pinned).
+        closure = Environment.GetEnvironmentVariable("FP_ROOTSONLY") == "1" ? roots.Distinct().ToList() : MethodFingerprint.GameClosure(asm, roots, int.Parse(args[2]), delegates, parents,
+            // As CodeSet computes it: no type initializers, dispatch only through the game's own virtual methods.
+            Environment.GetEnvironmentVariable("FP_INIT") == "1", Environment.GetEnvironmentVariable("FP_DISPATCH") == "1", dispatches, stops.Count > 0 ? stops : null);
+        watch.Stop();
+    }
+    catch (InvalidOperationException e) when (e.Message.StartsWith("more than"))
+    {
+        // The chain that led there, for the review.
+        Console.WriteLine(e.Message);
+        MethodBase? at = parents.Keys.LastOrDefault();
+        for (int i = 0; at != null && i < 40; i++, at = parents.GetValueOrDefault(at))
+        {
+            Console.WriteLine("  from " + MethodFingerprint.MemberName(at));
+        }
+        return;
+    }
+    foreach (MethodBase m in closure.OrderBy(m => MethodFingerprint.MemberName(m), StringComparer.Ordinal))
+    {
+        // "virtual": another assembly's override runs in its place (CodeSet.ForeignOverrides).
+        Console.WriteLine($"{MethodFingerprint.MemberName(m)} {MethodFingerprint.Of(m)}{(m is MethodInfo { IsVirtual: true, IsFinal: false } ? " virtual" : "")}");
+    }
+    string[] delegateNames = delegates.Select(d => MethodFingerprint.MemberName(d)).Distinct().OrderBy(n => n, StringComparer.Ordinal).ToArray();
+    foreach (string d in delegateNames)
+    {
+        Console.WriteLine($"delegate {d}");
+    }
+    // The game's virtual and interface methods called (abstract ones included): what CodeSet.Virtuals checks for other
+    // assemblies' overrides and implementations (not part of the set's fingerprint).
+    foreach (string d in dispatches.Where(d => d.Callee.Module.Assembly == asm).Select(d => MethodFingerprint.MemberName(MethodFingerprint.Definition(d.Callee)))
+        .Distinct().OrderBy(n => n, StringComparer.Ordinal))
+    {
+        Console.WriteLine($"dispatch {d}");
+    }
+    Console.WriteLine($"{closure.Count} methods, set {MethodFingerprint.SetFingerprint(closure, delegateNames)} ({watch.ElapsedMilliseconds} ms)");
+    return;
+}
 Type type = asm.GetType(args[1], true)!;
 foreach (MethodBase m in type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly).Cast<MethodBase>()
     .Concat(type.GetConstructors(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)))

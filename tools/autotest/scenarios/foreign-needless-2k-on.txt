@@ -15,8 +15,8 @@ expect FastListeners: CombatState\.IterateHookListeners is also patched by .*bdt
 expect FastListeners: CombatState\.IterateHookListeners is also patched by .*bdtest\.foreign\.walk-expand-postfix.*: normal game for that part
 expect HookFilter: CombatState\.IterateHookListeners is also patched by .*bdtest\.foreign\.walk-expand-postfix.*: normal game for that part
 expect PileIndex: CardModel\.get_Pile is also patched by bdtest\.foreign\.pile-prefix-narrow \(postfixes and prefixes running before this mod's: run around this mod's code as without it\): kept
-expect HookSkip: Hook\.ModifyHpLost is also patched by .*bdtest\.foreign\.byref-arg-prefix.* \(postfixes and void prefixes: run around this mod's code as without it\): kept
-expect HookSkip: Hook\.ModifyHpLost is also patched by .*bdtest\.foreign\.byref-out-postfix.* \(postfixes and void prefixes: run around
+expect HookSkip: Hook\.ModifyHpLost is also patched by .*bdtest\.foreign\.byref-arg-prefix.* \(prefixes and postfixes around the transpiled body: run around this mod's code as without it\): kept
+expect HookSkip: Hook\.ModifyHpLost is also patched by .*bdtest\.foreign\.byref-out-postfix.* \(prefixes and postfixes around the transpiled body: run around
 expect PileIndex: CardPile\.AddInternal is also patched by .*bdtest\.foreign\.byref-arg-prefix.* \(postfixes and void prefixes: run around
 expect FOREIGN classify CardModel\.get_Pile: bdtest\.foreign\.pile-prefix-narrow Prefix .*priority 800: .*BeforeReplace tolerated
 expect FOREIGN classify Hook\.ModifyHpLost: bdtest\.foreign\.byref-out-postfix Postfix .*SurroundingOnly tolerated
@@ -33,14 +33,13 @@ expect FOREIGN listener scopes with walk patches [1-9]
 expect FOREIGN runtime ListenerCache CombatState\.IterateHookListeners \(SurroundingOnly\) kept [1-9]
 expect FOREIGN runtime FastListeners CombatState\.IterateHookListeners \(SurroundingOnly\) kept [1-9]
 expect FOREIGN runtime PileIndex CardModel\.get_Pile \(BeforeReplace\) kept [1-9]
-expect FOREIGN runtime HookSkip Hook\.ModifyHpLost \(SurroundingOnly\) kept [1-9]
+expect FOREIGN runtime HookSkip Hook\.ModifyHpLost \(TranspiledOnly\) kept [1-9]
 expect FOREIGN runtime PileIndex CardPile\.AddInternal \(SurroundingOnly\) kept [1-9]
 expect FOREIGN walk-expand-postfix never ran on its own output
 newrun NECROBINDER
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 enemyhp 999999
 # One pile answer in 64 compared with the getter's own scan (through the patched Player.Piles), both sides alike.
 cmd bdperf pile verify 64

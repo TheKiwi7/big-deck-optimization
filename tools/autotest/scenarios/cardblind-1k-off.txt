@@ -1,0 +1,33 @@
+# Positive control of CardDbScan's whole-pile check (off; with cardblind-1k-on), ~935 cards: bdperf cardids blind leaves the next
+# add of a card without an ID unrecorded and checks every skipped walk from then on. The walk right after that add (a card made
+# in the hand) must see the card without an ID, turn CardDbScan off and walk vanilla, which IDs it as the game does: CHECKSUM and
+# STATE lines (STATE ...: cardids, the network ids no checksum covers) must match the off twin line for line.
+timeout 900
+cmd bdopt off
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+# Room in the hand first: the reference run's relics (Vexing Puzzlebox's card among them) fill it to 10 at the first turn.
+pilemove hand discard 9
+checksum start
+cmd card DUAL_WIELD hand
+waitfor idle 120
+checksum blind
+play 3
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+cmd kill all
+waitfor nocombat 300
+wait 2
+checksum after combat
+cmd bdopt on
+quit

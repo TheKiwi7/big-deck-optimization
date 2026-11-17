@@ -1,5 +1,6 @@
 # Co-op snapshot pieces against the game's own, same session: after each step, the optimized checksum then the vanilla one
 # ("checksum x" / "checksum x vanilla" must print the same value). ~4,700 cards + the reference relics, plays over turns (piles moving).
+# compare-with: snapcheck-5k-off
 timeout 1500
 newrun NECROBINDER 1234
 waitfor run 120

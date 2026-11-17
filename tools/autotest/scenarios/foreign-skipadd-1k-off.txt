@@ -1,0 +1,53 @@
+# Another mod's bool prefix replacing CardPile.AddInternal and RemoveInternal for Squeeze (off; with foreign-skipadd-1k-on): the original
+# skipped, the pile's list written by the prefix itself, no event (foreignpatch skip-and-add-prefix). CardDbScan walks that pile
+# in full (its tracking missed the add: pile changed); PileIndex can't tell that change from an unseen one and turns itself off
+# (strict, its expected line). CHECKSUM and STATE lines (and foreignpatch report's counts) must match the other side line for line.
+timeout 900
+cmd bdopt off
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+# Vexing Puzzlebox's first-turn card can be a Squeeze (v0.113.1, seed 1234): kept out of every pile by the patches below,
+# the game's own walk then throws (the turn loop dies, mod on or off). Removed before the combat.
+cmd relic remove VEXING_PUZZLEBOX
+foreignpatch skip-and-add-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal squeeze
+foreignpatch skip-and-add-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:RemoveInternal squeeze
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+# Room in the hand first: the reference run's relics (Vexing Puzzlebox's card among them) fill it to 10 at the first turn.
+pilemove hand discard 9
+checksum start
+state start
+cmd card SQUEEZE hand
+waitfor idle 60
+cmd card SQUEEZE discard
+waitfor idle 60
+checksum squeezes
+state squeezes
+play 3
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+pilemove draw discard 2
+wait 1
+checksum moved
+endturn
+waitfor idle 300
+checksum reshuffle
+state reshuffle
+play 3
+waitfor idle 120
+checksum t3 plays
+foreignpatch report end
+cmd kill all
+waitfor nocombat 300
+wait 2
+checksum after combat
+cmd bdopt on
+quit

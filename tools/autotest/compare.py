@@ -9,13 +9,27 @@ more often than A (B is the side under test, par.ps1's mod on: an exception in g
 this mod), but the engine's timing noise (judge.GAME_NOISE). Then the per-card times of 'playcard' ("played X in N ms") side
 by side.
 
-Verdict (last word of its line, exit code 0 only for IDENTICAL):
+A is usually a vanilla reference session (par.ps1's mod-off side, launched with --bdvanilla: no patch of this mod installed). The
+lines compared don't depend on that: this mod's own lines (patches applied, preflight, EFFECT counters, bdopt's status) are
+never compared. B launched vanilla (its BDVANILLA line) is a problem: the side under test would be the game itself.
+
+A game error B logs that one of B's own `expect` lines matches (a positive control's fault, the error it provokes on purpose:
+judge.py lists it as expected) is listed as expected, not counted, whichever kind of pair it is.
+
+Verdict (last word of its line, exit code 0 only for IDENTICAL and SKIPPED):
   IDENTICAL       the same lines, at least one, and no problem in either log
+  SKIPPED         B logged SKIPPED (requiregame, a game mode this version lacks: the rest of its scenario doesn't apply to this
+                  game version) before A's end (or neither compared a line), its lines A's first ones, no problem in either log:
+                  not applicable on this version. B skipping a last part after the same lines as A is IDENTICAL
   DIFFERENT       the lines differ (or one log stopped early)
   NOT COMPARED    no line to compare on either side: nothing was proven
   PROBLEMS        the same lines, but a log has a problem (a check of the mod failed, a session didn't end, a game error with B
                   only...)
 --lines-only: the verdict is about the lines alone (mutations.ps1, which judges the errors itself).
+--prefix: up to what both reached (vanillacheck.ps1, two mod-off sessions of a scenario the game itself can't finish in time:
+                outside-2k-off on v0.113, its rest site's clone): the lines of the shorter log must be the longer's first ones,
+                and a problem both logs have alike (the same text, numbers aside: the game's own failure, mod off on both
+                sides) is listed, not counted.
 """
 import os
 import re
@@ -39,7 +53,8 @@ def normalized_error(line):
 
 
 def read(path):
-    checked, played, errors = [], [], {}
+    """(checked lines, played cards, {normalized game error: count}, {normalized game error: its lines as logged})."""
+    checked, played, errors, raw = [], [], {}, {}
     with open(path, encoding='utf-8', errors='replace') as f:
         for line in f:
             line = line.rstrip('\n')
@@ -50,7 +65,8 @@ def read(path):
             elif line.startswith('[ERROR]'):
                 key = normalized_error(line)
                 errors[key] = errors.get(key, 0) + 1
-    return checked, played, errors
+                raw.setdefault(key, []).append(line)
+    return checked, played, errors, raw
 
 
 def difference(x, y):
@@ -85,14 +101,22 @@ def errors_grown(a, b):
             if not judge.GAME_NOISE.search(k) and (k not in a or (v > 2 * a[k] and v - a[k] >= 3))}
 
 
-def main(a_path, b_path, times=True, lines_only=False):
+def shared_problem_key(text):
+    """A judge.py problem without its log's name and numbers: the same failure on both sides compares equal."""
+    return re.sub(r'\d+', 'N', text.split(': ', 1)[-1])
+
+
+def main(a_path, b_path, times=True, lines_only=False, prefix=False):
     for path in (a_path, b_path):
         if not os.path.exists(path):
             print(f'no log {path}')
             print('NOT COMPARED')
             return 1
-    a_checked, a_played, a_errors = read(a_path)
-    b_checked, b_played, b_errors = read(b_path)
+    a_checked, a_played, a_errors, _ = read(a_path)
+    b_checked, b_played, b_errors, b_raw = read(b_path)
+    a_skipped, b_skipped = judge.is_skipped(a_path), judge.is_skipped(b_path)
+    # B skipped for this game version: its lines must be A's first ones (both skipped: the same lines), nothing more is compared.
+    skipped = b_skipped and len(b_checked) <= len(a_checked) and (not a_skipped or len(b_checked) == len(a_checked))
     mismatches = [(i, x, y) for i, (x, y) in enumerate(zip(a_checked, b_checked)) if x != y]
     print(f'checked lines: {len(a_checked)} vs {len(b_checked)}, mismatches: {len(mismatches)}')
     rooms = [sum(x.startswith('Entering') for x in side) for side in (a_checked, b_checked)]
@@ -101,34 +125,56 @@ def main(a_path, b_path, times=True, lines_only=False):
     for i, x, y in mismatches[:20]:
         words = difference(x, y)
         print(f'  #{i}\n    A: {x}\n    B: {y}' + (f'\n    differs: {words}' if words else ''))
-    if len(a_checked) != len(b_checked):
-        print('  DIFFERENT LENGTHS (a session stopped early?)')
+    if skipped:
+        print(f'  B SKIPPED (the rest of its scenario does not apply to this game version): compared up to where it stopped, {len(b_checked)} lines'
+              + (' (A skipped too)' if a_skipped else ''))
+    elif len(a_checked) != len(b_checked):
+        print(f'  DIFFERENT LENGTHS, compared up to what both reached: {min(len(a_checked), len(b_checked))} lines' if prefix
+              else '  DIFFERENT LENGTHS (a session stopped early?)')
     for name, only in (('A', errors_only_in(a_errors, b_errors)), ('B', errors_only_in(b_errors, a_errors))):
         for text, count in list(only.items())[:8]:
             print(f'errors only in {name}: {count}x {text}')
     problems = 0
-    # B is the side under test (par.ps1: mod on): a game error it logs alone, or far more often, is a problem.
+    # B is the side under test (par.ps1: mod on): a game error it logs alone, or far more often, is a problem. But one its own
+    # expect lines match on every line logged (a positive control's provoked error, judge.py's expected): listed, not counted.
+    b_expects = judge.expect_patterns(b_path)
     for text, count in errors_grown(a_errors, b_errors).items():
+        if b_expects and all(any(rx.search(line) for rx in b_expects) for line in b_raw.get(text, [])):
+            print(f'expected in B (game error, its expect lines): {count}x {text}')
+            continue
         problems += 1
         if problems <= 8:
             print(f'problem in B: game error only (or {count} times vs {a_errors.get(text, 0)}) with B: {text}')
-    for name, path in (('A', a_path), ('B', b_path)):
-        found, expected = judge.judge(path)
-        problems += len(found)
+    # B is the side under test: launched vanilla it compares the game with itself.
+    if judge.is_vanilla(b_path):
+        problems += 1
+        print('problem in B: a vanilla reference session (its BDVANILLA line, --bdvanilla): the side under test ran without the mod')
+    judged = {name: judge.judge(path) for name, path in (('A', a_path), ('B', b_path))}
+    # --prefix: the same failure on both sides is the game's (both mod off), listed only.
+    shared = ({shared_problem_key(p) for p in judged['A'][0]} & {shared_problem_key(p) for p in judged['B'][0]}) if prefix else set()
+    for name, (found, expected) in judged.items():
         for line in expected[:5]:
             print(f'expected in {name}: {line}')
+        found = [p for p in found if shared_problem_key(p) not in shared]
+        problems += len(found)
         for line in found[:8]:
             print(f'problem in {name}: {line}')
-    if mismatches or len(a_checked) != len(b_checked):
+    for key in sorted(shared)[:8]:
+        print(f'on both sides (not counted, --prefix): {key[:200]}')
+    if mismatches:
         verdict = 'DIFFERENT'
-    elif not a_checked:
+    elif skipped and (len(b_checked) < len(a_checked) or not b_checked):
+        verdict = 'PROBLEMS' if problems and not lines_only else 'SKIPPED'
+    elif len(a_checked) != len(b_checked) and not prefix:
+        verdict = 'DIFFERENT'
+    elif not a_checked or (prefix and not b_checked):
         verdict = 'NOT COMPARED'
     elif problems and not lines_only:
         verdict = 'PROBLEMS'
     else:
         verdict = 'IDENTICAL'
     print(verdict)
-    ok = verdict == 'IDENTICAL'
+    ok = verdict in ('IDENTICAL', 'SKIPPED')
     if not times:
         return 0 if ok else 1
 
@@ -150,4 +196,4 @@ def main(a_path, b_path, times=True, lines_only=False):
 if __name__ == '__main__':
     # Under python -I stdout is the ANSI code page (PYTHONIOENCODING ignored): a log's character it lacks must not crash the report.
     sys.stdout.reconfigure(errors='backslashreplace')
-    sys.exit(main(sys.argv[1], sys.argv[2], '--no-times' not in sys.argv, '--lines-only' in sys.argv))
+    sys.exit(main(sys.argv[1], sys.argv[2], '--no-times' not in sys.argv, '--lines-only' in sys.argv, '--prefix' in sys.argv))

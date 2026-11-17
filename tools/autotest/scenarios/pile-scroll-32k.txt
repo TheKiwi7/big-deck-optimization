@@ -1,5 +1,6 @@
 # Combat draw pile view scrolled like a held mouse wheel at ~31,800 cards (the user's report: it lags a lot).
 # Same deck as try-32k; release-like timings. Run with -TraceSec to profile the scroll.
+# compare-with: pile-scroll-32k-off
 timeout 900
 newrun NECROBINDER
 waitfor run 120

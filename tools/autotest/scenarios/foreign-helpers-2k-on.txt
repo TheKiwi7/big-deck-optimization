@@ -1,0 +1,109 @@
+# HookSkip's choice-context helpers (A/B, mod on; DESIGN "Needless back-offs made safe", HookSkip: per-hook helper sets and
+# listener gates): the same synthetic patches of "another mod" (Harmony ids bdtest.foreign.*, Bench/ForeignPatches.cs) as
+# foreign-helpers-2k-off; CHECKSUM and STATE lines must match line for line. (1) RitsuLib's shape on the 4-argument
+# HookPlayerChoiceContext constructor: a postfix doing nothing unless its `source` (the listener) is a Squeeze, in a
+# beforefieldinit class with a static field. It must stand (TypeGated on `source`), the hooks constructing contexts keep running
+# filtered with Squeeze kept (FOREIGN gated walks), its hits the same as mod off (STATE). (2) Then an ungated counting postfix on
+# the same constructor: only the hooks constructing contexts go vanilla (v0.113.1 BeforeSideTurnStart, BeforeSideTurnEnd,
+# AfterSideTurnEnd, BeforeFlush, AfterDeath, AfterDiedToDoom; v0.107.1 BeforeTurnEnd/AfterTurnEnd for the SideTurnEnd pair), the
+# others keep their filtered walks (AfterCardPlayed, AfterCardDrawn, AfterCardChangedPiles), the constructor's calls the same as
+# mod off (STATE). Hook names of the other version are skipped by `require` (listed).
+# (3) Patches on PlayerChoiceContext.PushModel and PopModel gated on its `model`. 2026-11-17: each first patch of another mod
+# on a method small enough to inline (PushModel, 32 bytes of IL; on v0.113.1 the constructor too, 87 bytes) compiles this
+# mod's replacements calling it again (InlineGuard.AfterForeignFirstPatch): before, HookSkip's hooks, compiled at this mod's
+# load, ran PushModel's inlined body past the postfix (3 calls seen on, 83,399 off; the constructor's 2,950 and 45,015).
+# Proof run 2: the on side now sees every PushModel call (119,397), the off side 83,399:
+# the game's own JIT had compiled some callers with PushModel inlined before the scenario's late patch (vanilla's behaviour for a
+# patch made mid-session; a patch made at another mod's load, the real case, is seen on both sides: foreign-helpers-load-2k).
+# So the late PushModel postfix's count is a FOREIGN display line, not compared; PopModel's (not inlined) and the rest are.
+# Proof 4: the game itself doesn't pop every push (a new context's own first push never is), so no equality is required within
+# a session: PopModel's count at t4 (STATE, before any line that can fail) is compared with foreign-helpers-2k-off.
+timeout 2400
+expect FOREIGN classify HookPlayerChoiceContext\.\.ctor: bdtest\.foreign\.ctor-source-gated-squeeze Postfix .*TypeGated tolerated, gates Squeeze
+expect HookSkip: HookPlayerChoiceContext\.\.ctor is also patched by .*bdtest\.foreign\.ctor-source-gated-squeeze.* \(patches gated on the listener's type: Squeeze treated as overriding it, gated on its argument source; its class's static initializer \(beforefieldinit\) only stores constants, empty runtime collections or field lookups that can't throw: the same values whenever the runtime runs it\): kept
+expect FOREIGN gated walks Hook\.BeforeSideTurnStart [1-9]
+expect HookSkip: other mods' patches on the hooks' choice-context helpers do nothing unless the listener is of these types, judged from the patches' code \(HookPlayerChoiceContext\.\.ctor \(source\): Squeeze\): those listeners keep their calls \(.*bdtest\.foreign\.ctor-source-gated-squeeze.*\): kept
+expect FOREIGN walks Hook\.BeforeSideTurnStart: [1-9][0-9]* since the mark, [1-9][0-9]* filtered
+expect HookSkip: HookPlayerChoiceContext\.\.ctor is also patched by .*bdtest\.foreign\.count-postfix.* \(patches gated on the listener's type not enough\): normal game for that part
+expect FOREIGN runtime HookSkip HookPlayerChoiceContext\.\.ctor \(TypeGated\) kept [1-9][0-9]* backed off [1-9]
+expect FOREIGN walks Hook\.BeforeSideTurnStart: [1-9][0-9]* since the mark, 0 filtered
+expect FOREIGN walks Hook\.AfterCardPlayed: [1-9][0-9]* since the mark, [1-9][0-9]* filtered
+expect STATE foreign end ctor-source-gated squeeze [1-9]
+expect STATE foreign end count-postfix HookPlayerChoiceContext\.\.ctor [1-9]
+expect HookSkip: PlayerChoiceContext\.PushModel is also patched by bdtest\.foreign\.model-gated-postfix-squeeze \(patches gated on the listener's type: Squeeze treated as overriding it, gated on its argument model\): kept
+expect HookSkip: PlayerChoiceContext\.PopModel is also patched by bdtest\.foreign\.model-gated-prefix-squeeze \(patches gated on the listener's type: Squeeze treated as overriding it, gated on its argument model\): kept
+expect FOREIGN display end model-gated-postfix squeeze PlayerChoiceContext\.PushModel [1-9]
+expect STATE foreign t4 model-gated-prefix squeeze PlayerChoiceContext\.PopModel [1-9]
+expect STATE foreign end model-gated-prefix squeeze PlayerChoiceContext\.PopModel [1-9]
+expect InlineGuard: .*bdtest\.foreign\.model-gated-postfix-squeeze.* patched .*PlayerChoiceContext\.PushModel.* for the first time, after this mod's patches were compiled: [1-9][0-9]* methods carrying them that may have inlined it compiled again .*queued from another thread
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+# (1) RitsuLib's constructor postfix shape, gated on the listener argument.
+foreignpatch ctor-source-gated MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext::.ctor(AbstractModel,UInt64,ICombatState,GameActionType) squeeze
+cmd bdopt why
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+effects start
+foreignpatch walks mark
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+foreignpatch require filtered BeforeSideTurnStart,BeforeFlush,BeforeSideTurnEnd,AfterSideTurnEnd,BeforeTurnEnd,AfterTurnEnd,AfterCardPlayed,AfterCardDrawn
+foreignpatch report gated
+# (2) An ungated postfix on the same constructor: only the hooks constructing contexts go vanilla.
+foreignpatch count-postfix MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext::.ctor(AbstractModel,UInt64,ICombatState,GameActionType)
+foreignpatch walks mark
+play 4
+waitfor idle 120
+checksum t3 plays
+endturn
+waitfor idle 300
+checksum t3 end
+state t3
+foreignpatch require vanilla BeforeSideTurnStart,BeforeFlush,BeforeSideTurnEnd,AfterSideTurnEnd,BeforeTurnEnd,AfterTurnEnd
+foreignpatch require filtered AfterCardPlayed,AfterCardDrawn,AfterCardChangedPiles
+# The PushModel postfix is installed from another thread (`background`, re-audit of b64e896 A1/A5): the rebuild is queued to the
+# main thread's end of frame, each candidate once for the batch ("queued from another thread").
+# (3) 2026-11-17: patches gated on PushModel's / PopModel's listener argument `model` (a postfix on PushModel, a prefix
+# on PopModel) stand: the hooks pushing models stay filtered (Squeeze kept), their hits the same as mod off (STATE).
+foreignpatch model-gated-postfix MegaCrit.Sts2.Core.GameActions.Multiplayer.PlayerChoiceContext:PushModel squeeze background
+foreignpatch model-gated-prefix MegaCrit.Sts2.Core.GameActions.Multiplayer.PlayerChoiceContext:PopModel squeeze
+foreignpatch walks mark
+play 4
+waitfor idle 120
+checksum t4 plays
+endturn
+waitfor idle 300
+checksum t4 end
+state t4
+foreignpatch report t4
+foreignpatch require filtered AfterCardPlayed,AfterCardDrawn
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+foreignpatch report end
+effects end
+effectcheck HookSkip grew start
+effectcheck InlineGuard.Refreshed grew start
+cmd bdopt why
+counters end
+foreignpatch remove
+quit

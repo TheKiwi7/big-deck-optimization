@@ -36,13 +36,30 @@ public static class CardDbScan
     /// already in a pile (same code in v0.111, v0.113.0 and v0.113.1). <c>AddInternal</c> is deliberately not fingerprinted
     /// (its body changed on v0.113): it only has to be the only way into a pile (the list's writers are checked) and to put
     /// the very card it is given in the list, which the sampled whole-pile check (<see cref="VerifyEvery"/>) would catch
-    /// otherwise. Recording a card whose add then fails costs one more ID check.</summary>
+    /// otherwise. A card recorded for an add that then failed (not in the pile) is dropped again (AfterAdd).</summary>
     private const string WalkFingerprint = "207017C48274E22C";
     private const string StartCombatFingerprint = "01491A6EA42EBCE2";
     private const string IdFingerprint = "DEC87C0A856497A5";
 
     private const int VerifyEvery = 64;
+#if BENCH
+    /// <summary>Adds kept per pile between walks (test builds: <c>bdperf pendingcap N</c> lowers it so a small deck overflows).</summary>
+    internal static int MaxPending = 256;
+    /// <summary>Piles whose pending adds overflowed (their next walk vanilla).</summary>
+    public static long Overflows;
+    /// <summary>Cards recorded for an add whose original threw without putting them in the pile, dropped again.</summary>
+    public static long DroppedFailedAdds;
+    /// <summary>Adds whose original another mod's prefix skipped, and those of them that changed the pile anyway (its next walk vanilla).</summary>
+    public static long SkippedAdds, SkippedAddsChanged;
+    /// <summary>
+    /// <c>bdperf cardids blind</c>: the next add of a card without an ID is not recorded (as if the tracking missed it), and every
+    /// skipped walk is checked from then on: the check must see the card and turn the patch off (positive control).
+    /// </summary>
+    internal static bool BlindForTest;
+    private static bool _verifyAllForTest;
+#else
     private const int MaxPending = 256;
+#endif
 
     public static bool Enabled { get; set; } = true;
     public static bool Applied { get; private set; }
@@ -144,8 +161,20 @@ public static class CardDbScan
             {
                 pending.Overflow = true;
                 pending.Cards.Clear();
+#if BENCH
+                Overflows++;
+#endif
                 return;
             }
+#if BENCH
+            if (BlindForTest && !_cardToId!(NetCombatCardDb.Instance).ContainsKey(card))
+            {
+                BlindForTest = false;
+                _verifyAllForTest = true;
+                Log.Info($"[{ModEntry.Id}] {Name}: blind (test): the add of {card} to {__instance.Type} not recorded");
+                return;
+            }
+#endif
             pending.Cards.Add(card);
         }
         catch (Exception e)
@@ -159,17 +188,46 @@ public static class CardDbScan
     [OrderFreePrefix]
     private static void WatchAdd(CardPile __instance, out int __state) => __state = __instance.Cards.Count;
 
-    /// <summary>An add whose original didn't run but whose pile changed anyway: what entered isn't known, that pile walks in full.</summary>
-    private static void AfterAdd(Exception? __exception, CardPile __instance, int __state, bool __runOriginal)
+    /// <summary>
+    /// An add whose original didn't run but whose pile changed anyway: what entered isn't known, that pile walks in full. An add
+    /// whose original threw (a canonical card, a card already there, a later throw from an event handler) recorded its card in
+    /// RecordAdd, before: if the card isn't in the pile it never will get an ID from this add, and kept pending it would make every
+    /// walk of that pile vanilla until combat end (the walk's postfix only drops cards given an ID): dropped again.
+    /// </summary>
+    private static void AfterAdd(Exception? __exception, CardPile __instance, CardModel card, int __state, bool __runOriginal)
     {
+        if (__exception != null && __runOriginal)
+        {
+            try
+            {
+                if (_pending.TryGetValue(__instance, out Pending? pending) && !pending.Overflow && pending.Cards.LastIndexOf(card) is int at && at >= 0
+                    && !__instance.Cards.Contains(card))
+                {
+                    pending.Cards.RemoveAt(at);
+#if BENCH
+                    DroppedFailedAdds++;
+#endif
+                }
+            }
+            catch (Exception e)
+            {
+                Fail(e.ToString());
+            }
+        }
         if (!__runOriginal)
         {
             try
             {
+#if BENCH
+                SkippedAdds++;
+#endif
                 if (__instance.Cards.Count != __state && _pending.TryGetValue(__instance, out Pending? pending))
                 {
                     pending.Overflow = true;
                     pending.Cards.Clear();
+#if BENCH
+                    SkippedAddsChanged++;
+#endif
                 }
             }
             catch (Exception e)
@@ -246,7 +304,11 @@ public static class CardDbScan
                 }
             }
             Skipped++;
+#if BENCH
+            if (Skipped % VerifyEvery == 0 || _verifyAllForTest)
+#else
             if (Skipped % VerifyEvery == 0)
+#endif
             {
                 Verified++;
                 foreach (CardModel card in pile.Cards)
@@ -306,6 +368,11 @@ public static class CardDbScan
             Fail(e.ToString());
         }
     }
+
+#if BENCH
+    /// <summary>Whether <paramref name="card"/> is pending in <paramref name="pile"/>'s tracking (test of the failed-add drop).</summary>
+    internal static bool PendingHolds(CardPile pile, CardModel card) => _pending.TryGetValue(pile, out Pending? pending) && pending.Cards.Contains(card);
+#endif
 
     private static void Fail(string reason)
     {

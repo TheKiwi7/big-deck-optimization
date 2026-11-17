@@ -15,7 +15,7 @@ expect FOREIGN runtime PileIndex CardModel\.get_Pile \(BeforeReplace\) kept 0 ba
 expect FOREIGN classify CardPile\.RemoveInternal: bdtest\.foreign\.byref-arg-prefix Prefix .*priority 0: SurroundingOnly backs off \(void prefix running after a prefix of this mod
 expect FOREIGN runtime PileIndex CardPile\.RemoveInternal \(SurroundingOnly\) kept 0 backed off [1-9]
 expect FOREIGN classify Hook\.ModifyHpLost: bdtest\.foreign\.byref-write-postfix Postfix .*SurroundingOnly backs off \(postfix taking modifiers by reference\)
-expect HookSkip: Hook\.ModifyHpLost is also patched by bdtest\.foreign\.byref-write-postfix \(postfixes and void prefixes not enough\): normal game for that part
+expect HookSkip: Hook\.ModifyHpLost is also patched by bdtest\.foreign\.byref-write-postfix \(prefixes and postfixes around the transpiled body: run around this mod's code as without it\): kept
 newrun NECROBINDER
 waitfor run 120
 wait 2

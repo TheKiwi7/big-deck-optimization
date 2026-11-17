@@ -1,0 +1,128 @@
+# RelicFlashMerge's controls (A/B, mod on): what stays strict under the relic-flash display premise (DESIGN "Owner-approved
+# premises", 2026-11-17; re-audit round 2's one prefix per phase, each detection proven alone, with runtime lines). The visual
+# members (NRelicFlashVfx.Create, Creature.GetVfxContainer, RelicModel.get_Icon, DoFlash, the flash scene's script) are under the
+# premise with the shape rules on: their merge stands, proven by relicflash-display-on/off, not here. (1) A counting prefix of
+# "another mod" on the handler Player.OnRelicFlashed (sound and creature effect: a patch there would see the whole call skipped)
+# keeps every player flash: its count the same as mod off (STATE, compared with relicflash-ctl-off), the runtime check recording
+# the back-off. (2) The same on the relic bar's handler NRelicInventoryHolder.OnRelicFlashed: every relic bar flash kept. (3) A
+# no-op prefix on Rng.get_Chaotic, a random number generator both visual sets reach (an icon getter's draw): the premise never
+# covers a draw, so nothing is merged at all (effectcheck RelicFlashMerge same), the back-off shown, no kept note. (4) A counting
+# prefix on Creature.GetVfxContainer (strict since the premises audit, A1: RunState's, CombatState's, Creature's and the save
+# code's members): no creature effect merged (effectcheck RelicFlashMerge.Creature same), its count the same as mod off. Each
+# phase checks the side its handler patch covers: the player phase no sound replayed and no creature effect merged (the relic bar
+# still merges there), the holder phase no relic bar effect merged (player flashes still merge, their sound replayed: proof 4).
+# A new run and a campfire clone (~945 cards, Bing Bong) per phase. CHECKSUM lines identical too. Expected lines match the log's
+# "<id>: normal game for that part" (proof 4: the colon follows the id).
+timeout 1800
+expect RelicFlashMerge: Player\.OnRelicFlashed is also patched by bdtest\.foreign\.count-prefix: normal game for that part
+expect STATE foreign player count-prefix Player\.OnRelicFlashed [1-9]
+expect FOREIGN runtime RelicFlashMerge Player\.OnRelicFlashed \(None\) kept 0 backed off [1-9]
+expect RelicFlashMerge: NRelicInventoryHolder\.OnRelicFlashed is also patched by bdtest\.foreign\.count-prefix: normal game for that part
+expect STATE foreign holder count-prefix NRelicInventoryHolder\.OnRelicFlashed [1-9]
+expect FOREIGN runtime RelicFlashMerge NRelicInventoryHolder\.OnRelicFlashed \(None\) kept 0 backed off [1-9]
+expect RelicFlashMerge: Rng\.get_Chaotic is also patched by bdtest\.foreign\.noop-prefix: normal game for that part
+expect EFFECTCHECK RelicFlashMerge same since 'rng'
+expect FOREIGN runtime RelicFlashMerge Rng\.get_Chaotic \(None\) kept 0 backed off [1-9]
+expect EFFECTCHECK RelicFlashMerge\.SoundsReplayed same since 'player'
+expect EFFECTCHECK RelicFlashMerge\.Creature same since 'player'
+expect EFFECTCHECK RelicFlashMerge\.Holder same since 'holder'
+expect RelicFlashMerge: Creature\.GetVfxContainer is also patched by bdtest\.foreign\.count-prefix: normal game for that part
+expect STATE foreign container count-prefix Creature\.GetVfxContainer [1-9]
+expect FOREIGN runtime RelicFlashMerge Creature\.GetVfxContainer \(None\) kept 0 backed off [1-9]
+expect EFFECTCHECK RelicFlashMerge\.Creature same since 'container'
+# Phase player: a counting prefix on the creature-side handler alone.
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+foreignpatch count-prefix MegaCrit.Sts2.Core.Entities.Players.Player:OnRelicFlashed
+checksum before player
+state before player optional
+effects player
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+checksum after player
+state after player optional
+foreignpatch report player
+effects player end
+effectcheck RelicFlashMerge.SoundsReplayed same player
+effectcheck RelicFlashMerge.Creature same player
+cmd bdopt why
+foreignpatch remove
+# Phase holder: a counting prefix on the relic bar's handler alone.
+tomenu
+wait 2
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+foreignpatch count-prefix MegaCrit.Sts2.Core.Nodes.Relics.NRelicInventoryHolder:OnRelicFlashed
+checksum before holder
+state before holder optional
+effects holder
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+checksum after holder
+state after holder optional
+foreignpatch report holder
+effects holder end
+effectcheck RelicFlashMerge.Holder same holder
+cmd bdopt why
+foreignpatch remove
+# Phase rng: a no-op prefix on the visual sets' random number generator alone.
+tomenu
+wait 2
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+foreignpatch noop-prefix MegaCrit.Sts2.Core.Random.Rng::get_Chaotic()
+checksum before rng
+state before rng optional
+effects rng
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+checksum after rng
+state after rng optional
+foreignpatch report rng
+effects rng end
+effectcheck RelicFlashMerge same rng
+cmd bdopt why
+foreignpatch remove
+# Phase container: a counting prefix on Creature.GetVfxContainer alone (strict since the premises audit, A1).
+tomenu
+wait 2
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+foreignpatch count-prefix MegaCrit.Sts2.Core.Entities.Creatures.Creature:GetVfxContainer
+checksum before container
+state before container optional
+effects container
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+checksum after container
+state after container optional
+foreignpatch report container
+effects container end
+effectcheck RelicFlashMerge.Creature same container
+cmd bdopt why
+foreignpatch remove
+quit

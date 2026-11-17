@@ -1,0 +1,84 @@
+# RelicFlashMerge's controls (A/B, mod off): the same phases and synthetic patches as relicflash-ctl-on (see there); CHECKSUM
+# and STATE lines must match line for line.
+timeout 1800
+cmd bdopt off
+# Phase player: a counting prefix on the creature-side handler alone.
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+foreignpatch count-prefix MegaCrit.Sts2.Core.Entities.Players.Player:OnRelicFlashed
+checksum before player
+state before player optional
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+checksum after player
+state after player optional
+foreignpatch report player
+foreignpatch remove
+# Phase holder: a counting prefix on the relic bar's handler alone.
+tomenu
+wait 2
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+foreignpatch count-prefix MegaCrit.Sts2.Core.Nodes.Relics.NRelicInventoryHolder:OnRelicFlashed
+checksum before holder
+state before holder optional
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+checksum after holder
+state after holder optional
+foreignpatch report holder
+foreignpatch remove
+# Phase rng: a no-op prefix on the visual sets' random number generator alone.
+tomenu
+wait 2
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+foreignpatch noop-prefix MegaCrit.Sts2.Core.Random.Rng::get_Chaotic()
+checksum before rng
+state before rng optional
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+checksum after rng
+state after rng optional
+foreignpatch report rng
+foreignpatch remove
+# Phase container: a counting prefix on Creature.GetVfxContainer alone.
+tomenu
+wait 2
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+foreignpatch count-prefix MegaCrit.Sts2.Core.Entities.Creatures.Creature:GetVfxContainer
+checksum before container
+state before container optional
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+checksum after container
+state after container optional
+foreignpatch report container
+foreignpatch remove
+cmd bdopt on
+quit

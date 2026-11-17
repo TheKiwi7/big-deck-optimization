@@ -117,6 +117,69 @@ public static class SortKeysBench
         }
     }
 
+    /// <summary>
+    /// <c>bdperf sortkeys deck</c> (R3-2, re-audit round 3): the local player's deck sorted as <c>StableShuffle</c> sorts it (WarHammer's
+    /// post-combat shuffle of the deck's upgradable cards), the game's and this part's, from the deck's order and two shuffled ones.
+    /// After a combat the owner's <c>Creature.CombatState</c> is still the ended combat, whose listeners hold any impure cost listener
+    /// the player has (Brilliant Scarf): deck cards never reach the cost hook (<c>card.CombatState</c> is null), so the sort must be
+    /// answered, with the game's order. The verdict names the ended combat's first impure cost listener (the test's premise).
+    /// </summary>
+    public static CmdResult RunDeck()
+    {
+        if (RunManager.Instance.DebugOnlyGetState() is not { } run || LocalContext.GetMe(run) is not { } me)
+        {
+            return new CmdResult(success: false, "No run.");
+        }
+        if (!CardSortKeys.Applied || !CardSortKeys.Enabled)
+        {
+            return new CmdResult(success: !CardSortKeys.Applied, $"{CardSortKeys.Name} {(CardSortKeys.Applied ? "is off" : "not applied")}: nothing to compare.");
+        }
+        List<CardModel> cards = me.Deck.Cards.ToList();
+        ICombatState? combat = me.Creature?.CombatState;
+        string where = combat == null ? "no combat" : CombatManager.Instance.IsInProgress ? "combat in progress" : "ended combat";
+        string impure = combat == null ? "none" : CardSortKeys.ImpureCostListenerForTest(combat) ?? "none";
+        // R3-2's narrow judgment off (A3's superset: deck cards judged with their owner's combat): named in the verdict. The owner's
+        // decision (2026-11-17): strict when another mod patches PlayerCombatState.get_AllPiles (BaseLib, RitsuLib), so with an
+        // impure cost listener in the owner's combat every sort must then be refused, the game's order kept.
+        string? narrowOff = CardSortKeys.NarrowOffForTest();
+        string narrow = narrowOff != null ? $", narrow judgment off ({narrowOff})" : "";
+        bool expectRefusal = narrowOff != null && impure != "none";
+        long sorts = CardSortKeys.Sorts, answered = CardSortKeys.Answered, refused = CardSortKeys.Refused, mismatches = CardSortKeys.Mismatches;
+        try
+        {
+            var random = new Random(4321);
+            int different = 0, notAnswered = 0;
+            for (int pass = 0; pass < 3; pass++)
+            {
+                List<CardModel> start = cards.ToList();
+                for (int j = pass == 0 ? 0 : start.Count - 1; j > 0; j--)
+                {
+                    int k = random.Next(j + 1);
+                    (start[j], start[k]) = (start[k], start[j]);
+                }
+                List<CardModel> game = start.ToList();
+                PerfConsoleCmd.Vanilla(() => { game.Sort(); return 0; });
+                List<CardModel> mine = start.ToList();
+                long before = CardSortKeys.Answered;
+                bool opened = CardSortKeys.SortInScope(mine);
+                different += Different(game, mine) ? 1 : 0;
+                notAnswered += !opened || (mine.Count > 1 && CardSortKeys.Answered == before) ? 1 : 0;
+            }
+            long refusedNow = CardSortKeys.Refused - refused, mismatchesNow = CardSortKeys.Mismatches - mismatches;
+            bool ok = different == 0 && mismatchesNow == 0 && CardSortKeys.Enabled && (expectRefusal ? notAnswered == 3 : notAnswered == 0);
+            string verdict = ok ? (expectRefusal ? $"OK: left to the game as expected ({CardSortKeys.LastRefusal ?? "refused"}), identical orders" : "OK: answered, identical orders")
+                : expectRefusal && notAnswered < 3 ? $"ANSWERED: {3 - notAnswered} of 3 sorts answered while the narrow judgment is off"
+                : notAnswered > 0 ? $"REFUSED: {notAnswered} of 3 sorts left to the game ({CardSortKeys.LastRefusal ?? "nothing answered"})"
+                : $"MISMATCH: {different} of 3 sorts differ, own check mismatches {mismatchesNow}";
+            return new CmdResult(ok, $"SORTKEYS deck {cards.Count} cards, {where}, impure cost listener {impure}{narrow}: answered {CardSortKeys.Answered - answered}, "
+                + $"refused {refusedNow}, checks {CardSortKeys.Checks}: {verdict}");
+        }
+        finally
+        {
+            CardSortKeys.RestoreCounters(sorts, answered);
+        }
+    }
+
     private const string VeilpiercerType = "MegaCrit.Sts2.Core.Models.Powers.VeilpiercerPower";
 
     /// <summary>

@@ -33,6 +33,12 @@ namespace BigDeckOptimization.Patches;
 /// constants or unwritten arguments otherwise) whose method provably does nothing unless the listener is of some types (the
 /// type-gate shape: from its first instruction only <c>isinst</c> tests of that parameter, then a no-op exit); those types then keep
 /// their iterations (treated as overriders, as for TypeGated defaults): a dropped listener's call would have done nothing.</item>
+/// <item>The identity bridge (owner-approved premise of 2026-11-17, DESIGN "Owner-approved premises": Downfall's and Watcher's
+/// <c>ModifyDamageInternal</c> shape): placed right after the game's own <c>stloc X</c> inside one listener iteration, a run
+/// <c>ldloc &lt;listener&gt;; ldloc X; [constants, unwritten arguments, locals the game read before in that straight code];
+/// call Bridge; stloc X</c>, whose bridge is gated on the listener's type and otherwise returns the argument fed by
+/// <c>ldloc X</c> as it is (<see cref="IdentityGatesOn"/>): for a listener of none of the gate types it stores back the very
+/// value the game stored, so a dropped iteration stays a no-op; the gate types keep their iterations.</item>
 /// </list>
 /// Anything else (a store, a branch, a call into the game, a reordered or changed instruction, a handler changed, an iteration
 /// observer without a gate, a transpiler Harmony sorts after this mod's, a factory) refuses all of them: the hook stays vanilla.
@@ -150,6 +156,8 @@ internal static class TranspilerJudge
         /// <summary>The gated methods called (their own patches checked at each recheck).</summary>
         public MethodInfo[] GatedCallees = Array.Empty<MethodInfo>();
         public int Runs;
+        /// <summary>Of the runs, the identity bridges (<see cref="IdentityGatesOn"/>): the premise's kept note names them.</summary>
+        public int Bridges;
         public string Key = "";
     }
 
@@ -199,8 +207,13 @@ internal static class TranspilerJudge
                 {
                     Log.Info($"[{ModEntry.Id}] {HookSkip.Name}: Hook.{hookName}: other mods' transpilers judged by their IL ({verdict.Owners}): "
                         + (verdict.Accepted ? $"{verdict.Runs} insertion(s) that change nothing this mod relies on"
+                            + (verdict.Bridges > 0 ? $" ({verdict.Bridges} storing their result back into the iteration's own: identity bridges, a stated premise)" : "")
                             + (verdict.Gates.Length > 0 ? $", gated on {string.Join(", ", verdict.Gates.Select(g => g.Name))} (kept)" : "") + ": kept"
                             : $"refused ({verdict.Why})"));
+                }
+                if (!waiting)
+                {
+                    NoteBridges(hookName, body, verdict.Accepted && !verdict.GatedCallees.Any(Patched) && verdict.Bridges > 0 ? verdict : null);
                 }
                 // A verdict missing its capture (the rebuild still under way) is asked again next time, not kept.
                 if (!waiting)
@@ -217,6 +230,41 @@ internal static class TranspilerJudge
     }
 
     private static bool Patched(MethodInfo method) => Harmony.GetPatchInfo(method) is { } info && PatchSafety.AllPatches(info).Any();
+
+    /// <summary>Per hook with accepted identity bridges: the mods (the kept note's text).</summary>
+    private static readonly ConcurrentDictionary<string, string[]> _bridged = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The identity-bridge premise's kept note (bdopt why, the menu's hover): the hooks whose accepted transpilers store a gated
+    /// bridge's result back into the iteration's own local, and their mods; the hook dropped from it when its verdict has none.
+    /// </summary>
+    private static void NoteBridges(string hook, MethodBase body, Verdict? verdict)
+    {
+        try
+        {
+            if (verdict == null)
+            {
+                _bridged.TryRemove(hook, out _);
+            }
+            else
+            {
+                _bridged[hook] = PatchSafety.OtherModsPatching(new MethodBase?[] { body });
+            }
+            if (_bridged.IsEmpty)
+            {
+                PatchSafety.ClearKept(HookSkip.Name, "identity_bridges");
+                return;
+            }
+            string hooks = string.Join(", ", _bridged.Keys.OrderBy(k => k, StringComparer.Ordinal).Select(k => "Hook." + k));
+            PatchSafety.Kept(HookSkip.Name, "identity_bridges", $"other mods' code passing each listener's result through their own method ({hooks}) "
+                + "is judged from its code to give the game's value back for the listeners of other types: those listeners are still skipped "
+                + "(a stated premise: the values it reads at a kept listener's turn are the game's own)", _bridged.Values.SelectMany(m => m).ToArray());
+        }
+        catch
+        {
+            // Display only.
+        }
+    }
 
     private static Verdict Refused(string key, string why, Patch[] foreign) =>
         new() { Why = why, Key = key, Owners = string.Join(", ", foreign.Select(p => p.owner).Distinct()) };
@@ -260,14 +308,14 @@ internal static class TranspilerJudge
         }
         Ins[] result = captured.Code;
         Ins[] original = PatchProcessor.GetOriginalInstructions(body).Select(Ins.From).ToArray();
-        string? why = JudgeCode(body, original, result, isWalk, out Type[] gates, out MethodInfo[] callees, out int runs);
+        string? why = JudgeCode(body, original, result, isWalk, out Type[] gates, out MethodInfo[] callees, out int runs, out int bridges);
         if (why != null)
         {
             return Refuse(why);
         }
         return new Verdict
         {
-            Accepted = true, Key = key, Owners = owners, Gates = gates, GatedCallees = callees, Runs = runs,
+            Accepted = true, Key = key, Owners = owners, Gates = gates, GatedCallees = callees, Runs = runs, Bridges = bridges,
             Transpilers = foreign.Select(p => PatchSafety.PatchMethodOf(p)!).ToArray(),
         };
     }
@@ -277,8 +325,13 @@ internal static class TranspilerJudge
     /// accepted (with the gate types, gated methods and number of inserted runs), else why not. Also the test tooling's entry.
     /// </summary>
     internal static string? JudgeCode(MethodBase body, IReadOnlyList<Ins> original, IReadOnlyList<Ins> result, Func<MethodInfo, bool> isWalk,
-        out Type[] gates, out MethodInfo[] callees, out int runs)
+        out Type[] gates, out MethodInfo[] callees, out int runs) => JudgeCode(body, original, result, isWalk, out gates, out callees, out runs, out _);
+
+    /// <summary><see cref="JudgeCode(MethodBase, IReadOnlyList{Ins}, IReadOnlyList{Ins}, Func{MethodInfo, bool}, out Type[], out MethodInfo[], out int)"/>, with the identity bridges counted.</summary>
+    internal static string? JudgeCode(MethodBase body, IReadOnlyList<Ins> original, IReadOnlyList<Ins> result, Func<MethodInfo, bool> isWalk,
+        out Type[] gates, out MethodInfo[] callees, out int runs, out int bridges)
     {
+        bridges = 0;
         gates = Type.EmptyTypes;
         callees = Array.Empty<MethodInfo>();
         runs = 0;
@@ -314,8 +367,9 @@ internal static class TranspilerJudge
         }
         var gateList = new List<Type>();
         var calleeList = new List<MethodInfo>();
-        foreach ((int gap, List<Ins> run) in inserted)
+        foreach ((int found, List<Ins> foundRun) in inserted)
         {
+            (int gap, List<Ins> run) = AfterStore(original, found, foundRun);
             if (gap >= original.Count)
             {
                 return "code appended after the method's last instruction";
@@ -328,7 +382,7 @@ internal static class TranspilerJudge
             {
                 return "code inserted where the game's code never goes";
             }
-            if (CheckRun(body, original, run, state, analysis, gateList, calleeList) is { } why)
+            if (CheckRun(body, original, run, gap, state, analysis, gateList, calleeList, ref bridges) is { } why)
             {
                 return why + $" (inserted before instruction {gap}, {original[gap].Op})";
             }
@@ -337,6 +391,25 @@ internal static class TranspilerJudge
         callees = calleeList.Distinct().ToArray();
         runs = inserted.Count;
         return null;
+    }
+
+    /// <summary>
+    /// The same code read the other way (the identity bridge's form, shape rules on): a run inserted before the game's
+    /// <c>stloc X</c> that starts with that same <c>stloc X</c> (the alignment matched the game's store with the run's last one) is the
+    /// run that follows the game's store: <c>stloc X; A</c> before <c>stloc X</c> is <c>A; stloc X</c> after it (neither carries a
+    /// label or an exception mark). Any other run as found.
+    /// </summary>
+    private static (int Gap, List<Ins> Run) AfterStore(IReadOnlyList<Ins> original, int gap, List<Ins> run)
+    {
+        if (!PatchSafety.ShapeRules || gap >= original.Count - 1 || run.Count < 2 || LocalIndex(original[gap].Op, original[gap].Operand, load: false) is not int
+            || !Same(run[0], original[gap]) || run[0].Labels.Length > 0 || run[0].Blocks.Length > 0 || original[gap].Labels.Length > 0
+            || original[gap].Blocks.Length > 0)
+        {
+            return (gap, run);
+        }
+        var rotated = run.Skip(1).ToList();
+        rotated.Add(original[gap]);
+        return (gap + 1, rotated);
     }
 
     /// <summary>No fall-through after it (br, leave, ret, throw, rethrow, endfinally).</summary>
@@ -828,22 +901,53 @@ internal static class TranspilerJudge
 
     // ---- The inserted runs ----
 
-    private enum RunKind : byte { Entry, Pure, Listener, Result }
+    /// <summary>
+    /// A run value: the game's stack (Entry), a constant or unwritten value (Pure), the current listener, a gated call's result, the
+    /// iteration's own local X the game just stored (Stored: only an identity bridge's argument).
+    /// </summary>
+    private enum RunKind : byte { Entry, Pure, Listener, Result, Stored }
 
     private readonly record struct RunValue(RunKind Kind, int Index);
 
-    private static string? CheckRun(MethodBase body, IReadOnlyList<Ins> original, List<Ins> run, State gap, Analysis analysis,
-        List<Type> gateList, List<MethodInfo> calleeList)
+    private static string? CheckRun(MethodBase body, IReadOnlyList<Ins> original, List<Ins> run, int gapIndex, State gap, Analysis analysis,
+        List<Type> gateList, List<MethodInfo> calleeList, ref int bridges)
     {
         var stack = new List<RunValue>();
         for (int i = 0; i < gap.Stack.Count; i++)
         {
             stack.Add(new RunValue(RunKind.Entry, i));
         }
-        int plainCalls = 0, gatedCalls = 0, gatedLoop = -1;
-        // A store, branch or address first named as such (whatever else the run does).
-        foreach (Ins ins in run)
+        int plainCalls = 0, gatedCalls = 0, gatedLoop = -1, identityCalls = 0;
+        // The identity bridge's form (the premise, shape rules on): the run ends with stloc X, right after the game's own stloc X.
+        int last = run.FindLastIndex(r => r.Op != OpCodes.Nop);
+        int? bridged = IdentityStore(body, original, run, gapIndex, last);
+        if (bridged != null)
         {
+            // Several mods' bridges after the same store (Downfall's and Watcher's): one segment each, every one ending with its own
+            // stloc X and judged alone; each reads the value the one before stored back (the game's own, for a listener none gates).
+            var ends = Enumerable.Range(0, run.Count).Where(k => LocalIndex(run[k].Op, run[k].Operand, load: false) == bridged).ToList();
+            if (ends.Count > 1)
+            {
+                int from = 0;
+                foreach (int end in ends)
+                {
+                    if (CheckRun(body, original, run.GetRange(from, end - from + 1), gapIndex, gap, analysis, gateList, calleeList, ref bridges) is { } segment)
+                    {
+                        return segment;
+                    }
+                    from = end + 1;
+                }
+                return run.Skip(from).All(r => r.Op == OpCodes.Nop) ? null : "code after the last identity bridge's store";
+            }
+        }
+        // A store, branch or address first named as such (whatever else the run does).
+        for (int i = 0; i < run.Count; i++)
+        {
+            Ins ins = run[i];
+            if (bridged != null && i == last)
+            {
+                continue; // The identity bridge's terminal store, judged below.
+            }
             if (Analysis.Writes(ins) || ins.Op.FlowControl is FlowControl.Branch or FlowControl.Cond_Branch or FlowControl.Return or FlowControl.Throw)
             {
                 return $"{ins.Op.Name} inserted (no store, branch or address is accepted)";
@@ -855,6 +959,16 @@ internal static class TranspilerJudge
             OpCode op = ins.Op;
             if (op == OpCodes.Nop)
             {
+                continue;
+            }
+            if (bridged != null && i == last)
+            {
+                // stloc X: the identity bridge's result, and nothing else of the run left.
+                if (identityCalls != 1 || stack.Count == 0 || stack[^1].Kind != RunKind.Result)
+                {
+                    return $"local {bridged} stored from something other than one identity bridge's result";
+                }
+                stack.RemoveAt(stack.Count - 1);
                 continue;
             }
             if (IsConstant(op))
@@ -893,6 +1007,18 @@ internal static class TranspilerJudge
                 Value held = local < gap.Locals.Length ? gap.Locals[local] : Value.Unknown;
                 if (held.Kind != Kind.Current)
                 {
+                    if (bridged == local)
+                    {
+                        // The value the game just stored (an identity bridge's argument only).
+                        stack.Add(new RunValue(RunKind.Stored, local));
+                        continue;
+                    }
+                    if (bridged != null && ReadBefore(original, gapIndex, local))
+                    {
+                        // A local the game's own code read just before in the same straight code: the same value here.
+                        stack.Add(new RunValue(RunKind.Pure, -1));
+                        continue;
+                    }
                     return $"local {local} read (not the current listener there)";
                 }
                 stack.Add(new RunValue(RunKind.Listener, held.N));
@@ -905,6 +1031,10 @@ internal static class TranspilerJudge
                     return "dup of an empty stack";
                 }
                 RunValue top = stack[^1];
+                if (top.Kind == RunKind.Stored)
+                {
+                    return "the stored local copied";
+                }
                 if (top.Kind == RunKind.Entry)
                 {
                     Value held = gap.Stack[top.Index];
@@ -926,6 +1056,10 @@ internal static class TranspilerJudge
                 {
                     return "a value of the game's stack popped";
                 }
+                if (stack[^1].Kind == RunKind.Stored)
+                {
+                    return "the stored local popped";
+                }
                 stack.RemoveAt(stack.Count - 1);
                 continue;
             }
@@ -940,7 +1074,7 @@ internal static class TranspilerJudge
                 {
                     return "a call with too few values";
                 }
-                int listenerAt = -1, loop = -1;
+                int listenerAt = -1, loop = -1, storedAt = -1;
                 for (int p = parameters.Length - 1; p >= 0; p--)
                 {
                     RunValue value = stack[^1];
@@ -948,6 +1082,15 @@ internal static class TranspilerJudge
                     if (value.Kind == RunKind.Entry)
                     {
                         return $"{Describe(callee)} takes a value of the game's stack";
+                    }
+                    if (value.Kind == RunKind.Stored)
+                    {
+                        if (storedAt >= 0)
+                        {
+                            return $"{Describe(callee)} takes the stored local twice";
+                        }
+                        storedAt = p;
+                        continue;
                     }
                     if (value.Kind == RunKind.Listener)
                     {
@@ -959,11 +1102,30 @@ internal static class TranspilerJudge
                         loop = value.Index;
                     }
                 }
+                if (storedAt >= 0 && listenerAt < 0)
+                {
+                    return $"{Describe(callee)} takes the stored local but not the current listener";
+                }
                 if (listenerAt >= 0)
                 {
-                    if (GatesOn(callee, listenerAt) is not { } gates)
+                    Type[] gates;
+                    if (storedAt >= 0)
+                    {
+                        // The identity bridge: gated on the listener, else gives the stored value back as it is.
+                        if (IdentityGatesOn(callee, listenerAt, storedAt, LocalType(body, bridged!.Value)) is not { } identity)
+                        {
+                            return $"{Describe(callee)} takes the stored local but doesn't provably give it back unless the listener is of its gate types";
+                        }
+                        gates = identity;
+                        identityCalls++;
+                    }
+                    else if (GatesOn(callee, listenerAt) is not { } plain)
                     {
                         return $"{Describe(callee)} takes the current listener but isn't provably gated on its type";
+                    }
+                    else
+                    {
+                        gates = plain;
                     }
                     if (gatedLoop >= 0 && gatedLoop != loop)
                     {
@@ -991,6 +1153,19 @@ internal static class TranspilerJudge
         {
             return "the stack left changed";
         }
+        if (bridged != null)
+        {
+            if (identityCalls != 1 || gatedCalls != 1 || plainCalls > 0)
+            {
+                return $"local {bridged} stored back by something other than exactly one identity bridge";
+            }
+            if (!gap.OnlyIn(gatedLoop))
+            {
+                return "the identity bridge isn't inside exactly one listener walk's iteration";
+            }
+            bridges++;
+            return null;
+        }
         if (gatedCalls == 0)
         {
             return gap.AllOut ? null : "runs inside a listener's iteration (or may) without a type gate on the listener: its calls would follow the walk's length";
@@ -1000,6 +1175,103 @@ internal static class TranspilerJudge
             return "a call besides the gated one inside a listener's iteration";
         }
         return gap.OnlyIn(gatedLoop) ? null : "the gated call isn't inside exactly one listener walk's iteration";
+    }
+
+    /// <summary>
+    /// The listener calls whose result local an identity bridge may store back into (re-audit of the premises, DMG-1: the
+    /// owner-approved scope, nothing wider): <c>Hook.ModifyDamageInternal</c>'s listener loops (v0.113's late multiplicative one
+    /// included), the <c>AbstractModel</c> virtual the game calls on the current listener right before its <c>stloc</c>.
+    /// </summary>
+    private static readonly string[] IdentityResultCalls =
+        { "ModifyDamageAdditive", "ModifyDamageMultiplicative", "ModifyDamageMultiplicativeLate", "ModifyDamageCap" };
+
+    private const string IdentityHook = "ModifyDamageInternal";
+
+    /// <summary>
+    /// The local the identity bridge stores back (the premise's form, shape rules on), or null: the hook is
+    /// <c>Hook.ModifyDamageInternal</c>, the game's instructions just before the gap are its own <c>callvirt</c> of a listener's
+    /// damage modifier (<see cref="IdentityResultCalls"/>, returning X's type) and <c>stloc X</c>, the run's last instruction is
+    /// <c>stloc X</c>, neither the gap nor that store is a jump target, and X's address is never taken (a call can't change it then).
+    /// </summary>
+    private static int? IdentityStore(MethodBase body, IReadOnlyList<Ins> original, List<Ins> run, int gapIndex, int last)
+    {
+        if (!PatchSafety.ShapeRules || last < 0 || gapIndex <= 1 || gapIndex >= original.Count
+            || body.DeclaringType != typeof(MegaCrit.Sts2.Core.Hooks.Hook) || body.Name != IdentityHook
+            || original[gapIndex - 2].Op != OpCodes.Callvirt || original[gapIndex - 2].Operand is not MethodInfo result
+            || result.DeclaringType != typeof(AbstractModel) || Array.IndexOf(IdentityResultCalls, result.Name) < 0
+            || LocalIndex(run[last].Op, run[last].Operand, load: false) is not int stored
+            || LocalIndex(original[gapIndex - 1].Op, original[gapIndex - 1].Operand, load: false) != stored
+            || original[gapIndex - 2].Labels.Length > 0 || LocalType(body, stored) != result.ReturnType
+            || original[gapIndex - 1].Labels.Length > 0 || original[gapIndex].Labels.Length > 0 || original[gapIndex].Blocks.Length > 0
+            || AddressTaken(original, "local " + stored) || AddressTaken(run, "local " + stored) || LocalType(body, stored) is null)
+        {
+            return null;
+        }
+        return stored;
+    }
+
+    /// <summary>A local's declared type in the game's method, or null.</summary>
+    private static Type? LocalType(MethodBase body, int local)
+    {
+        try
+        {
+            IList<LocalVariableInfo>? locals = body.GetMethodBody()?.LocalVariables;
+            return locals != null && local >= 0 && local < locals.Count && !locals[local].LocalType.IsByRef ? locals[local].LocalType : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The game's own code read <paramref name="local"/> before the gap in the same straight code: going back from the gap, an
+    /// <c>ldloc</c> of it is met before any write of it, any jump target (a path that would skip that read), any exception mark and
+    /// any instruction without a fall-through; at most 32 instructions back. Its address is never taken (a call can't change it).
+    /// </summary>
+    private static bool ReadBefore(IReadOnlyList<Ins> original, int gapIndex, int local)
+    {
+        if (AddressTaken(original, "local " + local))
+        {
+            return false;
+        }
+        for (int k = gapIndex - 1; k >= 0 && k >= gapIndex - 32; k--)
+        {
+            Ins ins = original[k];
+            if (LocalIndex(ins.Op, ins.Operand, load: true) == local)
+            {
+                return true;
+            }
+            if (LocalIndex(ins.Op, ins.Operand, load: false) == local || ins.Labels.Length > 0 || ins.Blocks.Length > 0 || Unconditional(ins.Op)
+                || ins.Op.FlowControl == FlowControl.Cond_Branch)
+            {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// The identity bridge: <see cref="GatesOn"/>'s gate on the listener's parameter <paramref name="listener"/>, whose no-op exit is
+    /// exactly <c>ldarg identity; ret</c> (it gives the stored value back as it is), returning <paramref name="type"/> (the local's
+    /// type, the parameter's too). Its class without a static constructor and every class it reaches initializer-free
+    /// (<see cref="PatchSafety.InitializersFree"/>, the TypeGated rule), not patched itself. Null otherwise.
+    /// </summary>
+    internal static Type[]? IdentityGatesOn(MethodInfo method, int listener, int identity, Type? type)
+    {
+        try
+        {
+            if (type == null || identity == listener || method.ReturnType != type || identity < 0 || identity >= method.GetParameters().Length
+                || method.GetParameters()[identity].ParameterType != type || Patched(method) || !PatchSafety.InitializersFree(method))
+            {
+                return null;
+            }
+            return GatesOn(method, listener, identity);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>Why a call inserted by another mod can't be accepted at all, or null.</summary>
@@ -1068,7 +1340,13 @@ internal static class TranspilerJudge
     /// when its class has a static constructor (the first call would run it at another time), or the parameter isn't the
     /// listener's reference.
     /// </summary>
-    internal static Type[]? GatesOn(MethodInfo method, int position)
+    internal static Type[]? GatesOn(MethodInfo method, int position) => GatesOn(method, position, -1);
+
+    /// <summary>
+    /// <see cref="GatesOn(MethodInfo, int)"/>; with <paramref name="identity"/> (an argument's index, the identity bridge), the only
+    /// no-op exit accepted is <c>ldarg identity; ret</c>.
+    /// </summary>
+    private static Type[]? GatesOn(MethodInfo method, int position, int identity)
     {
         try
         {
@@ -1112,10 +1390,10 @@ internal static class TranspilerJudge
                 }
                 if (ins.Op == OpCodes.Ret)
                 {
-                    return !returns && gates.Count > 0 ? gates.ToArray() : null;
+                    return !returns && identity < 0 && gates.Count > 0 ? gates.ToArray() : null;
                 }
                 if (returns && index + 1 < code.Count && code[index + 1].Op == OpCodes.Ret
-                    && (IsConstant(ins.Op) || ArgumentIndex(ins.Op, ins.Operand) != null))
+                    && (identity >= 0 ? ArgumentIndex(ins.Op, ins.Operand) == identity : IsConstant(ins.Op) || ArgumentIndex(ins.Op, ins.Operand) != null))
                 {
                     return gates.Count > 0 ? gates.ToArray() : null;
                 }

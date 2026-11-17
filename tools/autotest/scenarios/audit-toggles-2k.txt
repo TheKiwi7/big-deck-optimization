@@ -1,11 +1,12 @@
 # Audit: every switch flipped off and back on in the middle of a combat, with every cached state compared to the game's (ab-2k-off must give the same CHECKSUM and STATE lines).
+# compare-with: ab-2k-off
 # A cache that goes stale while its switch is off shows up at the first checksum after it comes back on.
 timeout 2400
 newrun NECROBINDER
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
+cmd bigdeck import ref 1 cards
 enemyhp 999999
 cmd fight CULTISTS_NORMAL
 waitfor idle 600

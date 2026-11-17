@@ -1,5 +1,6 @@
 # Audit: what stays on after SnapshotVerifier finds a difference. A stale relic (relicreuse blind, the positive control) must be seen, and then
-# EFFECT RelicStateReuse must stop growing: the verifier says every snapshot optimization is off (effectcheck fails the line otherwise).
+# EFFECT RelicStateReuse and the SnapshotCardReuse effects must stop growing: the verifier says every snapshot optimization is off
+# (effectcheck fails the line otherwise).
 expect SnapshotVerifier: (optimized snapshot differs from vanilla|line \d+: optimized)
 expect verify mode: .*mismatches [1-9]
 timeout 600
@@ -32,5 +33,12 @@ waitfor idle 120
 checksum t3
 effects later
 effectcheck RelicStateReuse same after mismatch
+# The card reuse goes off with it (SnapshotVerifier turns SnapshotCardReuse off): none of its effects may grow either.
+effectcheck SnapshotCardReuse.Cards same after mismatch
+effectcheck SnapshotCardReuse.Piles same after mismatch
+effectcheck SnapshotCardReuse.Moved same after mismatch
+effectcheck SnapshotCardReuse.CardBits same after mismatch
+effectcheck SnapshotCardReuse.PileBits same after mismatch
+effectcheck SnapshotCardReuse.UpgradeBits same after mismatch
 cmd bdperf verify
 quit

@@ -1,0 +1,28 @@
+# FastCombatStart's solo relic threshold (Settings: fast_combat_start_relics, 0 = always): a solo run below it keeps the game's
+# combat start (no wait skipped: effectcheck FastCombatStart zero), at 0 the waits are skipped again (ran). ~935 cards, the
+# starting relic only (the reference run's cards, not its relics). The threshold goes back to 0, its default, at the end.
+# onfail continue: a failed check must not leave the saved threshold at 100 for the next sessions of this copy (judge.py still
+# reports the failed line).
+timeout 900
+onfail continue
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all cards
+cmd bdopt fast_combat_start_relics 100
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 400
+effectcheck FastCombatStart zero
+state below threshold
+cmd kill all
+waitfor nocombat 300
+wait 1
+cmd bdopt fast_combat_start_relics 0
+cmd fight CULTISTS_NORMAL
+waitfor idle 400
+effectcheck FastCombatStart ran
+state threshold 0
+cmd kill all
+waitfor nocombat 300
+quit

@@ -362,7 +362,9 @@ public static class HookFilter
             {
                 if (HookFilterDamage.HasLate && MethodFingerprint.Of(damageHook) == ModifyDamageInternalLateFingerprint)
                 {
-                    PatchGuard.Patch(harmony, damageHook, prefix: new HarmonyMethod(typeof(HookFilterDamage), nameof(HookFilterDamage.PrefixWithLate)), finalizer: Finalizer);
+                    var late = new HarmonyMethod(typeof(HookFilterDamage), nameof(HookFilterDamage.PrefixWithLate));
+                    RegisterMirror(late);
+                    PatchGuard.Patch(harmony, damageHook, prefix: late, finalizer: Finalizer);
                 }
                 else
                 {
@@ -457,6 +459,7 @@ public static class HookFilter
         string actual = MethodFingerprint.Of(hook);
         if (PatchSafety.FingerprintMatches(actual, fingerprint))
         {
+            RegisterMirror(prefix);
             PatchGuard.Patch(harmony, hook, prefix: prefix, finalizer: Finalizer);
             return true;
         }
@@ -672,10 +675,13 @@ public static class HookFilter
             _lastWalked[hook] = list.Count;
 #if BENCH
             ListsFiltered++;
-            if (ExtraScopes.BenchChecks && ++WalkChecks % 32 == 0)
+            bool wrongWalk = ExtraScopes.BenchChecks && list.Count > 0 && TestWrong.Take("hookfilter.walk");
+            if ((ExtraScopes.BenchChecks && ++WalkChecks % 32 == 0) || wrongWalk)
             {
                 List<AbstractModel>? reference = Get(materialized(), hook);
-                if (reference == null || !reference.SequenceEqual(list, ReferenceEqualityComparer.Instance))
+                // Test: the walked list compared with its last entry missing (the check must see it; the walk's list is kept as is).
+                IEnumerable<AbstractModel> walked = wrongWalk ? list.Take(list.Count - 1) : list;
+                if (reference == null || !reference.SequenceEqual(walked, ReferenceEqualityComparer.Instance))
                 {
                     WalkMismatches++;
                     Log.Error($"[{ModEntry.Id}] {Name}: walked listeners of hook {hook} differ from the materialized ones ({list.Count} vs {reference?.Count})");
@@ -687,6 +693,12 @@ public static class HookFilter
     }
 
 #if BENCH
+    /// <summary>Answers each mirror gave from the filtered listeners (test builds: per-mirror effects, <c>HookFilter.&lt;Mirror&gt;</c>).</summary>
+    internal const int MirrorDamage = 0, MirrorDamageLate = 1, MirrorEnergyCost = 2, MirrorKeywords = 3, MirrorShouldPlay = 4, MirrorHitting = 5,
+        MirrorEnergyCostColor = 6, MirrorStarCostColor = 7;
+    internal static readonly string[] MirrorNames = { "Damage", "DamageLate", "EnergyCost", "Keywords", "ShouldPlay", "Hitting", "EnergyCostColor", "StarCostColor" };
+    internal static readonly long[] MirrorAnswers = new long[8];
+
     public static long WalkChecks { get; private set; }
     public static long WalkMismatches { get; private set; }
 #endif
@@ -774,6 +786,28 @@ public static class HookFilter
     }
 
     internal static HarmonyMethod Finalizer => new(typeof(HookFilter), nameof(RethrowFinalizer)) { priority = Priority.Last };
+
+    /// <summary>The mirror prefixes patched (and <see cref="RethrowFinalizer"/>): HookSkip's TranspiledOnly check lists them as this mod's.</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<RuntimeMethodHandle, byte> _mirrorPatches = new();
+
+    private static void RegisterMirror(HarmonyMethod prefix)
+    {
+        if (prefix.method != null)
+        {
+            _mirrorPatches[prefix.method.MethodHandle] = 0;
+        }
+    }
+
+    /// <summary>
+    /// One of HookFilter's mirror prefixes or its rethrowing finalizer. Each mirror checks its hook with
+    /// <see cref="PatchTolerance.PrefixesOnly"/> once per ListenerCache scope (<see cref="FilteredHook.IsSafe"/>, cached in the
+    /// thread-static <c>_safe</c> until the scope ends) and runs the game's hook when another mod has anything there but void
+    /// prefixes sorted before it. HookSkip's TranspiledOnly doesn't depend on when that check runs: a mirror skipping the hook
+    /// skips the transpiled body with it (HookSkip changes nothing on that call), and a patch added mid-scope is HookFilter's
+    /// own concern with or without HookSkip.
+    /// </summary>
+    internal static bool IsMirrorPatch(MethodInfo method) =>
+        _mirrorPatches.ContainsKey(method.MethodHandle) || (method.DeclaringType == typeof(HookFilter) && method.Name == nameof(RethrowFinalizer));
 }
 
 /// <summary>
@@ -937,6 +971,13 @@ internal static class HookFilterDamage
                 }
             }
             modifiers = list;
+#if BENCH
+            HookFilter.MirrorAnswers[HookFilter.MirrorDamage]++;
+            if (multiplicativeLate != null)
+            {
+                HookFilter.MirrorAnswers[HookFilter.MirrorDamageLate]++; // v0.113's ModifyDamageMultiplicativeLate (PrefixWithLate).
+            }
+#endif
             __result = num;
             return false;
         }
@@ -972,6 +1013,9 @@ internal static class HookFilterEnergyCost
             // ending. No list built for them either.
             if (originalCost < 0m || HookFilter.CombatHookListenersEmpty)
             {
+#if BENCH
+                HookFilter.MirrorAnswers[HookFilter.MirrorEnergyCost]++;
+#endif
                 __result = originalCost;
                 return false;
             }
@@ -998,6 +1042,9 @@ internal static class HookFilterEnergyCost
             {
                 item.TryModifyEnergyCostInCombatLate(card, modifiedCost, out modifiedCost);
             }
+#if BENCH
+            HookFilter.MirrorAnswers[HookFilter.MirrorEnergyCost]++;
+#endif
             __result = modifiedCost;
             return false;
         }
@@ -1042,6 +1089,9 @@ internal static class HookFilterKeywords
             {
                 item.TryModifyKeywordsInCombat(card, keywords);
             }
+#if BENCH
+            HookFilter.MirrorAnswers[HookFilter.MirrorKeywords]++;
+#endif
             return false;
         }
         catch (Exception e)
@@ -1076,6 +1126,9 @@ internal static class HookFilterShouldPlay
             if (HookFilter.CombatHookListenersEmpty)
             {
                 preventer = null;
+#if BENCH
+                HookFilter.MirrorAnswers[HookFilter.MirrorShouldPlay]++;
+#endif
                 __result = true;
                 return false;
             }
@@ -1097,11 +1150,17 @@ internal static class HookFilterShouldPlay
                 if (!item.ShouldPlay(card, autoPlayType))
                 {
                     preventer = item;
+#if BENCH
+                    HookFilter.MirrorAnswers[HookFilter.MirrorShouldPlay]++;
+#endif
                     __result = false;
                     return false;
                 }
             }
             preventer = null;
+#if BENCH
+            HookFilter.MirrorAnswers[HookFilter.MirrorShouldPlay]++;
+#endif
             __result = true;
             return false;
         }
@@ -1136,6 +1195,9 @@ internal static class HookFilterHitting
             // Vanilla goes through IterateCombatHookListeners, which yields nothing while combat is ending: no list built.
             if (HookFilter.CombatHookListenersEmpty)
             {
+#if BENCH
+                HookFilter.MirrorAnswers[HookFilter.MirrorHitting]++;
+#endif
                 __result = true;
                 return false;
             }
@@ -1162,15 +1224,20 @@ internal static class HookFilterHitting
                 }
             }
 #if BENCH
-            if (ExtraScopes.BenchChecks && ++HookFilter.HittingChecks % 64 == 0)
+            bool wrongHitting = ExtraScopes.BenchChecks && TestWrong.Take("hookfilter.hitting");
+            if ((ExtraScopes.BenchChecks && ++HookFilter.HittingChecks % 64 == 0) || wrongHitting)
             {
                 bool vanilla = ListenerCache.RunVanilla(() => Hook.ShouldAllowHitting(combatState, creature));
-                if (vanilla != allowed)
+                // Test: compared with the opposite answer (the check must see it; the filtered answer is returned as is).
+                if (vanilla != (wrongHitting ? !allowed : allowed))
                 {
                     HookFilter.HittingMismatches++;
                     Log.Error($"[{ModEntry.Id}] {HookFilter.Name}: ShouldAllowHitting({creature}) filtered {allowed}, vanilla {vanilla}");
                 }
             }
+#endif
+#if BENCH
+            HookFilter.MirrorAnswers[HookFilter.MirrorHitting]++;
 #endif
             __result = allowed;
             return false;
@@ -1232,6 +1299,9 @@ internal static class HookFilterCostColors
 #if BENCH
             CheckCostColor(EnergyCostColor!, card, state, modified, hookModifiedCost);
 #endif
+#if BENCH
+            HookFilter.MirrorAnswers[HookFilter.MirrorEnergyCostColor]++;
+#endif
             __result = modified;
             return false;
         }
@@ -1276,6 +1346,9 @@ internal static class HookFilterCostColors
 #if BENCH
             CheckCostColor(StarCostColor!, card, state, modified, hookModifiedCost);
 #endif
+#if BENCH
+            HookFilter.MirrorAnswers[HookFilter.MirrorStarCostColor]++;
+#endif
             __result = modified;
             return false;
         }
@@ -1290,9 +1363,15 @@ internal static class HookFilterCostColors
     /// <summary>Debug, with bench checks on: 1 call in 64 compared with the game's own helper run without caches.</summary>
     private static void CheckCostColor(MethodInfo helper, CardModel card, ICombatState state, bool modified, decimal cost)
     {
-        if (!ExtraScopes.BenchChecks || ++HookFilter.CostColorChecks % 64 != 0)
+        bool wrongCost = ExtraScopes.BenchChecks && TestWrong.Take("hookfilter.cost");
+        if (!wrongCost && (!ExtraScopes.BenchChecks || ++HookFilter.CostColorChecks % 64 != 0))
         {
             return;
+        }
+        if (wrongCost)
+        {
+            // Test: compared with a cost one higher (the check must see it; the filtered answer is returned as is).
+            cost++;
         }
         (bool Modified, decimal Cost) vanilla = ListenerCache.RunVanilla(() =>
         {

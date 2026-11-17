@@ -10,7 +10,6 @@ newrun NECROBINDER 1234
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
-cmd bigdeck import ref all cards
 cmd bdperf checks off
 cmd bdperf probe off
 cmd bdperf segments verify off

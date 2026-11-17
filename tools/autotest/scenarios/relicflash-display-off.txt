@@ -1,0 +1,42 @@
+# RelicFlashMerge under the relic-flash display premise (A/B, mod off): the same synthetic patches as relicflash-display-on (see
+# there); CHECKSUM and STATE lines must match line for line (the FOREIGN display counts differ by design: not compared).
+timeout 1200
+expect bigdeck trim: [0-9]+ cards removed, deck 900
+cmd bdopt off
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+foreignpatch display-count-prefix MegaCrit.Sts2.Core.Nodes.Relics.NRelicInventoryHolder:DoFlash
+foreignpatch display-count-prefix MegaCrit.Sts2.Core.Nodes.Vfx.Utilities.NVfxParticleSystem:_Ready
+foreignpatch display-count-prefix MegaCrit.Sts2.Core.Nodes.Vfx.NRelicFlashVfx::Create(RelicModel,Creature)
+foreignpatch display-count-prefix MegaCrit.Sts2.Core.Models.RelicModel:get_Icon
+checksum before
+state before optional
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+checksum after
+state after optional
+foreignpatch report end
+# The clone left ~3,225 cards: mod off, the game's own combat start there outlasts par's stall limit on v0.113.1 (its
+# quadratic shuffle sort; the session STALLED at 267 s). Trimmed to 900 first (bigdeck trim: the game's removal), both sides.
+cmd bigdeck trim 900
+waitfor deckcount 120
+wait 1
+checksum trimmed
+state trimmed optional
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd bdperf relicflash 50
+wait 1
+checksum combat
+state combat optional
+foreignpatch report combat
+foreignpatch remove
+cmd bdopt on
+quit

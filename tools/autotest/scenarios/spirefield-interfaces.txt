@@ -1,0 +1,12 @@
+# Rule E (2026-11-17, DESIGN "Needless back-offs made safe"): a BaseLib SavedSpireField keyed on an interface counts as on cards
+# (the notes of LimitlessReserialize, LimitlessRecalcSkip and SnapshotCardReuse) only when a loaded card or enchantment type
+# implements that interface. CardAscension's key IRunState: no card is one (no note from it); the control IComparable<AbstractModel>,
+# which every card implements: counted. Main menu only, no run.
+timeout 300
+expect FOREIGN spiretarget irunstate: on cards False
+expect FOREIGN spiretarget icomparable: on cards True
+wait 2
+foreignpatch spiretarget irunstate
+foreignpatch spiretarget icomparable
+cmd bdopt why
+quit

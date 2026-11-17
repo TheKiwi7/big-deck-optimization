@@ -10,9 +10,15 @@ sweep-<kind>-2k-off/on.log next to the parts. Exit code 1 when anything differs,
 only, when a game error is logged mod on only or far more often (but the engine's timing noise, judge.GAME_NOISE), or when
 a session has a problem (judge.py: an error or a difference this mod found itself, a failed line, a session neither ended nor
 stopped on an item). An item stopping a session on both sides (the game's own error in a situation it
-never meets, mod off too) is listed, not counted: the next session goes on from the next item. Every item of the game must
+never meets, mod off too) is listed, not counted: the next session goes on from the next item; it is compared only up to the
+step that failed, and one failing at its first step (headless: an image the dummy renderer never loaded, as FLANKING_POWER's
+on v0.113.1) is listed apart as never compared. Every item of the game must
 be in a chunk on both sides (the parts' scripts, against the item count): a chunk without any log, or a sweep cut short
 (parsweep.ps1 -Chunks over another run), is "not compared".
+
+The mod-off parts are vanilla reference sessions (launched with --bdvanilla, parlib.ps1): their "mod off from the start" lines
+are no problem (judge.py), and a mod-on part launched vanilla is one (the side under test without the mod).
+parsweep.ps1 -PatchedOff (vanillacheck.ps1) puts the mod-off scenario, every patch installed then bdopt off, on the "on" side.
 """
 import glob
 import os
@@ -95,9 +101,14 @@ def report(folder, kind):
         for side in ('off', 'on'):
             paths = parts.get((side, chunk), [])
             text, spent = read_parts(paths)
+            vanilla = False
             for path in paths:
                 found, _ = judge.judge(path, sweep=True, need_end=False)
                 session_problems += [f'mod {side}: {p}' for p in found]
+                if judge.is_vanilla(path):
+                    vanilla = True
+                    if side == 'on':
+                        session_problems.append(f'mod on: {os.path.basename(path)}: a vanilla reference session (BDVANILLA line, --bdvanilla): the side under test ran without the mod')
                 with open(path, encoding='utf-8', errors='replace') as f:
                     tail = f.read()
                 if not judge.END.search(tail) and 'SWEEP ABORT next=' not in tail:
@@ -120,7 +131,7 @@ def report(folder, kind):
                     effects[m.group(1)] = effects.get(m.group(1), 0) + int(m.group(2))
                 elif items is None and (m := ITEMS.search(line)):
                     items = int(m.group(1))
-                if compare.MOD_PROBLEM.search(line):
+                if compare.MOD_PROBLEM.search(line) and not (vanilla and judge.MOD_OFF_START.search(line)):
                     problems.append(f'mod {side}: ' + line.strip()[:170])
         a, b = logs['off']['lines'], logs['on']['lines']
         checked += len(a)
@@ -154,7 +165,17 @@ def report(folder, kind):
     out += different + cut + missing
     both = sorted(set(failed['off']) & set(failed['on']))
     if both:
-        out.append('items stopping a session on both sides: ' + ', '.join(both))
+        # Compared up to the step that failed (the steps both sides logged before it), never after: a new session goes on from the
+        # next item. One failing at its first step (headless: an asset the dummy renderer never loaded) is never compared at all.
+        compared = {item: sum(1 for key in steps['off'] if key[0] == item and key in steps['on']) for item in both}
+        never = [item for item in both if compared[item] == 0]
+        partly = [f'{item} ({compared[item]} step(s))' for item in both if compared[item]]
+        out.append(f"items stopping a session on both sides (the game's own failure, mod off too; not counted): {len(both)}, compared"
+                   " only up to the failing step")
+        if partly:
+            out.append('  compared before their failing step: ' + ', '.join(partly))
+        if never:
+            out.append(f'  NEVER COMPARED (failed at their first step on both sides): {len(never)}: ' + ', '.join(never))
     one_side = []
     # The same item stopping both sides is the game's own error only when it is the same error: another one mod on (an exception
     # from this mod's code where the game also fails) counts as a difference.

@@ -10,6 +10,10 @@ $StartLimitSec = 60
 $FreezeSilenceSec = 20
 # run.ps1 -KeepSlot: the slot of the sessions that follow each other and share their user data.
 $KeptSlot = 80
+# A solo mod-off session's launch argument (Invoke-Sessions, Test-BaselineJob): the mod starts off as a player's saved off would
+# leave it, no optimization patch installed (ModEntry.VanillaArg, Debug builds only). Its log says so in this line.
+$VanillaArg = "--bdvanilla"
+$VanillaLinePattern = '^\[INFO\] \[BigDeckOptimization\] BDVANILLA: launched with --bdvanilla '
 
 function Resolve-GameCopy([string]$dir) {
     if (-not $dir) { $dir = "$env:STS2_GAME_DIR" }
@@ -135,8 +139,10 @@ function Exit-ModLock($mutex) {
 # found is not loaded (the game logs every .json before reading it). A test mod must finish its initialization, without an exception
 # in its initializer (the game logs "Finished" all the same) or a degraded start. A mod the session's profile disables is a script's
 # own choice (Sync-Slot enables every test mod in the slot's profiles: only a script's later edit, baselib-absent, disables one), and
-# so are the mods depending on it. Known failures: LobbyBanlist's initializer throws on v0.113 (a note, not a problem).
-$KnownModInitFailures = @{ "LobbyBanlist" = '^v0\.113\.' }
+# so are the mods depending on it. Known failures (a note, not a problem): LobbyBanlist's initializer throws on v0.113; Unlimited
+# 2.0.0's throws on v0.107 (built for v0.113: a TypeLoadException on NBlitzScreen, a v0.113 type, before any of its patches; with
+# or without this mod, so on v0.107.1 those sessions run without Unlimited's patches).
+$KnownModInitFailures = @{ "LobbyBanlist" = '^v0\.113\.'; "sts2unlimited" = '^v0\.107\.' }
 $DegradedMarkers = @{ "sts2unlimited" = "Sts2Unlimited loaded DEGRADED" }
 if (-not (Test-Path variable:global:BdNotedModFailures)) { $global:BdNotedModFailures = [Collections.Generic.HashSet[string]]::new() }
 function Get-MissingTestMods([string]$log, [string]$gameDir) {
@@ -296,7 +302,7 @@ function Get-SlotPort([int]$slot) { 34000 + $slot }
 # The launch arguments a scenario asks for: --bdoff when it has a 'launchoff' line (the whole mod off for the session from its
 # launch, before the main menu's --fastmp lobby builds the co-op join lists; the line fails without it). Every launcher adds them.
 #  Also --bdforeign <shape> for each 'launchforeign <shape>' line: another mod's patches that must be in before this mod applies
-# (Bench/ForeignLaunch.cs; the line fails without it).
+# (Bench/ForeignLaunch.cs; the line fails without it). Invoke-Sessions adds --bdvanilla to a mod-off job (Test-BaselineJob).
 function Get-ScenarioLaunchArgs([string]$script) {
     if (-not (Test-Path $script)) { return @() }
     $launch = @()
@@ -345,23 +351,29 @@ function Set-SlotModEnabled([string]$slot, [string]$id, [bool]$enabled) {
 
 # Whether a session's log shows what the test is about: a setup that did nothing would otherwise pass unseen. A line missing proves
 # something only in a session that ran to its end (judge.py's end lines): a missing or cut-short log is a PROBLEM for a negative
-# check too. Each PROBLEM counts in $script:SessionLogProblems (the calling script's exit code).
+# check too. Each PROBLEM counts in $script:SessionLogProblems (the calling script's exit code). The pattern is case-sensitive and
+# never matches the script's own lines (judge.py's: the echo '> checksum x' of a line, the game's echo of a console command, the
+# EXPECT and EXPECTDECL lines): 'CHECKSUM x' is the result, '> checksum x' only the request.
 $SessionEnd = 'AutoTest\s+[\d.]+s\s+(script finished|> quit\b|handed over to the player)'
+$ScriptOwnLine = 'AutoTest\s+[\d.]+s\s+(> |EXPECT |EXPECTDECL )|Executing DevConsole command|DevConsole: '
 function Test-SessionLog([string]$name, [string]$pattern, [bool]$expected, [string]$meaning) {
     $log = Join-Path $Results "$name.log"
     if (-not (Test-Path $log)) { $ok = $false; $meaning += " (no session log)" }
     else {
-        $ok = [bool](Select-String -Path $log -Pattern $pattern -Quiet) -eq $expected
+        $seen = [bool](Select-String -Path $log -Pattern $pattern -CaseSensitive | Where-Object { $_.Line -cnotmatch $ScriptOwnLine } | Select-Object -First 1)
+        $ok = $seen -eq $expected
         if ($ok -and -not $expected -and -not (Select-String -Path $log -Pattern $SessionEnd -Quiet)) { $ok = $false; $meaning += " (the session did not reach its end: a missing line proves nothing)" }
     }
     if (-not $ok) { $script:SessionLogProblems = 1 + [int]$script:SessionLogProblems }
     Write-Output ("{0} {1}: {2}" -f $(if ($ok) { "ok     " } else { "PROBLEM" }), $name, $meaning)
 }
 
-# Everything a mod-off log depends on but this mod's own patches: a baseline stays valid until the game, a test mod's files, which
-# mods are loaded (Get-TestModIds), the shared run files the scenarios import, the test profile's progress
-# (what a run offers), the other mods' settings and data the slots copy (mod_configs; mod_data, e.g. LobbyBanlist's ban
-# profiles), the test tooling or the scenario changes.
+# Everything a mod-off log depends on: a baseline stays valid until the game, a test mod's files, which mods are loaded
+# (Get-TestModIds), the shared run files the scenarios import, the test profile's progress (what a run offers), the other mods'
+# settings and data the slots copy (mod_configs; mod_data, e.g. LobbyBanlist's ban profiles), the test tooling the scenario
+# runs or the scenario changes. Not this mod's patches: a mod-off session is launched with --bdvanilla and none of them is
+# installed (vanillacheck.ps1 proves a patched-off session, every patch installed then bdopt off, logs the same lines).
+# 'ref=vanilla1': the logs of patched-off sessions, kept before --bdvanilla, never serve as vanilla ones.
 $script:BaselineSalt = $null
 # The test tooling a script runs: the scenario engine and its helpers always, each optional part only when one of its commands is
 # in the script (AutoTest.cs reaches them only through those commands; a few CPU-time helpers feed timings, which no comparison
@@ -405,7 +417,7 @@ function Get-BaselineKey([string]$gameDir, [string]$scriptPath) {
             @(Get-ChildItem (Join-Path $profileSaves "*") -File -Include progress.save, prefs.save -ErrorAction SilentlyContinue) +
             @(Get-ChildItem (Join-Path $UserData "mod_configs") -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne "BigDeckOptimization.cfg" }) +
             @(Get-ChildItem (Join-Path $UserData "mod_data") -Recurse -File -ErrorAction SilentlyContinue)
-        $script:BaselineSalt = "no-steam|mods=" + (@(Get-TestModIds) -join ",") + "|" + (($files | Sort-Object FullName | ForEach-Object { "$($_.Name)=" + (Get-FileHash $_.FullName -Algorithm SHA256).Hash }) -join "")
+        $script:BaselineSalt = "ref=vanilla1|no-steam|mods=" + (@(Get-TestModIds) -join ",") + "|" + (($files | Sort-Object FullName | ForEach-Object { "$($_.Name)=" + (Get-FileHash $_.FullName -Algorithm SHA256).Hash }) -join "")
     }
     $scriptText = [IO.File]::ReadAllText($scriptPath)
     $bench = (@(Get-BaselineBenchFiles $scriptText) | Sort-Object Name | ForEach-Object { "$($_.Name)=" + (Get-FileHash $_.FullName -Algorithm SHA256).Hash }) -join ""
@@ -414,11 +426,18 @@ function Get-BaselineKey([string]$gameDir, [string]$scriptPath) {
     ([BitConverter]::ToString($sha.ComputeHash($bytes)) -replace "-", "").Substring(0, 16)
 }
 
-# A log that can be a baseline: a real mod-off session, its name says off and its script turns the whole mod off ('cmd bdopt off')
-# before the run exists (newrun, mplobby, autoslay, continuerun) and before any other console command. A scenario named -off that
-# turns one option off (hookskip-off, turns-32k-off, snapcheck-5k-off) runs this mod's code: its log depends on the patches, which
-# the key leaves out, so it is never cached.
+# A patched-off job (vanillacheck.ps1, par.ps1 / parsweep.ps1 -PatchedOff): every patch installed, then 'bdopt off', as mod-off
+# sessions ran before --bdvanilla. Never launched vanilla, never a baseline (its log depends on the patches' code).
+function Test-PatchedOffJob($job) { [bool]($job.PSObject.Properties["PatchedOff"] -and $job.PatchedOff) }
+
+# A real mod-off session, launched with --bdvanilla (nothing of this mod installed but the test tooling and the co-op check) and
+# kept as a baseline: its name says off and its script turns the whole mod off ('cmd bdopt off') before the run exists (newrun,
+# mplobby, autoslay, continuerun) and before any other console command (that 'bdopt off' then changes nothing: the mod started
+# off). A scenario named -off that turns one option off (hookskip-off, turns-32k-off, snapcheck-5k-off) runs this mod's code:
+# launched as any other, never cached. Solo only: parcoop.ps1, coop.ps1 and coop4.ps1 launch their own sessions (--bdoff, every
+# patch installed).
 function Test-BaselineJob($job) {
+    if (Test-PatchedOffJob $job) { return $false }
     if ($job.Name -notmatch '-off(\d*$|-)') { return $false }
     foreach ($line in [IO.File]::ReadAllLines($job.Script)) {
         $text = $line.Trim()
@@ -428,17 +447,37 @@ function Test-BaselineJob($job) {
     $false
 }
 
+# How a session was launched, as its log shows it: a vanilla one (Test-BaselineJob) must have the BDVANILLA line, any other must
+# not (a mod-on side launched vanilla would compare the game with itself), and a patched-off one must show this mod's patches
+# applied. Nothing, or the problem.
+function Get-LaunchProblem($job, [string]$log) {
+    if (-not (Test-Path $log)) { return }
+    $vanilla = [bool](Select-String -Path $log -Pattern $VanillaLinePattern -Quiet)
+    if (Test-BaselineJob $job) {
+        if (-not $vanilla) { "launched with $VanillaArg, but its log has no BDVANILLA line: not a vanilla session (a Release build, an old Debug build?)" }
+    }
+    elseif ($vanilla) { "its log has the BDVANILLA line, but this job is not a vanilla one (a mod-on side, a patched-off one): it ran without the mod's patches" }
+    elseif ((Test-PatchedOffJob $job) -and -not (Select-String -Path $log -Pattern '\[BigDeckOptimization\] Patch (ListenerCache|PileIndex|FastListeners) applied' -Quiet)) {
+        "a patched-off session, but its log shows none of this mod's patches applied"
+    }
+}
+
 # A session's problems, judge.py's judgment (one rule for every runner): a session cut short, a failed line (a failed console
 # command included), the script's timeout, a sweep stopping, an error or a difference this mod found itself, the mod off from
 # the start, a leak check finding a path or blind, a positive control ("expect") that saw nothing.
-function Get-FailedLines([string]$log) {
+# -Mutated: a job on a game mutations.ps1 modified (Test-MutatedJob).
+function Get-FailedLines([string]$log, [switch]$Mutated) {
     if (-not (Test-Path $log)) { return @("no log") }
-    @(Invoke-Judge @($log) | ForEach-Object { $_ -replace '^PROBLEM [^:]+: ', '' })
+    @(Invoke-Judge @($log) -Mutated:$Mutated | ForEach-Object { $_ -replace '^PROBLEM [^:]+: ', '' })
 }
+
+# A job on a game mutations.ps1 modified (its Mutated property): the parts the mutation leaves vanilla compare nothing and count no
+# effect, which judge.py --mutated doesn't hold against it (mutations.ps1 checks them against its table).
+function Test-MutatedJob($job) { [bool]($job.PSObject.Properties["Mutated"] -and $job.Mutated) }
 
 # results/status.txt: progress and time left (from the items done when jobs have an Items count, else the sessions done),
 # each running session's current line. Read with status.ps1.
-function Write-SessionStatus([string]$label, [int]$total, [int]$finished, [int]$waiting, $running, [datetime]$started, $jobs) {
+function Write-SessionStatus([string]$label, [int]$total, [int]$finished, [int]$waiting, $running, [datetime]$started, $jobs, [string]$file = "status.txt") {
     $itemsTotal = 0
     foreach ($job in $jobs) { if ($job.PSObject.Properties["Items"]) { $itemsTotal += $job.Items } }
     $itemsDone = 0
@@ -471,7 +510,7 @@ function Write-SessionStatus([string]$label, [int]$total, [int]$finished, [int]$
     }
     $left = if ($share -gt 0.02) { "about {0:F0} min left" -f (($elapsed * (1 - $share) / $share) / 60) } else { "time left: not known yet" }
     $header = "{0}  {1}: {2}, {3} running, {4} waiting, {5:F0} min so far, {6}, {7:F1} GB free" -f (Get-Date -Format "HH:mm:ss"), $label, $progress, $running.Count, $waiting, ($elapsed / 60), $left, ((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB)
-    Set-Content (Join-Path $Results "status.txt") (@($header) + @($rows)) -Encoding utf8 -ErrorAction SilentlyContinue
+    Set-Content (Join-Path $Results $file) (@($header) + @($rows)) -Encoding utf8 -ErrorAction SilentlyContinue
 }
 
 # A game copy that costs nothing: hard links to every file of $source. Replacing a file: delete its link, then write a new
@@ -498,9 +537,9 @@ $CutShortExpect = '^expected ".*" never seen \(a positive control that saw nothi
 # Why a session that ended before its script's end is a problem, or nothing when it is the known benign end: the game gone right
 # after a texture load outside the cache (Godot's dummy renderer, "[WARN] Asset not cached" as the log's last line), or before
 # the script's first line. Either way with no problem in what it logged (judge.py, no end expected).
-function Get-EarlyExitProblem([string]$log, $exitCode) {
+function Get-EarlyExitProblem([string]$log, $exitCode, [switch]$Mutated) {
     if (-not (Test-Path $log)) { return }
-    $problems = @(Invoke-Judge @($log) -NoEnd | ForEach-Object { $_ -replace '^PROBLEM [^:]+: ', '' } | Where-Object { $_ -notmatch $CutShortExpect })
+    $problems = @(Invoke-Judge @($log) -NoEnd -Mutated:$Mutated | ForEach-Object { $_ -replace '^PROBLEM [^:]+: ', '' } | Where-Object { $_ -notmatch $CutShortExpect })
     $last = @(Get-Content $log -Tail 6 | Where-Object { $_.Trim() }) | Select-Object -Last 1
     $started = [bool](Select-String -Path $log -Pattern "AutoTest\s+[\d.]+s > " -Quiet)
     if ($problems.Count) { return "ended early (exit code $exitCode, log $(Split-Path $log -Leaf)) with a problem: $($problems[0])" }
@@ -514,11 +553,11 @@ function Get-EarlyExitProblem([string]$log, $exitCode) {
 # Set-CopyOverrides removes), or one before or after this mod's load work. This mod's: a freeze inside that work (the mod initialized,
 # its patches not applied yet: ModEntry's applying over frames, InlineGuard, HarmonyRebuild), or a problem judge.py finds in what
 # the session logged. A new session that gets past it would otherwise hide a freeze that comes one time in three.
-function Get-FrozenProblem([string]$log) {
+function Get-FrozenProblem([string]$log, [switch]$Mutated) {
     if (-not (Test-Path $log)) { return }
     $leaf = Split-Path $log -Leaf
     # Cut short: its positive controls ('expect' lines still to come) can't be held against it, the other problems can.
-    $problems = @(Invoke-Judge @($log) -NoEnd | ForEach-Object { $_ -replace '^PROBLEM [^:]+: ', '' } | Where-Object { $_ -notmatch $CutShortExpect })
+    $problems = @(Invoke-Judge @($log) -NoEnd -Mutated:$Mutated | ForEach-Object { $_ -replace '^PROBLEM [^:]+: ', '' } | Where-Object { $_ -notmatch $CutShortExpect })
     if ($problems.Count) { return "froze (log $leaf) with a problem: $($problems[0])" }
     if (Get-Content $log -Tail 4 -ErrorAction SilentlyContinue | Select-String -SimpleMatch 'Parameter "t" is null') { return }
     $initialized = @(Select-String -Path $log -Pattern "\[BigDeckOptimization\] Initialized v" | Where-Object { $_.Line -notmatch "turned off" }).Count -gt 0
@@ -528,31 +567,48 @@ function Get-FrozenProblem([string]$log) {
 # Jobs: objects with Name, Script (scenario path), Log. Runs at most $MaxJobs at once. A session is closed when it passes
 # $TimeoutSec, or when its log stays silent for $StallSec. Returns one result per job: Name, State (done, cached, TIMEOUT,
 # STALLED, FROZEN, CRASHED), Seconds, Failed (its problems: judge.py's, a test mod not loaded, an earlier session that ended early
-# or froze in this mod's code), Restarts.
-function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$TimeoutSec = 900, [int]$StallSec = 240, [switch]$Rendered, [switch]$UseBaselines, [string]$Label = "sessions") {
+# or froze in this mod's code), Restarts. -OnFinish { param($job, $result) ... }: called once per job with its final result (not
+# for a session that starts over); the jobs it returns are queued at once, ahead of the others (parsweep.ps1's continuation of a
+# chunk an item stopped: it starts as soon as a slot frees, not after every session of a round), and their results returned too.
+# -StatusFile: the file in results/ the progress goes to (status.ps1 shows every status*.txt).
+function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$TimeoutSec = 900, [int]$StallSec = 240, [switch]$Rendered, [switch]$UseBaselines, [string]$Label = "sessions", [scriptblock]$OnFinish = $null, [string]$StatusFile = "status.txt") {
     $launchMode = if ($Rendered) { @("--bdhidden", "--windowed", "--resolution", "1920x1080") } else { @("--headless") }
     Add-TestMods $GameDir
-    $pending = [Collections.Generic.Queue[object]]::new()
+    # In order; the jobs OnFinish returns go first.
+    $pending = [Collections.Generic.List[object]]::new()
     $done = [Collections.Generic.List[object]]::new()
+    $allJobs = [Collections.Generic.List[object]]::new()
+    foreach ($job in $Jobs) { $allJobs.Add($job) }
     $baselineDir = Join-Path $BaselineRoot (Get-GameTag $GameDir)
-    foreach ($job in $Jobs) {
-        # A cached mod-off log replaces the session.
-        if ($UseBaselines -and (Test-BaselineJob $job)) {
-            $cached = Join-Path $baselineDir "$($job.Name)-$(Get-BaselineKey $GameDir $job.Script).log"
+    # Queues a job (-First: ahead of the others), unless a cached mod-off log replaces its session. These two are child scopes: they
+    # change the lists, never assign a variable of this function.
+    $enqueue = {
+        param($newJob, [bool]$first)
+        if ($UseBaselines -and (Test-BaselineJob $newJob)) {
+            $cached = Join-Path $baselineDir "$($newJob.Name)-$(Get-BaselineKey $GameDir $newJob.Script).log"
             if (Test-Path $cached) {
-                Copy-Item $cached $job.Log -Force
-                $done.Add([pscustomobject]@{ Name = $job.Name; State = "cached"; Seconds = 0; Failed = @(Get-FailedLines $job.Log) })
-                continue
+                Copy-Item $cached $newJob.Log -Force
+                & $finish $newJob ([pscustomobject]@{ Name = $newJob.Name; State = "cached"; Seconds = 0; Failed = @(Get-FailedLines $newJob.Log -Mutated:(Test-MutatedJob $newJob)) + @(Get-LaunchProblem $newJob $newJob.Log) })
+                return
             }
         }
-        $pending.Enqueue($job)
+        if ($first) { $pending.Insert(0, $newJob) } else { $pending.Add($newJob) }
     }
+    # A job's final result: kept, then handed to OnFinish, whose jobs are queued first, in the order it returns them.
+    $finish = {
+        param($finishedJob, $result)
+        $done.Add($result)
+        if (-not $OnFinish) { return }
+        $added = @(& $OnFinish $finishedJob $result | Where-Object { $_ })
+        foreach ($newJob in $added) { $allJobs.Add($newJob) }
+        for ($k = $added.Count - 1; $k -ge 0; $k--) { & $enqueue $added[$k] $true }
+    }
+    foreach ($job in $Jobs) { & $enqueue $job $false }
     $running = @{}
     $retries = @{}
     # Sessions that ended early, not in the known renderer crash: problems of their job, whatever the session that started over did.
     $earlyProblems = @{}
     $realAppData = $env:APPDATA
-    $total = $pending.Count + $done.Count
     $started = Get-Date
     $lastStatus = [datetime]::MinValue
     # The slots are shared by every series, whatever the game copy: a slot another series holds (Lock-Slot) is skipped until free.
@@ -567,12 +623,15 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                     if (-not (Lock-Slot $slot -Try)) { continue }
                     [void]$locked.Add($slot)
                 }
-                $job = $pending.Dequeue()
+                $job = $pending[0]
+                $pending.RemoveAt(0)
                 Remove-Item $job.Log -ErrorAction SilentlyContinue
                 $env:APPDATA = Sync-Slot $slot
                 # A job may name its own game folder (mutations.ps1).
                 $jobDir = if ($job.PSObject.Properties["GameDir"]) { $job.GameDir } else { $GameDir }
                 $launch = @("--force-steam", "off", "--log-file", "`"$($job.Log)`"", "--bdtest", "`"$($job.Script)`"", "--bdmute") + $launchMode + @(Get-ScenarioLaunchArgs $job.Script)
+                # A solo mod-off session is a vanilla one: the game as a player who started with the mod off has it.
+                if (Test-BaselineJob $job) { $launch += $VanillaArg }
                 $jobExe = Join-Path $jobDir "SlayTheSpire2.exe"
                 $p = if ($Rendered) { Start-HiddenGame $jobExe $jobDir $launch } else { Start-Process -FilePath $jobExe -WorkingDirectory $jobDir -PassThru -WindowStyle Hidden -ArgumentList $launch }
                 $env:APPDATA = $realAppData
@@ -582,7 +641,7 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
             if ($running.Count -eq 0 -and $locked.Count -eq 0 -and -not $toldBusy) { $toldBusy = $true; Write-Host "every test slot 0-$($MaxJobs - 1) is held by another series: waiting for one" }
             Start-Sleep -Milliseconds 300
             if (((Get-Date) - $lastStatus).TotalSeconds -ge 5) {
-                Write-SessionStatus $Label $total $done.Count $pending.Count $running $started $Jobs
+                Write-SessionStatus $Label ($done.Count + $pending.Count + $running.Count) $done.Count $pending.Count $running $started $allJobs $StatusFile
                 $lastStatus = Get-Date
             }
             foreach ($slot in @($running.Keys)) {
@@ -610,11 +669,11 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                     # problem of the job, whatever the session that starts over does.
                     $frozenLog = "$($run.Job.Log).frozen$(if ($retries[$name] -gt 1) { $retries[$name] })"
                     Copy-Item $run.Job.Log $frozenLog -Force -ErrorAction SilentlyContinue
-                    $why = Get-FrozenProblem $frozenLog
+                    $why = Get-FrozenProblem $frozenLog -Mutated:(Test-MutatedJob $run.Job)
                     if ($why) { $earlyProblems[$name] = @($earlyProblems[$name]) + @($why) }
                     $running.Remove($slot)
-                    if ($retries[$name] -le 2) { $pending.Enqueue($run.Job) }
-                    else { $done.Add([pscustomobject]@{ Name = $name; State = "FROZEN"; Seconds = [int]$age; Failed = @("froze 3 times") + @($earlyProblems[$name] | Where-Object { $_ }); Restarts = $retries[$name] }) }
+                    if ($retries[$name] -le 2) { $pending.Add($run.Job) }
+                    else { & $finish $run.Job ([pscustomobject]@{ Name = $name; State = "FROZEN"; Seconds = [int]$age; Failed = @("froze 3 times") + @($earlyProblems[$name] | Where-Object { $_ }); Restarts = $retries[$name] }) }
                     continue
                 }
                 if ($run.Process.HasExited) {
@@ -628,12 +687,12 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                         $retries[$name] = 1 + [int]$retries[$name]
                         $early = "$($run.Job.Log).early$(if ($retries[$name] -gt 1) { $retries[$name] })"
                         Copy-Item $run.Job.Log $early -Force -ErrorAction SilentlyContinue
-                        $why = Get-EarlyExitProblem $early $run.Process.ExitCode
+                        $why = Get-EarlyExitProblem $early $run.Process.ExitCode -Mutated:(Test-MutatedJob $run.Job)
                         if ($why) { $earlyProblems[$name] = @($earlyProblems[$name]) + @($why) }
                         Start-Sleep 1
                         $running.Remove($slot)
-                        if ($retries[$name] -le 2) { $pending.Enqueue($run.Job) }
-                        else { $done.Add([pscustomobject]@{ Name = $name; State = "CRASHED"; Seconds = [int]$age; Failed = @("stopped early 3 times, exit code $($run.Process.ExitCode)") + @($earlyProblems[$name] | Where-Object { $_ }); Restarts = $retries[$name] }) }
+                        if ($retries[$name] -le 2) { $pending.Add($run.Job) }
+                        else { & $finish $run.Job ([pscustomobject]@{ Name = $name; State = "CRASHED"; Seconds = [int]$age; Failed = @("stopped early 3 times, exit code $($run.Process.ExitCode)") + @($earlyProblems[$name] | Where-Object { $_ }); Restarts = $retries[$name] }) }
                         continue
                     }
                 }
@@ -641,21 +700,31 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                 elseif ($age -gt 60 -and (Test-Path $run.Job.Log) -and ((Get-Date) - (Get-Item $run.Job.Log).LastWriteTime).TotalSeconds -gt $StallSec) { $state = "STALLED" }
                 if (-not $state) { continue }
                 if ($state -ne "done") { Stop-Process -Id $run.Process.Id -Force -ErrorAction SilentlyContinue; Start-Sleep 1 }
-                $failed = @(Get-FailedLines $run.Job.Log) + @(Get-MissingTestMods $run.Job.Log $GameDir) + @($earlyProblems[$run.Job.Name] | Where-Object { $_ })
-                $done.Add([pscustomobject]@{ Name = $run.Job.Name; State = $state; Seconds = [int]$age; Failed = $failed; Restarts = [int]$retries[$run.Job.Name] })
+                $failed = @(Get-FailedLines $run.Job.Log -Mutated:(Test-MutatedJob $run.Job)) + @(Get-MissingTestMods $run.Job.Log $GameDir) + @($earlyProblems[$run.Job.Name] | Where-Object { $_ }) + @(Get-LaunchProblem $run.Job $run.Job.Log)
                 $running.Remove($slot)
-                if ($UseBaselines -and $state -eq "done" -and $failed.Count -eq 0 -and (Test-BaselineJob $run.Job)) {
-                    New-Item -ItemType Directory -Force $baselineDir | Out-Null
-                    Copy-Item $run.Job.Log (Join-Path $baselineDir "$($run.Job.Name)-$(Get-BaselineKey $GameDir $run.Job.Script).log") -Force
+                & $finish $run.Job ([pscustomobject]@{ Name = $run.Job.Name; State = $state; Seconds = [int]$age; Failed = $failed; Restarts = [int]$retries[$run.Job.Name] })
+                # Kept as a baseline whether or not this series reads them: a run without -UseBaselines is the freshest mod-off
+                # log there is, and a rerun after a fix can then reuse it. Never stops the series.
+                if ($state -eq "done" -and $failed.Count -eq 0 -and (Test-BaselineJob $run.Job)) {
+                    try {
+                        New-Item -ItemType Directory -Force $baselineDir | Out-Null
+                        Copy-Item $run.Job.Log (Join-Path $baselineDir "$($run.Job.Name)-$(Get-BaselineKey $GameDir $run.Job.Script).log") -Force
+                    }
+                    catch { Write-Host "note: $($run.Job.Name) not kept as a baseline: $($_.Exception.Message)" }
                 }
+            }
+            # Nothing left to start: a slot whose session ended goes back to the other series (a sweep's long mod-off tail would
+            # otherwise hold idle slots). A session starting over is queued before this, while its slot is still held.
+            if ($pending.Count -eq 0) {
+                foreach ($slot in @($locked)) { if (-not $running.ContainsKey($slot)) { Unlock-Slot $slot; [void]$locked.Remove($slot) } }
             }
         }
     }
     finally {
         $env:APPDATA = $realAppData
         foreach ($run in $running.Values) { Stop-Process -Id $run.Process.Id -Force -ErrorAction SilentlyContinue }
-        # Held for the whole series (a slot freed between two sessions could be taken by another series and mirrored meanwhile).
-        foreach ($slot in $locked) { Unlock-Slot $slot }
+        # Held while this series has sessions to start (each start mirrors the user data into its slot again), released when none is left.
+        foreach ($slot in @($locked)) { Unlock-Slot $slot }
     }
     $done
 }

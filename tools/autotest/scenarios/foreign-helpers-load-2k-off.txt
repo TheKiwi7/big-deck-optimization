@@ -1,0 +1,39 @@
+# HookSkip next to patches on PushModel and PopModel installed at the launch (A/B, mod off): the same as
+# foreign-helpers-load-2k-on (see there); CHECKSUM and STATE lines, the gated patches' counts included, must match line for line.
+launchforeign model-gated-pushpop
+expect LAUNCHFOREIGN model-gated-pushpop
+timeout 1800
+cmd bdopt off
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+foreignpatch report t2
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+foreignpatch report end
+cmd bdopt on
+quit

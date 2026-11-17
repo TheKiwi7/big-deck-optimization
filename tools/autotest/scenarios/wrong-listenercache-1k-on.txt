@@ -1,0 +1,56 @@
+# Positive control: ListenerCache's check of a kept listener list reused across refreshes (CheckedAgainstKept). Armed at the combat start (bdperf listenercache wrong): the next pass through that check
+# sees a wrong answer, and must find it and take its fallback, which gives the game's own result: CHECKSUM and STATE lines
+# (cardids included) must match wrong-1k-off line for line. ~945 cards; SnapshotVerifier off (bdperf verify off) so that
+# this net, not the verifier, is the one that sees it. bdperf wrong check fails if the injection was never taken.
+# compare-with: wrong-1k-off
+expect ListenerCache: a kept listener list differs from a fresh one
+timeout 900
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf verify off
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd bdperf listenercache wrong
+checksum start
+state start
+hover 0
+# ListenerCache's lists kept across display scopes are used only where the listener lists are built through it: with
+# FastListeners on, HookFilter walks its own filtered lists (BetterSpire2's damage preview, the display scope that
+# refreshes several times a second, never asks it). A few idle seconds with that option off: the preview's scopes reuse
+# the kept lists (ListenerCache.Reused). Results stay the game's either way (CHECKSUM lines compared).
+cmd bdopt listeners off
+wait 3
+cmd bdopt listeners on
+play 3
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 3
+waitfor idle 120
+checksum t2 plays
+pilemove draw discard 2
+wait 1
+checksum moved
+endturn
+waitfor idle 300
+checksum reshuffle
+state reshuffle
+play 3
+waitfor idle 120
+checksum t3 plays
+state t3
+cmd kill all
+waitfor nocombat 300
+wait 2
+checksum after combat
+state after combat
+counters end
+cmd bdperf wrong check
+quit

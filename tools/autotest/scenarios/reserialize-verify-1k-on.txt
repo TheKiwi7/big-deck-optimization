@@ -1,0 +1,46 @@
+# LimitlessReserialize's comparison of every kept list with what Limitless would rebuild (bdperf reserialize verify 1: each one,
+# 1 in 4,096 otherwise): no difference, and the reports fail when nothing was compared (verified 0) or a list differed. CHECKSUM
+# and STATE lines must match wrong-1k-off line for line. ~945 cards (the reference run's stacked enchantments).
+# compare-with: wrong-1k-off
+timeout 900
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+cmd bdperf reserialize verify 1
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+state start
+play 3
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+cmd bdperf reserialize
+state t1
+play 3
+waitfor idle 120
+checksum t2 plays
+pilemove draw discard 2
+wait 1
+checksum moved
+endturn
+waitfor idle 300
+checksum reshuffle
+state reshuffle
+play 3
+waitfor idle 120
+checksum t3 plays
+state t3
+cmd kill all
+waitfor nocombat 300
+wait 2
+checksum after combat
+state after combat
+cmd bdperf reserialize
+counters end
+quit

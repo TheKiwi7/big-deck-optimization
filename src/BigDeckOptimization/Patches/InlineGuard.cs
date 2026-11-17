@@ -31,6 +31,11 @@ namespace BigDeckOptimization.Patches;
 /// (card piles, card and enchantment setters) only run inside a run. A patch applied later (an Apply run again when an
 /// optional mod's assembly loads, or a game or mod starting a run before the main menu) could be outrun by tier-1 code
 /// already compiled, and no recompile follows it.
+///
+/// The other way round, this mod's own replacements: Harmony compiles them when this mod patches (at its load, over the first
+/// frames), while the game compiles a method it runs at its first call, in a run. A small method they call (inlined there)
+/// that another mod patches afterwards would run its original body from them, past that patch: <see cref="AfterForeignFirstPatch"/>
+/// compiles them again at that patch.
 /// </summary>
 public static class InlineGuard
 {
@@ -181,7 +186,7 @@ public static class InlineGuard
             long start = System.Diagnostics.Stopwatch.GetTimestamp();
             try
             {
-                bool rebuild = ReplacementReaches(patched, reaches);
+                bool rebuild = ReplacementReaches(patched, _protected.Contains, reaches);
 #if BENCH
                 // BDTEST_REBUILD_ALL=1 or a list of Type.Method: rebuilt whatever they call (a friend's game rebuilt
                 // NGlobalUi._Ready, this machine's doesn't). BDTEST_REBUILD_RAW=1: straight through Harmony, as v1.0.0 did.
@@ -213,36 +218,458 @@ public static class InlineGuard
     }
 
     /// <summary>
-    /// What is known of a method: it reaches a protected method within <c>FoundAt</c> calls (int.MaxValue: not
+    /// Methods carrying this mod's patches compiled again after another mod's first patch on a method their replacements may
+    /// have inlined (<see cref="AfterForeignFirstPatch"/>): the effect counter.
+    /// </summary>
+    public static int Refreshed { get; private set; }
+
+    /// <summary>Candidates found stale but not compiled again (refused, failed): surfaced (A2, re-audit of b64e896).</summary>
+    public static int NotRefreshed { get; private set; }
+
+    private static Harmony? _rebuilder;
+
+    /// <summary>The other mods' first patches waiting for the end of the frame (any thread adds, the main thread drains).</summary>
+    private static readonly List<MethodBase> _queued = new();
+    private static readonly object _queueLock = new();
+    private static bool _flushScheduled, _queuedOffMain;
+
+    /// <summary>The thread this class was first used on: the main thread (PatchGuard.Protect at the mod's load). The log only.</summary>
+    private static readonly int _firstThread = Environment.CurrentManagedThreadId;
+
+    /// <summary>
+    /// The helpers (by module and token) inlined by a replacement of this mod that couldn't be compiled again: their inlined body
+    /// stays there, so a patch on them is never reached from it (HookSkip: <see cref="InlinedUnseen"/>).
+    /// </summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(Module Module, int Token), string> _inlinedUnseen = new();
+
+    /// <summary>
+    /// Moves each time <see cref="Surface"/> records helpers (round 4): HookSkip's per-group helper answers, cached up to a second
+    /// per Harmony epoch, are asked again at once (a flush records them after the Patch call that moved the epoch).
+    /// </summary>
+    internal static int UnseenVersion => System.Threading.Volatile.Read(ref _unseenVersion);
+    private static int _unseenVersion;
+
+    /// <summary>
+    /// Whether a replacement of this mod that may have inlined <paramref name="method"/> couldn't be compiled again after another
+    /// mod patched it (A2): a patch on it isn't reached from there, whatever it is gated on.
+    /// </summary>
+    internal static bool InlinedUnseen(MethodBase? method)
+    {
+        if (method == null || _inlinedUnseen.IsEmpty)
+        {
+            return false;
+        }
+        try
+        {
+            return _inlinedUnseen.ContainsKey((method.Module, method.MetadataToken));
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Another mod patched this method for the first time (no Harmony patch on it before, so no no-inlining flag either:
+    /// MonoMod sets it when it detours a method) after replacements of this mod were compiled: one that may have inlined its
+    /// body (it calls it, directly or through callees the JIT may inline) runs that body past the new patch. Seen in game:
+    /// HookSkip's transpiled hooks inline <c>PlayerChoiceContext.PushModel</c> (32 bytes of IL) and, on v0.113.1, the
+    /// 4-argument <c>HookPlayerChoiceContext</c> constructor (87 bytes): a postfix another mod put on PushModel mid-run saw 3
+    /// calls where the game made 83,399. In the game without this mod, a hook is compiled at its first call, in a run, after
+    /// the other mods' patches, and so calls them.
+    ///
+    /// Re-audit of b64e896 (A1, A5): never rebuilt inside the other mod's Patch call (a PatchAll batch, maybe on another thread,
+    /// Harmony's lock held): the method is queued, and at the end of the frame, on the main thread, every queued method of the
+    /// batch is handled at once (<see cref="Flush"/>: each candidate rebuilt once). A call made between the other mod's Patch
+    /// call and the frame's end still runs the inlined body, as it did before this check existed. Nothing is queued when the
+    /// method can't be inlined (too large, virtual, NoInlining) nor for a value type's method or shared generic code (A3: the
+    /// rebuild changes nothing there): the common case, at no cost but this check. Never throws.
+    /// </summary>
+    internal static void AfterForeignFirstPatch(MethodBase patched, Func<string> ownersOf)
+    {
+        try
+        {
+            if (patched.DeclaringType is not { IsValueType: false } declaring || declaring.ContainsGenericParameters || patched.ContainsGenericParameters
+                || declaring.IsGenericType || patched.IsGenericMethod || !Inlinable(patched))
+            {
+                return;
+            }
+            lock (_queueLock)
+            {
+                _queued.Add(patched);
+                _queuedOffMain |= Environment.CurrentManagedThreadId != _firstThread;
+                if (_flushScheduled)
+                {
+                    return;
+                }
+                _flushScheduled = true;
+            }
+            Godot.Callable.From(Flush).CallDeferred();
+        }
+        catch (Exception e)
+        {
+            lock (_queueLock)
+            {
+                _flushScheduled = false;
+            }
+            // Never in the way of the other mod's Patch call: at worst its patch misses the calls inlined before it.
+            Log.Info($"[{ModEntry.Id}] {nameof(InlineGuard)}: after another mod patched {patched.Name}: callers not checked ({e.Message})");
+        }
+    }
+
+    /// <summary>Godot's main thread (true when that can't be read: the deferred call's own thread, as before).</summary>
+    private static bool OnMainThread()
+    {
+        try
+        {
+            return Godot.OS.GetThreadCallerId() == Godot.OS.GetMainThreadId();
+        }
+        catch (Exception)
+        {
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// The queued first patches of other mods (main thread, end of the frame): every candidate (a patched method carrying a patch
+    /// of this mod) whose replacement reaches one of them is built again by Harmony once, the same patches in the same order
+    /// (<see cref="HarmonyRebuild.Run"/>, which refuses a stateful transpiler of another mod), now with the no-inlining flag set:
+    /// its calls reach the new patches. One that isn't (refused, failed) is surfaced (A2): a warning, a <c>bdopt why</c> note
+    /// naming it and the other mod, and its inlined helpers recorded (<see cref="InlinedUnseen"/>). The scan time is always logged.
+    /// </summary>
+    private static void Flush()
+    {
+        MethodBase[] targets;
+        bool offMain;
+        if (!OnMainThread())
+        {
+            // Round 4: a deferred call is run by the main loop; should it ever come on another thread, it goes back there (the
+            // queue kept, the flush still scheduled).
+            try
+            {
+                Godot.Callable.From(Flush).CallDeferred();
+            }
+            catch (Exception e)
+            {
+                lock (_queueLock)
+                {
+                    _flushScheduled = false; // The next first patch schedules it again.
+                }
+                Log.Info($"[{ModEntry.Id}] {nameof(InlineGuard)}: flush called off the main thread, not deferred again ({e.Message})");
+            }
+            return;
+        }
+        lock (_queueLock)
+        {
+            targets = _queued.Distinct().ToArray();
+            offMain = _queuedOffMain;
+            _queued.Clear();
+            _flushScheduled = false;
+            _queuedOffMain = false;
+        }
+        if (targets.Length == 0)
+        {
+            return;
+        }
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        string owners = "another mod";
+        try
+        {
+            owners = OwnersOf(targets);
+            var keys = new HashSet<(Module, int)>();
+            foreach (MethodBase target in targets)
+            {
+                try
+                {
+                    keys.Add((target.Module, target.MetadataToken));
+                }
+                catch (Exception)
+                {
+                    // A dynamic method: no caller inlines it.
+                }
+            }
+            List<(MethodBase Candidate, MethodBase[] Inlined)> stale = new();
+            int candidates = 0;
+            foreach (MethodBase candidate in Harmony.GetAllPatchedMethods().ToList())
+            {
+                try
+                {
+                    if (candidate.DeclaringType?.Assembly == typeof(Harmony).Assembly || keys.Contains((candidate.Module, candidate.MetadataToken))
+                        || Harmony.GetPatchInfo(candidate) is not { } info || !info.Owners.Any(PatchGuard.IsOurs))
+                    {
+                        continue;
+                    }
+                    candidates++;
+                    MethodBase[] inlined = targets.Where(t => ReachedBy(candidate).Contains((t.Module, t.MetadataToken))).ToArray();
+                    if (inlined.Length > 0)
+                    {
+                        stale.Add((candidate, inlined));
+                    }
+                }
+                catch (Exception)
+                {
+                    // Not readable: left as it is (as before this check).
+                }
+            }
+            double scanMs = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+            string what = string.Join(", ", targets.Select(HarmonyRebuild.Describe).Distinct());
+            if (stale.Count == 0)
+            {
+                Log.Info($"[{ModEntry.Id}] {nameof(InlineGuard)}: {owners} patched {what} for the first time: none of the {candidates} methods carrying this mod's patches may have inlined it ({scanMs:F0} ms{(offMain ? "; queued from another thread" : "")})");
+                return;
+            }
+            int done = 0;
+            List<(MethodBase Candidate, MethodBase[] Inlined, string Why)> notDone = new();
+            foreach ((MethodBase method, MethodBase[] inlined) in stale)
+            {
+                try
+                {
+                    if (!HarmonyRebuild.Available)
+                    {
+                        throw new NotSupportedException("Harmony's detour table isn't as expected");
+                    }
+                    _rebuilder ??= new Harmony(ModEntry.Harmony.Id + "." + nameof(InlineGuard));
+                    // Refused there (an exception, nothing touched) when another mod's transpiler on it isn't safe to run again.
+                    HarmonyRebuild.Run(method, $"compiling it again after {owners} patched {string.Join(", ", inlined.Select(HarmonyRebuild.Describe))}", () => new PatchProcessor(_rebuilder, method).Patch());
+                    done++;
+                    Refreshed++;
+                }
+                catch (Exception e)
+                {
+                    notDone.Add((method, inlined, e.Message));
+                }
+            }
+            Log.Info($"[{ModEntry.Id}] {nameof(InlineGuard)}: {owners} patched {what} for the first time, after this mod's patches were compiled: "
+                + $"{done} methods carrying them that may have inlined it compiled again ({string.Join(", ", stale.Select(s => HarmonyRebuild.Describe(s.Candidate)).Distinct())})"
+                + $" (scan {scanMs:F0} ms, {System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds:F0} ms in all{(offMain ? "; queued from another thread" : "")})");
+            foreach ((MethodBase method, MethodBase[] inlined, string why) in notDone)
+            {
+                Surface(method, inlined, owners, why);
+            }
+        }
+        catch (Exception e)
+        {
+            Log.Info($"[{ModEntry.Id}] {nameof(InlineGuard)}: after {owners} patched {string.Join(", ", targets.Select(t => t.Name))}: callers not checked ({e.Message})");
+        }
+    }
+
+    /// <summary>The other mods patching these methods (display names), for the log and the note.</summary>
+    private static string OwnersOf(MethodBase[] targets)
+    {
+        string[] names = targets.Select(t => Harmony.GetPatchInfo(t)).Where(i => i != null)
+            .SelectMany(i => i!.Prefixes.Concat(i.Postfixes).Concat(i.Transpilers).Concat(i.Finalizers).Concat(i.InnerPrefixes).Concat(i.InnerPostfixes))
+            .Where(p => !PatchGuard.IsOurs(p.owner)).Select(p => PatchSafety.ModNameOf(p.PatchMethod?.DeclaringType?.Assembly) ?? p.owner).Distinct().ToArray();
+        return names.Length > 0 ? string.Join(", ", names) : "another mod";
+    }
+
+    /// <summary>
+    /// A stale replacement not compiled again (A2): a warning, a note (bdopt why, "Other") naming it, the patched helpers and the
+    /// other mods, and the helpers recorded so HookSkip keeps no tolerance for a patch there (<see cref="InlinedUnseen"/>).
+    /// </summary>
+    private static void Surface(MethodBase method, MethodBase[] inlined, string owners, string why)
+    {
+        NotRefreshed++;
+        string helpers = string.Join(", ", inlined.Select(HarmonyRebuild.Describe).Distinct());
+        foreach (MethodBase helper in inlined)
+        {
+            try
+            {
+                _inlinedUnseen[(helper.Module, helper.MetadataToken)] = HarmonyRebuild.Describe(method);
+            }
+            catch (Exception)
+            {
+                // A dynamic method: nothing inlines it.
+            }
+        }
+        System.Threading.Interlocked.Increment(ref _unseenVersion);
+        Log.Warn($"[{ModEntry.Id}] {nameof(InlineGuard)}: {HarmonyRebuild.Describe(method)} may have inlined {helpers}, which {owners} patched after this mod's patches were compiled, and couldn't be compiled again ({why}): its calls there don't reach that patch");
+        try
+        {
+            string[] mods = owners.Split(new[] { ", " }, StringSplitOptions.RemoveEmptyEntries);
+            PatchSafety.Note(nameof(InlineGuard), HarmonyRebuild.Describe(method), $"{HarmonyRebuild.Describe(method)} may run the body of {helpers} inlined, past the patch {owners} put there after this mod's patches were compiled (compiling it again: {why})", mods);
+        }
+        catch (Exception)
+        {
+            // Display only.
+        }
+    }
+
+    /// <summary>
+    /// C1: per candidate, every method (by module and token) its replacement may have inlined: its code after every transpiler
+    /// and each patch method, and what they call through callees the JIT may inline (<see cref="CalleeDepth"/>). Worked out again
+    /// when Harmony's patches change (<see cref="HarmonyWatch.Epoch"/>).
+    /// </summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<MethodBase, (int Epoch, HashSet<(Module, int)> Methods)> _reached = new();
+
+    private static HashSet<(Module, int)> ReachedBy(MethodBase candidate)
+    {
+        int epoch = HarmonyWatch.Epoch;
+        if (_reached.TryGetValue(candidate, out var known) && known.Epoch == epoch)
+        {
+            return known.Methods;
+        }
+        var methods = new HashSet<(Module, int)>();
+        var expanded = new Dictionary<MethodBase, int>();
+        void Add(MethodBase method)
+        {
+            try
+            {
+                methods.Add((method.Module, method.MetadataToken));
+            }
+            catch (Exception)
+            {
+                // A dynamic method: nothing to inline.
+            }
+        }
+        void Expand(MethodBase method, int depth)
+        {
+            if (depth <= 0 || (expanded.TryGetValue(method, out int seen) && seen >= depth))
+            {
+                return;
+            }
+            expanded[method] = depth;
+            MethodBase[] callees;
+            try
+            {
+                callees = OwnCallees(method);
+            }
+            catch (Exception)
+            {
+                return; // No readable body (native, dynamic).
+            }
+            foreach (MethodBase callee in callees)
+            {
+                Add(callee);
+                if (Inlinable(callee))
+                {
+                    Expand(callee, depth - 1);
+                }
+            }
+        }
+        HarmonyLib.Patches? info = Harmony.GetPatchInfo(candidate);
+        try
+        {
+            MethodBase[] code = info is { Transpilers.Count: > 0 } ? TranspiledCallees(candidate, info) : OwnCallees(candidate);
+            foreach (MethodBase callee in code)
+            {
+                Add(callee);
+                if (Inlinable(callee))
+                {
+                    Expand(callee, CalleeDepth);
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // No readable body or a transpiler that throws: its patch methods are still looked at.
+        }
+        if (info != null)
+        {
+            foreach (Patch patch in info.Prefixes.Concat(info.Postfixes).Concat(info.Finalizers).Concat(info.InnerPrefixes).Concat(info.InnerPostfixes))
+            {
+                MethodInfo? method;
+                try
+                {
+                    method = patch.PatchMethod;
+                }
+                catch (Exception)
+                {
+                    continue;
+                }
+                if (method == null)
+                {
+                    continue;
+                }
+                // Called by the replacement: one level down, like a callee of its own code.
+                Add(method);
+                if (Inlinable(method))
+                {
+                    Expand(method, CalleeDepth);
+                }
+            }
+        }
+        _reached[candidate] = (epoch, methods);
+        return methods;
+    }
+
+    /// <summary>The candidate's code after every transpiler, read again only when its transpilers change (<see cref="_transpiledCallees"/>).</summary>
+    private static MethodBase[] TranspiledCallees(MethodBase patched, HarmonyLib.Patches info)
+    {
+        string transpilers = string.Join("|", info.Transpilers.Select(t => $"{t.owner}#{t.index}#{t.priority}#{t.PatchMethod?.Module.ModuleVersionId}#{t.PatchMethod?.MetadataToken}"));
+        if (_transpiledCallees.TryGetValue(patched, out var cached) && cached.Transpilers == transpilers)
+        {
+            return cached.Callees;
+        }
+        // Runs the transpilers again, as any rebuild does. One Harmony can't run again safely (HarmonyRebuild.Blocker) isn't run:
+        // the original's calls stand for its code (transpilers mostly keep them), so a stale one is still found, its rebuild
+        // refused and surfaced (A2).
+        if (HarmonyRebuild.Blocker(patched) != null)
+        {
+            return OwnCallees(patched);
+        }
+        MethodBase[] code = Callees(PatchProcessor.GetCurrentInstructions(patched).Select(c => (c.opcode, (object?)c.operand)));
+        _transpiledCallees[patched] = (transpilers, code);
+        return code;
+    }
+
+    /// <summary>
+    /// What is known of a method: it reaches a target method within <c>FoundAt</c> calls (int.MaxValue: not
     /// known to), and doesn't within <c>NotWithin</c> calls (-1: not known). An answer only holds for the depth it was
     /// searched to: a method first met as a callee at depth 0 (its own calls only) must be searched again when it is met
     /// again at a greater depth (as a patch method, <see cref="CalleeDepth"/> - 1), or its callees' calls would never be looked at.
+    /// A memo holds for one set of targets only (a new one per set).
     /// </summary>
     private record struct Reach(int FoundAt, int NotWithin);
 
+    /// <summary>The methods a method's own IL calls or constructs (call, callvirt, newobj): its IL never changes, read once.</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<MethodBase, MethodBase[]> _ownCallees = new();
+
     /// <summary>
-    /// Whether the replacement Harmony compiled for this patched method calls a protected method, directly or through a callee
+    /// Per patched method, the methods its code after every transpiler calls, and the transpilers that code came from (in
+    /// Harmony's list order): read again only when they change, so the transpilers rarely run outside a rebuild.
+    /// </summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<MethodBase, (string Transpilers, MethodBase[] Callees)> _transpiledCallees = new();
+
+    private static MethodBase[] Callees(IEnumerable<(OpCode Op, object? Operand)> code) =>
+        code.Where(c => c.Operand is MethodBase && (c.Op == OpCodes.Call || c.Op == OpCodes.Callvirt || c.Op == OpCodes.Newobj))
+            .Select(c => (MethodBase)c.Operand!).ToArray();
+
+    private static MethodBase[] OwnCallees(MethodBase method) =>
+        _ownCallees.GetOrAdd(method, m => Callees(PatchProcessor.ReadMethodBody(m).Select(i => (i.Key, (object?)i.Value))));
+
+    /// <summary>
+    /// Whether the replacement Harmony compiled for this patched method calls a target method, directly or through a callee
     /// the JIT may inline: its code after every transpiler (the original body when there is none), and each patch method of
     /// every mod (prefixes, postfixes, finalizers, inner patches), which the replacement calls and the JIT may inline too.
     /// </summary>
-    private static bool ReplacementReaches(MethodBase patched, Dictionary<MethodBase, Reach> known)
+    private static bool ReplacementReaches(MethodBase patched, Func<MethodBase, bool> isTarget, Dictionary<MethodBase, Reach> known)
     {
         HarmonyLib.Patches? info = Harmony.GetPatchInfo(patched);
         try
         {
-            IEnumerable<(OpCode, object?)> code;
+            MethodBase[] code;
             if (info is { Transpilers.Count: > 0 })
             {
-                // Runs the transpilers again, as any rebuild does (they must allow it: another mod may patch later). One
-                // Harmony can't find again can't be rebuilt either (HarmonyRebuild.Run refuses it): nothing to read.
-                code = HarmonyRebuild.Blocker(patched) != null ? Enumerable.Empty<(OpCode, object?)>()
-                    : PatchProcessor.GetCurrentInstructions(patched).Select(c => (c.opcode, (object?)c.operand)).ToList();
+                // Runs the transpilers again, as any rebuild does (they must allow it: another mod may patch later), once per
+                // list of transpilers. One Harmony can't find again can't be rebuilt either (HarmonyRebuild.Run refuses it):
+                // nothing to read.
+                string transpilers = string.Join("|", info.Transpilers.Select(t => $"{t.owner}#{t.index}#{t.priority}#{t.PatchMethod?.Module.ModuleVersionId}#{t.PatchMethod?.MetadataToken}"));
+                if (_transpiledCallees.TryGetValue(patched, out var cached) && cached.Transpilers == transpilers)
+                {
+                    code = cached.Callees;
+                }
+                else
+                {
+                    code = HarmonyRebuild.Blocker(patched) != null ? Array.Empty<MethodBase>()
+                        : Callees(PatchProcessor.GetCurrentInstructions(patched).Select(c => (c.opcode, (object?)c.operand)));
+                    _transpiledCallees[patched] = (transpilers, code);
+                }
             }
             else
             {
-                code = PatchProcessor.ReadMethodBody(patched).Select(i => (i.Key, (object?)i.Value)).ToList();
+                code = OwnCallees(patched);
             }
-            if (Calls(code, CalleeDepth, known))
+            if (Calls(code, CalleeDepth, isTarget, known))
             {
                 return true;
             }
@@ -267,7 +694,7 @@ public static class InlineGuard
                 continue;
             }
             // Called by the replacement: one level down, like a callee of its own code.
-            if (method != null && (_protected.Contains(method) || (Inlinable(method) && Reaches(method, CalleeDepth - 1, known))))
+            if (method != null && (isTarget(method) || (Inlinable(method) && Reaches(method, CalleeDepth - 1, isTarget, known))))
             {
                 return true;
             }
@@ -275,16 +702,12 @@ public static class InlineGuard
         return false;
     }
 
-    /// <summary>Whether this code calls a protected method, or a callee the JIT may inline does (up to this depth).</summary>
-    private static bool Calls(IEnumerable<(OpCode Op, object? Operand)> code, int depth, Dictionary<MethodBase, Reach> known)
+    /// <summary>Whether these calls reach a target method, or a callee the JIT may inline does (up to this depth).</summary>
+    private static bool Calls(MethodBase[] callees, int depth, Func<MethodBase, bool> isTarget, Dictionary<MethodBase, Reach> known)
     {
-        foreach ((OpCode op, object? operand) in code)
+        foreach (MethodBase callee in callees)
         {
-            if (operand is not MethodBase callee || (op != OpCodes.Call && op != OpCodes.Callvirt && op != OpCodes.Newobj))
-            {
-                continue;
-            }
-            if (_protected.Contains(callee) || (depth > 0 && Inlinable(callee) && Reaches(callee, depth - 1, known)))
+            if (isTarget(callee) || (depth > 0 && Inlinable(callee) && Reaches(callee, depth - 1, isTarget, known)))
             {
                 return true;
             }
@@ -296,7 +719,12 @@ public static class InlineGuard
     /// Whether the JIT may inline a call of this method: a body, not marked NoInlining, not virtual unless it can be
     /// devirtualized (final, or its type sealed), and small enough or marked AggressiveInlining.
     /// </summary>
-    private static bool Inlinable(MethodBase method)
+    private static bool Inlinable(MethodBase method) => _inlinable.GetOrAdd(method, InlinableNow);
+
+    /// <summary>C1: <see cref="Inlinable"/> per method (its flags and IL never change).</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<MethodBase, bool> _inlinable = new();
+
+    private static bool InlinableNow(MethodBase method)
     {
         try
         {
@@ -315,8 +743,8 @@ public static class InlineGuard
         }
     }
 
-    /// <summary>Whether this method's own code calls a protected method, or a callee the JIT may inline does (up to this depth).</summary>
-    private static bool Reaches(MethodBase method, int depth, Dictionary<MethodBase, Reach> known)
+    /// <summary>Whether this method's own code calls a target method, or a callee the JIT may inline does (up to this depth).</summary>
+    private static bool Reaches(MethodBase method, int depth, Func<MethodBase, bool> isTarget, Dictionary<MethodBase, Reach> known)
     {
         if (!known.TryGetValue(method, out Reach reach))
         {
@@ -335,7 +763,7 @@ public static class InlineGuard
         bool found = false;
         try
         {
-            found = Calls(PatchProcessor.ReadMethodBody(method).Select(i => (i.Key, (object?)i.Value)), depth, known);
+            found = Calls(OwnCallees(method), depth, isTarget, known);
         }
         catch (Exception)
         {

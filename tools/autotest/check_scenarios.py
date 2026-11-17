@@ -4,7 +4,12 @@
 
 Known commands: the labels of AutoTest.cs's dispatcher switch only (a nested switch's labels, such as a subcommand's, are
 not commands), plus the top-level labels of a local LocalCommand implementation when one exists (untracked tooling). Also
-checked: the kinds `waitfor` knows (WaitFor's own labels) and the numbers `wait`, `timeout`, `play` and `waitfor` parse.
+checked: the kinds `waitfor` knows (WaitFor's own labels) and the numbers `wait`, `timeout`, `play` and `waitfor` parse;
+the directive comments judge.py and par.ps1 read (`# effects-ran:`, `# effects-zero-ok:`, `# uncompared:`, `# compare-with:`:
+a regex Python compiles, an `effects` line for effects-ran, a scenario that exists for compare-with), and every `expect` regex
+both compile and name their target in a line of several parts: one a COUNTERS line (or any line of 'Part ..., mismatches n;'
+parts) matches through another part's field than its own passes when its own part saw nothing. And the two sides of every
+comparison the runners make (<x>-off/<x>-on, '# compare-with:', co-op <x>off/<x>-off/<x>van) import the same deck.
 """
 import glob
 import os
@@ -84,14 +89,145 @@ def argument_problem(command, arg, kinds):
     return None
 
 
+# judge.py's and par.ps1's directive comments ('# name: value'); a comment that looks like one with another name is a typo.
+DIRECTIVE = re.compile(r'^#\s*(effects-ran|effects-zero-ok|uncompared|compare-with):\s*(.*?)\s*$')
+LOOKS_LIKE_DIRECTIVE = re.compile(r'^#\s*((effects?[-_ ]\w+|uncompared\w*|compare[-_ ]?with)\s*:|(effects?-\w+|uncompared|compare-with)\b)', re.I)
+
+
+def directive_problem(kind, value, names, commands):
+    """What is wrong with a directive line, or None."""
+    if not value:
+        return f'# {kind}: needs a value'
+    if kind == 'compare-with':
+        return None if value in names else f'# compare-with: no scenario {value}'
+    text, version = value, None
+    if kind in ('effects-zero-ok', 'uncompared') and (m := re.match(r'^(.*?)\s+on\s+(\S+)$', value)):
+        text, version = m.group(1), m.group(2)
+    for rx in (text, version):
+        if rx is not None and not (kind == 'effects-ran' and rx == 'all'):
+            try:
+                re.compile(rx)
+            except re.error as e:
+                return f'# {kind}: "{rx}" is not a regex Python reads ({e})'
+    if kind == 'effects-ran' and 'effects' not in commands:
+        return '# effects-ran: the script has no "effects" line (judge.py would find no EFFECT line)'
+    return None
+
+
+def counters_template():
+    """The COUNTERS line AutoTest's 'counters' command logs, every value a placeholder '\\0' (from its interpolated strings)."""
+    with open(os.path.join(BENCH, 'AutoTest.cs'), encoding='utf-8') as f:
+        main = f.read()
+    start = main.find('case "counters":')
+    end = main.find('break;', start)
+    if start < 0 or end < 0:
+        return None
+    body, text, i = main[start:end], [], 0
+    while (i := body.find('$"', i)) >= 0:
+        i += 2
+        depth, chunk, expr = 0, [], []
+        while i < len(body):
+            c = body[i]
+            if depth == 0 and c == '"':
+                break
+            if c == '{':
+                depth += 1
+                if depth == 1:
+                    expr = []
+                    i += 1
+                    continue
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    # A part's name ({X.Name}) is its type's name, the label ({arg...}) '\1', any other value '\0'.
+                    e = ''.join(expr).strip()
+                    chunk.append(m.group(1) if (m := re.match(r'^(\w+)\.Name$', e)) else '\1' if e.startswith('arg') else '\0')
+                    i += 1
+                    continue
+            if depth == 0:
+                chunk.append(c)
+            else:
+                expr.append(c)
+            i += 1
+        text.append(''.join(chunk))
+        i += 1
+    line = ''.join(text).strip()
+    return line if line.startswith('COUNTERS \1') else None
+
+
+def loose_expect(rx, template, labels):
+    """Why an expect regex matches a line of several parts generically ('Part a n, b n; Part2 ...'), or None: it matches the line
+    with every value at zero, or the line with one value set through two parts or more."""
+    if not template:
+        return None
+    head, _, body = template.partition(': ')
+    parts = body.split('; ')
+    for label in labels:
+        start = head.replace('\1', label) + ': '
+        if rx.search(start + '; '.join(parts).replace('\0', '0')):
+            return f'matches COUNTERS {label} with every value at zero'
+        through = set()
+        for pi, part in enumerate(parts):
+            for slot in [k for k, c in enumerate(part) if c == '\0']:
+                one = part[:slot] + '7' + part[slot + 1:]
+                line = start + '; '.join(parts[:pi] + [one] + parts[pi + 1:]).replace('\0', '0')
+                if rx.search(line):
+                    through.add(part.split(' ')[0])
+        if len(through) > 1:
+            return f'matches COUNTERS {label} through {len(through)} parts ({", ".join(sorted(through))}): name its own part'
+    return None
+
+
+def deck_lines(name):
+    """The lines making a scenario's deck (imports, party5), in order."""
+    with open(os.path.join(ROOT, 'scenarios', name + '.txt'), encoding='utf-8') as f:
+        return [line.strip() for line in f if re.search(r'bigdeck import|\bparty5\b', line) and not line.strip().startswith('#')]
+
+
+def compared_pairs(names):
+    """(reference, tested) of the comparisons the runners make: par.ps1's <x>-off/<x>-on and '# compare-with:' lines, parcoop.ps1's
+    <x>off, <x>-off and <x>van co-op twins, peer by peer."""
+    pairs = []
+    for name in sorted(names):
+        if name.endswith('-off') and name[:-4] + '-on' in names:
+            pairs.append((name, name[:-4] + '-on'))
+        with open(os.path.join(ROOT, 'scenarios', name + '.txt'), encoding='utf-8') as f:
+            for line in f:
+                if (m := DIRECTIVE.match(line.strip())) and m.group(1) == 'compare-with' and m.group(2) in names:
+                    pairs.append((m.group(2), name))
+        for role in ('-host', '-client'):
+            if name.endswith(role):
+                base = name[:-len(role)]
+                pairs += [(base + suffix + role, name) for suffix in ('off', '-off', 'van') if base + suffix + role in names]
+    return pairs
+
+
 def main():
     known, kinds = known_commands()
+    template = counters_template()
     bad = 0
     scenarios = glob.glob(os.path.join(ROOT, 'scenarios', '*.txt'))
+    names = {os.path.basename(p)[:-4] for p in scenarios}
+    if template is None:
+        print("AutoTest.cs: the 'counters' command's COUNTERS line not found: loose expects not checked (update check_scenarios.py)")
+        bad += 1
     for path in scenarios:
-        for number_, line in enumerate(open(path, encoding='utf-8'), 1):
-            line = line.strip()
-            if not line or line.startswith('#'):
+        lines = [line.strip() for line in open(path, encoding='utf-8')]
+        commands = {line.partition(' ')[0].lower() for line in lines if line and not line.startswith('#')}
+        labels = {line.partition(' ')[2].strip() for line in lines if line.lower().startswith('counters ')} or {'end'}
+        for number_, line in enumerate(lines, 1):
+            if not line:
+                continue
+            if line.startswith('#'):
+                if m := DIRECTIVE.match(line):
+                    problem = directive_problem(m.group(1), m.group(2), names, commands)
+                elif LOOKS_LIKE_DIRECTIVE.match(line):
+                    problem = f'"{line[:40]}": not a directive judge.py or par.ps1 knows (effects-ran, effects-zero-ok, uncompared, compare-with)'
+                else:
+                    problem = None
+                if problem:
+                    print(f'{os.path.basename(path)}:{number_}: {problem}')
+                    bad += 1
                 continue
             command, _, arg = line.partition(' ')
             command = command.lower()
@@ -101,6 +237,21 @@ def main():
             elif problem := argument_problem(command, arg, kinds):
                 print(f'{os.path.basename(path)}:{number_}: {problem}')
                 bad += 1
+            elif command == 'expect':
+                try:
+                    rx = re.compile(arg.strip())
+                except re.error as e:
+                    print(f'{os.path.basename(path)}:{number_}: expect "{arg.strip()}" is not a regex Python reads ({e})')
+                    bad += 1
+                    continue
+                if why := loose_expect(rx, template, labels):
+                    print(f'{os.path.basename(path)}:{number_}: expect "{arg.strip()}" {why}')
+                    bad += 1
+    for reference, tested in compared_pairs(names):
+        if (a := deck_lines(reference)) != (b := deck_lines(tested)):
+            print(f'{tested}: compared with {reference}, but its deck differs ({len(b)} import line(s) against {len(a)}): '
+                  'a comparison of two decks finds differences that aren\'t the mod\'s')
+            bad += 1
     print(f'{len(scenarios)} scenarios, {len(known)} commands, {len(kinds)} waitfor kinds, {bad} problem(s)')
     return 1 if bad else 0
 

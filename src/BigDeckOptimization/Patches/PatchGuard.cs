@@ -33,6 +33,9 @@ public static class PatchGuard
 
     private static readonly MethodInfo _guard = Reflect.Method(typeof(PatchGuard), nameof(Guard));
 
+    /// <summary>This mod's guard finalizer (void, read-only): for checks listing this mod's own patches on a method.</summary>
+    internal static bool IsGuard(MethodInfo method) => method.MethodHandle == _guard.MethodHandle;
+
     /// <summary>
     /// The guard, first of the method's finalizers (Priority.First): Harmony gives each finalizer the exception the ones before
     /// it left, and another mod's finalizer returning null would hide a fault of this mod's patch from a guard running after it.
@@ -323,6 +326,12 @@ public static class PatchGuard
         var hit = new List<(Type Type, string[] Names)>();
         foreach (StackFrame frame in new StackTrace(exception).GetFrames())
         {
+            // From the throw outwards: a replay of the game's own call (GameCallReplayAttribute) ends the walk, the code that
+            // threw being the game's or another mod's, called as the game would (this mod's patches inside it still count).
+            if (frame.GetMethod() is { } replay && replay.IsDefined(typeof(GameCallReplayAttribute), false))
+            {
+                break;
+            }
             if (frame.GetMethod()?.DeclaringType is not { } declaring || declaring.Assembly != typeof(PatchGuard).Assembly)
             {
                 continue;
@@ -435,4 +444,15 @@ public static class PatchGuard
         }
         return type;
     }
+}
+
+/// <summary>
+/// On a method of this mod that only replays a call the game itself makes at that point, with the same arguments (RelicFlashMerge's
+/// sound of a merged flash): an exception from inside it is the game's or another mod's, thrown where the game's own call would
+/// throw it and passed on to the game's caller as such. PatchGuard doesn't fault or blame the patch whose code holds the replay
+/// (nor any frame outside it); this mod's patches called inside the replay are still judged as anywhere.
+/// </summary>
+[AttributeUsage(AttributeTargets.Method)]
+internal sealed class GameCallReplayAttribute : Attribute
+{
 }

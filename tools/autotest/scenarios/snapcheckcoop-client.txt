@@ -11,8 +11,9 @@ cmd bigdeck import ref all cards {hash:ref}
 cmd bigdeck import ref all cards {hash:ref}
 cmd bdperf checks off
 cmd bdperf segments verify off
-wait 26
 immortal until 99
+# Before the host starts the fight (its barrier before cmd fight).
+barrier ready 900
 waitfor combat 900
 waitfor idle 900
 wait 10

@@ -4,6 +4,8 @@
 
 One block per moment (idle, plays, end of turn, combat start), one row per log: seconds, fps, percentiles, where a frame's time
 goes (ms per frame: process step, draw step on the main thread, GPU beside them, the rest), main thread use, GC, allocations.
+'1%low' is the worst window's (a moment is measured once per turn: the lowest of its windows' 1% lows), 'in' names that window
+and 'med' is the median of the windows' 1% lows (one bad turn in five hides there: 130, 128, 125, 40, 45 -> 125).
 Then the time of a play from the click to when the player can act again.
 """
 import re
@@ -30,7 +32,7 @@ def read(path):
     with open(path, encoding='utf-8', errors='replace') as f:
         for line in f:
             if m := FPS.search(line):
-                windows.setdefault(moment(m[1]), []).append(dict(frames=int(m[2]), wall=float(m[3]), low=int(m[5]), worst=int(m[6]), over33=int(m[7]), over100=int(m[9])))
+                windows.setdefault(moment(m[1]), []).append(dict(label=m[1], frames=int(m[2]), wall=float(m[3]), low=int(m[5]), worst=int(m[6]), over33=int(m[7]), over100=int(m[9])))
             elif m := FRAMES.search(line):
                 w = windows.get(moment(m[1]))
                 if w:
@@ -54,7 +56,8 @@ def weighted(items, key):
 def row(name, deck, items):
     frames = sum(i['frames'] for i in items)
     wall = sum(i['wall'] for i in items)
-    cells = [name, f'{deck}', f'{wall:.1f}', f'{frames / max(wall, 0.001):.0f}', f'{statistics.median(i["low"] for i in items):.0f}',
+    lowest = min(items, key=lambda i: i['low'])
+    cells = [name, f'{deck}', f'{wall:.1f}', f'{frames / max(wall, 0.001):.0f}', f'{lowest["low"]}', lowest['label'], f'{statistics.median(i["low"] for i in items):.0f}',
              f'{max(i.get("p999", 0) for i in items):.1f}', f'{max(i["worst"] for i in items)}', f'{sum(i.get("over8", 0) for i in items) * 100 / max(frames, 1):.1f}',
              f'{sum(i["over33"] for i in items)}', f'{sum(i["over100"] for i in items)}']
     cells += [f'{weighted(items, k):.2f}' for k in ('p50', 'process', 'processp99', 'draw', 'drawp99', 'gpu', 'rest')]
@@ -62,7 +65,7 @@ def row(name, deck, items):
     return cells
 
 
-HEAD = ['log', 'cards', 'time s', 'fps', '1%low', 'p99.9', 'worst', '%>8ms', '>33', '>100', 'p50', 'proc', 'proc99', 'draw', 'draw99', 'gpu', 'rest', 'main%', 'draws', 'gc ms', 'MB']
+HEAD = ['log', 'cards', 'time s', 'fps', '1%low', 'in', 'med', 'p99.9', 'worst', '%>8ms', '>33', '>100', 'p50', 'proc', 'proc99', 'draw', 'draw99', 'gpu', 'rest', 'main%', 'draws', 'gc ms', 'MB']
 
 
 def print_table(rows, markdown):
