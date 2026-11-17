@@ -1,5 +1,11 @@
 # Co-op snapshot pieces against the game's own, same session: after each step, the optimized checksum then the vanilla one
 # ("checksum x" / "checksum x vanilla" must print the same value). ~4,700 cards + the reference relics, plays over turns (piles moving).
+# Moved piles off (snapmoved off): the reference of snapcheck-5k (compare-with), its CHECKSUM and STATE lines line for line.
+# 7 turns, the same on both sides of the pair (compare.py wants the same lines). Not more: `immortal` only clamps
+# Creature.LoseHpInternal, while Doom (most likely: No Escape adds half the Doom already there, v0.113 also checks it after
+# the player's turn) kills through CreatureCmd.Kill once it reaches the enemy's HP: on v0.113.1 the Calcified Cultist is
+# gone before turn 7's enemy turn, the Damp Cultist dies at turn 8's end, the combat is won and the next 'waitfor idle'
+# waits out its 300 s.
 timeout 900
 newrun NECROBINDER 1234
 waitfor run 120
@@ -135,4 +141,50 @@ endturn
 waitfor idle 300
 checksum t5 end
 checksum t5 end vanilla
+cmd energy 50
+checksum t6 energy
+checksum t6 energy vanilla
+play 2
+waitfor idle 120
+checksum t6 p1
+checksum t6 p1 vanilla
+play 2
+waitfor idle 120
+checksum t6 p2
+checksum t6 p2 vanilla
+play 2
+waitfor idle 120
+checksum t6 p3
+checksum t6 p3 vanilla
+play 2
+waitfor idle 120
+checksum t6 p4
+checksum t6 p4 vanilla
+endturn
+waitfor idle 300
+checksum t6 end
+checksum t6 end vanilla
+cmd energy 50
+checksum t7 energy
+checksum t7 energy vanilla
+play 2
+waitfor idle 120
+checksum t7 p1
+checksum t7 p1 vanilla
+play 2
+waitfor idle 120
+checksum t7 p2
+checksum t7 p2 vanilla
+play 2
+waitfor idle 120
+checksum t7 p3
+checksum t7 p3 vanilla
+play 2
+waitfor idle 120
+checksum t7 p4
+checksum t7 p4 vanilla
+endturn
+waitfor idle 300
+checksum t7 end
+checksum t7 end vanilla
 quit

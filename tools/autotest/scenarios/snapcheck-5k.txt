@@ -1,6 +1,11 @@
 # Co-op snapshot pieces against the game's own, same session: after each step, the optimized checksum then the vanilla one
 # ("checksum x" / "checksum x vanilla" must print the same value). ~4,700 cards + the reference relics, plays over turns (piles moving).
 # compare-with: snapcheck-5k-off
+# 7 turns, the same on both sides of the pair (compare.py wants the same lines). Not more: `immortal` only clamps
+# Creature.LoseHpInternal, while Doom (most likely: No Escape adds half the Doom already there, v0.113 also checks it after
+# the player's turn) kills through CreatureCmd.Kill once it reaches the enemy's HP: on v0.113.1 the Calcified Cultist is
+# gone before turn 7's enemy turn, the Damp Cultist dies at turn 8's end, the combat is won and the next 'waitfor idle'
+# waits out its 300 s.
 timeout 1500
 newrun NECROBINDER 1234
 waitfor run 120
@@ -181,74 +186,5 @@ endturn
 waitfor idle 300
 checksum t7 end
 checksum t7 end vanilla
-cmd energy 50
-checksum t8 energy
-checksum t8 energy vanilla
-play 2
-waitfor idle 120
-checksum t8 p1
-checksum t8 p1 vanilla
-play 2
-waitfor idle 120
-checksum t8 p2
-checksum t8 p2 vanilla
-play 2
-waitfor idle 120
-checksum t8 p3
-checksum t8 p3 vanilla
-play 2
-waitfor idle 120
-checksum t8 p4
-checksum t8 p4 vanilla
-endturn
-waitfor idle 300
-checksum t8 end
-checksum t8 end vanilla
-cmd energy 50
-checksum t9 energy
-checksum t9 energy vanilla
-play 2
-waitfor idle 120
-checksum t9 p1
-checksum t9 p1 vanilla
-play 2
-waitfor idle 120
-checksum t9 p2
-checksum t9 p2 vanilla
-play 2
-waitfor idle 120
-checksum t9 p3
-checksum t9 p3 vanilla
-play 2
-waitfor idle 120
-checksum t9 p4
-checksum t9 p4 vanilla
-endturn
-waitfor idle 300
-checksum t9 end
-checksum t9 end vanilla
-cmd energy 50
-checksum t10 energy
-checksum t10 energy vanilla
-play 2
-waitfor idle 120
-checksum t10 p1
-checksum t10 p1 vanilla
-play 2
-waitfor idle 120
-checksum t10 p2
-checksum t10 p2 vanilla
-play 2
-waitfor idle 120
-checksum t10 p3
-checksum t10 p3 vanilla
-play 2
-waitfor idle 120
-checksum t10 p4
-checksum t10 p4 vanilla
-endturn
-waitfor idle 300
-checksum t10 end
-checksum t10 end vanilla
 effects end
 quit
