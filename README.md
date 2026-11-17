@@ -4,10 +4,12 @@
 
 Removes the lag of huge decks in Slay the Spire 2: thousands of cards, hundreds of relics, in singleplayer and in co-op.
 
+**Works on both branches of the game:** the public version and the public-beta branch.
+
 **Playing with Limitless or BaseLib?** The mod also speeds up a large part of their work during combat, with the same results.
 
-**In co-op, every player needs this mod, and every player must have it on (or every player off).** The game won't let a player without it, or with it turned off while the others have it on, join (it says the mods don't match).
-Why: with a huge deck, the mod speeds the game up so much that a player without it falls far behind. For example, with about 8,000 cards and a few hundred relics, starting a combat takes about 4 seconds with the mod and over 30 seconds without it. The game can't handle players that far apart: the cards played in the meantime get lost, and the run desyncs or freezes.
+**In co-op, every player needs this mod, and every player must have it on (or every player off).** The game won't let a player without it, or with it turned off while the others have it on, join (it says the mods don't match). With mods that add to the game's lists of what reacts to effects (RitsuLib, EnchantLib...), every player also needs the "Co-op state check" option set the same way.
+Why: with a huge deck, the mod speeds the game up so much that a player without it falls far behind. For example, with about 8,000 cards and a few hundred relics, starting a combat takes about 5 seconds with the mod and nearly a minute without it (on the beta, about 10 seconds against several minutes). The game can't handle players that far apart: the cards played in the meantime get lost, and the run desyncs or freezes.
 
 **Want a settings menu?** Install [BaseLib](https://steamcommunity.com/sharedfiles/filedetails/?id=3737335127) (optional) to turn each improvement on or off from the game's settings.
 
@@ -15,7 +17,7 @@ Why: with a huge deck, the mod speeds the game up so much that a player without 
 
 With a huge deck, the game slows down more and more until every action freezes it. With the mod:
 
-- **Entering a combat:** with 8,000+ cards and hundreds of relics, about 4 seconds instead of half a minute.
+- **Entering a combat:** with 8,000+ cards and hundreds of relics, about 5 seconds instead of nearly a minute (on the game's beta, about 10 seconds instead of several minutes).
 - **Playing cards:** smooth again, even past 10,000 cards.
 - **Limitless and BaseLib:** the mod also speeds up a good part of their work during combat. Limitless' stacked enchantments are no longer re-saved after every action when nothing changed (nor the save data BaseLib attaches to each copy), and BaseLib's card modifier and card type line checks are skipped when no mod uses them (smooth draw pile scrolling with tens of thousands of cards). Same results.
 - **Cards that search your piles:** cards like Hidden Gem no longer freeze the game.
@@ -39,7 +41,7 @@ Co-op with very big decks is much better, but not instant: going from one turn t
 
 Slay the Spire 2 isn't made for thousands of cards and hundreds of relics, but a run can get there:
 
-- **In vanilla:** **Pael's Growth** (start of act 2) lets you clone a card at every rest site, copies included, so their number doubles each time. Add **Bing Bong**, **Dolly's Mirror** or the **Reflections** event and a good run ends with thousands of cards.
+- **In vanilla:** **Pael's Growth** (start of act 2) lets you clone a card at every rest site, copies included, so their number doubles each time. Add **Bing Bong**, **Dolly's Mirror** or the **Reflections** event and a good run ends with tens of thousands of cards.
 - **With other mods:** many mods give you more cards and relics, or more time to collect them. **Limitless**, for example, adds infinite acts, so you can keep cloning forever.
 - **In co-op:** the lag comes from the cards and relics of all players together. 4 players with 2,000 cards each lag about as much as one player with 8,000, so a laggy amount comes much sooner.
 
