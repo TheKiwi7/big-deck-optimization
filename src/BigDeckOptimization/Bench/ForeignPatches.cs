@@ -318,6 +318,11 @@ public static class ForeignPatches
         {
             return ListenerCache.WalkOutputSelfTest();
         }
+        // KeptOnly's memo over the kept outputs: its controls (an error, a memo made different), counters and state checks.
+        if (parts[0] == "keptmemo" && parts.Length > 1)
+        {
+            return new[] { ListenerCache.MemoControl(string.Join(" ", parts.Skip(1))) };
+        }
         // The name gates' resolution (re-audit of the premises, P-1): closed generic names, types being built, types emitted later.
         if (parts[0] == "namegate" && parts.Length > 1 && parts[1] == "selftest")
         {
@@ -939,6 +944,7 @@ public static class ForeignPatches
             + $"{ListenerCache.KeptDroppedAfterForeign}, first walks after them kept anew {ListenerCache.KeptAfterForeign}, reused {ListenerCache.ReusedAfterForeign}), "
             + $"out of scope {ListenerCache.ReusesOutOfScope}, "
             + $"suspended {ListenerCache.SuspendedRevalidations}, on {ListenerCache.WalkReuseEnabled}");
+        lines.Add(ListenerCache.MemoControl("status"));
         lines.AddRange(PatchSafety.RuntimeReport().Select(t => "FOREIGN runtime " + t));
         lines.AddRange(HookSkip.GatedWalkReport().Select(t => "FOREIGN gated walks " + t));
         lines.AddRange(HookSkip.FilteredWalkReport().Select(t => "FOREIGN filtered walks " + t));
@@ -999,13 +1005,15 @@ public static class ForeignPatches
     {
         Count("statechanged-subscriber calls");
 #if BENCH
-        long touchedBefore = ListenerCache.WalksReused + ListenerCache.WalksVerified + ListenerCache.WalksMaterialized;
+        long touchedBefore = ListenerCache.WalksReused + ListenerCache.WalksVerified + ListenerCache.WalksMaterialized
+            + ListenerCache.MemoHits + ListenerCache.MemoBuilt + ListenerCache.MemoVerified;
 #endif
         List<AbstractModel> combat = state.IterateHookListeners().ToList();
         RunState? runState = state.RunState as RunState;
         List<AbstractModel>? run = runState?.IterateHookListeners(state).ToList();
 #if BENCH
-        _freshHandlerTouched += ListenerCache.WalksReused + ListenerCache.WalksVerified + ListenerCache.WalksMaterialized - touchedBefore;
+        _freshHandlerTouched += ListenerCache.WalksReused + ListenerCache.WalksVerified + ListenerCache.WalksMaterialized
+            + ListenerCache.MemoHits + ListenerCache.MemoBuilt + ListenerCache.MemoVerified - touchedBefore;
 #endif
         List<AbstractModel> freshCombat = ListenerCache.RunVanilla(() => state.IterateHookListeners().ToList());
         List<AbstractModel>? freshRun = runState == null ? null : ListenerCache.RunVanilla(() => runState.IterateHookListeners(state).ToList());

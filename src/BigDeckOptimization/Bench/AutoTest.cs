@@ -549,6 +549,9 @@ public static partial class AutoTest
             (ListenerCache.WalkReuseName + ".ForeignHandlers", ListenerCache.ForeignHandlerCalls),
             (ListenerCache.WalkReuseName + ".DroppedAfterForeign", ListenerCache.KeptDroppedAfterForeign),
             (ListenerCache.WalkReuseName + ".KeptAfterForeign", ListenerCache.KeptAfterForeign),
+            // KeptOnly's memo over the kept outputs: filtered walks replayed, memos made, uses checked against KeptOnly's own loop.
+            (ListenerCache.WalkMemoName, ListenerCache.MemoHits), (ListenerCache.WalkMemoName + ".Built", ListenerCache.MemoBuilt),
+            (ListenerCache.WalkMemoName + ".Verified", ListenerCache.MemoVerified),
             (RelicFlashMerge.Name + ".Holder", RelicFlashMerge.MergedHolder), (RelicFlashMerge.Name + ".Creature", RelicFlashMerge.MergedCreature),
             (RelicFlashMerge.Name + ".SceneRefusals", RelicFlashMerge.SceneRefusals), (RelicFlashMerge.Name + ".NoNode", RelicFlashMerge.MergedNoNode),
             // Only where another mod patches a small method after this mod's load (foreign-helpers-2k-on).

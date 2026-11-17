@@ -4,11 +4,17 @@
 # after those postfixes are kept and reused for the refresh's walks (effectcheck ListenerCache.Walks grew), one reuse in 16
 # compared with a fresh call (ListenerCache.Walks.Verified grew, no difference logged), never in the co-op state check or a
 # game-value refresh. The kept note names the walks. CHECKSUM and STATE identical with foreign-walkreuse-1k-off; the expansion never
-# ran on its own output (require nodouble). ~945 cards.
+# ran on its own output (require nodouble). KeptOnly's memo (HookSkip's filtered walks of a refresh replaying each filter's result
+# over the kept output): memos made and replayed (ListenerCache.WalkMemo, .Built grew), checked against KeptOnly's own loop
+# (.Verified grew), no difference (foreignpatch keptmemo require on). ~945 cards.
 expect FOREIGN kept ListenerCache\.Walks: other mods' code on the listener walks \(.*CombatState\.IterateHookListeners.*\) runs once per display refresh instead of once per walk
 expect EFFECTCHECK ListenerCache\.Walks grew since 'start': [0-9]+ -> [1-9]
 expect EFFECTCHECK ListenerCache\.Walks\.Verified grew since 'start': [0-9]+ -> [1-9]
 expect FOREIGN walk-expand-postfix never ran on its own output
+expect EFFECTCHECK ListenerCache\.WalkMemo grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK ListenerCache\.WalkMemo\.Built grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK ListenerCache\.WalkMemo\.Verified grew since 'start': [0-9]+ -> [1-9]
+expect FOREIGN keptmemo built [1-9]\d*, hits [1-9]\d*, checked \d+, mismatches 0, on True, faulted False, walk reuse on True
 timeout 1500
 newrun NECROBINDER 1234
 waitfor run 120
@@ -53,6 +59,10 @@ effects end
 effectcheck ListenerCache.Walks grew start
 effectcheck ListenerCache.Walks.Verified grew start
 foreignpatch require nodouble
+effectcheck ListenerCache.WalkMemo grew start
+effectcheck ListenerCache.WalkMemo.Built grew start
+effectcheck ListenerCache.WalkMemo.Verified grew start
+foreignpatch keptmemo require on
 cmd bdopt why
 counters end
 foreignpatch remove

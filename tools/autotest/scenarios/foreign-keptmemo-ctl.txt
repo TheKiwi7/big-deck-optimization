@@ -1,0 +1,47 @@
+# KeptOnly's memo's control (mod on; DESIGN Walks Tier 2, the memo): with RitsuLib's walk shape (walk-expand-postfix), the memo is
+# made and replayed in the display refreshes (ListenerCache.WalkMemo grew), then a memo is made different (its first kept listener
+# removed: foreignpatch keptmemo wrong) and that use checked: the caller gets KeptOnly's own loop, the check finds the difference
+# (logged), the memo turns off for the session and is faulted while the walk reuse itself stays on (foreignpatch keptmemo require
+# off), and no memo is used after it (ListenerCache.WalkMemo the same) while walk outputs are still reused. ~945 cards.
+expect ListenerCache: a memoized filtered walk differs from the filter run again over the same kept walk output
+expect EFFECTCHECK ListenerCache\.WalkMemo grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK ListenerCache\.WalkMemo same since 'off'
+expect FOREIGN keptmemo built \d+, hits \d+, checked \d+, mismatches 1, on False, faulted True, walk reuse on True
+timeout 1500
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+foreignpatch walk-expand-postfix MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners
+effects start
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+play 4
+waitfor idle 120
+checksum t1 plays
+effects memo
+effectcheck ListenerCache.WalkMemo grew start
+effectcheck ListenerCache.WalkMemo.Built grew start
+foreignpatch keptmemo wrong
+play 4
+waitfor idle 120
+checksum t2 plays
+foreignpatch keptmemo require off
+effects off
+play 4
+waitfor idle 120
+checksum t2 more plays
+endturn
+waitfor idle 300
+checksum t2 end
+play 4
+waitfor idle 120
+checksum t3 plays
+effects end
+effectcheck ListenerCache.WalkMemo same off
+effectcheck ListenerCache.Walks grew off
+cmd bdopt why
+foreignpatch remove
+quit

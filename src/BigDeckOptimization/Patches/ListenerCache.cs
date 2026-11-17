@@ -457,7 +457,7 @@ public static class ListenerCache
 #endif
                 // D1 (re-audit of c2f613b): Checked is set by a check that covered everything its caller read (CheckedOutput), not
                 // when a check is handed out. D2: the per-key sample's position moves with the scope (display only).
-                bool check = !entry.Checked || (CountReuse(key) + SampleOffset()) % WalkVerifyEvery == 0;
+                bool check = !entry.Checked || CountReuse(key) % WalkVerifyEvery == 0;
                 if (!check)
                 {
 #if BENCH
@@ -497,8 +497,15 @@ public static class ListenerCache
         }
     }
 
-    /// <summary>D2 (re-audit of c2f613b): where in each run of <see cref="WalkVerifyEvery"/> reuses the sample falls, per scope (0 in the self-test).</summary>
-    private static int SampleOffset() => SelfTesting ? 0 : (int)((uint)(_scopeSerial * 7) % WalkVerifyEvery);
+    /// <summary>
+    /// D2 (re-audit of c2f613b; review of the memo, 2026-11-17): where in each run of <see cref="WalkVerifyEvery"/> uses a
+    /// counter's sample falls, fixed per counter (a walk key's reuses, a memo's uses) and spread between counters (0 in the
+    /// self-test). Each counter then samples exactly one use in 16; an offset moving with the scope could skip or repeat
+    /// samples (aliasing with the scope's count of uses).
+    /// </summary>
+    private static int StartOffset() => SelfTesting ? 0 : (int)((uint)(_nextStart++ * 7) % WalkVerifyEvery);
+
+    [ThreadStatic] private static int _nextStart;
 
     /// <summary>
     /// D3 (re-audit of c2f613b): every kept output closed (an unfinished source disposed once no caller is in it: other mods'
@@ -524,7 +531,10 @@ public static class ListenerCache
         _reuseCounts ??= new ConditionalWeakTable<object, Dictionary<int, int>>();
         Dictionary<int, int> counts = _reuseCounts.GetValue(key.Item1, _ => new Dictionary<int, int>());
         int child = key.Item2 == null ? 0 : RuntimeHelpers.GetHashCode(key.Item2);
-        counts.TryGetValue(child, out int count);
+        if (!counts.TryGetValue(child, out int count))
+        {
+            count = StartOffset();
+        }
         counts[child] = ++count;
         return count;
     }
@@ -566,9 +576,9 @@ public static class ListenerCache
     /// longer reused. The source is disposed at its end or on its throw, as a foreach does; a source no caller enumerated to its
     /// end is not disposed when the callers stop (a later walk may go further) but left to the collector (the game's iterators'
     /// finally blocks only dispose list enumerators: a stated part of the premise). Not a list: an enumerable only, as the game's
-    /// iterator (nothing to test, cast or change).
+    /// iterator (nothing to test, cast or change). Internal only for <see cref="FilteredMemo"/> (KeptOnly's memo over it).
     /// </summary>
-    private sealed class LazyOutput : IEnumerable<AbstractModel>
+    internal sealed class LazyOutput : IEnumerable<AbstractModel>
     {
         private readonly IEnumerable<AbstractModel> _source;
         private readonly (object, object?) _key;
@@ -587,6 +597,9 @@ public static class ListenerCache
             _key = key;
         }
 
+        /// <summary>Its walk key: (combat state, null) or (run state, child).</summary>
+        public (object, object?) Key => _key;
+
         /// <summary>The elements pulled so far, and whether the source reached its end (or threw, or was closed).</summary>
         public int Count => _items.Count;
         public bool Done => _done;
@@ -604,7 +617,7 @@ public static class ListenerCache
 
         public IEnumerator<AbstractModel> GetEnumerator()
         {
-            _consumers++;
+            Enter();
             try
             {
                 for (int i = 0; ; i++)
@@ -618,10 +631,95 @@ public static class ListenerCache
             }
             finally
             {
-                _consumers--;
-                if (_closeAsked && _consumers == 0)
+                Leave();
+            }
+        }
+
+        /// <summary>
+        /// A caller starts enumerating it (its own enumerator, or KeptOnly's memo over it: <see cref="FilteredMemo"/>), and leaves
+        /// it: a close asked meanwhile is done when the last one leaves (D3), whichever way they read it.
+        /// </summary>
+        internal void Enter() => _consumers++;
+
+        internal void Leave()
+        {
+            _consumers--;
+            if (_closeAsked && _consumers == 0)
+            {
+                Close();
+            }
+        }
+
+        /// <summary>
+        /// Element <paramref name="index"/>, pulled if not yet (as the enumerator's step to it would: its end, a throw met
+        /// there and rethrown to every later caller, the source disposed). For a caller between <see cref="Enter"/> and
+        /// <see cref="Leave"/>.
+        /// </summary>
+        internal bool TryAt(int index, out AbstractModel model)
+        {
+            while (index >= _items.Count)
+            {
+                if (!Pull())
                 {
-                    Close();
+                    model = null!;
+                    return false;
+                }
+            }
+            model = _items[index];
+            return true;
+        }
+
+        /// <summary>Type ids of the pulled elements, worked out once per element for every filter's memo (0: not yet, else id + 1).</summary>
+        private int[] _typeIds = Array.Empty<int>();
+
+        /// <summary>
+        /// FastListeners' type id of pulled element <paramref name="index"/> (<paramref name="idOf"/>, main thread only), worked
+        /// out once and kept: an object's type never changes and a type's id is never given again (the ids only grow).
+        /// </summary>
+        internal int TypeIdAt(int index, Func<AbstractModel, int> idOf)
+        {
+            if (index >= _typeIds.Length)
+            {
+                Array.Resize(ref _typeIds, Math.Max(index + 1, Math.Max(64, _typeIds.Length * 2)));
+            }
+            int known = _typeIds[index];
+            if (known == 0)
+            {
+                known = idOf(_items[index]) + 1;
+                _typeIds[index] = known;
+            }
+            return known - 1;
+        }
+
+        /// <summary>KeptOnly's memos over this output, per filter (<see cref="FilteredMemo"/>): they live and go with it.</summary>
+        private Dictionary<object, FilteredMemo>? _memos;
+
+        /// <summary>This filter's memo over this output, made now if it has none (<paramref name="built"/>).</summary>
+        internal FilteredMemo MemoOf(object filter, out bool built)
+        {
+            _memos ??= new Dictionary<object, FilteredMemo>(ReferenceEqualityComparer.Instance);
+            built = !_memos.TryGetValue(filter, out FilteredMemo? memo);
+            if (built)
+            {
+                memo = new FilteredMemo(this);
+                _memos[filter] = memo;
+            }
+            return memo!;
+        }
+
+        /// <summary>
+        /// Every memo over this output turned off and dropped (the output closed, the memo's part turned off): a caller still
+        /// in one goes on with KeptOnly's own loop from where it is, over this output, as without the memo.
+        /// </summary>
+        internal void DropMemos()
+        {
+            Dictionary<object, FilteredMemo>? memos = _memos;
+            _memos = null;
+            if (memos != null)
+            {
+                foreach (FilteredMemo memo in memos.Values)
+                {
+                    memo.Off = true;
                 }
             }
         }
@@ -635,6 +733,9 @@ public static class ListenerCache
         /// </summary>
         public void Close()
         {
+            // Its memos go with it at once (a complete output too: no later walk reads it), also when the close waits for a
+            // caller (a version replacing it, exact mode, a drop): a memo caller in it goes on with KeptOnly's own loop over it.
+            DropMemos();
             if (_consumers > 0 || _pulling)
             {
                 _closeAsked = true;
@@ -762,10 +863,19 @@ public static class ListenerCache
             _version = version;
         }
 
+        /// <summary>Whether enumerating it now gives the kept output (else the call's own).</summary>
+        private bool InScope => _scope == _scopeSerial && _version == ListenerCache._version && !_kept.Closed && WalkReuseEnabled && !_exactScope
+            && _foreignDepth == 0 && !_mirrorDeclined && Serving && !_kept.Pulling;
+
+        /// <summary>
+        /// The kept output if enumerating this reuse now would give it (<see cref="GetEnumerator"/>'s own test, nothing counted),
+        /// else null: KeptOnly's memo (<see cref="MemoFor"/>) stands for an enumeration of exactly that output.
+        /// </summary>
+        public LazyOutput? KeptNow() => InScope ? _kept : null;
+
         public IEnumerator<AbstractModel> GetEnumerator()
         {
-            bool inScope = _scope == _scopeSerial && _version == ListenerCache._version && !_kept.Closed && WalkReuseEnabled && !_exactScope
-                && _foreignDepth == 0 && !_mirrorDeclined && Serving && !_kept.Pulling;
+            bool inScope = InScope;
 #if BENCH
             if (!inScope)
             {
@@ -781,6 +891,271 @@ public static class ListenerCache
 #if BENCH
     /// <summary>Reused outputs enumerated outside the scope they were kept for: given the call's own output (W-1b's test).</summary>
     public static long ReusesOutOfScope { get; private set; }
+#endif
+
+    // ---- KeptOnly's memo over a kept walk output (Walks Tier 2: the filtered walks of a display refresh) ----
+
+    /// <summary>The memo of the filtered walks over kept walk outputs (a part of the combat refresh): its switch, off for the session after a difference or an error.</summary>
+    public const string WalkMemoName = Name + ".WalkMemo";
+
+    public static bool WalkMemoEnabled { get; set; } = true;
+
+    /// <summary>
+    /// One filter's <c>FastListeners.KeptOnly</c> result over one kept walk output, built as its callers go: the kept elements
+    /// in order, each one's index in the output, how many of the output's elements were judged, whether the output's end was
+    /// reached. A filtered walk whose walk is a <see cref="ReusedOutput"/> giving the kept output when enumerated (the call
+    /// KeptOnly's loop would make) replays it, judging further elements only when it goes further, so the kept output is pulled
+    /// exactly as far as KeptOnly's own loop over it would pull it. A stacked enchantment is a live entry, judged at every
+    /// replay (its verdict reads its inner enchantments). Lives with its output (<see cref="LazyOutput.DropMemos"/>:
+    /// its close at the scope's end, a version change of its key, exact mode, after another mod's CombatStateChanged handler,
+    /// the parts' faults). Off: callers go on with KeptOnly's own loop from where they are (a verdict that threw, a drop).
+    /// Main thread only.
+    /// </summary>
+    internal sealed class FilteredMemo
+    {
+        public readonly LazyOutput Source;
+        public readonly List<AbstractModel> Kept = new();
+        public readonly List<int> KeptAt = new();
+        /// <summary>Per entry: a live one (a stacked enchantment), judged with the filter's Keeps at every replay, kept or not then.</summary>
+        public readonly List<bool> Live = new();
+        public int Judged;
+        public bool Done;
+        public bool Off;
+#if BENCH
+        /// <summary>The filter would have dropped the first element (KeptOnly keeps it: A4): FastListeners.FirstKept counts each replay.</summary>
+        public bool FirstWouldDrop;
+        /// <summary>The first element is a live one: FastListeners.FirstKept's test runs on it at each replay, as KeptOnly's loop.</summary>
+        public bool FirstLive;
+#endif
+
+        /// <summary>Its filter's uses over its walk key, across scopes (<see cref="MemoStats"/>).</summary>
+        internal MemoStats? Stats;
+
+        public FilteredMemo(LazyOutput source)
+        {
+            Source = source;
+        }
+    }
+
+    /// <summary>
+    /// Per filter and walk key ((combat state) or (run state, child), as W-4's per-key counts), across scopes: the memos' uses
+    /// (from a fixed start, <see cref="StartOffset"/>) and whether one was checked yet. The first use of a filter's memo over a
+    /// key is checked, then one in 16. Weak on the state; the child combat by its identity hash (as <see cref="CountReuse"/>).
+    /// </summary>
+    internal sealed class MemoStats
+    {
+        public int Uses;
+        public bool Checked;
+    }
+
+    [ThreadStatic] private static ConditionalWeakTable<object, Dictionary<(object Filter, int Child), MemoStats>>? _memoStats;
+
+    private static MemoStats StatsOf(object filter, (object, object?) key)
+    {
+        _memoStats ??= new ConditionalWeakTable<object, Dictionary<(object Filter, int Child), MemoStats>>();
+        Dictionary<(object Filter, int Child), MemoStats> byFilter = _memoStats.GetValue(key.Item1, _ => new Dictionary<(object Filter, int Child), MemoStats>());
+        var at = (filter, key.Item2 == null ? 0 : RuntimeHelpers.GetHashCode(key.Item2));
+        if (!byFilter.TryGetValue(at, out MemoStats? stats))
+        {
+            stats = new MemoStats { Uses = StartOffset() };
+            byFilter[at] = stats;
+        }
+        return stats;
+    }
+
+#if BENCH
+    /// <summary>Filtered walks answered from a memo, memos made, memo uses compared with KeptOnly's own loop (the effects check).</summary>
+    public static long MemoHits { get; private set; }
+    public static long MemoBuilt { get; private set; }
+    public static long MemoVerified { get; private set; }
+
+    /// <summary>Test-only injections (<c>foreignpatch keptmemo fault|wrong</c>): an error in the memo's own code, a memo made different.</summary>
+    private static bool _memoInjectFault, _memoInjectWrong;
+#endif
+    public static long MemoMismatches { get; private set; }
+
+    /// <summary>
+    /// The memo of <paramref name="filter"/> over the kept output <paramref name="walk"/> gives when enumerated now, or null:
+    /// the walk isn't a reuse, or enumerating it now gives the call's own output (<see cref="ReusedOutput.KeptNow"/>: outside
+    /// its scope, a version or exact mode since, another mod's handler running, its output closed or running), or the part is
+    /// off, or the memo is off. Called by KeptOnly at its first step, where its loop would call the walk's GetEnumerator.
+    /// <paramref name="check"/>: this use runs KeptOnly's own loop, compared with the memo (the first use per filter, then one
+    /// in <see cref="WalkVerifyEvery"/>). Never throws: an error here turns the part off and KeptOnly runs its own loop.
+    /// </summary>
+    internal static FilteredMemo? MemoFor(IEnumerable<AbstractModel> walk, object filter, out bool check)
+    {
+        check = false;
+        if (!WalkMemoEnabled || walk is not ReusedOutput reused)
+        {
+            return null;
+        }
+        try
+        {
+            LazyOutput? kept = reused.KeptNow();
+            if (kept == null)
+            {
+                return null;
+            }
+#if BENCH
+            if (_memoInjectFault)
+            {
+                _memoInjectFault = false;
+                throw new InvalidOperationException("injected memo fault (foreignpatch keptmemo fault)");
+            }
+#endif
+            FilteredMemo memo = kept.MemoOf(filter, out bool built);
+            if (memo.Off)
+            {
+                return null;
+            }
+            if (built)
+            {
+#if BENCH
+                MemoBuilt++;
+#endif
+                return memo;
+            }
+            MemoStats stats = memo.Stats ??= StatsOf(filter, kept.Key);
+            check = !stats.Checked || ++stats.Uses % WalkVerifyEvery == 0;
+#if BENCH
+            if (_memoInjectWrong && memo.Kept.Count >= 2)
+            {
+                // The control: a memo made different (its first kept element gone: compared by any caller reading one), and
+                // this use checked: the caller gets KeptOnly's own loop, the comparison must find the difference and turn the part off.
+                _memoInjectWrong = false;
+                memo.Kept.RemoveAt(0);
+                memo.KeptAt.RemoveAt(0);
+                memo.Live.RemoveAt(0);
+                check = true;
+            }
+            if (check)
+            {
+                MemoVerified++;
+            }
+            else
+            {
+                MemoHits++;
+            }
+#endif
+            return memo;
+        }
+        catch (Exception e)
+        {
+            check = false;
+            WalkMemoFailed(e);
+            return null;
+        }
+    }
+
+    /// <summary>A checked use ended: it compared everything its caller read (the filter's memos over that key then sampled one in 16), or not (checked again next time).</summary>
+    internal static void MemoCheckDone(FilteredMemo memo, bool covered)
+    {
+        if (covered && memo.Stats != null)
+        {
+            memo.Stats.Checked = true;
+        }
+    }
+
+    /// <summary>A memo differs from KeptOnly's own loop over the same output: the part off for the session, every memo dropped, logged.</summary>
+    internal static void MemoMismatch(string what)
+    {
+#if BENCH
+        if (_selfTesting)
+        {
+            _selfTestMismatches++;
+            return;
+        }
+#endif
+        if (!WalkMemoEnabled)
+        {
+            return;
+        }
+        MemoMismatches++;
+        WalkMemoEnabled = false;
+        DropAllMemos();
+        PatchSafety.Fault(WalkMemoName);
+        Log.Error($"[{ModEntry.Id}] {Name}: a memoized filtered walk differs from the filter run again over the same kept walk output ({what}): "
+            + "the memo turned off for this session (filtered walks run their own loop, as before). Please report this log.");
+    }
+
+    /// <summary>An error in the memo's own code (never the filter's verdicts, never the output's): the part off for the session, logged.</summary>
+    internal static void WalkMemoFailed(Exception e)
+    {
+#if BENCH
+        if (_selfTesting)
+        {
+            _selfTestMemoFaults++;
+            return;
+        }
+#endif
+        if (!WalkMemoEnabled)
+        {
+            return; // Off already: logged once.
+        }
+        WalkMemoEnabled = false;
+        DropAllMemos();
+        PatchSafety.Fault(WalkMemoName);
+        Log.Error($"[{ModEntry.Id}] {Name}: the filtered walks' memo failed, off for this session (filtered walks run their own loop, as before): {e}");
+    }
+
+    /// <summary>Every memo over the kept outputs turned off and dropped (callers in one go on with KeptOnly's own loop). Never throws.</summary>
+    private static void DropAllMemos()
+    {
+        try
+        {
+            if (_augmented != null)
+            {
+                foreach (KeptOutput entry in _augmented.Values)
+                {
+                    entry.Output.DropMemos();
+                }
+            }
+        }
+        catch
+        {
+            // The part is off: no memo is used again whatever was left.
+        }
+    }
+
+#if BENCH
+    /// <summary>
+    /// <c>foreignpatch keptmemo fault|wrong|status|require on|require off</c>: the memo's controls (test builds; a fault is for
+    /// the session, as any part's), its counters, and whether it is on (the walk reuse with it) or off (faulted, a difference logged).
+    /// </summary>
+    internal static string MemoControl(string what)
+    {
+        string status = $"FOREIGN keptmemo built {MemoBuilt}, hits {MemoHits}, checked {MemoVerified}, mismatches {MemoMismatches}, "
+            + $"on {WalkMemoEnabled}, faulted {PatchSafety.IsFaulted(WalkMemoName)}, walk reuse on {WalkReuseEnabled}, live verdicts {FastListeners.MemoLiveJudged}";
+        switch (what)
+        {
+            case "fault":
+                _memoInjectFault = true;
+                return "FOREIGN keptmemo: the next memo lookup throws";
+            case "wrong":
+                _memoInjectWrong = true;
+                return "FOREIGN keptmemo: the next memo use with two kept elements loses its first one and is checked";
+            case "status":
+                return status;
+            case "require on":
+                // Memos made and used, every check equal, the walk reuse still on.
+                if (!WalkMemoEnabled || MemoMismatches > 0 || MemoBuilt == 0 || MemoHits == 0 || !WalkReuseEnabled)
+                {
+                    throw new InvalidOperationException(status);
+                }
+                return status;
+            case "require off":
+                // The control: the memo off and faulted, the walk reuse itself still on (only the memo falls back).
+                if (WalkMemoEnabled || !PatchSafety.IsFaulted(WalkMemoName) || !WalkReuseEnabled)
+                {
+                    throw new InvalidOperationException(status);
+                }
+                return status;
+            default:
+                throw new ArgumentException("foreignpatch keptmemo fault|wrong|status|require on|require off");
+        }
+    }
+
+    [ThreadStatic] private static int _selfTestMemoFaults;
 #endif
 
     /// <summary>
@@ -1088,6 +1463,8 @@ public static class ListenerCache
         // The dispatch counters are the effects check's: what the cases below count is put back.
         long wasDispatches = ForeignDispatches, wasGameReuses = GameHandlerReuses, wasForeignCalls = ForeignHandlerCalls, wasDropped = KeptDroppedAfterForeign;
         long wasKeptAfter = KeptAfterForeign, wasReusedAfter = ReusedAfterForeign;
+        long wasMemoBuilt = MemoBuilt, wasMemoHits = MemoHits, wasMemoVerified = MemoVerified;
+        bool wasMemoEnabled = WalkMemoEnabled;
         var wasAugmented = _augmented;
         _selfTesting = true;
         try
@@ -1488,6 +1865,9 @@ public static class ListenerCache
             Expect(d1, "a checked reuse that couldn't compare everything read leaves the key unchecked (D1)");
             Expect(d6, "the first walk's output is guarded by its scope (D6)");
             Expect(d3, "at the scope's end a kept source no caller finished is disposed (D3)");
+
+            // 8. KeptOnly's memo over a kept output (Walks Tier 2): the same result, the same pulls, every way it falls back.
+            MemoSelfTest(Expect);
         }
         catch (Exception e)
         {
@@ -1504,6 +1884,12 @@ public static class ListenerCache
             KeptDroppedAfterForeign = wasDropped;
             KeptAfterForeign = wasKeptAfter;
             ReusedAfterForeign = wasReusedAfter;
+            MemoBuilt = wasMemoBuilt;
+            MemoHits = wasMemoHits;
+            MemoVerified = wasMemoVerified;
+            WalkMemoEnabled = wasMemoEnabled;
+            _memoInjectFault = false;
+            _memoInjectWrong = false;
             _keysAtForeignEnd?.Clear();
             WalkReuseEnabled = wasEnabled;
             _safe = wasSafe;
@@ -1516,6 +1902,281 @@ public static class ListenerCache
         }
         lines.Add($"FOREIGN walkreuse selftest: {lines.Count} cases as expected");
         return lines;
+    }
+
+    /// <summary>
+    /// KeptOnly's memo (<see cref="FilteredMemo"/>) against KeptOnly's own loop over the same elements: the same result in the
+    /// same order (the first element kept though the filter drops it), the kept output pulled exactly as far, a later caller
+    /// extending a partial memo, two callers interleaved, a caller going on when the memo is dropped under it, the checked use
+    /// finding a memo made different (the caller getting KeptOnly's own result), an error in the memo's code falling back,
+    /// a reuse after the scope's end or exact mode reading no memo and the memos dropped. Main thread (FastListeners' type ids).
+    /// </summary>
+    private static void MemoSelfTest(Action<bool, string> expect)
+    {
+        Type[] types = typeof(CardModel).Assembly.GetTypes();
+        bool Concrete(Type t) => !t.IsAbstract && !t.ContainsGenericParameters;
+        Type[] cards = types.Where(t => Concrete(t) && typeof(CardModel).IsAssignableFrom(t)).Take(2).ToArray();
+        Type? other = types.FirstOrDefault(t => Concrete(t) && typeof(AbstractModel).IsAssignableFrom(t)
+            && !typeof(CardModel).IsAssignableFrom(t) && !typeof(EnchantmentModel).IsAssignableFrom(t) && !typeof(AfflictionModel).IsAssignableFrom(t));
+        if (cards.Length < 2 || other == null)
+        {
+            expect(false, "memo: two card types and a listener type outside piles found");
+            return;
+        }
+        AbstractModel Make(Type t) => (AbstractModel)RuntimeHelpers.GetUninitializedObject(t);
+        // B0 A1 B2 R3 A4 B5 A6, the filter keeping A: KeptOnly gives B0 (the first, A4), A1, R3 (not a pile entry), A4, A6.
+        AbstractModel[] walk = { Make(cards[1]), Make(cards[0]), Make(cards[1]), Make(other), Make(cards[0]), Make(cards[1]), Make(cards[0]) };
+        AbstractModel[] expected = { walk[0], walk[1], walk[3], walk[4], walk[6] };
+        FastListeners.PileFilter NewFilter() => new(t => t == cards[0], keepSubscribed: false);
+        List<AbstractModel> Fresh(IEnumerable<AbstractModel> items, FastListeners.PileFilter f) => FastListeners.KeptOnlyForTest(items.ToArray(), f).ToList();
+        bool mainThread = FastListeners.MemoThreadForTest;
+        expect(mainThread, "memo: run on FastListeners' main thread");
+        expect(Fresh(walk, NewFilter()).SequenceEqual(expected), "memo: KeptOnly's own loop gives the expected listeners (the reference)");
+
+        bool wasExact = _exactScope, wasSafeHere = _safe, wasFastListeners = FastListeners.Enabled, wasMemo = WalkMemoEnabled;
+        int wasSnapshot = _snapshotDepth, wasRefresh = _refreshDepth, wasSerial = _scopeSerial;
+        int faultsBefore = _selfTestMemoFaults, mismatchesBefore = _selfTestMismatches;
+        try
+        {
+            _snapshotDepth = 0;
+            _refreshDepth = 0;
+            _exactScope = false;
+            WalkMemoEnabled = true;
+            FastListeners.Enabled = true;
+            EnterDisplayRefresh(out int outer);
+            _safe = true;
+            // A kept output (the first walk of a key: a reuse guarded by its scope), read through KeptOnly several times.
+            var source = new CountingSource(walk);
+            var key = ((object)source, (object?)null);
+            IEnumerable<AbstractModel> reuse = Augmented(key, source);
+            LazyOutput? kept = (reuse as ReusedOutput)?.KeptNow();
+            expect(kept != null, "memo: the first walk's output is a reuse giving the kept output in its scope");
+            if (kept == null)
+            {
+                ExitRefresh(null, outer);
+                return;
+            }
+            FastListeners.PileFilter filter = NewFilter();
+            long built = MemoBuilt, hits = MemoHits, verified = MemoVerified;
+            // A caller stopping at the second kept listener pulls two elements, as KeptOnly's own loop would (B0, A1).
+            bool early = FastListeners.KeptOnlyForTest(reuse, filter).Take(2).SequenceEqual(expected.Take(2)) && source.Produced == 2;
+            expect(early && MemoBuilt == built + 1, "memo: made by the first filtered walk, which pulls only as far as its caller goes");
+            // The filter's first use of a memo is checked: KeptOnly's own loop, compared as far as the memo knows. One going
+            // further than the memo knows isn't covered (checked again next time); this one stops within it: covered.
+            bool uncovered = FastListeners.KeptOnlyForTest(reuse, filter).Take(3).SequenceEqual(expected.Take(3)) && source.Produced == 4;
+            bool checkedUse = FastListeners.KeptOnlyForTest(reuse, filter).Take(2).SequenceEqual(expected.Take(2));
+            expect(uncovered && checkedUse && MemoVerified == verified + 2 && MemoHits == hits, "memo: the filter's first uses are checked until one covers what its caller read");
+            // The memo is still partial (two kept, two judged): the next caller replays them, then judges on, pulling only as
+            // far as KeptOnly's loop would (to R3: four elements), and the next one completes it.
+            bool extended = FastListeners.KeptOnlyForTest(reuse, filter).Take(3).SequenceEqual(expected.Take(3)) && source.Produced == 4;
+            bool rest = FastListeners.KeptOnlyForTest(reuse, filter).SequenceEqual(expected);
+            expect(extended && rest && source.Produced == 7 && source.Enumerations == 1 && source.Disposed == 1 && MemoHits == hits + 2,
+                "memo: later callers replay it and extend it as far as they go, one enumeration of the source");
+            bool hit = FastListeners.KeptOnlyForTest(reuse, filter).SequenceEqual(expected);
+            expect(hit && MemoHits == hits + 3 && source.Produced == 7 && _selfTestMismatches == mismatchesBefore, "memo: replayed whole, no difference");
+            // A second filter over the same output (keeping B) has its own memo: B0, B2, R3, B5 (one keyed by the output only
+            // would replay the first filter's).
+            FastListeners.PileFilter filterB = new(t => t == cards[1], keepSubscribed: false);
+            List<AbstractModel> expectedB = Fresh(walk, new FastListeners.PileFilter(t => t == cards[1], keepSubscribed: false));
+            bool secondFilter = expectedB.SequenceEqual(new[] { walk[0], walk[2], walk[3], walk[5] })
+                && FastListeners.KeptOnlyForTest(reuse, filterB).SequenceEqual(expectedB)
+                && FastListeners.KeptOnlyForTest(reuse, filterB).SequenceEqual(expectedB)
+                && FastListeners.KeptOnlyForTest(reuse, filterB).SequenceEqual(expectedB)
+                && FastListeners.KeptOnlyForTest(reuse, filter).SequenceEqual(expected);
+            expect(secondFilter && _selfTestMismatches == mismatchesBefore, "memo: each filter has its own memo over the same output");
+            // Live entries (Limitless's stacked enchantments in game; here B's type stands for it): judged with Keeps at every
+            // replay as KeptOnly's loop judges them (B2 and B5, dropped by this filter), the first one kept as always; a checked
+            // use doesn't count a live entry the filter dropped as a difference.
+            FastListeners._liveTypeForTest = cards[1];
+            try
+            {
+                FastListeners.PileFilter liveFilter = NewFilter();
+                long liveBefore = FastListeners.MemoLiveJudged;
+                bool liveBuild = FastListeners.KeptOnlyForTest(reuse, liveFilter).SequenceEqual(expected);
+                bool liveCheck = FastListeners.KeptOnlyForTest(reuse, liveFilter).SequenceEqual(expected); // Its first check, covered.
+                bool liveHit = FastListeners.KeptOnlyForTest(reuse, liveFilter).SequenceEqual(expected);
+                expect(liveBuild && liveCheck && liveHit && FastListeners.MemoLiveJudged == liveBefore + 4 && _selfTestMismatches == mismatchesBefore,
+                    "memo: a stacked enchantment is a live entry, judged at every replay, the checked use equal");
+            }
+            finally
+            {
+                FastListeners._liveTypeForTest = null;
+            }
+            // Two callers of one memo interleaved: one step of the first, the second whole (extending it), the first's rest.
+            FastListeners.PileFilter filter2 = NewFilter();
+            FastListeners.KeptOnlyForTest(reuse, filter2).Take(1).Count();
+            FastListeners.KeptOnlyForTest(reuse, filter2).Take(1).Count(); // Its first check, covered.
+            using (IEnumerator<AbstractModel> first = FastListeners.KeptOnlyForTest(reuse, filter2).GetEnumerator())
+            {
+                bool one = first.MoveNext() && ReferenceEquals(first.Current, expected[0]);
+                bool second = FastListeners.KeptOnlyForTest(reuse, filter2).SequenceEqual(expected);
+                var firstAll = new List<AbstractModel> { first.Current };
+                while (first.MoveNext())
+                {
+                    firstAll.Add(first.Current);
+                }
+                expect(one && second && firstAll.SequenceEqual(expected), "memo: two callers interleaved each get the whole result");
+            }
+            // A caller in a memo when it is dropped goes on with KeptOnly's own loop from where it is.
+            FastListeners.PileFilter filter3 = NewFilter();
+            FastListeners.KeptOnlyForTest(reuse, filter3).Take(2).Count();
+            FastListeners.KeptOnlyForTest(reuse, filter3).Take(2).Count(); // Its first check, covered.
+            using (IEnumerator<AbstractModel> inMemo = FastListeners.KeptOnlyForTest(reuse, filter3).GetEnumerator())
+            {
+                var got = new List<AbstractModel>();
+                for (int n = 0; n < 2 && inMemo.MoveNext(); n++)
+                {
+                    got.Add(inMemo.Current);
+                }
+                kept.DropMemos();
+                while (inMemo.MoveNext())
+                {
+                    got.Add(inMemo.Current);
+                }
+                expect(got.SequenceEqual(expected), "memo: a caller in a memo dropped under it goes on as KeptOnly's own loop");
+            }
+            // The control: a memo made different, its use checked: the caller gets KeptOnly's own result, the difference found.
+            FastListeners.PileFilter filter4 = NewFilter();
+            FastListeners.KeptOnlyForTest(reuse, filter4).ToList();
+            FastListeners.KeptOnlyForTest(reuse, filter4).ToList(); // Its first check, covered.
+            _memoInjectWrong = true;
+            bool wrongUse = FastListeners.KeptOnlyForTest(reuse, filter4).SequenceEqual(expected);
+            expect(wrongUse && !_memoInjectWrong && _selfTestMismatches > mismatchesBefore, "memo: a memo made different is found by its check, the caller unaffected");
+            // An error in the memo's own code: that walk runs KeptOnly's own loop.
+            _memoInjectFault = true;
+            bool faulted = FastListeners.KeptOnlyForTest(reuse, NewFilter()).SequenceEqual(expected);
+            expect(faulted && !_memoInjectFault && _selfTestMemoFaults == faultsBefore + 1, "memo: an error in its code falls back to KeptOnly's own loop");
+            // The type ids kept per element are FastListeners' own.
+            bool ids = Enumerable.Range(0, walk.Length).All(i => kept.TypeIdAt(i, FastListeners.ModelTypeIdForTest) == FastListeners.ModelTypeIdForTest(walk[i]));
+            expect(ids, "memo: the per-element type ids are FastListeners' type ids");
+            // An error in the memo's own code while extending it (a type id): that caller goes on with KeptOnly's loop from that
+            // element, the memo off, the part's fault counted, FastListeners untouched (never its fault, never the caller's).
+            var source7 = new CountingSource(walk);
+            IEnumerable<AbstractModel> reuse7 = Augmented(((object)source7, (object?)null), source7);
+            FastListeners.PileFilter filter7 = NewFilter();
+            FastListeners.KeptOnlyForTest(reuse7, filter7).Take(1).Count();
+            FastListeners.KeptOnlyForTest(reuse7, filter7).Take(1).Count(); // Its first check, covered.
+            int faultsBeforeTypeId = _selfTestMemoFaults;
+            long hitsBeforeTypeId = MemoHits;
+            FastListeners._typeIdFaultForTest = true;
+            bool typeIdFault = FastListeners.KeptOnlyForTest(reuse7, filter7).SequenceEqual(expected);
+            FastListeners._typeIdFaultForTest = false;
+            bool offAfter = FastListeners.KeptOnlyForTest(reuse7, filter7).SequenceEqual(expected) && MemoHits == hitsBeforeTypeId + 1;
+            expect(typeIdFault && offAfter && _selfTestMemoFaults == faultsBeforeTypeId + 1 && FastListeners.Enabled,
+                "memo: an error in its own code while extending it falls back from that element, the memo off, FastListeners on");
+            // The part turned off under a caller (a difference or an error elsewhere): it goes on with KeptOnly's loop from its
+            // position, the memo no longer replayed nor extended.
+            FastListeners.PileFilter filter8 = NewFilter();
+            FastListeners.KeptOnlyForTest(reuse, filter8).Take(1).Count();
+            FastListeners.KeptOnlyForTest(reuse, filter8).Take(1).Count(); // Its first check, covered.
+            var afterOff = new List<AbstractModel>();
+            using (IEnumerator<AbstractModel> replaying = FastListeners.KeptOnlyForTest(reuse, filter8).GetEnumerator())
+            {
+                if (replaying.MoveNext())
+                {
+                    afterOff.Add(replaying.Current);
+                }
+                WalkMemoEnabled = false;
+                while (replaying.MoveNext())
+                {
+                    afterOff.Add(replaying.Current);
+                }
+                WalkMemoEnabled = true;
+            }
+            expect(afterOff.SequenceEqual(expected) && kept.MemoOf(filter8, out _).Judged == 1, "memo: the part turned off under a caller stops its replay, KeptOnly's loop goes on");
+            // A filter verdict throwing while a memo is extended (B's type here): as KeptOnly's loop, that element and the rest
+            // kept for that caller and the verdict's error handled as KeptOnly's (Disable, counted here), the memo off.
+            FastListeners._disablesForTest = 0;
+            FastListeners._countDisablesForTest = true;
+            try
+            {
+                Func<Type, bool> throwing = t => t == cards[1] ? throw new SelfTestException() : t == cards[0];
+                bool freshThrow = Fresh(walk, new FastListeners.PileFilter(throwing, keepSubscribed: false)).SequenceEqual(walk);
+                int disablesFresh = FastListeners._disablesForTest;
+                FastListeners.PileFilter throwingFilter = new(throwing, keepSubscribed: false);
+                bool memoThrow = FastListeners.KeptOnlyForTest(reuse, throwingFilter).SequenceEqual(walk);
+                bool thenOwn = FastListeners.KeptOnlyForTest(reuse, throwingFilter).SequenceEqual(walk);
+                expect(freshThrow && memoThrow && thenOwn && disablesFresh == 1 && FastListeners._disablesForTest == 3 && kept.MemoOf(throwingFilter, out _).Off,
+                    "memo: a verdict throwing during an extension is handled as KeptOnly's loop handles it, the memo off");
+            }
+            finally
+            {
+                FastListeners._countDisablesForTest = false;
+            }
+            // A caller resumed on another thread (a hook awaiting between two listeners): the type ids and verdict arrays are
+            // main-thread state, so it goes on with KeptOnly's loop there, the memo not extended.
+            FastListeners.PileFilter filter9 = NewFilter();
+            FastListeners.KeptOnlyForTest(reuse, filter9).Take(1).Count();
+            FastListeners.KeptOnlyForTest(reuse, filter9).Take(1).Count(); // Its first check, covered.
+            var crossed = new List<AbstractModel>();
+            using (IEnumerator<AbstractModel> resumed = FastListeners.KeptOnlyForTest(reuse, filter9).GetEnumerator())
+            {
+                if (resumed.MoveNext())
+                {
+                    crossed.Add(resumed.Current);
+                }
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    while (resumed.MoveNext())
+                    {
+                        crossed.Add(resumed.Current);
+                    }
+                }).Wait();
+            }
+            expect(crossed.SequenceEqual(expected) && kept.MemoOf(filter9, out _).Judged == 1, "memo: a caller resumed on another thread goes on with KeptOnly's loop, the memo not extended");
+            // A memo caller is a caller of the kept output (D3): its close asked meanwhile (exact mode) waits for it, so it goes on
+            // to the end as KeptOnly's own loop over the output would, and the close is done when it leaves.
+            var source6 = new CountingSource(walk);
+            IEnumerable<AbstractModel> reuse6 = Augmented(((object)source6, (object?)null), source6);
+            FastListeners.PileFilter filter6 = NewFilter();
+            FastListeners.KeptOnlyForTest(reuse6, filter6).Take(1).Count();
+            FastListeners.KeptOnlyForTest(reuse6, filter6).Take(1).Count(); // Its first check, covered.
+            var through = new List<AbstractModel>();
+            int disposedInside;
+            using (IEnumerator<AbstractModel> inside = FastListeners.KeptOnlyForTest(reuse6, filter6).GetEnumerator())
+            {
+                for (int n = 0; n < 2 && inside.MoveNext(); n++)
+                {
+                    through.Add(inside.Current);
+                }
+                kept.MemoOf(filter, out _);
+                ExactFromHere();
+                while (inside.MoveNext())
+                {
+                    through.Add(inside.Current);
+                }
+                disposedInside = source6.Disposed;
+            }
+            expect(through.SequenceEqual(expected) && source6.Produced == 7 && disposedInside == 1 && source6.Enumerations == 1,
+                "memo: a caller in it when its output's close is asked goes on to the end (the close waits for it)");
+            // Exact mode in the scope (started just above): a reuse held from before gives the call's own output (its source
+            // enumerated again, no memo read), the memos dropped.
+            long builtBeforeExact = MemoBuilt;
+            bool exactOwn = FastListeners.KeptOnlyForTest(reuse, NewFilter()).SequenceEqual(expected) && source.Enumerations == 2;
+            kept.MemoOf(filter, out bool madeAgain);
+            expect(exactOwn && madeAgain && MemoBuilt == builtBeforeExact, "memo: exact mode reads no memo and drops them");
+            ExitRefresh(null, outer);
+            // After the scope's end, a reuse held from it is the call's own output, read without a memo.
+            var source5 = new CountingSource(walk);
+            _exactScope = false;
+            EnterDisplayRefresh(out int outer5);
+            _safe = true;
+            IEnumerable<AbstractModel> held = Augmented(((object)source5, (object?)null), new List<AbstractModel>(walk.Take(3)));
+            ExitRefresh(null, outer5);
+            long builtBeforeEnd = MemoBuilt;
+            bool afterEnd = FastListeners.KeptOnlyForTest(held, NewFilter()).SequenceEqual(Fresh(walk.Take(3), NewFilter()));
+            expect(afterEnd && MemoBuilt == builtBeforeEnd, "memo: a reuse enumerated after its scope reads no memo");
+        }
+        finally
+        {
+            _exactScope = wasExact;
+            _snapshotDepth = wasSnapshot;
+            _refreshDepth = wasRefresh;
+            _scopeSerial = wasSerial;
+            _safe = wasSafeHere;
+            FastListeners.Enabled = wasFastListeners;
+            WalkMemoEnabled = wasMemo;
+        }
     }
 #endif
 

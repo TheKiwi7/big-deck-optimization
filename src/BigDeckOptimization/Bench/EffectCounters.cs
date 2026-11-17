@@ -59,6 +59,8 @@ internal static class EffectCounters
         (typeof(ListenerCache), nameof(ListenerCache.ForeignDispatches)), (typeof(ListenerCache), nameof(ListenerCache.GameHandlerReuses)),
         (typeof(ListenerCache), nameof(ListenerCache.ForeignHandlerCalls)), (typeof(ListenerCache), nameof(ListenerCache.KeptDroppedAfterForeign)),
         (typeof(ListenerCache), nameof(ListenerCache.KeptAfterForeign)), (typeof(ListenerCache), nameof(ListenerCache.ReusedAfterForeign)),
+        (typeof(ListenerCache), nameof(ListenerCache.MemoHits)), (typeof(ListenerCache), nameof(ListenerCache.MemoBuilt)),
+        (typeof(ListenerCache), nameof(ListenerCache.MemoVerified)),
     };
 
     /// <summary>Each counter's getter and setter (private setters included), resolved once.</summary>

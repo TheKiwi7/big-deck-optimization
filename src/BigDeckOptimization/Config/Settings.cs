@@ -615,9 +615,9 @@ public static class Settings
             "Faster card and UI refresh after every action in combat.",
             new[] { ListenerCache.Name }, on => ListenerCache.RefreshEnabled = on,
             () => NoneApplied(ListenerCache.Name, TextPoolReuse.Name, ThemeColorSkip.Name, DeckCountMemo.Name),
-            parts: new OptionPart[] { new(TextPoolReuse.Name), new(ThemeColorSkip.Name), new(DeckCountMemo.Name), new(ListenerCache.ReuseFault), new(ListenerCache.WalkReuseName), new(ExtraScopes.Name), new(ExtraScopes.Name + ".BetterSpire2") },
+            parts: new OptionPart[] { new(TextPoolReuse.Name), new(ThemeColorSkip.Name), new(DeckCountMemo.Name), new(ListenerCache.ReuseFault), new(ListenerCache.WalkReuseName), new(ListenerCache.WalkMemoName), new(ExtraScopes.Name), new(ExtraScopes.Name + ".BetterSpire2") },
             // ExtraScopes reads its own two fault names itself (a scope stays off once faulted): one switch for both.
-            setParts: on => { Flag(() => TextPoolReuse.Enabled = Part(on, TextPoolReuse.Name)); Flag(() => ThemeColorSkip.Enabled = Part(on, ThemeColorSkip.Name)); Flag(() => DeckCountMemo.Enabled = Part(on, DeckCountMemo.Name)); Flag(() => ListenerCache.WalkReuseEnabled = Part(on, ListenerCache.WalkReuseName)); Flag(() => ExtraScopes.Enabled = on); }),
+            setParts: on => { Flag(() => TextPoolReuse.Enabled = Part(on, TextPoolReuse.Name)); Flag(() => ThemeColorSkip.Enabled = Part(on, ThemeColorSkip.Name)); Flag(() => DeckCountMemo.Enabled = Part(on, DeckCountMemo.Name)); Flag(() => ListenerCache.WalkReuseEnabled = Part(on, ListenerCache.WalkReuseName)); Flag(() => ListenerCache.WalkMemoEnabled = Part(on, ListenerCache.WalkMemoName)); Flag(() => ExtraScopes.Enabled = on); }),
         new("hook_filter", "Skip empty hooks",
             "Inside the two optimizations above, only asks the cards and relics that actually react to each check.",
             new[] { HookFilter.Name }, on => HookFilter.Enabled = on),

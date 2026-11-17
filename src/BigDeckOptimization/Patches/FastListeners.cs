@@ -1053,6 +1053,15 @@ public static class FastListeners
             return known < 0;
         }
 
+        /// <summary>It keeps ExecutionFinished subscribers (a verdict reading each object's subscriptions: never memoized).</summary>
+        internal bool KeepsSubscribed => _keepSubscribed;
+
+        /// <summary>
+        /// <see cref="Keeps"/>' verdict on the main thread for a listener of this type id that is not a stacked enchantment, by a
+        /// filter not keeping subscribers: <c>Reacts(TypeIdOf(type))</c>, its only read (KeptOnly's memo, the type id worked out once).
+        /// </summary>
+        internal bool ReactsById(int typeId) => Reacts(typeId);
+
         /// <summary>Whether this type reacts, cached per filter: no subscriber check, no stacked enchantment check.</summary>
         internal bool TypeReacts(Type type) => Environment.CurrentManagedThreadId == _mainThread ? Reacts(TypeIdOf(type)) : _byType.GetOrAdd(type, _reacts);
 
@@ -1804,16 +1813,23 @@ public static class FastListeners
 
     private static void CountFirstKept(AbstractModel model, PileFilter filter)
     {
+        if (WouldDropFirst(model, filter))
+        {
+            FirstKept++;
+        }
+    }
+
+    /// <summary>The first listener kept is one the filter would have dropped (KeptOnly's memo counts each replay of it).</summary>
+    private static bool WouldDropFirst(AbstractModel model, PileFilter filter)
+    {
         try
         {
-            if (filter.KeepsBadges && model is (CardModel or EnchantmentModel or AfflictionModel) && !filter.Keeps(model))
-            {
-                FirstKept++;
-            }
+            return filter.KeepsBadges && model is (CardModel or EnchantmentModel or AfflictionModel) && !filter.Keeps(model);
         }
         catch
         {
             // Test counter only: a verdict that throws is not counted (KeptOnly's own verdicts handle their failures).
+            return false;
         }
     }
     /// <summary>Shuffles in progress: 0 when nothing runs (the effects check).</summary>
@@ -2874,40 +2890,410 @@ public static class FastListeners
     /// listener in the middle of the run walk: the same iteration as vanilla), and HookFilter's lists (its override mask drops
     /// it again: the list it builds is unchanged).
     /// </summary>
+    /// <remarks>
+    /// Inside a display refresh, where <c>ListenerCache</c> hands the walk's kept output (other mods' postfixes included) to
+    /// every walk of its key (Walks Tier 2), each filter's result over that output is memoized (<see cref="ListenerCache.FilteredMemo"/>):
+    /// the later filtered walks of that key and filter in the refresh replay it instead of judging every element again.
+    /// Exact without a new premise: the output is the same sequence for every caller (pulled once, replayed), and this loop's
+    /// result over it depends on nothing else than each element's position (the first kept) and runtime type, and the filter's
+    /// verdict on that type, which is fixed for the filter's lifetime (<see cref="PileFilter.Reacts"/>' per-filter caches,
+    /// never reset but for the stacked enchantment type). What it reads besides is never memoized: a stacked enchantment's
+    /// verdict reads its inner enchantments and judging it notes them, so the memo holds it as a live entry, judged with
+    /// <see cref="PileFilter.Keeps"/> at every replay as this loop judges it; a filter keeping ExecutionFinished subscribers
+    /// (reads each object's subscriptions) takes this loop; a verdict that throws, another thread (the type ids are main-thread
+    /// state): this loop's own handling from there. A memo use is checked against this loop once per filter, then one in 16
+    /// (<see cref="ListenerCache.MemoFor"/>).
+    /// </remarks>
     private static IEnumerable<AbstractModel> KeptOnly(IEnumerable<AbstractModel> walk, PileFilter filter)
     {
-        bool failed = false;
-        bool first = true;
-        foreach (AbstractModel model in walk)
+        // Decided at the first step, where the loop below would call walk.GetEnumerator() (a reuse decides there which output it gives).
+        ListenerCache.FilteredMemo? memo = null;
+        bool check = false;
+        if (Enabled && !filter.KeepsSubscribed && Environment.CurrentManagedThreadId == _mainThread)
         {
-            bool kept = true;
-            if (first)
-            {
-                first = false;
-#if BENCH
-                CountFirstKept(model, filter);
-#endif
-            }
-            else if (!failed && model is (CardModel or EnchantmentModel or AfflictionModel))
-            {
-                try
-                {
-                    // A MultiEnchantment is an EnchantmentModel: Keeps notes its inner enchantments first (no snapshot on this path).
-                    kept = filter.Keeps(model);
-                }
-                catch (Exception e)
-                {
-                    // As GuardedPiles: this mod's verdict failed, so this entry and the rest of the walk are kept, as vanilla.
-                    failed = true;
-                    Disable(e);
-                }
-            }
-            if (kept)
+            memo = ListenerCache.MemoFor(walk, filter, out check);
+        }
+        if (memo != null && !check)
+        {
+            foreach (AbstractModel model in FromMemo(memo, filter))
             {
                 yield return model;
             }
+            yield break;
+        }
+        bool failed = false;
+        bool first = true;
+        // A checked memo use: each element this loop keeps compared, by its index in the output, with the memo's entries (a live
+        // entry this loop dropped is no difference), as far as the memo judged (D1's rule).
+        int source = 0;
+        int entry = 0;
+        bool covered = memo != null;
+        try
+        {
+            foreach (AbstractModel model in walk)
+            {
+                bool kept = true;
+                if (first)
+                {
+                    first = false;
+#if BENCH
+                    CountFirstKept(model, filter);
+#endif
+                }
+                else if (!failed && model is (CardModel or EnchantmentModel or AfflictionModel))
+                {
+                    try
+                    {
+                        // A MultiEnchantment is an EnchantmentModel: Keeps notes its inner enchantments first (no snapshot on this path).
+                        kept = filter.Keeps(model);
+                    }
+                    catch (Exception e)
+                    {
+                        // As GuardedPiles: this mod's verdict failed, so this entry and the rest of the walk are kept, as vanilla.
+                        failed = true;
+                        Disable(e);
+                    }
+                }
+                if (kept && memo != null && covered)
+                {
+                    try
+                    {
+                        covered = CompareKept(memo, model, source, ref entry, failed);
+                    }
+                    catch (Exception e)
+                    {
+                        // The memo's own code: the part off, this loop's result unchanged.
+                        covered = false;
+                        ListenerCache.WalkMemoFailed(e);
+                    }
+                }
+                source++;
+                if (kept)
+                {
+                    yield return model;
+                }
+            }
+            if (memo != null && covered)
+            {
+                try
+                {
+                    covered = CompareEnd(memo, source, entry);
+                }
+                catch (Exception e)
+                {
+                    covered = false;
+                    ListenerCache.WalkMemoFailed(e);
+                }
+            }
+        }
+        finally
+        {
+            if (memo != null)
+            {
+                ListenerCache.MemoCheckDone(memo, covered);
+            }
         }
     }
+
+    /// <summary>
+    /// A checked memo use: listener <paramref name="source"/> of the output was kept by KeptOnly's loop; the memo's entries before
+    /// it (<paramref name="entry"/> on) must be live ones (dropped here), and it must be the next one. False: not compared further
+    /// (a difference reported, this loop's fallback, the memo off, or further than the memo judged).
+    /// </summary>
+    private static bool CompareKept(ListenerCache.FilteredMemo memo, AbstractModel model, int source, ref int entry, bool failed)
+    {
+        if (failed || memo.Off)
+        {
+            return false;
+        }
+        if (source >= memo.Judged)
+        {
+            if (memo.Done)
+            {
+                ListenerCache.MemoMismatch($"listener {source} kept, past the memo's end ({memo.Judged})");
+            }
+            return false;
+        }
+        for (; entry < memo.Kept.Count && memo.KeptAt[entry] < source; entry++)
+        {
+            if (!memo.Live[entry])
+            {
+                ListenerCache.MemoMismatch($"the memo keeps listener {memo.KeptAt[entry]}, the filter drops it");
+                return false;
+            }
+        }
+        if (entry < memo.Kept.Count && memo.KeptAt[entry] == source && ReferenceEquals(memo.Kept[entry], model))
+        {
+            entry++;
+            return true;
+        }
+        ListenerCache.MemoMismatch($"listener {source} kept, not in the memo as such");
+        return false;
+    }
+
+    /// <summary>A checked memo use's end: the memo knows its end there, and its remaining entries are live ones (dropped here).</summary>
+    private static bool CompareEnd(ListenerCache.FilteredMemo memo, int source, int entry)
+    {
+        if (memo.Off || !memo.Done)
+        {
+            return false;
+        }
+        if (memo.Judged != source)
+        {
+            ListenerCache.MemoMismatch($"{source} listeners, the memo judged {memo.Judged}");
+            return false;
+        }
+        for (; entry < memo.Kept.Count; entry++)
+        {
+            if (!memo.Live[entry])
+            {
+                ListenerCache.MemoMismatch($"the memo keeps listener {memo.KeptAt[entry]}, the filter drops it");
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>FastListeners' type id of a listener (main thread only): the memo's per-element ids.</summary>
+    private static readonly Func<AbstractModel, int> ModelTypeId = model =>
+    {
+#if BENCH
+        if (_typeIdFaultForTest)
+        {
+            _typeIdFaultForTest = false;
+            throw new InvalidOperationException("injected type id fault (memo self-test)");
+        }
+#endif
+        return TypeIdOf(model.GetType());
+    };
+
+    /// <summary>
+    /// A listener KeptOnly's memo never judges once for all: Limitless's stacked enchantment (its verdict reads its inner
+    /// enchantments, and judging it notes them), judged again at every replay.
+    /// </summary>
+    private static bool JudgedLive(AbstractModel model)
+    {
+        Type type = model.GetType();
+#if BENCH
+        if (_liveTypeForTest != null && ReferenceEquals(type, _liveTypeForTest))
+        {
+            return true;
+        }
+#endif
+        return ReferenceEquals(type, LimitlessHookSkip.Multi);
+    }
+
+    /// <summary>
+    /// <see cref="KeptOnly"/>'s result read from the memo, extended as far as this caller goes: the memo's entries, then the
+    /// next elements of the kept output judged as KeptOnly's loop judges them (the first kept, a pile entry by the filter's
+    /// verdict on its type, anything else kept), each judged once for every caller of the memo, but a stacked enchantment, held
+    /// as a live entry and judged with <see cref="PileFilter.Keeps"/> at each replay (as KeptOnly's loop, at the same point of
+    /// the sequence). A caller of the memo is a caller of the kept output (entered and left as its enumerator would be: a close
+    /// asked meanwhile waits for it), so the output is pulled when and as far as KeptOnly's loop would pull it, a throw from it
+    /// met at the same element. Once the memo is off (a verdict that threw, a drop) or the caller is off the main thread,
+    /// KeptOnly's loop goes on from this caller's position over the same output.
+    /// </summary>
+    private static IEnumerable<AbstractModel> FromMemo(ListenerCache.FilteredMemo memo, PileFilter filter)
+    {
+        ListenerCache.LazyOutput source = memo.Source;
+        source.Enter();
+        try
+        {
+            int replayed = 0;
+            // This caller's position in the output: the next element it has not passed.
+            int position = 0;
+            bool failed = false;
+            // The part turned off (a difference, an error) stops every replay at once, the memos of outputs not yet closed included.
+            while (!memo.Off && ListenerCache.WalkMemoEnabled)
+            {
+                if (replayed < memo.Kept.Count)
+                {
+                    AbstractModel entry;
+                    int at;
+                    bool isLive;
+                    try
+                    {
+                        entry = memo.Kept[replayed];
+                        at = memo.KeptAt[replayed];
+                        isLive = memo.Live[replayed];
+                    }
+                    catch (Exception e)
+                    {
+                        // The memo's own code: the part off (never FastListeners, never the game's caller), KeptOnly's loop from here.
+                        ListenerCache.WalkMemoFailed(e);
+                        memo.Off = true;
+                        break;
+                    }
+                    if (isLive)
+                    {
+                        bool keeps;
+                        try
+                        {
+                            keeps = filter.Keeps(entry);
+#if BENCH
+                            MemoLiveJudged++;
+#endif
+                        }
+                        catch (Exception e)
+                        {
+                            // As KeptOnly's loop: this entry and the rest of the walk kept for this caller.
+                            failed = true;
+                            position = at;
+                            Disable(e);
+                            break;
+                        }
+                        replayed++;
+                        position = at + 1;
+                        if (keeps)
+                        {
+                            yield return entry;
+                        }
+                        continue;
+                    }
+#if BENCH
+                    if (replayed == 0)
+                    {
+                        if (memo.FirstLive)
+                        {
+                            CountFirstKept(entry, filter);
+                        }
+                        else if (memo.FirstWouldDrop)
+                        {
+                            FirstKept++;
+                        }
+                    }
+#endif
+                    replayed++;
+                    position = at + 1;
+                    yield return entry;
+                    continue;
+                }
+                if (memo.Done)
+                {
+                    yield break;
+                }
+                // This caller has passed every entry: the elements judged after the last are dropped.
+                int i = memo.Judged;
+                position = i;
+                if (Environment.CurrentManagedThreadId != _mainThread)
+                {
+                    break; // The type ids and verdict arrays are main-thread state: KeptOnly's own loop from here.
+                }
+                if (!source.TryAt(i, out AbstractModel model))
+                {
+                    memo.Done = true;
+                    yield break;
+                }
+                bool kept = true;
+                bool live = false;
+                int typeId = -1;
+                try
+                {
+                    if (i == 0)
+                    {
+#if BENCH
+                        memo.FirstLive = JudgedLive(model);
+                        memo.FirstWouldDrop = !memo.FirstLive && WouldDropFirst(model, filter);
+#endif
+                    }
+                    else if (model is (CardModel or EnchantmentModel or AfflictionModel))
+                    {
+                        // A stacked enchantment is held as a live entry: judged at this replay and every later one, as KeptOnly's loop judges it.
+                        live = JudgedLive(model);
+                        typeId = live ? -1 : source.TypeIdAt(i, ModelTypeId);
+                    }
+                }
+                catch (Exception e)
+                {
+                    // The memo's own code (the type id, the live test): the part off, KeptOnly's loop from this element.
+                    ListenerCache.WalkMemoFailed(e);
+                    memo.Off = true;
+                    break;
+                }
+                if (typeId >= 0)
+                {
+                    try
+                    {
+                        kept = filter.ReactsById(typeId);
+                    }
+                    catch (Exception e)
+                    {
+                        // The filter's verdict, as KeptOnly's loop: this entry and the rest of the walk kept for this caller.
+                        memo.Off = true;
+                        failed = true;
+                        Disable(e);
+                        break;
+                    }
+                }
+                try
+                {
+                    memo.Judged = i + 1;
+                    if (kept)
+                    {
+                        memo.Kept.Add(model);
+                        memo.KeptAt.Add(i);
+                        memo.Live.Add(live);
+                    }
+                }
+                catch (Exception e)
+                {
+                    // The memo's own code: the part off, KeptOnly's loop from this element (not yet given to this caller).
+                    ListenerCache.WalkMemoFailed(e);
+                    memo.Off = true;
+                    break;
+                }
+            }
+            // KeptOnly's own loop over the same output, from this caller's position.
+            for (int i = position; source.TryAt(i, out AbstractModel model); i++)
+            {
+                bool kept = true;
+                if (i == 0)
+                {
+#if BENCH
+                    CountFirstKept(model, filter);
+#endif
+                }
+                else if (!failed && model is (CardModel or EnchantmentModel or AfflictionModel))
+                {
+                    try
+                    {
+                        kept = filter.Keeps(model);
+                    }
+                    catch (Exception e)
+                    {
+                        failed = true;
+                        Disable(e);
+                    }
+                }
+                if (kept)
+                {
+                    yield return model;
+                }
+            }
+        }
+        finally
+        {
+            source.Leave();
+        }
+    }
+
+#if BENCH
+    /// <summary>A KeptOnly test entry (ListenerCache's self-test): the filtered walk over <paramref name="walk"/>.</summary>
+    internal static IEnumerable<AbstractModel> KeptOnlyForTest(IEnumerable<AbstractModel> walk, PileFilter filter) => KeptOnly(walk, filter);
+
+    /// <summary>The self-test runs where KeptOnly's memo can (FastListeners' main thread), and reads the memo's type ids against these.</summary>
+    internal static bool MemoThreadForTest => Environment.CurrentManagedThreadId == _mainThread;
+    internal static Func<AbstractModel, int> ModelTypeIdForTest => ModelTypeId;
+
+    /// <summary>A type the memo treats as Limitless's stacked enchantment (judged live at every replay), and those live verdicts (self-test).</summary>
+    internal static Type? _liveTypeForTest;
+    /// <summary>The next type id the memo asks for throws (self-test: an error in the memo's own code, never FastListeners' fault).</summary>
+    internal static bool _typeIdFaultForTest;
+    /// <summary>Set: <see cref="Disable"/> only counts in <see cref="_disablesForTest"/> (the memo self-test's throwing verdicts).</summary>
+    [ThreadStatic] internal static bool _countDisablesForTest;
+    [ThreadStatic] internal static int _disablesForTest;
+    internal static long MemoLiveJudged;
+#endif
 
     private static List<AbstractModel> Rent()
     {
@@ -3425,6 +3811,13 @@ public static class FastListeners
 
     public static void Disable(Exception e)
     {
+#if BENCH
+        if (_countDisablesForTest)
+        {
+            _disablesForTest++; // The memo self-test's throwing verdicts: counted, FastListeners left on.
+            return;
+        }
+#endif
         Enabled = false;
         PatchSafety.Fault(Name);
         Log.Error($"[{ModEntry.Id}] {Name} disabled after exception, falling back to vanilla: {e}");
