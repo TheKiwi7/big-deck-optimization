@@ -1,6 +1,6 @@
 # Positive control of the snapshot verifier against RelicStateReuse.Scalar (every relic of a scalar plan taken as unchanged
 # without reading it; the part's own sampled check put out of reach, see relics-scalarblind): the verifier must see a snapshot
-# differ. Expected to fail at its last line.
+# differ. Expected to fail at its check (`onfail continue` before it, so `quit` still runs and the session reaches its end).
 expect SnapshotVerifier: (optimized snapshot differs from vanilla|line \d+: optimized)
 # SnapshotVerifier's own count (bdperf verify: 'snapshots n, verified n, mismatches n'; its failed check), not a COUNTERS part's.
 expect (snapshots \d+, |the command failed: )verified \d+, mismatches [1-9]
@@ -23,5 +23,6 @@ cmd bdperf verify all
 sweep relics 0 75 checksum state
 cmd bdperf verify
 effects end
+onfail continue
 cmd bdperf verify check
 quit
