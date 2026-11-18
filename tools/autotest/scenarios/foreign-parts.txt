@@ -4,6 +4,9 @@
 # (AS) CardPile.AddInternal: a bool prefix sorted after this mod's prefixes (priority 0) backs off PileIndex, FastListeners and
 # CardDbScan at run time; one writing the pile's list through ___cards backs off; a plain skipping one (skip-prefix) and Chimera's
 # redirect, at the default priority, are accepted (BeforeReplace).
+# (Reorders) PileIndex judges the reorders (MoveToBottomInternal, MoveToTopInternal, RandomizeOrderInternal) as RemoveInternal
+# (SurroundingOnly): a void prefix sorted before this mod's on RandomizeOrderInternal (priority 800) is kept at run time, one
+# sorted after them on MoveToTopInternal (priority 0) backs off.
 timeout 900
 expect FOREIGN classify CardPile\.AddInternal: bdtest\.foreign\.bool-prefix Prefix .*priority 0: .*BeforeReplace backs off \(bool prefix running after a prefix of this mod
 expect CardDbScan: CardPile\.AddInternal is also patched by bdtest\.foreign\.bool-prefix \(postfixes and prefixes running before this mod's not enough\): normal game for that part
@@ -13,6 +16,11 @@ expect FOREIGN runtime FastListeners CardPile\.AddInternal \(BeforeReplace\) kep
 expect FOREIGN classify CardPile\.AddInternal: bdtest\.foreign\.skip-and-add-prefix-squeeze Prefix .*BeforeReplace backs off \(prefix taking the instance's field _cards
 expect FOREIGN classify CardPile\.AddInternal: bdtest\.foreign\.skip-prefix-squeeze Prefix .*BeforeReplace tolerated
 expect FOREIGN classify CardPile\.AddInternal: bdtest\.foreign\.redirect-prefix-squeeze Prefix .*BeforeReplace tolerated
+expect PileIndex: CardPile\.RandomizeOrderInternal is also patched by bdtest\.foreign\.noop-prefix \(postfixes and void prefixes: run around this mod's code as without it\): kept
+expect FOREIGN runtime PileIndex CardPile\.RandomizeOrderInternal \(SurroundingOnly\) kept [1-9][0-9]* backed off 0
+expect FOREIGN classify CardPile\.MoveToTopInternal: bdtest\.foreign\.noop-prefix Prefix .*priority 0: SurroundingOnly backs off \(void prefix running after a prefix of this mod
+expect PileIndex: CardPile\.MoveToTopInternal is also patched by bdtest\.foreign\.noop-prefix \(postfixes and void prefixes not enough\): normal game for that part
+expect FOREIGN runtime PileIndex CardPile\.MoveToTopInternal \(SurroundingOnly\) kept 0 backed off [1-9]
 newrun NECROBINDER 1234
 waitfor run 120
 wait 2
@@ -20,6 +28,9 @@ cmd bigdeck import ref all all
 enemyhp 999999
 # (AS) controls first: the runtime counts above must come from them alone.
 foreignpatch bool-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal priority 0
+# (Reorders) both installed through the AS stage: their runtime counts are per method.
+foreignpatch noop-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:RandomizeOrderInternal priority 800
+foreignpatch noop-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:MoveToTopInternal priority 0
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 1

@@ -140,10 +140,14 @@ public static class PileIndex
             // same pile during the call faults the index, the game's own scan from then on (safe, not exact). One they throw is
             // judged by the pile's list (Judge). Not seen: a patch writing CardPile._cards through __instance.Cards cast to its
             // list, reflection or code outside a patch (a ___cards field parameter is refused; DESIGN). AddInternal also lets
-            // bool prefixes stand when Harmony sorts them before every prefix of this mod there (AddTolerance). The other list
-            // methods (clear, moves, shuffle): no tolerance.
+            // bool prefixes stand when Harmony sorts them before every prefix of this mod there (AddTolerance). The reorders
+            // (MoveToBottomInternal, MoveToTopInternal, RandomizeOrderInternal; rule of 2026-11-18, Flaw): the same postfixes
+            // and void prefixes. They can't skip the reorder, which moves no card between piles; a card they move goes through
+            // AddInternal/RemoveInternal, counted there, and the reorder's own count check (AfterReorder, AfterRandomize, run
+            // whatever else is there) faults the index when the pile's count changed during the call (safe, not exact). Clear:
+            // no tolerance.
             others |= method == _addMethod ? PatchSafety.IsPatchedByOthers(method, AddTolerance)
-                : method == _removeMethod ? PatchSafety.IsPatchedByOthers(method, PatchTolerance.SurroundingOnly)
+                : method == _removeMethod || IsReorder(method) ? PatchSafety.IsPatchedByOthers(method, PatchTolerance.SurroundingOnly)
                 : PatchSafety.IsPatchedByOthers(method);
         }
         _others = others;
@@ -152,6 +156,11 @@ public static class PileIndex
         _moveOthers = (_addMethod != null && PatchSafety.HasOtherPatches(_addMethod))
             || (_removeMethod != null && PatchSafety.HasOtherPatches(_removeMethod));
     }
+
+    /// <summary>A CardPile method that only reorders its list (its patches by other mods judged as RemoveInternal's).</summary>
+    private static bool IsReorder(MethodBase? method) =>
+        method?.DeclaringType == typeof(CardPile)
+        && method.Name is nameof(CardPile.MoveToBottomInternal) or nameof(CardPile.MoveToTopInternal) or nameof(CardPile.RandomizeOrderInternal);
 
     /// <summary>
     /// Cards whose add or remove is under way on this thread while <see cref="_moveOthers"/>: the index is updated before the
@@ -252,7 +261,8 @@ public static class PileIndex
         PatchGuard.Patch(harmony, _getter, prefix: Method(nameof(PilePrefix)));
         Applied = true;
         // What RefreshOthers and GetterPatched ask about (display only).
-        PatchSafety.Watch(Name, _listMethods.Where(m => m != _addMethod && m != _removeMethod));
+        PatchSafety.Watch(Name, _listMethods.Where(m => m != _addMethod && m != _removeMethod && !IsReorder(m)));
+        PatchSafety.Watch(Name, _listMethods.Where(IsReorder), PatchTolerance.SurroundingOnly);
         PatchSafety.Watch(Name, _addMethod, AddTolerance);
         PatchSafety.Watch(Name, _removeMethod, PatchTolerance.SurroundingOnly);
         PatchSafety.Watch(Name, _getter, PatchTolerance.BeforeReplace);
