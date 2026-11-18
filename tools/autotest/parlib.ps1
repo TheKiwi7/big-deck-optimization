@@ -975,8 +975,6 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
             $candidates = @(@($locked | Where-Object { -not $running.ContainsKey($_) } | Sort-Object) + @(0..($SlotPool - 1) | Where-Object { -not $locked.Contains($_) }))
             foreach ($slot in $candidates) {
                 if ($running.Count -ge $MaxJobs -or $pending.Count -eq 0) { break }
-                # Each session takes 1-2 GB: the PC stays usable, the next one waits.
-                if ($running.Count -gt 0 -and (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory -lt $MinFreeKB) { break }
                 if (-not $locked.Contains($slot)) {
                     if (-not (Lock-Slot $slot -Try)) { continue }
                     [void]$locked.Add($slot)
@@ -985,6 +983,8 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                 if ($null -eq $others) { $others = @(Get-OtherSeriesHeads $queueDir $queueName) }
                 $head = & $lengthOf $pending[0]
                 if (@($others | Where-Object { $_.Length -gt $head -or ($_.Length -eq $head -and [string]::CompareOrdinal($_.Name, $queueName) -lt 0) }).Count) { break }
+                # Each session takes 1-2 GB: the PC stays usable, the next one waits. Asked only with a slot in hand (every series polls).
+                if ($running.Count -gt 0 -and (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory -lt $MinFreeKB) { break }
                 $job = $pending[0]
                 $pending.RemoveAt(0)
                 Remove-Item $job.Log -ErrorAction SilentlyContinue
