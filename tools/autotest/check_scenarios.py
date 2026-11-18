@@ -10,7 +10,13 @@ a regex Python compiles, an `effects` line for effects-ran, a scenario that exis
 both compile and name their target in a line of several parts: one a COUNTERS line (or any line of 'Part ..., mismatches n;'
 parts) matches through another part's field than its own passes when its own part saw nothing. And the two sides of every
 comparison the runners make (<x>-off/<x>-on, '# compare-with:', co-op <x>off/<x>-off/<x>van) import the same deck.
+
+    python -I tools/autotest/check_scenarios.py --against <log> [scenario]
+        tests each `expect` regex of the scenario (default: the one the log ran) against that log's session lines: which match
+        (how many lines) and which never do, with the closest line of the log for a miss (a drifted wording). Exit 1 when one
+        never matches.
 """
+import difflib
 import glob
 import os
 import re
@@ -202,6 +208,69 @@ def compared_pairs(names):
     return pairs
 
 
+def literal_of(pattern):
+    """The readable text of a regex: escapes undone, wildcards and classes turned into a space."""
+    text = re.sub(r'\\([.\[\](){}*+?|^$\\/-])', r'\1', pattern)
+    text = re.sub(r'\[[^\]]*\][*+?]?|\.[*+?]|\\[dswDSW][*+?]?|[()|^$?*+{}]', ' ', text)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def closest_line(rx, lines, floor=0.6, cap=400):
+    """(score 0..1, line) of the line of `lines` closest to the text of regex `rx` (the share of its literal text found in the
+    line, in order), or None under `floor`. Candidates: the lines holding the first characters of the regex's longest literal
+    chunk (the last `cap` of them)."""
+    literal = literal_of(rx.pattern)
+    chunks = sorted((c for c in literal.split(' ') if len(c) >= 4), key=len, reverse=True)
+    if not chunks:
+        return None
+    key = chunks[0][:8].lower()
+    best = None
+    for line in [x for x in lines if key in x.lower()][-cap:]:
+        blocks = difflib.SequenceMatcher(None, literal, line, autojunk=False).get_matching_blocks()
+        score = sum(b.size for b in blocks) / len(literal)
+        if score >= floor and (best is None or score > best[0]):
+            best = (score, line)
+    return best
+
+
+def against(log_path, scenario):
+    """Test a scenario's expect regexes against a real log (see the module's doc). Returns the exit code."""
+    import judge
+    with open(log_path, encoding='utf-8', errors='replace') as f:
+        text = f.read().splitlines()
+    if scenario is None:
+        ran = judge.scenario_of(text)
+        if not ran:
+            print(f'{log_path}: no "script <path>" line: name the scenario')
+            return 1
+        scenario = re.split(r'[\\/]', ran)[-1].removesuffix('.txt')
+    path = os.path.join(ROOT, 'scenarios', scenario + '.txt')
+    if not os.path.exists(path):
+        print(f'no scenario {scenario}')
+        return 1
+    session = [x for x in text if not judge.ECHO.search(x) and not judge.EXPECT.search(x) and not judge.EXPECTDECL.search(x)]
+    with open(path, encoding='utf-8-sig') as f:
+        expects = [line.strip().partition(' ')[2].strip() for line in f if line.strip().lower().startswith('expect ')]
+    missing = 0
+    for pattern in expects:
+        try:
+            rx = re.compile(pattern)
+        except re.error as e:
+            print(f'BAD   {pattern[:150]}: not a regex Python reads ({e})')
+            missing += 1
+            continue
+        hits = sum(1 for x in session if rx.search(x))
+        if hits:
+            print(f'MATCH {hits}x  {pattern[:150]}')
+            continue
+        missing += 1
+        near = closest_line(rx, session)
+        print(f'NEVER      {pattern[:150]}')
+        print(f'  closest ({near[0]:.0%}): {near[1].strip()[:200]}' if near else '  no close line in the log')
+    print(f'{scenario}: {len(expects)} expect line(s) against {os.path.basename(log_path)}, {missing} never matching')
+    return 1 if missing else 0
+
+
 def main():
     known, kinds = known_commands()
     template = counters_template()
@@ -259,4 +328,8 @@ def main():
 if __name__ == '__main__':
     # Under python -I stdout is the ANSI code page (PYTHONIOENCODING ignored): a log's character it lacks must not crash the report.
     sys.stdout.reconfigure(errors='backslashreplace')
+    if '--against' in sys.argv:
+        rest = sys.argv[sys.argv.index('--against') + 1:]
+        sys.path.insert(0, ROOT)
+        sys.exit(against(rest[0], rest[1] if len(rest) > 1 else None) if rest else 1)
     sys.exit(main())
