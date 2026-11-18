@@ -11,7 +11,10 @@
 #         Both       step by step, the copies at once (sweeps: each step on both copies together).
 #   Step: @{ Name; Script = 'par.ps1'; Args = @('-Names','x,y','-GameDir','{copy}'); Env = @{...}; TimeoutSec }, or the shortcut
 #         @{ Par = 'x,y'; Args = @('-UseBaselines') } for par.ps1 -Names x,y -GameDir {copy} -Jobs {jobs}. {copy} is the copy's
-#         folder, {jobs} the pool, {version} the copy's game version. STS2_GAME_DIR is the copy's folder for every step.
+#         folder, {jobs} the pool, {version} the copy's game version, {copies} the folders of every copy of the block, comma-joined.
+#         STS2_GAME_DIR is the copy's folder for every step. Once = $true (Parallel and Both blocks): the step runs once for the
+#         whole block, not once per copy (parsweep-all.ps1 -GameDir {copies}: the sweeps of both copies in one pool beside the solo
+#         par lists), reported as copy "all".
 # Checks before the start (-SkipChecks leaves them out): each copy holds the DLLs of the build folder (hash), no game of a copy is
 # running, no test slot is locked by another series. A failed check ends with "BATTERY ABORT <why>" and exit code 2.
 # Output (stdout and the -Log file, default results\battery\<name>.log; the steps' full output next to it, one file per step):
@@ -79,7 +82,7 @@ function Test-Battery {
 }
 
 # ---- steps --------------------------------------------------------------------------------------------------------------
-function Expand-Step($step, $copy) {
+function Expand-Step($step, $copy, $blockCopies) {
     $script = "$($step.Script)"
     $argList = @($step.Args | Where-Object { $null -ne $_ } | ForEach-Object { "$_" })
     if ($step.Par) {
@@ -87,7 +90,7 @@ function Expand-Step($step, $copy) {
         $argList = @("-Names", "$($step.Par)", "-GameDir", "{copy}", "-Jobs", "{jobs}") + $argList
     }
     if (-not $script) { throw "A step of the battery has neither Script nor Par: $($step | Out-String)" }
-    $argList = @($argList | ForEach-Object { $_.Replace("{copy}", $copy.Dir).Replace("{jobs}", "$jobsPool").Replace("{version}", $copy.Version) })
+    $argList = @($argList | ForEach-Object { $_.Replace("{copies}", (@($blockCopies | ForEach-Object { $_.Dir }) -join ",")).Replace("{copy}", $copy.Dir).Replace("{jobs}", "$jobsPool").Replace("{version}", $copy.Version) })
     $first = if ($step.Par) { "$($step.Par)" } elseif ($argList -contains "-Names") { $argList[[array]::IndexOf($argList, "-Names") + 1] } elseif ($argList -contains "-Name") { $argList[[array]::IndexOf($argList, "-Name") + 1] } else { "" }
     $label = if ($step.Name) { "$($step.Name)" } else { ([IO.Path]::GetFileNameWithoutExtension($script) + $(if ($first) { ":" + $first } else { "" })) }
     $label = $label -replace "\s+", "_"
@@ -118,7 +121,8 @@ function Complete-Step($s, [bool]$timedOut) {
     $exit, $lines = 1, @()
     if ($timedOut) {
         Stop-Job $s.Job; $lines = @("battery.ps1: step timed out after $($s.Timeout) s")
-        Get-Process -Name "SlayTheSpire2*" -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($s.Copy.Dir, "OrdinalIgnoreCase") } | Stop-Process -Force -ErrorAction SilentlyContinue
+        $dirs = if ($s.Copy.Dirs) { @($s.Copy.Dirs) } else { @($s.Copy.Dir) }
+        Get-Process -Name "SlayTheSpire2*" -ErrorAction SilentlyContinue | Where-Object { $p = $_.Path; $p -and @($dirs | Where-Object { $p.StartsWith($_, "OrdinalIgnoreCase") }).Count } | Stop-Process -Force -ErrorAction SilentlyContinue
     } else {
         $got = @(Receive-Job $s.Job -ErrorAction Continue 2>&1)
         $res = $got | Where-Object { $_ -is [pscustomobject] -and $null -ne $_.Exit } | Select-Object -Last 1
@@ -138,10 +142,10 @@ function Complete-Step($s, [bool]$timedOut) {
     if ($exit -ne 0 -or $k -gt 0) {
         $script:failed++
         $since = $s.Started.AddMinutes(-1).ToString("HH:mm")
-        $dir = Join-Path $Results $s.Copy.Version
+        $dirs = @(@(if ($s.Copy.Versions) { $s.Copy.Versions } else { $s.Copy.Version }) | ForEach-Object { Join-Path $Results $_ })
         $first = ""
         try {
-            $tri = @(& python -I (Join-Path $auto "triage.py") $dir --since $since --lines 8 2>&1 | ForEach-Object { "$_" })
+            $tri = @(& python -I (Join-Path $auto "triage.py") @dirs --since $since --lines 8 2>&1 | ForEach-Object { "$_" })
             $first = ($tri | Where-Object { $_ -match "^(LOOK|ALARM)" } | Select-Object -First 1)
         } catch { $first = "triage.py failed: $($_.Exception.Message)" }
         if (-not $first) { $first = ($lines | Where-Object { $_ -match "PROBLEM|FAILED|TIMEOUT|DIFFERENT|timed out" } | Select-Object -First 1) }
@@ -165,6 +169,12 @@ function Wait-Steps($running) {
     }
 }
 
+# The copies a step runs on: one pseudo copy "all" (the first copy's folder and version, every folder in Dirs) for a Once step.
+function Get-Instances($step, $bc) {
+    if ($step.Once) { return @([pscustomobject]@{ Name = "all"; Dir = $bc[0].Dir; Version = $bc[0].Version; Dirs = @($bc | ForEach-Object { $_.Dir }); Versions = @($bc | ForEach-Object { $_.Version }) }) }
+    $bc
+}
+
 # ---- run ----------------------------------------------------------------------------------------------------------------
 $blocks = @($bat.Blocks | Where-Object { -not $Only -or "$($_.Name)" -eq $Only })
 if (-not $blocks.Count) { Say "BATTERY ABORT no block named '$Only' in $File"; exit 2 }
@@ -184,7 +194,7 @@ foreach ($b in $blocks) {
 if ($DryRun) {
     foreach ($b in $plan) {
         Say "BLOCK $($b.Name) $($b.Mode) on $(($b.Copies | ForEach-Object { $_.Name }) -join ',')"
-        foreach ($step in $b.Steps) { foreach ($c in $b.Copies) { $s = Expand-Step $step $c; Say "  $($s.Label) $($c.Name): $($s.Script) $($s.Args -join ' ')" } }
+        foreach ($step in $b.Steps) { foreach ($c in (Get-Instances $step $b.Copies)) { $s = Expand-Step $step $c $b.Copies; Say "  $($s.Label) $($c.Name): $($s.Script) $($s.Args -join ' ')" } }
     }
     Say "BATTERY DONE $batName steps 0 failed 0 (dry run)"
     exit 0
@@ -194,13 +204,13 @@ foreach ($b in $plan) {
     Say "BLOCK $($b.Name) $($b.Mode) $(Get-Date -Format HH:mm)"
     switch ($b.Mode) {
         "Parallel" {
-            Wait-Steps @(foreach ($step in $b.Steps) { foreach ($c in $b.Copies) { Start-Step (Expand-Step $step $c) } })
+            Wait-Steps @(foreach ($step in $b.Steps) { foreach ($c in (Get-Instances $step $b.Copies)) { Start-Step (Expand-Step $step $c $b.Copies) } })
         }
         "Both" {
-            foreach ($step in $b.Steps) { Wait-Steps @(foreach ($c in $b.Copies) { Start-Step (Expand-Step $step $c) }) }
+            foreach ($step in $b.Steps) { Wait-Steps @(foreach ($c in (Get-Instances $step $b.Copies)) { Start-Step (Expand-Step $step $c $b.Copies) }) }
         }
         "Exclusive" {
-            foreach ($c in $b.Copies) { foreach ($step in $b.Steps) { Wait-Steps @(Start-Step (Expand-Step $step $c)) } }
+            foreach ($c in $b.Copies) { foreach ($step in $b.Steps) { Wait-Steps @(Start-Step (Expand-Step $step $c $b.Copies)) } }
         }
     }
 }
