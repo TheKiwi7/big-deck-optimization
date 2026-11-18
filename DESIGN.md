@@ -835,6 +835,30 @@ Fix: HarmonyWatch's finalizer of `UpdateWrapper` sees another mod's first Harmon
 
 Proof offline (a console harness, scratch only, loading the Debug DLL with v0.107.1's reference assemblies, the game's logging sent to the console): HarmonyWatch applied, another Harmony id patching after this mod's: a 15-byte helper called by a method this mod transpiles: rebuilt, its postfix sees 1,000 of 1,000 calls; the same helper behind a small wrapper (depth 1): rebuilt, 1,000; called from this mod's prefix: rebuilt, 1,000; a 274-byte helper: nothing rebuilt, 1,000; called only by a method another mod transpiles: nothing rebuilt, 0 (as without this mod). In game: pending (no game session on this code). `foreign-helpers-2k-on/off` on v0.107.1 and v0.113.1: the STATE lines identical (expected: `model-gated-postfix squeeze PlayerChoiceContext.PushModel` 83,399 and 24,680 both sides, v0.113.1's `ctor-source-gated squeeze` 21,401 at t2 and 45,015 at the end, `count-postfix` 67,387), the new expect (the `InlineGuard:` line for `PushModel`) seen and `effectcheck InlineGuard.Refreshed grew start`; then `foreign-helpers-controls`, `foreign-flights-2k-on/off`, `rebuild-check`, `ab-2k-off/on` and `release-checks` (nothing to rebuild there: no `InlineGuard: ... for the first time` line expected without a foreign patch after the load).
 
+### Lazily built instances (2026-11-18)
+
+A back-off scan (one game session per group of the downloaded Workshop mods, `bdopt why` against a control) found
+RelicFlashMerge backing off on v0.113.1 next to Unlimited 2.0.0 (a postfix on `SaveManager.ConstructDefault` redirecting the save
+folder; Unlimited no longer applies it on v0.111.1) and next to RitsuLib (`ProgressState.FromSerializable`): both are save code,
+strict under the relic-flash display premise (`StrictMember`, re-audit A1), and both only run while `SaveManager.Instance` builds
+the save manager, at the game's start, long before any flash. Generic rule (`Patches/LazyGuard.cs`, owner-approved 2026-11-18):
+a method of a skipped call's set behind a lazily built singleton can't run once the instance exists. Found from the game's code
+once per set: a static parameterless getter whose IL is exactly `ldsfld F; brtrue L; call Build; stsfld F; L: ldsfld F; ret` (nops
+aside), after any number of early returns `ldsfld X; brfalse M; ldsfld X; ret; M:` on static fields of its type (SaveManager's
+`_mockInstance`, which never reach the builder); F a static reference field of the getter's type, `Build` a static parameterless
+game method; within the set, the getter alone calls `Build` (call, callvirt, ldftn, generated code) and alone stores or takes the
+address of F; the methods behind it are those the set no longer reaches when the closure stops at `Build`
+(`MethodFingerprint.GameClosure`, the set's own options). Any other shape, or a method whose code can't be read: no guard. Asked
+per flash: F read then (non-null: the guard is shut, its methods are not asked about, not watched for the menu, named in a kept
+note `flash_lazy` with their mods). With `PatchSafety.ShapeRules` off: strict as before. v0.111.1: `SaveManager._instance`, 191
+methods behind it; v0.113.1: 231. Only RelicFlashMerge uses it (the only set whose strict members reach a lazy singleton today).
+
+Proof: `relicflash-lazy-on` on both versions (a counting postfix on `ConstructDefault`, Unlimited's shape: 3,946 flashes merged,
+no back-off, the kept note; control `foreignpatch lazyguard open`, every guard read as not built: the back-off line and no merge),
+`relicflash-ctl-on/off` and `relicflash-display-on/off` identical, `effects-check`; with the real mods on v0.113.1 (scan groups
+with Unlimited, and with RitsuLib): 104 merges each where there were none, the note naming `ConstructDefault` /
+`ProgressState.FromSerializable`.
+
 ### Re-audit round 3 (2026-11-17, from cf119ae)
 
 - **R3-1, RelicFlashMerge: merges refused out of combat (perf regression of B1).** Out of combat `Creature.GetVfxContainer()` is null (`NCombatRoom.Instance` is null at a rest site) and the game's `target.GetVfxContainer()?.AddChildSafely(NRelicFlashVfx.Create(relic, target))` skips `Create`: the shown flash makes no node, B1's capture saw none and refused every repeat (`SceneRefusals` 1,973 at Bing Bong's campfire clone in the second proof run: thousands of one-shot sounds a frame again). Fix: a flash whose handler provably left no node is a merge that leaves no scene code out (`Capture.LeftNoNode`, read from Godot's own counters, no game or mod code): no node entered the tree while the handler ran, and Godot's orphan node count (`Performance.Monitor.ObjectOrphanNodeCount`: every node alive outside the tree, one waiting for a deferred `AddChildSafely` among them) is the one it began with. A node made and kept for a later add raises the orphan count: not seen, refused as before; a node made and freed in the handler shows nothing. The only miss: a node made while another orphan node is freed in the same handler (a visual difference at most). Counted `RelicFlashMerge.NoNode` (Bench). Tests: `relicflash-display-on/off` (the campfire's creature merges are "no node" ones; then a combat and `bdperf relicflash 50`, a burst of the first relic's flashes in one frame: the node is made, checked and merged with, `NRelicFlashVfx.Create` counted), `relicflash-scene-ctl` (the control moved to that combat burst: out of combat the postfix on `Create` never runs).

@@ -345,6 +345,12 @@ public static class ForeignPatches
         {
             return new[] { ListenerCache.SnapshotWalksControl("status"), $"FOREIGN walk-snapflip shapes changed walks {_snapFlips}, RNG draws {_snapRngDraws}" };
         }
+        // LazyGuard's control: every lazily built instance read as not built yet (open), or as it is (shut).
+        if (parts[0] == "lazyguard" && parts.Length > 1 && parts[1] is "open" or "shut")
+        {
+            Patches.LazyGuard.ForceOpen = parts[1] == "open";
+            return new[] { $"FOREIGN lazyguard {(Patches.LazyGuard.ForceOpen ? "open: every guard read as not built yet" : "shut: guards read from their fields")}" };
+        }
         // The name gates' resolution (re-audit of the premises, P-1): closed generic names, types being built, types emitted later.
         if (parts[0] == "namegate" && parts.Length > 1 && parts[1] == "selftest")
         {
@@ -933,6 +939,7 @@ public static class ForeignPatches
 
     private static IReadOnlyList<string> Remove()
     {
+        Patches.LazyGuard.ForceOpen = false;
         (string Id, MethodBase Target)[] installed;
         lock (_installed)
         {

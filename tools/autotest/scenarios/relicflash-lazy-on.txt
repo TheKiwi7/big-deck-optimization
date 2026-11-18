@@ -1,0 +1,56 @@
+# RelicFlashMerge and LazyGuard (2026-11-18): a strict member a flash can't reach. The visual sets reach SaveManager.Instance,
+# whose getter builds the instance (ConstructDefault, save code: strict) only while it doesn't exist; Unlimited 2.0.0 postfixes
+# ConstructDefault (its save folder), which kept every flash on v0.113.1. (1) shut: a counting postfix of "another mod" on
+# ConstructDefault (Unlimited's shape); the instance exists long before any flash, so flashes still merge (effectcheck
+# RelicFlashMerge grew), no back-off, a kept note naming it (its count prints no STATE line: never called). (2) open (control,
+# foreignpatch lazyguard open: every guard read as if its instance weren't built): the same postfix keeps every flash, the
+# back-off recorded as before the rule. A new run and a campfire clone (~945 cards, Bing Bong) per phase.
+timeout 1500
+expect RelicFlashMerge: strict members behind a lazily built instance \(can't run once it exists\): SaveManager\._instance \([0-9]+ methods, ConstructDefault among them\)
+expect FOREIGN kept RelicFlashMerge: other mods' code on game code that only runs while an instance isn't built yet \(.*SaveManager\.ConstructDefault.*\)
+expect EFFECTCHECK RelicFlashMerge grew since 'shut'
+expect FOREIGN lazyguard open
+expect RelicFlashMerge: SaveManager\.ConstructDefault is also patched by bdtest\.foreign\.count-postfix: normal game for that part
+expect EFFECTCHECK RelicFlashMerge same since 'open'
+# Phase shut: the instance exists (the save manager is built at the game's start).
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+foreignpatch count-postfix MegaCrit.Sts2.Core.Saves.SaveManager:ConstructDefault
+effects shut
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+state after shut optional
+foreignpatch report shut
+effects shut end
+effectcheck RelicFlashMerge grew shut
+cmd bdopt why
+foreignpatch remove
+# Phase open (control): the same postfix, every guard read as open.
+tomenu
+wait 2
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+foreignpatch count-postfix MegaCrit.Sts2.Core.Saves.SaveManager:ConstructDefault
+foreignpatch lazyguard open
+effects open
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+state after open optional
+foreignpatch report open
+effects open end
+effectcheck RelicFlashMerge same open
+cmd bdopt why
+foreignpatch remove
+quit

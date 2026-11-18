@@ -162,8 +162,8 @@ public static class RelicFlashMerge
         PatchSafety.WatchAll(Name, () => (_holderPatched ? new System.Reflection.MethodBase?[] { _holderFlash } : Array.Empty<System.Reflection.MethodBase?>())
             .Concat(_holderPatched && !PatchSafety.ShapeRules ? new System.Reflection.MethodBase?[] { _doFlash }.Concat(_holderScript) : Array.Empty<System.Reflection.MethodBase?>())
             .Concat(_playerPatched ? new System.Reflection.MethodBase?[] { _playerFlash } : Array.Empty<System.Reflection.MethodBase?>())
-            .Concat(_sets is { } sets ? (_holderPatched ? Watched(sets.Holder, sets.HolderStrict) : Array.Empty<System.Reflection.MethodBase>())
-                .Concat(_playerPatched ? Watched(sets.Player, sets.PlayerStrict) : Array.Empty<System.Reflection.MethodBase>()).Cast<System.Reflection.MethodBase?>()
+            .Concat(_sets is { } sets ? (_holderPatched ? Watched(sets.Holder, sets.HolderStrict, sets.HolderGuards) : Array.Empty<System.Reflection.MethodBase>())
+                .Concat(_playerPatched ? Watched(sets.Player, sets.PlayerStrict, sets.PlayerGuards) : Array.Empty<System.Reflection.MethodBase>()).Cast<System.Reflection.MethodBase?>()
                 : Array.Empty<System.Reflection.MethodBase?>()));
         // The sound set: strict with the shape rules off, as before rule D; with them, replayed (no back-off to show).
         if (player && !PatchSafety.ShapeRules)
@@ -175,7 +175,9 @@ public static class RelicFlashMerge
     }
 
     /// <summary>The methods of a visual set the strict checks (and the menu's back-off rows) ask about now.</summary>
-    private static System.Reflection.MethodBase[] Watched(CodeSet set, System.Reflection.MethodBase[] strict) => PatchSafety.ShapeRules ? strict : set.Methods;
+    private static System.Reflection.MethodBase[] Watched(CodeSet set, System.Reflection.MethodBase[] strict,
+        Dictionary<System.Reflection.MethodBase, LazyGuard.Guard> guards) =>
+        PatchSafety.ShapeRules ? (guards.Count == 0 ? strict : strict.Where(m => !Unreachable(m, guards)).ToArray()) : set.Methods;
 
     /// <summary>
     /// A visual set's method that stays strict under the display premise (a patch there is never taken as display): the game's
@@ -219,7 +221,16 @@ public static class RelicFlashMerge
 
     /// <summary>The sets, and each visual set's methods strict under the display premise (<see cref="StrictMember"/>).</summary>
     private sealed record ComputedSets(CodeSet Sound, CodeSet Player, CodeSet Holder,
-        System.Reflection.MethodBase[] PlayerStrict, System.Reflection.MethodBase[] HolderStrict, System.Reflection.MethodInfo[] StrictVirtuals);
+        System.Reflection.MethodBase[] PlayerStrict, System.Reflection.MethodBase[] HolderStrict, System.Reflection.MethodInfo[] StrictVirtuals,
+        Dictionary<System.Reflection.MethodBase, LazyGuard.Guard> PlayerGuards, Dictionary<System.Reflection.MethodBase, LazyGuard.Guard> HolderGuards);
+
+    /// <summary>
+    /// A strict member a flash can't reach now (with the shape rules on): behind a lazily built instance that already exists
+    /// (<see cref="LazyGuard"/>: SaveManager's <c>ConstructDefault</c>, which only <c>SaveManager.Instance</c> calls, and only
+    /// before the instance exists). Its patches can't see a merged flash's skip: not a back-off.
+    /// </summary>
+    private static bool Unreachable(System.Reflection.MethodBase method, Dictionary<System.Reflection.MethodBase, LazyGuard.Guard> guards) =>
+        PatchSafety.ShapeRules && guards.TryGetValue(method, out LazyGuard.Guard? guard) && LazyGuard.Shut(guard);
 
     private static ComputedSets? _sets;
     private static bool _setsFailed;
@@ -250,20 +261,31 @@ public static class RelicFlashMerge
                 soundRoots.AddRange(MethodFingerprint.Implementations(typeof(MegaCrit.Sts2.Core.Hooks.Hook).Assembly, _flashSfx));
             }
             var sound = CodeSet.Compute(Name + " (sound)", soundRoots, SetLimit, SoundSets, interfaces: true);
-            var player = CodeSet.Compute(Name + " (creature effect)", vfxMethods.Concat(new System.Reflection.MethodBase?[]
+            System.Reflection.MethodBase?[] playerRoots = vfxMethods.Concat(new System.Reflection.MethodBase?[]
             {
                 Reflect.Method(typeof(Creature), nameof(Creature.GetVfxContainer), Type.EmptyTypes),
                 Reflect.Method(typeof(MegaCrit.Sts2.Core.Helpers.GodotTreeExtensions), nameof(MegaCrit.Sts2.Core.Helpers.GodotTreeExtensions.AddChildSafely), new[] { typeof(Node), typeof(Node) }),
-            }), SetLimit, PlayerVisualSets);
+            }).ToArray();
+            var player = CodeSet.Compute(Name + " (creature effect)", playerRoots, SetLimit, PlayerVisualSets);
             // The relic bar effect: the handler, DoFlash, and the whole class of its scene's script (NVfxParticleSystem: its
             // instances in that scene only exist through flashes; the same class elsewhere runs as before, only a merged flash's
             // calls are left out).
-            var holderSet = CodeSet.Compute(Name + " (relic bar effect)", new System.Reflection.MethodBase?[] { _holderFlash, _doFlash }.Concat(_holderScript),
-                SetLimit, HolderVisualSets);
+            System.Reflection.MethodBase?[] holderRoots = new System.Reflection.MethodBase?[] { _holderFlash, _doFlash }.Concat(_holderScript).ToArray();
+            var holderSet = CodeSet.Compute(Name + " (relic bar effect)", holderRoots, SetLimit, HolderVisualSets);
             System.Reflection.MethodBase[] playerStrict = player.Methods.Where(StrictMember).ToArray();
             System.Reflection.MethodBase[] holderStrict = holderSet.Methods.Where(StrictMember).ToArray();
             System.Reflection.MethodInfo[] strictVirtuals = player.Virtuals.Concat(holderSet.Virtuals).Where(StrictMember).Distinct().ToArray();
-            _sets = new ComputedSets(sound, player, holderSet, playerStrict, holderStrict, strictVirtuals);
+            // Strict members behind a lazily built instance, per set (a method behind it in one set may be reached otherwise in
+            // the other): used with the shape rules on only, asked per flash.
+            Dictionary<System.Reflection.MethodBase, LazyGuard.Guard> playerGuards = LazyGuard.Find(playerRoots, player, playerStrict, SetLimit);
+            Dictionary<System.Reflection.MethodBase, LazyGuard.Guard> holderGuards = LazyGuard.Find(holderRoots, holderSet, holderStrict, SetLimit);
+            if (playerGuards.Count + holderGuards.Count > 0)
+            {
+                Log.Info($"[{ModEntry.Id}] {Name}: strict members behind a lazily built instance (can't run once it exists): "
+                    + string.Join(", ", playerGuards.Concat(holderGuards).GroupBy(p => p.Value.Field).Select(g =>
+                        $"{g.Key.DeclaringType?.Name}.{g.Key.Name} ({g.Select(p => p.Key).Distinct().Count()} methods, {g.First().Value.Builder.Name} among them)")));
+            }
+            _sets = new ComputedSets(sound, player, holderSet, playerStrict, holderStrict, strictVirtuals, playerGuards, holderGuards);
         }
         catch (Exception e)
         {
@@ -282,7 +304,7 @@ public static class RelicFlashMerge
         __state = null;
         try
         {
-            if (!Usable() || Sets() is not { } sets || !VisualUsable(sets.Holder, sets.HolderStrict, sets.StrictVirtuals, __0, _holderFlash, _doFlash))
+            if (!Usable() || Sets() is not { } sets || !VisualUsable(sets.Holder, sets.HolderStrict, sets.StrictVirtuals, __0, _holderFlash, _doFlash, sets.HolderGuards))
             {
                 return true;
             }
@@ -350,7 +372,7 @@ public static class RelicFlashMerge
         try
         {
             if (!Usable() || SingleTarget(targets) is not { } target || Sets() is not { } sets
-                || !VisualUsable(sets.Player, sets.PlayerStrict, sets.StrictVirtuals, relic, _playerFlash, null))
+                || !VisualUsable(sets.Player, sets.PlayerStrict, sets.StrictVirtuals, relic, _playerFlash, null, sets.PlayerGuards))
             {
                 return true;
             }
@@ -440,7 +462,7 @@ public static class RelicFlashMerge
     /// RelicModel: only this relic's own class counts).
     /// </summary>
     private static bool VisualUsable(CodeSet set, System.Reflection.MethodBase[] strict, System.Reflection.MethodInfo[] strictVirtuals, RelicModel relic,
-        System.Reflection.MethodBase? handler, System.Reflection.MethodBase? doFlash)
+        System.Reflection.MethodBase? handler, System.Reflection.MethodBase? doFlash, Dictionary<System.Reflection.MethodBase, LazyGuard.Guard> guards)
     {
         // No tolerance: merged flashes skip calls (a missing method counts as patched).
         if (!set.Reviewed || PatchSafety.IsPatchedByOthers(handler))
@@ -452,6 +474,11 @@ public static class RelicFlashMerge
             bool patched = false;
             foreach (System.Reflection.MethodBase method in strict)
             {
+                // Behind a lazily built instance that exists: the flash can't reach it (its patches see nothing skipped).
+                if (guards.Count > 0 && Unreachable(method, guards))
+                {
+                    continue;
+                }
                 // Every one asked: each back-off recorded (bdopt why names them all).
                 patched |= PatchSafety.IsPatchedByOthers(method, Caller);
             }
@@ -520,34 +547,46 @@ public static class RelicFlashMerge
     private static void NoteDisplay()
     {
         var patched = new List<System.Reflection.MethodBase>();
+        var behindBuilt = new List<System.Reflection.MethodBase>();
         var overriders = new List<string>();
         // Only while flashes can be merged (G, re-audit of the premises): not once faulted (with the mod off: what would run once on).
         if (PatchSafety.ShapeRules && Applied && !PatchSafety.IsFaulted(Name) && Sets() is { } sets)
         {
-            void Collect(CodeSet set, System.Reflection.MethodBase[] strict, System.Reflection.MethodBase? handler)
+            void Collect(CodeSet set, System.Reflection.MethodBase[] strict, System.Reflection.MethodBase? handler,
+                Dictionary<System.Reflection.MethodBase, LazyGuard.Guard> guards)
             {
-                if (!set.Reviewed || PatchSafety.HasOtherPatches(handler) || strict.Any(PatchSafety.HasOtherPatches) || StrictOverridden(sets.StrictVirtuals))
+                if (!set.Reviewed || PatchSafety.HasOtherPatches(handler) || strict.Any(m => !Unreachable(m, guards) && PatchSafety.HasOtherPatches(m))
+                    || StrictOverridden(sets.StrictVirtuals))
                 {
                     return;
                 }
                 foreach (System.Reflection.MethodBase method in set.Methods)
                 {
-                    if (method != handler && !StrictMember(method) && PatchSafety.HasOtherPatches(method))
+                    if (method == handler || !PatchSafety.HasOtherPatches(method))
+                    {
+                        continue;
+                    }
+                    if (!StrictMember(method))
                     {
                         patched.Add(method);
+                    }
+                    else if (Unreachable(method, guards))
+                    {
+                        behindBuilt.Add(method);
                     }
                 }
                 overriders.AddRange(set.ForeignOverriders());
             }
             if (_holderPatched)
             {
-                Collect(sets.Holder, sets.HolderStrict, _holderFlash);
+                Collect(sets.Holder, sets.HolderStrict, _holderFlash, sets.HolderGuards);
             }
             if (_playerPatched)
             {
-                Collect(sets.Player, sets.PlayerStrict, _playerFlash);
+                Collect(sets.Player, sets.PlayerStrict, _playerFlash, sets.PlayerGuards);
             }
         }
+        NoteBehindBuilt(behindBuilt);
         if (patched.Count == 0 && overriders.Count == 0)
         {
             PatchSafety.ClearKept(Name, "flash_display");
@@ -569,6 +608,27 @@ public static class RelicFlashMerge
             + "doesn't run for the flashes merged where it would have: taken as display only, with no effect on the game's state (a stated "
             + "premise: what a merged flash leaves out is the relic bar's and the creature's flash effects; most of those methods only run on "
             + "a flash's first use or an error path; a mod changing game state there could desync co-op; its sound is still played)", mods.ToArray());
+    }
+
+    /// <summary>
+    /// The kept note of strict members other mods patch that a flash can't reach (<see cref="Unreachable"/>): named with their
+    /// mods (bdopt why, the menu's hover), not a back-off. Cleared when there is none.
+    /// </summary>
+    private static void NoteBehindBuilt(List<System.Reflection.MethodBase> methods)
+    {
+        if (methods.Count == 0)
+        {
+            PatchSafety.ClearKept(Name, "flash_lazy");
+            return;
+        }
+        var mods = new List<string>(PatchSafety.OtherModsPatching(methods));
+        foreach (System.Reflection.MethodBase method in methods)
+        {
+            mods.AddRange(HarmonyWatch.HiddenOwners(method));
+        }
+        PatchSafety.Kept(Name, "flash_lazy", $"other mods' code on game code that only runs while an instance isn't built yet "
+            + $"({string.Join(", ", methods.Select(m => $"{m.DeclaringType?.Name}.{m.Name}").Distinct())}): that instance already exists, "
+            + "so a relic flash can't reach it, merged or not (nothing of it is left out)", mods.ToArray());
     }
 #if BENCH
     /// <summary>Merged flashes whose sound was played through the game's command (rule D).</summary>
