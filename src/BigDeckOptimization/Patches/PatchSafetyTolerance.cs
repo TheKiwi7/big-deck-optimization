@@ -927,7 +927,7 @@ public static partial class PatchSafety
     private static string GateDetail(MethodBase method)
     {
         string listener = ListenerOf(method)?.Parameter ?? "__instance";
-        return (listener == "__instance" ? ", gated on the instance" : $", gated on its argument {listener}")
+        return (listener == "__instance" ? (ResultIsInstance(method) ? ", gated on the instance or its copy returned" : ", gated on the instance") : $", gated on its argument {listener}")
             + (NameGated(method) ? "; a name test on the instance's runtime type taken as a gate on every loaded type of that name (a stated premise)" : "")
             + InitializerDetail(method);
     }
@@ -1069,6 +1069,42 @@ public static partial class PatchSafety
         }
     }
 
+    /// <summary>The originals registered by <see cref="SetResultIsInstance"/>, keyed as <see cref="_listenerParameters"/>.</summary>
+    private static readonly ConcurrentDictionary<(Module Module, int Token), bool> _resultIsInstance = new();
+
+    /// <summary>
+    /// Says that <paramref name="original"/>, an instance method whose code the caller pins (a fingerprint), returns a copy of its
+    /// instance of the same runtime type (<c>CardModel.ToMutable</c>: <c>MemberwiseClone</c>), and that a gate's question is the
+    /// instance's type: a <see cref="PatchTolerance.TypeGated"/> check then also takes a postfix gated on <c>__result</c> (by value,
+    /// the same IL shape) as gated on those types. Postfixes only: a prefix sees no result yet. Never throws.
+    /// </summary>
+    internal static void SetResultIsInstance(MethodBase? original)
+    {
+        try
+        {
+            if (original != null && !original.IsStatic && _resultIsInstance.TryAdd((original.Module, original.MetadataToken), true))
+            {
+                Invalidate(original);
+            }
+        }
+        catch
+        {
+            // Not registered: a postfix gated on the result backs off there, as before.
+        }
+    }
+
+    private static bool ResultIsInstance(MethodBase original)
+    {
+        try
+        {
+            return !_resultIsInstance.IsEmpty && _resultIsInstance.ContainsKey((original.Module, original.MetadataToken));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     /// <summary>The listener registered for this original, or null (none registered).</summary>
     internal static ListenerSlot? ListenerOf(MethodBase original)
     {
@@ -1139,6 +1175,12 @@ public static partial class PatchSafety
         }
         var gateKey = (patch.MethodHandle, kind, listener, position);
         Type[]? shape = _gates.GetOrAdd(gateKey, key => AnalyseGates(patch, key.Kind, key.Listener, key.Position));
+        // A postfix gated on __result where the result is a copy of the instance of the same runtime type (SetResultIsInstance).
+        if (shape == null && kind == PatchKind.Postfix && listener == "__instance" && original != null && ResultIsInstance(original))
+        {
+            gateKey = (patch.MethodHandle, kind, "__result", -1);
+            shape = _gates.GetOrAdd(gateKey, key => AnalyseGates(patch, key.Kind, key.Listener, key.Position));
+        }
         // Name gates (the reflection-reads premise) resolved to the loaded types of that name at each answer: null when they can't be.
         if (shape != null && Array.IndexOf(shape, typeof(NameGateMarker)) >= 0)
         {

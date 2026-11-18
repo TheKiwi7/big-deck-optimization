@@ -328,8 +328,18 @@ public static class LimitlessCloneMemo
     /// does nothing unless the card is of some types (<see cref="PatchTolerance.TypeGated"/>, e.g. CardAscension's
     /// <c>AddKeyword</c> prefix gated on its own card) changes nothing for a card of another type: only a card of a gate type
     /// loses the memo (and the drops, <see cref="LimitlessHookSkip"/>: its inner cards are Limitless's storage card).
+    /// Rule A (2026-11-18): the CardModel-declared methods of the chain itself too (FromSerializable's ToMutable, AfterDeserialized,
+    /// EnchantInternal, set_Enchantment, UpgradeInternal, FinalizeUpgradeInternal): each runs on that same inner card (ToMutable on
+    /// its canonical card, of the same type). On ToMutable a postfix gated on <c>__result</c> counts as one on the instance (the
+    /// pinned code returns <c>MemberwiseClone</c>'s copy: the same runtime type; <see cref="PatchSafety.SetResultIsInstance"/>).
+    /// Not the AbstractModel-declared ones (MutableClone, ClonePreservingMutability, DeepCloneFields, AfterCloned): they also run
+    /// on the inner card's enchantment, whose type a gate on card types isn't asked about (strict there).
     /// </summary>
-    private static readonly HashSet<string> GatedChain = new(StringComparer.Ordinal) { "AddKeyword", "RemoveKeyword", "get_MaxUpgradeLevel" };
+    private static readonly HashSet<string> GatedChain = new(StringComparer.Ordinal)
+    {
+        "AddKeyword", "RemoveKeyword", "get_MaxUpgradeLevel",
+        nameof(CardModel.ToMutable), "AfterDeserialized", "EnchantInternal", "set_Enchantment", "UpgradeInternal", "FinalizeUpgradeInternal",
+    };
 
     /// <summary>
     /// Asked per stacked card: answered from a result rechecked each second, the patches no rule lets stand. Also
@@ -419,9 +429,22 @@ public static class LimitlessCloneMemo
         }
         (Type type, string name, (string Patch, string Fingerprint)[] allowedPatches) = Chain[index];
         System.Reflection.MethodInfo[] allowed = allowedPatches.Select(a => Allowed(a.Patch, a.Fingerprint)).OfType<System.Reflection.MethodInfo>().ToArray();
-        return parts[index] = DeclaredMethods(type).Where(m => m.Name == name)
+        var built = DeclaredMethods(type).Where(m => m.Name == name)
             .Select(m => ((System.Reflection.MethodBase)m, allowed, type == typeof(CardModel) && !m.IsStatic && GatedChain.Contains(name)))
             .ToArray();
+        // Before any check of it: CardModel.ToMutable's result is its instance's copy (pinned in GameChain), so a postfix gated on
+        // __result is gated on the instance's type.
+        if (type == typeof(CardModel) && name == nameof(CardModel.ToMutable))
+        {
+            foreach ((System.Reflection.MethodBase method, _, bool gated) in built)
+            {
+                if (gated && method.GetParameters().Length == 0)
+                {
+                    PatchSafety.SetResultIsInstance(method);
+                }
+            }
+        }
+        return parts[index] = built;
     }
 
     private static (System.Reflection.MethodBase Method, System.Reflection.MethodInfo[] Allowed, bool Gated)[]?[]? _chainParts;

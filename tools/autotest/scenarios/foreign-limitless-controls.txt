@@ -1,0 +1,67 @@
+# The generic rules on the Limitless parts (2026-11-18): their controls, synthetic patches of another mod (Bench/ForeignShapesLimitless.cs)
+# that must still back off, one at a time on its own chain method, each phase one combat start at ~945 cards (the reference deck,
+# Limitless stacked enchantments) with LimitlessCloneMemo idle (its effect the same). Mod on only (nothing differs: each control's
+# part stays the game's). FOREIGN runtime lines come from the runtime checks only.
+# Rule A: (1) a postfix gated on an enchantment type on AbstractModel.MutableClone (it also runs on the inner card's enchantment:
+# strict there), (2) a postfix gated on `is CardModel` on CardModel.UpgradeInternal (kept by TypeGated, but every inner card is a
+# CardModel: the per-card strict check backs off), (3) a count before the gate's branch on CardModel.FinalizeUpgradeInternal
+# (not a gate: TypeGated backs off).
+timeout 1500
+expect FOREIGN runtime LimitlessCloneMemo AbstractModel\.MutableClone \(None\) kept 0 backed off [1-9]
+expect FOREIGN runtime LimitlessCloneMemo CardModel\.UpgradeInternal \(TypeGated\) kept [1-9]
+expect FOREIGN runtime LimitlessCloneMemo CardModel\.UpgradeInternal \(None\) kept 0 backed off [1-9]
+expect FOREIGN classify CardModel\.FinalizeUpgradeInternal: bdtest\.foreign\.lim-write-then-gated-postfix-squeeze Postfix .*TypeGated backs off \(postfix not provably gated
+expect FOREIGN runtime LimitlessCloneMemo CardModel\.FinalizeUpgradeInternal \(TypeGated\) kept 0 backed off [1-9]
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bdopt on
+cmd bigdeck import ref all all
+enemyhp 999999
+immortal
+# (1) Rule A: an enchantment-type gate on MutableClone.
+foreignpatch lim-enchantment-gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:MutableClone
+wait 3
+effects a1
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd kill all
+waitfor nocombat 300
+wait 2
+effectcheck LimitlessCloneMemo same a1
+foreignpatch report a1
+foreignpatch limitless remove
+wait 3
+# (2) Rule A: a gate every inner card passes.
+foreignpatch lim-cardmodel-gated-postfix MegaCrit.Sts2.Core.Models.CardModel:UpgradeInternal
+wait 3
+effects a2
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd kill all
+waitfor nocombat 300
+wait 2
+effectcheck LimitlessCloneMemo same a2
+foreignpatch report a2
+foreignpatch limitless remove
+wait 3
+# (3) Rule A: a write before the gate's branch.
+foreignpatch lim-write-then-gated-postfix MegaCrit.Sts2.Core.Models.CardModel:FinalizeUpgradeInternal squeeze
+wait 3
+effects a3
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd kill all
+waitfor nocombat 300
+wait 2
+effectcheck LimitlessCloneMemo same a3
+foreignpatch report a3
+foreignpatch limitless remove
+wait 3
+cmd bdopt on
+wait 1
+foreignpatch remove
+quit

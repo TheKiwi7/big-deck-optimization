@@ -1,0 +1,88 @@
+# Rule A (2026-11-18): type gates on the Limitless clone chain's CardModel-declared methods. Synthetic patches of another mod
+# doing nothing unless the card is a Squeeze: a postfix gated on __result on CardModel.ToMutable (Acts from the Past's shape,
+# Bench/ForeignShapesLimitless.cs lim-result-gated-postfix) and postfixes gated on the instance (Bench/ForeignPatches.cs
+# gated-postfix) on AfterDeserialized, EnchantInternal, set_Enchantment, UpgradeInternal, FinalizeUpgradeInternal; three combat
+# starts at ~945 cards (the reference deck, Limitless stacked enchantments). Their counts (STATE foreign) must match.
+# Mod on. Compare foreign-limitless-a-2k-off and foreign-limitless-a-2k-on: CHECKSUM/STATE identical.
+# The on side: LimitlessCloneMemo and LimitlessHookSkip keep running past the gated patches (their effects grow), the runtime
+# check lets them stand (TypeGated kept); the inner cards are Limitless's storage card, never a Squeeze.
+timeout 1500
+expect .*CardModel\.ToMutable is also patched by bdtest\.foreign\.lim-result-gated-postfix-squeeze \(patches gated on the listener's type: Squeeze treated as overriding it, gated on the instance or its copy returned
+expect FOREIGN runtime LimitlessCloneMemo CardModel\.ToMutable \(TypeGated\) kept [1-9]
+expect FOREIGN runtime LimitlessCloneMemo CardModel\.UpgradeInternal \(TypeGated\) kept [1-9]
+expect FOREIGN runtime LimitlessCloneMemo CardModel\.FinalizeUpgradeInternal \(TypeGated\) kept [1-9]
+expect FOREIGN runtime LimitlessCloneMemo CardModel\.EnchantInternal \(TypeGated\) kept [1-9]
+expect FOREIGN runtime LimitlessCloneMemo CardModel\.set_Enchantment \(TypeGated\) kept [1-9]
+expect FOREIGN runtime LimitlessCloneMemo CardModel\.AfterDeserialized \(TypeGated\) kept [1-9]
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bdopt on
+cmd bigdeck import ref all all
+foreignpatch lim-result-gated-postfix MegaCrit.Sts2.Core.Models.CardModel:ToMutable squeeze
+foreignpatch gated-postfix MegaCrit.Sts2.Core.Models.CardModel:AfterDeserialized squeeze
+foreignpatch gated-postfix MegaCrit.Sts2.Core.Models.CardModel:EnchantInternal squeeze
+foreignpatch gated-postfix MegaCrit.Sts2.Core.Models.CardModel:set_Enchantment squeeze
+foreignpatch gated-postfix MegaCrit.Sts2.Core.Models.CardModel:UpgradeInternal squeeze
+foreignpatch gated-postfix MegaCrit.Sts2.Core.Models.CardModel:FinalizeUpgradeInternal squeeze
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum CULTISTS_NORMAL start
+state CULTISTS_NORMAL start
+effects first
+play 5
+waitfor idle 300
+checksum CULTISTS_NORMAL plays
+state CULTISTS_NORMAL plays
+endturn
+waitfor idle 600
+checksum CULTISTS_NORMAL t1 end
+state CULTISTS_NORMAL t1 end
+cmd kill all
+waitfor nocombat 300
+wait 2
+cmd fight KNIGHTS_ELITE
+waitfor idle 600
+wait 1
+checksum KNIGHTS_ELITE start
+state KNIGHTS_ELITE start
+play 5
+waitfor idle 300
+checksum KNIGHTS_ELITE plays
+state KNIGHTS_ELITE plays
+endturn
+waitfor idle 600
+checksum KNIGHTS_ELITE t1 end
+state KNIGHTS_ELITE t1 end
+cmd kill all
+waitfor nocombat 300
+wait 2
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum CULTISTS_NORMAL start
+state CULTISTS_NORMAL start
+play 5
+waitfor idle 300
+checksum CULTISTS_NORMAL plays
+state CULTISTS_NORMAL plays
+endturn
+waitfor idle 600
+checksum CULTISTS_NORMAL t1 end
+state CULTISTS_NORMAL t1 end
+cmd kill all
+waitfor nocombat 300
+wait 2
+foreignpatch report end
+foreignpatch limitless report end
+effects end
+effectcheck LimitlessCloneMemo grew first
+effectcheck LimitlessHookSkip grew first
+cmd bdopt on
+wait 1
+foreignpatch remove
+foreignpatch limitless remove
+quit

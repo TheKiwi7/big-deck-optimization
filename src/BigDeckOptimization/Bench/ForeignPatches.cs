@@ -366,6 +366,7 @@ public static class ForeignPatches
         {
             return InstallIl(parts);
         }
+        if (ForeignShapesLimitless.Handles(parts)) return ForeignShapesLimitless.Run(parts); // Rules A, B, L on the Limitless parts.
         if (!Shapes.Contains(parts[0]) || parts.Length < 2)
         {
             throw new ArgumentException($"unknown foreignpatch shape '{parts[0]}' (or no target): {string.Join(", ", Shapes)}");
