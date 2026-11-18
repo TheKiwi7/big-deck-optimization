@@ -1649,6 +1649,12 @@ public static partial class PatchSafety
 
         /// <summary>The address of a null reference (NullSkipped's <c>ref __result</c>): <c>ldind.ref</c> through it gives null.</summary>
         NullAddress,
+
+        /// <summary>
+        /// Rule G: a value read from a static field by a trivial getter (a mod's config flag, set at run time), or computed from
+        /// such values and constants: unknown, but a branch on it explores both sides (each must reach a no-op exit).
+        /// </summary>
+        Forkable,
     }
 
     private readonly record struct PathValue(PathKind Kind, int Number = 0);
@@ -1689,6 +1695,9 @@ public static partial class PatchSafety
 
     private const int MaxPathSteps = 4096;
 
+    /// <summary>Rule G's bound on the paths explored (each branch on a forkable value adds one).</summary>
+    private const int MaxPaths = 16;
+
     /// <summary>
     /// Rule E (2026-11-18, replacing the fixed shape of the type gates): follows the path the calls this mod skips take through
     /// <paramref name="method"/>, every value tracked as a constant, null, the listener (non-null, of none of the types tested so
@@ -1699,8 +1708,11 @@ public static partial class PatchSafety
     /// <c>cgt.un</c>, <c>clt</c>, <c>clt.un</c>, <c>or</c>/<c>and</c> (with an absorbing constant: an <c>or</c> with a nonzero
     /// constant is nonzero, not 1), <c>dup</c>, <c>pop</c>, <c>br</c>, <c>brtrue</c>/<c>brfalse</c>, <c>beq</c>/<c>bne.un</c> on a
     /// known value, the reflection-reads premise's name test on the instance as one instruction (<see cref="NameCompare"/>), and
-    /// the exit <paramref name="exit"/> asks for. Anything else refuses: any call, field access, store outside the locals, address
-    /// taken, a branch on an unknown value, a loop. Returns why the path isn't a no-op, or null. <paramref name="arguments"/>: what
+    /// the exit <paramref name="exit"/> asks for. Rule G: a call to a trivial static getter (<see cref="TrivialStaticGetter"/>)
+    /// gives a forkable value, and a branch on it explores both sides (at most <see cref="MaxPaths"/> paths, each its own copy of
+    /// the stack and locals, each ending at an accepted exit). Rule FW: a call to an <see cref="Inlinable"/> static method of the
+    /// patch's assembly is followed inline (depth 2), with the values passed. Anything else refuses: any other call, field access,
+    /// store outside the locals, address taken, a branch on an unknown value, a loop. Returns why the path isn't a no-op, or null. <paramref name="arguments"/>: what
     /// each argument is on entry. Throws on IL it can't decode (the caller refuses).
     /// </summary>
     private static string? EvaluatePath(MethodBase method, PathValue[] arguments, PathExit exit, bool nameTests, int depth, PathOutcome outcome,
@@ -1817,11 +1829,23 @@ public static partial class PatchSafety
                     PathValue condition = equality ? PathCompare(OpCodes.Ceq, Pop(), Pop()) : Pop();
                     bool onTrue = op == OpCodes.Brtrue || op == OpCodes.Brtrue_S || op == OpCodes.Beq || op == OpCodes.Beq_S;
                     bool? truth = PathTruth(condition);
-                    if (truth == null)
+                    if (truth == null && condition.Kind == PathKind.Forkable)
+                    {
+                        // Rule G: both sides, the taken one later with copies of this path's state.
+                        if (++outcome.Paths > MaxPaths)
+                        {
+                            return "too many paths";
+                        }
+                        work.Push((at[(int)ins.Operand!], new List<PathValue>(stack), new Dictionary<int, PathValue>(locals), new HashSet<int>(visited)));
+                    }
+                    else if (truth == null)
                     {
                         return "a branch on a value it can't tell";
                     }
-                    next = truth == onTrue ? at[(int)ins.Operand!] : i + 1;
+                    else
+                    {
+                        next = truth == onTrue ? at[(int)ins.Operand!] : i + 1;
+                    }
                 }
                 else if (op == OpCodes.Ret)
                 {
@@ -1840,6 +1864,12 @@ public static partial class PatchSafety
                     }
                     returned?.Add(exitValue);
                     break;
+                }
+                else if (op == OpCodes.Call && ins.Operand is MethodInfo getter && TrivialStaticGetter(getter))
+                {
+                    // Rule G: the flag's value isn't known (a config read at run time): forkable.
+                    outcome.Callees.Add(getter);
+                    stack.Add(new PathValue(PathKind.Forkable));
                 }
                 else
                 {
@@ -1878,6 +1908,10 @@ public static partial class PatchSafety
         {
             return unknown;
         }
+        if (left.Kind == PathKind.Forkable || right.Kind == PathKind.Forkable)
+        {
+            return new PathValue(PathKind.Forkable);
+        }
         bool leftWide = left.Kind is PathKind.Listener or PathKind.NonZero, rightWide = right.Kind is PathKind.Listener or PathKind.NonZero;
         if (leftWide || rightWide)
         {
@@ -1908,7 +1942,44 @@ public static partial class PatchSafety
         {
             return new PathValue(PathKind.Int, 0);
         }
-        return new PathValue(PathKind.Unknown);
+        // Rule G: integers computed from a forkable value stay forkable (a branch on them explores both sides).
+        static bool Integer(PathValue v) => v.Kind is PathKind.Int or PathKind.NonZero or PathKind.Forkable;
+        return (left.Kind == PathKind.Forkable || right.Kind == PathKind.Forkable) && Integer(left) && Integer(right)
+            ? new PathValue(PathKind.Forkable) : new PathValue(PathKind.Unknown);
+    }
+
+    /// <summary>
+    /// Rule G (2026-11-18): a static getter that only reads a static field, <c>ldsfld F; ret</c> (or Roslyn's Debug form through a
+    /// local), no parameter, neither it nor its field generic, its class's and the field's class's initializers free
+    /// (<see cref="InitializerFree"/>: calling it runs nothing else, now or later). Its value is unknown (a mod's config flag, set
+    /// at run time: its initializer's constant isn't its value), so a branch on it explores both sides. Whether it is patched is
+    /// asked at each answer (<see cref="PatchedPathCallee"/>).
+    /// </summary>
+    private static bool TrivialStaticGetter(MethodInfo getter)
+    {
+        try
+        {
+            if (!getter.IsStatic || getter.IsGenericMethod || getter.ContainsGenericParameters || getter.ReturnType == typeof(void)
+                || getter.GetParameters().Length != 0 || getter.DeclaringType is not { IsGenericType: false } owner || getter.GetMethodBody() == null)
+            {
+                return false;
+            }
+            List<MethodFingerprint.Instruction> code = MethodFingerprint.Instructions(getter, strict: true).Where(c => c.Op != OpCodes.Nop).ToList();
+            if (code.Count == 0 || code[0].Op != OpCodes.Ldsfld || code[0].Operand is not FieldInfo { IsStatic: true } field
+                || field.DeclaringType is not { IsGenericType: false } holder)
+            {
+                return false;
+            }
+            bool plain = code.Count == 2 && code[1].Op == OpCodes.Ret;
+            // Debug: ldsfld F; stloc.k; br L; L: ldloc.k; ret.
+            bool debug = code.Count == 5 && StoresLocal(code[1], out int local) && (code[2].Op == OpCodes.Br || code[2].Op == OpCodes.Br_S)
+                && code[2].Operand is int target && target == code[3].Offset && LocalLoaded(code[3]) == local && code[4].Op == OpCodes.Ret;
+            return (plain || debug) && InitializerFree(owner) && InitializerFree(holder);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>

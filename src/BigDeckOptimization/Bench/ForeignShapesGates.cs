@@ -31,6 +31,7 @@ public static class ForeignShapesGates
         "gates-passthrough-finalizer", "gates-passthrough-finalizer-debug", "gates-swallow-finalizer", "gates-ternary-finalizer",
         "gates-debug-gated-postfix", "gates-debug-gated-prefix", "gates-bitor-gated-postfix", "gates-bool-local-postfix",
         "gates-copy-prologue-postfix", "gates-call-first-postfix",
+        "gates-getter-gated-postfix", "gates-getter-ungated-postfix",
     };
 
     /// <summary>Whether a <c>foreignpatch</c> line is one of this file's.</summary>
@@ -81,6 +82,8 @@ public static class ForeignShapesGates
             "gates-bool-local-postfix" => (BoolLocalPostfix(key), PatchSafety.PatchKind.Postfix),
             "gates-copy-prologue-postfix" => (CopyProloguePostfix(key), PatchSafety.PatchKind.Postfix),
             "gates-call-first-postfix" => (CallFirstPostfix(key), PatchSafety.PatchKind.Postfix),
+            "gates-getter-gated-postfix" => (FlagOn(GetterGatedPostfix(key)), PatchSafety.PatchKind.Postfix),
+            "gates-getter-ungated-postfix" => (FlagOn(GetterUngatedPostfix(key)), PatchSafety.PatchKind.Postfix),
             _ => throw new ArgumentException("unknown gates shape " + shape),
         };
     }
@@ -92,7 +95,7 @@ public static class ForeignShapesGates
 
     /// <summary>A public static method in a class of its own (no initializer unless <paramref name="initializer"/> emits one).</summary>
     private static MethodInfo Emit(string name, Type returns, (Type Type, string Name)[] parameters, Action<ILGenerator> body,
-        Action<ILGenerator, TypeBuilder>? initializer = null, bool beforeFieldInit = true, Action<TypeBuilder>? members = null)
+        Action<ILGenerator, TypeBuilder>? initializer = null, bool beforeFieldInit = true, Action<TypeBuilder>? members = null, Action<TypeBuilder, ILGenerator>? withType = null)
     {
         lock (Shapes)
         {
@@ -115,7 +118,9 @@ public static class ForeignShapesGates
             {
                 method.DefineParameter(i + 1, ParameterAttributes.None, parameters[i].Name);
             }
-            body(method.GetILGenerator());
+            ILGenerator code = method.GetILGenerator();
+            body(code);
+            withType?.Invoke(type, code);
             return type.CreateType()!.GetMethod("Patch")!;
         }
     }
@@ -534,6 +539,89 @@ public static class ForeignShapesGates
             il.Emit(OpCodes.Ret);
         });
 
+    // --- G: a trivial static getter as a branch condition, both sides explored ---
+
+    private static readonly MethodInfo ConfigGetter = typeof(GatesCounter).GetProperty(nameof(GatesCounter.Config))!.GetGetMethod()!;
+
+    /// <summary>Installing a getter shape turns the flag on (both sides of its branch then run in game, the gated one counting).</summary>
+    private static MethodInfo FlagOn(MethodInfo patch)
+    {
+        GatesCounter.Flag = true;
+        return patch;
+    }
+
+    /// <summary>
+    /// ZZZLib's shape: <c>if (!GatesCounter.Config) return; if (__instance is Squeeze) Hit(key);</c>, the flag read through a
+    /// trivial getter (Debug IL: <c>ldc.i4.0; ceq</c> through a local). Both sides are no-ops for other listeners: stands, gated
+    /// on Squeeze. With <paramref name="getter"/> another getter.
+    /// </summary>
+    private static MethodInfo GetterGatedPostfix(string key, MethodInfo? getter = null) => Emit("getter_gated_postfix", typeof(void), InstanceOnly, il =>
+    {
+        il.DeclareLocal(typeof(bool));
+        il.DeclareLocal(typeof(bool));
+        Label gate = il.DefineLabel(), end = il.DefineLabel();
+        il.Emit(OpCodes.Call, getter ?? ConfigGetter);
+        il.Emit(OpCodes.Ldc_I4_0);
+        il.Emit(OpCodes.Ceq);
+        il.Emit(OpCodes.Stloc_0);
+        il.Emit(OpCodes.Ldloc_0);
+        il.Emit(OpCodes.Brfalse_S, gate);
+        il.Emit(OpCodes.Br_S, end);
+        il.MarkLabel(gate);
+        EmitIs(il, typeof(Squeeze));
+        il.Emit(OpCodes.Stloc_1);
+        il.Emit(OpCodes.Ldloc_1);
+        il.Emit(OpCodes.Brfalse_S, end);
+        EmitHit(il, key);
+        il.MarkLabel(end);
+        il.Emit(OpCodes.Ret);
+    });
+
+    /// <summary>The control: <c>if (GatesCounter.Config || __instance is Squeeze) Hit(key);</c>: with the flag on it acts for every listener.</summary>
+    private static MethodInfo GetterUngatedPostfix(string key) => Emit("getter_ungated_postfix", typeof(void), InstanceOnly, il =>
+    {
+        Label work = il.DefineLabel(), end = il.DefineLabel();
+        il.Emit(OpCodes.Call, ConfigGetter);
+        il.Emit(OpCodes.Brtrue_S, work);
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Isinst, typeof(Squeeze));
+        il.Emit(OpCodes.Brfalse_S, end);
+        il.MarkLabel(work);
+        EmitHit(il, key);
+        il.MarkLabel(end);
+        il.Emit(OpCodes.Ret);
+    });
+
+    /// <summary>
+    /// The control: the gated shape, its flag read by a getter of its own class whose initializer reads the clock (beforefieldinit):
+    /// when it runs matters.
+    /// </summary>
+    private static MethodInfo GetterImpureClass() => Emit("getter_impure_class", typeof(void), InstanceOnly, il => { }, null, true, null, (type, il) =>
+    {
+        FieldBuilder flag = type.DefineField("Flag", typeof(bool), FieldAttributes.Public | FieldAttributes.Static);
+        ConstructorBuilder cctor = type.DefineTypeInitializer();
+        ILGenerator init = cctor.GetILGenerator();
+        init.Emit(OpCodes.Call, typeof(Environment).GetProperty(nameof(Environment.TickCount64))!.GetGetMethod()!);
+        init.Emit(OpCodes.Ldc_I4_0);
+        init.Emit(OpCodes.Conv_I8);
+        init.Emit(OpCodes.Cgt);
+        init.Emit(OpCodes.Stsfld, flag);
+        init.Emit(OpCodes.Ret);
+        MethodBuilder get = type.DefineMethod("get_Flag", MethodAttributes.Public | MethodAttributes.Static, typeof(bool), Type.EmptyTypes);
+        ILGenerator g = get.GetILGenerator();
+        g.Emit(OpCodes.Ldsfld, flag);
+        g.Emit(OpCodes.Ret);
+        Label end = il.DefineLabel();
+        il.Emit(OpCodes.Call, get);
+        il.Emit(OpCodes.Brfalse_S, end);
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Isinst, typeof(Squeeze));
+        il.Emit(OpCodes.Brfalse_S, end);
+        EmitHit(il, "control");
+        il.MarkLabel(end);
+        il.Emit(OpCodes.Ret);
+    });
+
     // --- The self-test ---
 
     private readonly record struct Case(string Name, MethodInfo Patch, PatchSafety.PatchKind Kind, MethodBase Original, PatchTolerance Tolerance,
@@ -585,6 +673,11 @@ public static class ForeignShapesGates
         yield return new Case("E NullSkipped: Debug null test by value", DebugNullGatedPostfix("selftest", byRef: false), postfix, hook, PatchTolerance.NullSkipped, true);
         yield return new Case("E NullSkipped: Debug null test through ref __result", DebugNullGatedPostfix("selftest", byRef: true), postfix, hook, PatchTolerance.NullSkipped, true);
         yield return new Case("E NullSkipped control: a call before the null test", DebugNullGatedPostfix("selftest", byRef: false, callFirst: true), postfix, hook, PatchTolerance.NullSkipped, false);
+        // G.
+        yield return new Case("G a trivial static getter as the branch, both sides no-ops for other listeners", GetterGatedPostfix("selftest"), postfix, model, gated, true, "Squeeze");
+        yield return new Case("G control: the getter's true side acts for every listener", GetterUngatedPostfix("selftest"), postfix, model, gated, false);
+        yield return new Case("G control: a getter reading two fields (not trivial)", GetterGatedPostfix("selftest", typeof(GatesCounter).GetProperty(nameof(GatesCounter.ConfigBoth))!.GetGetMethod()), postfix, model, gated, false);
+        yield return new Case("G control: a getter whose class initializer reads the clock", GetterImpureClass(), postfix, model, gated, false);
     }
 
     /// <summary>
@@ -629,6 +722,15 @@ public static class GatesCounter
 {
     /// <summary>A STATE line of the foreign report (IlJudgeShapes' counts).</summary>
     public static void Hit(string key) => IlJudgeShapes.Count(key);
+
+    /// <summary>A mod's config flag (set at run time: the gate rules can't know it). No initializer.</summary>
+    public static bool Flag;
+
+    /// <summary>A trivial static getter of it (<c>ldsfld; ret</c>): rule G's branch condition.</summary>
+    public static bool Config => Flag;
+
+    /// <summary>Not trivial (two fields read): a branch on it is refused.</summary>
+    public static bool ConfigBoth => Flag && Swallow;
 
     /// <summary>Read by the ternary finalizer (a value the judge can't know).</summary>
     public static bool Swallow;

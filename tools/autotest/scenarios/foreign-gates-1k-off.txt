@@ -16,6 +16,8 @@ foreignpatch gates-bitor-gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:A
 foreignpatch gates-bool-local-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardDrawnEarly
 foreignpatch gates-copy-prologue-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardDrawn
 foreignpatch gates-call-first-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterEnergyReset
+foreignpatch gates-getter-gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterSideTurnStart
+foreignpatch gates-getter-ungated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:BeforeSideTurnStart
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 1
