@@ -92,7 +92,9 @@ public static class JoinMismatchNote
             throw new PatchSkippedException($"NetErrorInfo.GetErrorString changed (fingerprint {actual}, expected {ErrorStringFingerprint107} or {ErrorStringFingerprint111}): the game's mismatch text alone");
         }
         _original = original;
-        PatchGuard.Patch(harmony, original, postfix: new HarmonyMethod(typeof(JoinMismatchNote), nameof(Postfix)));
+        // Last of the postfixes: another mod's postfix registered later at its default priority runs before it and sees the
+        // game's text, as without this mod (only one at Priority.Last registered after this mod's sorts after it).
+        PatchGuard.Patch(harmony, original, postfix: new HarmonyMethod(typeof(JoinMismatchNote), nameof(Postfix)) { priority = Priority.Last });
         Applied = true;
         // The one gate in front of everything it does (display only).
         PatchSafety.Watch(Name, original);

@@ -362,19 +362,19 @@ public static class HookFilter
             {
                 if (HookFilterDamage.HasLate && MethodFingerprint.Of(damageHook) == ModifyDamageInternalLateFingerprint)
                 {
-                    var late = new HarmonyMethod(typeof(HookFilterDamage), nameof(HookFilterDamage.PrefixWithLate));
+                    HarmonyMethod late = MirrorPrefix(typeof(HookFilterDamage), nameof(HookFilterDamage.PrefixWithLate));
                     RegisterMirror(late);
                     PatchGuard.Patch(harmony, damageHook, prefix: late, finalizer: Finalizer);
                 }
                 else
                 {
                     PatchIfUnchanged(harmony, damageHook, ModifyDamageInternalWithCardPlayFingerprint,
-                        new HarmonyMethod(typeof(HookFilterDamage), nameof(HookFilterDamage.PrefixWithCardPlay)));
+                        MirrorPrefix(typeof(HookFilterDamage), nameof(HookFilterDamage.PrefixWithCardPlay)));
                 }
             }
             else
             {
-                PatchIfUnchanged(harmony, damageHook, ModifyDamageInternalFingerprint, new HarmonyMethod(typeof(HookFilterDamage), nameof(HookFilterDamage.Prefix)));
+                PatchIfUnchanged(harmony, damageHook, ModifyDamageInternalFingerprint, MirrorPrefix(typeof(HookFilterDamage), nameof(HookFilterDamage.Prefix)));
             }
         }
         catch (Exception e) when (e is PatchSkippedException or MissingMemberException)
@@ -445,7 +445,7 @@ public static class HookFilter
         {
             PatchSafety.RequireResolvable(mirror);
             PatchGuard.Register(Name, mirror, Array.Empty<PatchGuard.Installed>());
-            return PatchIfUnchanged(harmony, target, fingerprint, new HarmonyMethod(mirror, prefix));
+            return PatchIfUnchanged(harmony, target, fingerprint, MirrorPrefix(mirror, prefix));
         }
         catch (PatchSkippedException e)
         {
@@ -453,6 +453,15 @@ public static class HookFilter
             return false;
         }
     }
+
+    /// <summary>
+    /// A mirror prefix, last of the method's prefixes (<see cref="Priority.Last"/>): another mod's prefix at any higher priority,
+    /// or at the same one registered before, runs before it as before the original without this mod, so the tolerance's order
+    /// rule lets it stand (PatchSafety's PrecedenceRefusal); only one at <see cref="Priority.Last"/> registered after this mod's
+    /// sorts after it. At the default priority, every prefix another mod registered later at its own default sorted after the
+    /// mirror, and ties after an Unpatch and Patch depended on Harmony's sort.
+    /// </summary>
+    private static HarmonyMethod MirrorPrefix(Type mirror, string prefix) => new(mirror, prefix) { priority = Priority.Last };
 
     private static bool PatchIfUnchanged(Harmony harmony, MethodInfo hook, string fingerprint, HarmonyMethod prefix)
     {

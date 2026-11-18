@@ -1,0 +1,40 @@
+# HookFilter's mirrors, ReplayStateSkip and JoinMismatchNote next to other mods' patches (DESIGN "Re-verification of the leads
+# (2026-11-18)": Priority.Last on this mod's skipping prefixes). Synthetic patches of "another mod" (Harmony ids bdtest.foreign.*,
+# Bench/ForeignPatches.cs, Bench/ForeignShapesHookFilter.cs); the expect lines must all be seen. Accepted: a void prefix at the
+# default priority on a mirrored hook (sorted before the mirror, Priority.Last since 2026-11-18). FOREIGN runtime lines come from
+# the runtime checks only ("kept 0 backed off N": a back-off the runtime itself made).
+timeout 900
+expect HookFilter: Hook\.ShouldAllowHitting is also patched by bdtest\.foreign\.noop-prefix \(void prefixes: run around this mod's code as without it\): kept
+expect FOREIGN runtime HookFilter Hook\.ShouldAllowHitting \(PrefixesOnly\) kept [1-9]
+expect FOREIGN classify Hook\.ShouldAllowHitting: bdtest\.foreign\.noop-prefix Prefix .*priority 400: .*PrefixesOnly tolerated
+expect EFFECTCHECK HookFilter\.Hitting grew since 'start': [0-9]+ -> [1-9]
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+# Rule 1 (Priority.Last on the mirrors): a void prefix at the default priority, registered after this mod's mirror, sorts before it.
+foreignpatch noop-prefix MegaCrit.Sts2.Core.Hooks.Hook:ShouldAllowHitting
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+effects start
+checksum start
+play 3
+waitfor idle 120
+endturn
+waitfor idle 300
+checksum t1 end
+play 3
+waitfor idle 120
+wait 3
+foreignpatch report end
+effects end
+effectcheck HookFilter.Hitting grew start
+cmd bdopt why
+cmd bdperf conflicts
+cmd kill all
+waitfor nocombat 300
+wait 2
+foreignpatch remove
+quit

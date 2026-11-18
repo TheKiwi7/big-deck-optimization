@@ -72,13 +72,15 @@ foreignpatch inner-postfix MegaCrit.Sts2.Core.Hooks.Hook:ModifyBlock
 foreignpatch noop-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:RemoveInternal priority 0
 foreignpatch byref-postfix MegaCrit.Sts2.Core.Entities.Cards.CardPile:RemoveInternal
 foreignpatch field-postfix MegaCrit.Sts2.Core.Entities.Cards.CardPile:RemoveInternal
-# A void prefix Harmony runs after HookFilter's mirror (same priority, registered later): may never run, so not tolerated.
-foreignpatch noop-prefix MegaCrit.Sts2.Core.Hooks.Hook:ShouldPlay
+# A void prefix Harmony runs after HookFilter's mirror (Priority.Last as the mirror, registered later): may never run, so not
+# tolerated. One at the default priority sorts before the mirror (Priority.Last since 2026-11-18) and stands (foreign-hookfilter).
+foreignpatch noop-prefix MegaCrit.Sts2.Core.Hooks.Hook:ShouldPlay priority 0
 # A postfix on a HookFilter mirror: the mirror skips the original (no postfix there), HookSkip's walk keeps it.
 foreignpatch noop-postfix MegaCrit.Sts2.Core.Hooks.Hook:ModifyKeywordsInCombat
 # A postfix reading __runOriginal (false behind a prefix of this mod that skipped the original): nowhere.
 foreignpatch runoriginal-postfix MegaCrit.Sts2.Core.Hooks.Hook:ModifyEnergyCostInCombat
-# One void prefix registered twice, before HookFilter's mirror and after it: the later copy decides.
+# One void prefix registered twice, before HookFilter's mirror (Priority.First) and after it (Priority.Last, registered later):
+# the later copy decides.
 foreignpatch dup-prefix MegaCrit.Sts2.Core.Hooks.Hook:ShouldAllowHitting
 # A prefix renaming a parameter to __args (Harmony writes the array back), and a factory postfix (its code made by Harmony's call).
 foreignpatch argsrename-prefix MegaCrit.Sts2.Core.Hooks.Hook:AfterEnergySpent

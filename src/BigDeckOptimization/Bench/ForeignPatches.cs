@@ -485,10 +485,11 @@ public static class ForeignPatches
                 harmony.Patch(target, postfix: Fix(nameof(FactoryPostfix)));
                 break;
             case "dup-prefix":
-                // The same patch method twice (PatchInfo.Add doesn't deduplicate): before this mod's prefixes, then after them.
+                // The same patch method twice (PatchInfo.Add doesn't deduplicate): before this mod's prefixes, then after them
+                // (Priority.Last registered after this mod's: after HookFilter's mirrors and PileIndex's tracking prefixes alike).
                 harmony.Patch(target, prefix: new HarmonyMethod(typeof(ForeignPatches), nameof(DupPrefix)) { priority = Priority.First });
                 var second = new Harmony(id + ".again");
-                second.Patch(target, prefix: new HarmonyMethod(typeof(ForeignPatches), nameof(DupPrefix)) { priority = Priority.Normal });
+                second.Patch(target, prefix: new HarmonyMethod(typeof(ForeignPatches), nameof(DupPrefix)) { priority = Priority.Last });
                 extra.Add((id + ".again", target));
                 break;
             case "gated-postfix":

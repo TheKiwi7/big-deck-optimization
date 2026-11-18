@@ -41,7 +41,9 @@ public static class ReplayStateSkip
     {
         _record = Reflect.Method(typeof(CombatReplayWriter), "RecordChecksum") ?? throw new MissingMethodException(nameof(CombatReplayWriter), "RecordChecksum");
         PatchSafety.RequireFingerprint(_record, RecordChecksumFingerprint);
-        PatchGuard.Patch(harmony, _record, prefix: new HarmonyMethod(typeof(ReplayStateSkip), nameof(Prefix)));
+        // Last of the prefixes: another mod's prefix registered later at its default priority runs before it, as before the
+        // original without this mod (only one at Priority.Last registered after this mod's sorts after it).
+        PatchGuard.Patch(harmony, _record, prefix: new HarmonyMethod(typeof(ReplayStateSkip), nameof(Prefix)) { priority = Priority.Last });
         Applied = true;
         PatchSafety.Watch(Name, _record); // What Prefix asks about (display only).
         PatchSafety.WholePatch(Name);
