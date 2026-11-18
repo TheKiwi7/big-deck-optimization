@@ -1356,7 +1356,7 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
             + optimized.Format("+card reuse ") + "\n"
             + $"  served: cache {cacheServed}, filter {(filterServed is { } f ? f.ToString() : "not counted")}, card reuse {reuseServed}\n"
             + $"  snapshot walks: reused {ListenerCache.SnapshotWalkReuses - snapReusesBefore}, compared by the net {ListenerCache.SnapshotNetCompared - snapComparedBefore}, "
-            + $"found different and built again {ListenerCache.SnapshotDetections - snapDetectionsBefore}\n"
+            + $"caught by the net and built again {ListenerCache.SnapshotDetections - snapDetectionsBefore}\n"
             + cacheNote
             + (!identical ? "  MISMATCH: optimized checksum differs from vanilla!"
                 : !engaged ? $"  not compared: {string.Join(", ", idle)}: identical checksums, but that row compared the row before it with itself"

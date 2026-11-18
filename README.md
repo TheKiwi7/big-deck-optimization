@@ -78,7 +78,7 @@ If the problem is still there with the mod off, it doesn't come from this mod. O
 
 ## Support
 
-The mod is free and stays free for everyone. If it saved your runs from the lag and you'd like to say thanks, you can [buy me a coffee on Ko-fi](https://ko-fi.com/thekiwi7) ☕
+I work on this mod when I have time. If it saved your runs from the lag, support is much appreciated: [buy me a coffee on Ko-fi](https://ko-fi.com/thekiwi7) ☕
 
 ## License
 
