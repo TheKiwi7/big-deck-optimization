@@ -6,15 +6,22 @@
 # conflicts run): "kept 0 backed off N" is a back-off the runtime itself made. Since 2026-11-17 (rule A, TranspiledOnly) HookSkip
 # lets every prefix and postfix stand on its Hook methods (this mod only transpiles them): the bool, ref, __runOriginal, renamed
 # and factory shapes there are HookSkip's positive cases now (still controls for SurroundingOnly in their classify lines and for
-# HookFilter); its controls there are a finalizer on ModifyHpLost and an inner postfix on ModifyBlock (classified only).
+# HookFilter); its controls there are an inner postfix on ModifyBlock (classified only) and, since F1 (2026-11-18: a finalizer
+# passing the exception on unchanged stands there, the void noop-finalizer on ModifyHpLost now kept), a finalizer returning
+# null on AfterCardDrawn and one merging null and __exception into one ret on AfterSideTurnEnd.
 timeout 600
 expect HookSkip: Hook\.AfterCardPlayed is also patched by bdtest\.foreign\.bool-prefix \(prefixes and postfixes around the transpiled body: run around this mod's code as without it\): kept
 expect FOREIGN runtime HookSkip Hook\.AfterCardPlayed \(TranspiledOnly\) kept [1-9][0-9]* backed off 0
 expect HookSkip: Hook\.BeforeCombatStart is also patched by bdtest\.foreign\.bool-prefix \(postfixes and void prefixes not enough\): normal game for that part
 expect FOREIGN runtime HookSkip Hook\.BeforeCombatStart \(SurroundingOnly\) kept 0 backed off [1-9]
 expect FOREIGN classify Hook\.ModifyBlock \(synthetic\): bdtest\.foreign\.inner-postfix InnerPostfix .*TranspiledOnly backs off \(inner postfix
-expect HookSkip: Hook\.ModifyHpLost is also patched by bdtest\.foreign\.noop-finalizer \(prefixes and postfixes around the transpiled body not enough\): normal game for that part
-expect FOREIGN runtime HookSkip Hook\.ModifyHpLost \(TranspiledOnly\) kept 0 backed off [1-9]
+expect HookSkip: Hook\.ModifyHpLost is also patched by bdtest\.foreign\.noop-finalizer \(prefixes and postfixes around the transpiled body: run around this mod's code as without it\): kept
+expect FOREIGN runtime HookSkip Hook\.ModifyHpLost \(TranspiledOnly\) kept [1-9][0-9]* backed off 0
+expect HookSkip: Hook\.AfterCardDrawn is also patched by bdtest\.foreign\.gates-swallow-finalizer \(prefixes and postfixes around the transpiled body not enough\): normal game for that part
+expect FOREIGN runtime HookSkip Hook\.AfterCardDrawn \(TranspiledOnly\) kept 0 backed off [1-9]
+expect FOREIGN classify Hook\.AfterCardDrawn: bdtest\.foreign\.gates-swallow-finalizer Finalizer .*TranspiledOnly backs off \(finalizer that may return another exception or none
+expect HookSkip: Hook\.AfterSideTurnEnd is also patched by bdtest\.foreign\.gates-ternary-finalizer \(prefixes and postfixes around the transpiled body not enough\): normal game for that part
+expect FOREIGN runtime HookSkip Hook\.AfterSideTurnEnd \(TranspiledOnly\) kept 0 backed off [1-9]
 expect FOREIGN classify Hook\.AfterCardPlayed \(synthetic\): bdtest\.foreign\.inner-postfix InnerPostfix .*SurroundingOnly backs off \(inner postfix
 expect HookSkip: Hook\.AfterSideTurnStart is also patched by bdtest\.foreign\.ref-prefix \(prefixes and postfixes around the transpiled body: run around this mod's code as without it\): kept
 expect PileIndex: CardPile\.AddInternal is also patched by bdtest\.foreign\.identity-transpiler \(postfixes and void prefixes not enough\)
@@ -56,7 +63,8 @@ foreignpatch bool-prefix MegaCrit.Sts2.Core.Hooks.Hook:AfterCardPlayed
 foreignpatch ref-prefix MegaCrit.Sts2.Core.Hooks.Hook:AfterSideTurnStart
 foreignpatch identity-transpiler MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal
 foreignpatch inner-postfix MegaCrit.Sts2.Core.Hooks.Hook:AfterCardPlayed
-# Rule A's controls: a finalizer on a hook HookSkip transpiles, an inner postfix on another (classified only).
+# Rule A: a void finalizer on a hook HookSkip transpiles (F1: kept), an inner postfix on another (classified only); F1's controls:
+# a finalizer returning null, one whose single ret merges null and __exception (backed off).
 # Rule A next to another patch of this mod: a no-op postfix under this mod's own Harmony id (own-postfix, not a read-only
 # probe) keeps SurroundingOnly on Hook.BeforeCombatStart (HookSkip.MethodTolerance), so this bool prefix backs off, in the
 # preflight (bdopt why, the same tolerance function since 2026-11-17) as at run time. The test tooling's own probes there
@@ -66,6 +74,8 @@ foreignpatch inner-postfix MegaCrit.Sts2.Core.Hooks.Hook:AfterCardPlayed
 foreignpatch own-postfix MegaCrit.Sts2.Core.Hooks.Hook:BeforeCombatStart
 foreignpatch bool-prefix MegaCrit.Sts2.Core.Hooks.Hook:BeforeCombatStart
 foreignpatch noop-finalizer MegaCrit.Sts2.Core.Hooks.Hook:ModifyHpLost
+foreignpatch gates-swallow-finalizer MegaCrit.Sts2.Core.Hooks.Hook:AfterCardDrawn
+foreignpatch gates-ternary-finalizer MegaCrit.Sts2.Core.Hooks.Hook:AfterSideTurnEnd
 foreignpatch inner-postfix MegaCrit.Sts2.Core.Hooks.Hook:ModifyBlock
 # A void prefix Harmony runs after this mod's tracking prefixes (Priority.Last, registered later), and a postfix taking the card by
 # reference (the finalizers read that slot after it), and one taking the pile's own card list (Harmony's ___ field injection).

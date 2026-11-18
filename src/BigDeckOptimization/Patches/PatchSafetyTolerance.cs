@@ -101,8 +101,10 @@ public enum PatchTolerance
     /// postfixes of every shape stand (bool,
     /// <c>ref __result</c>, arguments written by reference, <c>__args</c>, <c>__runOriginal</c>, factories, renamed parameters).
     /// A prefix decides whether and with which arguments the body runs, as without this mod; a postfix sees the same
-    /// <c>__result</c>, out values and <c>__runOriginal</c>, the dropped iterations being no-ops. Finalizers, transpilers (the
-    /// caller's IL judge aside) and inner patches back off. The caller checks that this mod's own patches there are only those
+    /// <c>__result</c>, out values and <c>__runOriginal</c>, the dropped iterations being no-ops. Finalizers that provably pass
+    /// the exception on unchanged stand too (F1, 2026-11-18: void, or every <c>ret</c> returning <c>__exception</c> as it came,
+    /// <see cref="PatchSafety"/>'s PassThroughRefusal); other finalizers, transpilers (the caller's IL judge aside) and inner
+    /// patches back off. The caller checks that this mod's own patches there are only those
     /// (HookSkip.OwnPatchesOnly), else it asks <see cref="SurroundingOnly"/>.
     /// </summary>
     TranspiledOnly,
@@ -495,6 +497,17 @@ public static partial class PatchSafety
             if (tolerance == PatchTolerance.None)
             {
                 return "no tolerance at this call site";
+            }
+            // F1 (2026-11-18): under TranspiledOnly a finalizer that provably hands the exception on unchanged stands (PassThroughRefusal).
+            if (kind == PatchKind.Finalizer && tolerance == PatchTolerance.TranspiledOnly)
+            {
+                if (_shapes.GetOrAdd((method.MethodHandle, kind, tolerance), static (_, m) => PassThroughRefusal(m), method) is { } notPassing)
+                {
+                    return notPassing;
+                }
+                // The code that runs is its replacement when anyone patches it, not the IL read: asked at each recheck.
+                return Harmony.GetPatchInfo(method) is { } patchedFinalizer && AllPatches(patchedFinalizer).Any()
+                    ? "finalizer whose own method is patched (judged from its IL to pass the exception on unchanged)" : null;
             }
             if (kind is not (PatchKind.Prefix or PatchKind.Postfix))
             {
@@ -1019,6 +1032,196 @@ public static partial class PatchSafety
         }
         return lines;
     }
+
+    // --- Pass-through finalizers (F1, TranspiledOnly) ---
+
+    /// <summary>
+    /// F1 (2026-11-18): why another mod's finalizer on a TranspiledOnly method may change what the call throws, or null when it
+    /// provably hands Harmony the exception it got. A void finalizer can't change it (Harmony rethrows the one it caught); one
+    /// returning <c>Exception</c> stands only when every <c>ret</c> returns the <c>__exception</c> argument as it came: the
+    /// <c>ret</c> is no branch target (a merged one, <c>return c ? null : __exception</c>, may carry another value) and follows
+    /// <c>ldarg __exception</c>, or <c>ldloc n</c> of a local whose every store is <c>ldarg __exception; stloc n</c> (that store no
+    /// branch target either) and which every path stores before that load (an unwritten local is null: a swallow). Nothing
+    /// takes an address (<c>ldloca</c>, <c>ldarga</c>) or writes the argument (<c>starg</c>); no exception clauses. Its other
+    /// parameters are free, as a postfix's are under TranspiledOnly (the body around which it runs keeps its effects, so it sees
+    /// what it sees without this mod). Then an exception of this mod's own code (its guard finalizer runs first) or of the game
+    /// passes on as without that mod. Refused: a factory, renamed parameters (<c>HarmonyArgument</c>), <c>__exception</c> by
+    /// reference, any other return type. Whether the finalizer's own method is patched is asked at each recheck
+    /// (<see cref="Intolerable"/>). On an async hook it only sees the stub's synchronous exceptions (the state machine puts the
+    /// others in the task), as without this mod. Throws when the IL can't be read (Intolerable refuses then).
+    /// </summary>
+    private static string? PassThroughRefusal(MethodInfo finalizer)
+    {
+        if (IsFactory(finalizer))
+        {
+            return "factory patch method (Harmony runs the method it returns)";
+        }
+        if (RenamesParameters(finalizer))
+        {
+            return "patch renaming its parameters (HarmonyArgument)";
+        }
+        if (!finalizer.IsStatic || finalizer.ContainsGenericParameters)
+        {
+            return "finalizer not a plain static method";
+        }
+        ParameterInfo[] parameters = finalizer.GetParameters();
+        int exception = Array.FindIndex(parameters, p => p.Name == "__exception");
+        if (exception >= 0 && (parameters[exception].ParameterType.IsByRef || parameters[exception].IsOut))
+        {
+            return "finalizer taking __exception by reference";
+        }
+        if (finalizer.ReturnType == typeof(void))
+        {
+            return null; // Harmony rethrows the exception it caught, whatever the finalizer did.
+        }
+        if (finalizer.ReturnType != typeof(Exception))
+        {
+            return $"finalizer returning {finalizer.ReturnType.Name}";
+        }
+        const string swallow = "finalizer that may return another exception or none (may change or swallow the method's exception)";
+        if (exception < 0)
+        {
+            return swallow;
+        }
+        if (finalizer.GetMethodBody() is not { } body || body.ExceptionHandlingClauses.Count > 0)
+        {
+            return swallow;
+        }
+        List<MethodFingerprint.Instruction> code = MethodFingerprint.Instructions(finalizer);
+        Dictionary<int, int> at = IndexByOffset(code);
+        HashSet<int> targets = BranchTargets(code, at);
+        var returned = new List<(int Local, int Load)>();
+        for (int i = 0; i < code.Count; i++)
+        {
+            OpCode op = code[i].Op;
+            if (op == OpCodes.Ldloca || op == OpCodes.Ldloca_S || op == OpCodes.Ldarga || op == OpCodes.Ldarga_S
+                || ((op == OpCodes.Starg || op == OpCodes.Starg_S) && code[i].Operand is int n && n == exception))
+            {
+                return swallow;
+            }
+            if (op != OpCodes.Ret)
+            {
+                continue;
+            }
+            if (i == 0 || targets.Contains(i))
+            {
+                return swallow;
+            }
+            if (LoadsArgument(code[i - 1], exception))
+            {
+                continue;
+            }
+            if (LocalLoaded(code[i - 1]) is not { } local)
+            {
+                return swallow;
+            }
+            returned.Add((local, i - 1));
+        }
+        foreach ((int local, int load) in returned)
+        {
+            for (int j = 0; j < code.Count; j++)
+            {
+                if (StoresLocal(code[j], out int stored) && stored == local
+                    && (j == 0 || targets.Contains(j) || !LoadsArgument(code[j - 1], exception)))
+                {
+                    return swallow;
+                }
+            }
+            if (Reaches(code, at, load, j => StoresLocal(code[j], out int s) && s == local))
+            {
+                return swallow; // A path reads the local before storing it: null there.
+            }
+        }
+        return null;
+    }
+
+    /// <summary>The index of each instruction by its offset.</summary>
+    private static Dictionary<int, int> IndexByOffset(List<MethodFingerprint.Instruction> code)
+    {
+        var at = new Dictionary<int, int>(code.Count);
+        for (int i = 0; i < code.Count; i++)
+        {
+            at[code[i].Offset] = i;
+        }
+        return at;
+    }
+
+    /// <summary>Every instruction index a branch, a <c>leave</c> or a <c>switch</c> may jump to. Throws on a target that is no instruction.</summary>
+    private static HashSet<int> BranchTargets(List<MethodFingerprint.Instruction> code, Dictionary<int, int> at)
+    {
+        var targets = new HashSet<int>();
+        for (int i = 0; i < code.Count; i++)
+        {
+            FlowControl flow = code[i].Op.FlowControl;
+            if (flow is not (FlowControl.Branch or FlowControl.Cond_Branch))
+            {
+                continue;
+            }
+            foreach (int offset in code[i].Operand switch { int one => new[] { one }, int[] many => many, _ => throw new InvalidOperationException("branch without target") })
+            {
+                targets.Add(at[offset]);
+            }
+        }
+        return targets;
+    }
+
+    /// <summary>
+    /// The instructions control may go to after instruction <paramref name="i"/> (none after <c>ret</c>, <c>throw</c>,
+    /// <c>rethrow</c>, <c>endfinally</c>, <c>jmp</c>). Exception handlers aren't followed (callers refuse methods with them).
+    /// </summary>
+    private static IEnumerable<int> Successors(List<MethodFingerprint.Instruction> code, Dictionary<int, int> at, int i)
+    {
+        OpCode op = code[i].Op;
+        switch (op.FlowControl)
+        {
+            case FlowControl.Return or FlowControl.Throw:
+                yield break;
+            case FlowControl.Branch:
+                yield return at[(int)code[i].Operand!];
+                yield break;
+            case FlowControl.Cond_Branch:
+                foreach (int offset in code[i].Operand switch { int one => new[] { one }, int[] many => many, _ => throw new InvalidOperationException("branch without target") })
+                {
+                    yield return at[offset];
+                }
+                break;
+        }
+        if (op == OpCodes.Jmp)
+        {
+            yield break;
+        }
+        yield return i + 1;
+    }
+
+    /// <summary>Whether some path from the first instruction reaches <paramref name="target"/> without going through an instruction <paramref name="blocks"/> holds for.</summary>
+    private static bool Reaches(List<MethodFingerprint.Instruction> code, Dictionary<int, int> at, int target, Func<int, bool> blocks)
+    {
+        var seen = new HashSet<int>();
+        var stack = new Stack<int>();
+        stack.Push(0);
+        while (stack.Count > 0)
+        {
+            int i = stack.Pop();
+            if (i < 0 || i >= code.Count || !seen.Add(i) || blocks(i))
+            {
+                continue;
+            }
+            if (i == target)
+            {
+                return true;
+            }
+            foreach (int next in Successors(code, at, i))
+            {
+                stack.Push(next);
+            }
+        }
+        return false;
+    }
+
+    /// <summary>The local an <c>ldloc</c> (by value) loads, else null.</summary>
+    private static int? LocalLoaded(MethodFingerprint.Instruction ins) =>
+        ins.Op == OpCodes.Ldloc_0 ? 0 : ins.Op == OpCodes.Ldloc_1 ? 1 : ins.Op == OpCodes.Ldloc_2 ? 2 : ins.Op == OpCodes.Ldloc_3 ? 3
+        : (ins.Op == OpCodes.Ldloc_S || ins.Op == OpCodes.Ldloc) && ins.Operand is int n ? n : null;
 
     // --- Type-gated patches (TypeGated) ---
 

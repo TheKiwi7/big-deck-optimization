@@ -1,0 +1,60 @@
+# The gate rules of 2026-11-18 (A/B, mod on; DESIGN "Re-verification of the leads", Bench/ForeignShapesGates.cs): synthetic
+# patches of "another mod" the rules let stand, counting their calls (STATE lines identical with foreign-gates-1k-off), and the
+# self-test of every shape's verdict (accept cases and the controls that must still back off).
+# F1: finalizers passing the exception on unchanged on hooks HookSkip transpiles (TranspiledOnly): Release IL (ldarg; ret) on
+# AfterCardPlayed, Debug IL (through a local) on BeforeCardPlayed; both kept, the hooks filtered.
+# CHECKSUM and STATE lines identical with the off side. ~945 cards.
+expect FOREIGN gates selftest: \d+ cases as expected
+expect HookSkip: Hook\.AfterCardPlayed is also patched by bdtest\.foreign\.gates-passthrough-finalizer \(prefixes and postfixes around the transpiled body: run around this mod's code as without it\): kept
+expect HookSkip: Hook\.BeforeCardPlayed is also patched by bdtest\.foreign\.gates-passthrough-finalizer-debug \(prefixes and postfixes around the transpiled body: run around this mod's code as without it\): kept
+expect FOREIGN runtime HookSkip Hook\.AfterCardPlayed \(TranspiledOnly\) kept [1-9][0-9]* backed off 0
+expect FOREIGN runtime HookSkip Hook\.BeforeCardPlayed \(TranspiledOnly\) kept [1-9][0-9]* backed off 0
+expect STATE foreign end gates-passthrough-finalizer Hook\.AfterCardPlayed [1-9]
+expect STATE foreign end gates-passthrough-finalizer-debug Hook\.BeforeCardPlayed [1-9]
+timeout 1500
+newrun NECROBINDER 1234
+waitfor run 120
+foreignpatch gates selftest
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+foreignpatch gates-passthrough-finalizer MegaCrit.Sts2.Core.Hooks.Hook:AfterCardPlayed
+foreignpatch gates-passthrough-finalizer-debug MegaCrit.Sts2.Core.Hooks.Hook:BeforeCardPlayed
+effects start
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+play 4
+waitfor idle 120
+checksum t3 plays
+endturn
+waitfor idle 300
+checksum t3 end
+state t3
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+foreignpatch report end
+effects end
+effectcheck HookSkip grew start
+cmd bdopt why
+counters end
+foreignpatch remove
+quit

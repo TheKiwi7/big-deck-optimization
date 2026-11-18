@@ -1167,7 +1167,8 @@ public static partial class HookSkip
             // postfix; Zone's ModifyHpLost modifiers). Holds on v0.107.1, v0.111.0 and v0.113.1 alike: it relies on no hook's
             // code, only on the transpiler keeping each hook's effects (each row's fingerprint and classification) and on
             // MethodTolerance (this mod's own patches there are only those; another of this mod's: SurroundingOnly, as before).
-            // Finalizers, transpilers (the IL judge aside) and inner patches still back off. Not on an async hook's state
+            // Finalizers that don't provably pass the exception on unchanged (F1: void, or returning __exception as it came stand),
+            // transpilers (the IL judge aside) and inner patches still back off. Not on an async hook's state
             // machine: a patch there can read the machine's fields, the walk's enumerator among them, which the redirect makes
             // another object (strict, below). A postfix of an async hook subscribing to ExecutionFinished: Entry.Subscribed.
             // Invariant with HookFilter: on the hooks it mirrors (a bool prefix of this mod skipping the original), anything but
