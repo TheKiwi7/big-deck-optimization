@@ -2385,6 +2385,7 @@ public static class FastListeners
             // The walk itself twice: tolerantly (the served walk: CombatServedPatched), strictly (the filtered walks: CombatWalkPatched).
             PatchSafety.Watch(Name, new MethodBase?[] { _combatIterate, _combatBody, _combatContains });
             PatchSafety.Watch(Name, _combatIterate, PatchTolerance.SurroundingOnly);
+            PatchSafety.WatchNote(Name, () => NoteNullGuard(Name));
             if (_combatSubscribers != null)
             {
                 PatchSafety.Watch(Name, new[] { _subscribersMethod, _subscribersBody, _subscribeMethod });
@@ -2629,7 +2630,53 @@ public static class FastListeners
     /// </summary>
     private static bool CombatServedPatched() =>
         PatchSafety.IsPatchedByOthers(_combatIterate, PatchTolerance.SurroundingOnly) || PatchSafety.IsPatchedByOthers(_combatBody)
-        || PatchSafety.IsPatchedByOthers(_combatContains);
+        || UnfilteredContainsPatched(_combatContains);
+
+    /// <summary>
+    /// Rule NG (2026-11-18): another mod's patch on <c>CombatState.Contains</c> or <c>RunState.Contains</c> for the unfiltered
+    /// mirror (served walks, <see cref="UnpatchedCombat"/>, <see cref="UnpatchedRun"/>, <see cref="WalkCodePatchedByOthers"/>):
+    /// none, or only pass-through null guards (<see cref="PatchSafety.NullGuardAnswer"/>: HonkaiLib's), which <see cref="CombatContains"/>
+    /// and <see cref="RunContains"/> answer the same way for a null model while they stand (false), every other model being the
+    /// game's own code. The filtered walks keep the strict check (<see cref="CombatWalkPatched"/>): the game's call there.
+    /// </summary>
+    private static bool UnfilteredContainsPatched(MethodBase? contains, [System.Runtime.CompilerServices.CallerFilePath] string caller = "") =>
+        PatchSafety.NullGuardAnswer(contains) == null && PatchSafety.IsPatchedByOthers(contains, caller);
+
+    /// <summary>A null model in a walk's list while another mod's null guard stands on that Contains: its answer (false), else the game's throw.</summary>
+    private static bool NullGuarded(object model, MethodBase? contains) => ReferenceEquals(model, null) && PatchSafety.NullGuardAnswer(contains) is false;
+
+    /// <summary>
+    /// The kept note of rule NG (a WatchNote of FastListeners and ListenerCache, display only): the null guards standing on the two
+    /// Contains, which the unfiltered mirror and the cached lists answer the same way.
+    /// </summary>
+    internal static void NoteNullGuard(string patch)
+    {
+        try
+        {
+            var mods = new List<string>();
+            var names = new List<string>();
+            foreach ((MethodBase? method, string name) in new[] { (_combatContains ?? Reflect.Method(typeof(CombatState), "Contains"), "CombatState.Contains"),
+                (_runContains ?? Reflect.Method(typeof(RunState), "Contains"), "RunState.Contains") })
+            {
+                if (PatchSafety.NullGuardAnswer(method) != null)
+                {
+                    names.Add(name);
+                    mods.AddRange(PatchSafety.NullGuardMods(method));
+                }
+            }
+            if (names.Count == 0)
+            {
+                PatchSafety.ClearKept(patch, "null_guard");
+                return;
+            }
+            PatchSafety.Kept(patch, "null_guard", $"other mods' null guards on {string.Join(" and ", names)} (a missing listener answered as not there) "
+                + "are answered the same way by this mod's copy of the game's listener walk" + (patch == Name ? "; the filtered walks are the game's" : ""), mods.ToArray());
+        }
+        catch
+        {
+            // Display only.
+        }
+    }
 
     /// <summary>
     /// <see cref="CombatServedPatched"/> for the run walk, served unfiltered only (<see cref="RunPrefix"/> with no HookSkip filter
@@ -2638,7 +2685,7 @@ public static class FastListeners
     /// </summary>
     private static bool RunServedPatched() =>
         PatchSafety.IsPatchedByOthers(_runIterate, PatchTolerance.SurroundingOnly) || PatchSafety.IsPatchedByOthers(_runBody)
-        || PatchSafety.IsPatchedByOthers(_runContains);
+        || UnfilteredContainsPatched(_runContains);
 
     /// <summary>
     /// The combat walk as the unpatched original yields it, without going through the game's call (no other mod's patch on
@@ -2647,7 +2694,7 @@ public static class FastListeners
     /// inside the vanilla reference, or its code patched by another mod).
     /// </summary>
     internal static IEnumerable<AbstractModel>? UnpatchedCombat(CombatState state) =>
-        CombatMirrored && Enabled && !ListenerCache.IsSuspended && !PatchSafety.IsPatchedByOthers(_combatBody) && !PatchSafety.IsPatchedByOthers(_combatContains)
+        CombatMirrored && Enabled && !ListenerCache.IsSuspended && !PatchSafety.IsPatchedByOthers(_combatBody) && !UnfilteredContainsPatched(_combatContains)
             ? Combat(state, null) : null;
 
     /// <summary>
@@ -2656,7 +2703,7 @@ public static class FastListeners
     /// (<see cref="ListenerCache"/> doesn't serve a run walk with a child combat while the combat walk carries one).
     /// </summary>
     internal static IEnumerable<AbstractModel>? UnpatchedRun(RunState run, ICombatState? child) =>
-        RunMirrored && Enabled && !ListenerCache.IsSuspended && !PatchSafety.IsPatchedByOthers(_runBody) && !PatchSafety.IsPatchedByOthers(_runContains)
+        RunMirrored && Enabled && !ListenerCache.IsSuspended && !PatchSafety.IsPatchedByOthers(_runBody) && !UnfilteredContainsPatched(_runContains)
             ? Run(run, child, null) : null;
 
     /// <summary>Whether both <see cref="UnpatchedCombat"/> and <see cref="UnpatchedRun"/> can answer now.</summary>
@@ -2712,7 +2759,7 @@ public static class FastListeners
     /// <see cref="WalkCode"/> for the back-off preflight (<see cref="ListenerCache"/> registers it under its own name: its
     /// check passes it). Resolved lazily, inside the preflight's try.
     /// </summary>
-    internal static IEnumerable<MethodBase?> WalkCodeMethods() => WalkCode();
+    internal static IEnumerable<MethodBase?> WalkCodeMethods() => WalkCode().Where(m => PatchSafety.NullGuardAnswer(m) == null);
 
     /// <summary>
     /// The delegate methods of BaseLib's card modifier subscribers, which <see cref="CardModifiersEmpty"/> asks about (for the
@@ -2754,8 +2801,9 @@ public static class FastListeners
     {
         foreach (MethodBase method in WalkCode())
         {
-            // No tolerance: the walks' code is mirrored or replayed (iterators, Contains, ModHelper's subscriber walks).
-            if (PatchSafety.IsPatchedByOthers(method, caller))
+            // No tolerance: the walks' code is mirrored or replayed (iterators, Contains, ModHelper's subscriber walks). A Contains
+            // carrying only other mods' null guards (rule NG) stands: the mirror answers a null model as they do.
+            if (PatchSafety.NullGuardAnswer(method) == null && PatchSafety.IsPatchedByOthers(method, caller))
             {
                 return true;
             }
@@ -3870,7 +3918,7 @@ public static class FastListeners
     }
 
     /// <summary><c>CombatState.Contains</c>: the model types are disjoint, so testing cards first gives the same answer.</summary>
-    private static bool CombatContains(AbstractModel model) => model switch
+    private static bool CombatContains(AbstractModel model) => NullGuarded(model, _combatContains) ? false : model switch
     {
         CardModel card => !card.HasBeenRemovedFromState && card.Owner.IsActiveForHooks,
         EnchantmentModel enchantment => enchantment.HasCard && !enchantment.Card.HasBeenRemovedFromState && enchantment.Card.Owner.IsActiveForHooks,
@@ -3885,7 +3933,7 @@ public static class FastListeners
     };
 
     /// <summary><c>RunState.Contains</c>, cards first.</summary>
-    private static bool RunContains(AbstractModel model) => model switch
+    private static bool RunContains(AbstractModel model) => NullGuarded(model, _runContains) ? false : model switch
     {
         CardModel card => !card.HasBeenRemovedFromState && card.Owner.IsActiveForHooks,
         EnchantmentModel enchantment => enchantment.HasCard && !enchantment.Card.HasBeenRemovedFromState && enchantment.Card.Owner.IsActiveForHooks,

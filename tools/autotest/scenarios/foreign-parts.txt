@@ -7,7 +7,11 @@
 # (Reorders) PileIndex judges the reorders (MoveToBottomInternal, MoveToTopInternal, RandomizeOrderInternal) as RemoveInternal
 # (SurroundingOnly): a void prefix sorted before this mod's on RandomizeOrderInternal (priority 800) is kept at run time, one
 # sorted after them on MoveToTopInternal (priority 0) backs off.
-timeout 900
+# (NG) HonkaiLib's null guard on CombatState.Contains and RunState.Contains (a bool prefix answering false for a null model,
+# Release-build IL): ListenerCache and FastListeners' unfiltered mirror keep running (their effects grow), the filtered walks are
+# the game's (FastListeners' back-off); the same guard answering true for null, and one calling a method first, back off
+# ListenerCache (its effect stays the same).
+timeout 1200
 expect FOREIGN classify CardPile\.AddInternal: bdtest\.foreign\.bool-prefix Prefix .*priority 0: .*BeforeReplace backs off \(bool prefix running after a prefix of this mod
 expect CardDbScan: CardPile\.AddInternal is also patched by bdtest\.foreign\.bool-prefix \(postfixes and prefixes running before this mod's not enough\): normal game for that part
 expect PileIndex: CardPile\.AddInternal is also patched by bdtest\.foreign\.bool-prefix \(postfixes and prefixes running before this mod's not enough\): normal game for that part
@@ -21,6 +25,16 @@ expect FOREIGN runtime PileIndex CardPile\.RandomizeOrderInternal \(SurroundingO
 expect FOREIGN classify CardPile\.MoveToTopInternal: bdtest\.foreign\.noop-prefix Prefix .*priority 0: SurroundingOnly backs off \(void prefix running after a prefix of this mod
 expect PileIndex: CardPile\.MoveToTopInternal is also patched by bdtest\.foreign\.noop-prefix \(postfixes and void prefixes not enough\): normal game for that part
 expect FOREIGN runtime PileIndex CardPile\.MoveToTopInternal \(SurroundingOnly\) kept 0 backed off [1-9]
+expect PatchSafety: CombatState\.Contains is patched by bdtest\.foreign\.ng-guard with a null guard
+expect PatchSafety: RunState\.Contains is patched by bdtest\.foreign\.ng-guard with a null guard
+expect EFFECTCHECK ListenerCache grew since 'ng'
+expect EFFECTCHECK FastListeners\.CombatWalk grew since 'ng'
+expect FOREIGN kept ListenerCache: other mods' null guards on CombatState\.Contains and RunState\.Contains
+expect FastListeners: CombatState\.Contains is also patched by bdtest\.foreign\.ng-guard: normal game for that part
+expect ListenerCache: CombatState\.Contains is also patched by bdtest\.foreign\.ng-true-guard: normal game for that part
+expect EFFECTCHECK ListenerCache same since 'ngtrue'
+expect ListenerCache: CombatState\.Contains is also patched by bdtest\.foreign\.ng-call-guard: normal game for that part
+expect EFFECTCHECK ListenerCache same since 'ngcall'
 newrun NECROBINDER 1234
 waitfor run 120
 wait 2
@@ -48,6 +62,42 @@ foreignpatch remove
 foreignpatch skip-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal squeeze
 foreignpatch remove
 foreignpatch redirect-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal squeeze
+foreignpatch remove
+# (NG) the guard on both Contains.
+foreignpatch ng-guard MegaCrit.Sts2.Core.Combat.CombatState:Contains
+foreignpatch ng-guard MegaCrit.Sts2.Core.Runs.RunState:Contains
+wait 3
+effects ng
+play 2
+waitfor idle 120
+endturn
+waitfor idle 300
+effects ng end
+effectcheck ListenerCache grew ng
+effectcheck FastListeners.CombatWalk grew ng
+foreignpatch report ng
+cmd bdopt why
+foreignpatch remove
+# (NG) controls: true for a null model; a call before the original runs.
+foreignpatch ng-true-guard MegaCrit.Sts2.Core.Combat.CombatState:Contains
+wait 3
+effects ngtrue
+play 2
+waitfor idle 120
+endturn
+waitfor idle 300
+effects ngtrue end
+effectcheck ListenerCache same ngtrue
+foreignpatch remove
+foreignpatch ng-call-guard MegaCrit.Sts2.Core.Combat.CombatState:Contains
+wait 3
+effects ngcall
+play 2
+waitfor idle 120
+endturn
+waitfor idle 300
+effects ngcall end
+effectcheck ListenerCache same ngcall
 foreignpatch remove
 wait 3
 cmd kill all

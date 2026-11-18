@@ -22,6 +22,7 @@ public static class ForeignShapesParts
     {
         "redirect-prefix",
         "sort-gated-postfix", "sort-nearmiss-postfix",
+        "ng-guard", "ng-true-guard", "ng-call-guard",
         // Not a shape: "foreignpatch c0-override constant|patch|subclass|stateful" (rule C0: classes of "another mod" emitted into a
         // dynamic assembly, overriding PowerModel.OwnerIsSecondaryEnemy, which CardFlightLimit's combat-end check reaches).
         "c0-override",
@@ -112,6 +113,19 @@ public static class ForeignShapesParts
                 }
                 harmony.Patch(target, postfix: new HarmonyMethod(typeof(SortGates), shape == "sort-gated-postfix" ? nameof(SortGates.GatedPostfix) : nameof(SortGates.NearMissPostfix)) { priority = priority });
                 break;
+            case "ng-guard":
+            case "ng-true-guard":
+            case "ng-call-guard":
+                // Rule NG (HonkaiLib's CombatStateContainsNullGuardPatch, on CombatState.Contains or RunState.Contains): a bool
+                // prefix answering false for a null model and letting every other one through, emitted with Release-build IL (a
+                // Debug build of this file would add nops, locals and branches); its controls: the same answering true for null,
+                // and one calling a method on the non-null path. No game state changes (the game's lists hold no null model).
+                if (target.DeclaringType?.Name is not ("CombatState" or "RunState") || target.Name != "Contains")
+                {
+                    throw new ArgumentException(shape + " goes on MegaCrit.Sts2.Core.Combat.CombatState:Contains or MegaCrit.Sts2.Core.Runs.RunState:Contains");
+                }
+                harmony.Patch(target, prefix: new HarmonyMethod(EmitGuard(shape)) { priority = priority });
+                break;
             default:
                 throw new ArgumentException("unknown shape " + shape);
         }
@@ -119,6 +133,51 @@ public static class ForeignShapesParts
         var lines = new List<string> { $"FOREIGN installed {shape}{(gate.Length > 0 ? " " + gate : "")} on {target.DeclaringType?.Name}.{target.Name} as {id} (priority {priority})" };
         lines.AddRange(PatchSafety.Describe(target).Select(line => $"FOREIGN classify {target.DeclaringType?.Name}.{target.Name}: {line}"));
         return lines;
+    }
+
+    private static int _guards;
+
+    /// <summary>A call the ng-call-guard control makes on its non-null path (does nothing).</summary>
+    public static void GuardCall()
+    {
+    }
+
+    /// <summary>
+    /// The null guard as the C# compiler's Release build gives it (<c>ldarg.0; brfalse.s L; ldc.i4.1; ret; L: ldarg.1; ldc.i4.0;
+    /// stind.i1; ldc.i4.0; ret</c>), in a class of its own in a dynamic assembly (parameters named model and __result).
+    /// </summary>
+    private static MethodInfo EmitGuard(string shape)
+    {
+        if (_c0Module == null)
+        {
+            string unique = "BdoC0Shapes" + Environment.TickCount64.ToString("X");
+            _c0Module = System.Reflection.Emit.AssemblyBuilder.DefineDynamicAssembly(new AssemblyName(unique), System.Reflection.Emit.AssemblyBuilderAccess.Run)
+                .DefineDynamicModule(unique);
+        }
+        System.Reflection.Emit.TypeBuilder type = _c0Module.DefineType("BdoNullGuard" + (++_guards),
+            TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed | TypeAttributes.Class | TypeAttributes.BeforeFieldInit);
+        System.Reflection.Emit.MethodBuilder method = type.DefineMethod("Prefix", MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.HideBySig,
+            typeof(bool), new[] { typeof(AbstractModel), typeof(bool).MakeByRefType() });
+        method.DefineParameter(1, ParameterAttributes.None, "model");
+        method.DefineParameter(2, ParameterAttributes.None, "__result");
+        System.Reflection.Emit.ILGenerator il = method.GetILGenerator();
+        System.Reflection.Emit.Label isNull = il.DefineLabel();
+        il.Emit(System.Reflection.Emit.OpCodes.Ldarg_0);
+        il.Emit(System.Reflection.Emit.OpCodes.Brfalse_S, isNull);
+        if (shape == "ng-call-guard")
+        {
+            il.Emit(System.Reflection.Emit.OpCodes.Call, typeof(ForeignShapesParts).GetMethod(nameof(GuardCall))!);
+        }
+        il.Emit(System.Reflection.Emit.OpCodes.Ldc_I4_1);
+        il.Emit(System.Reflection.Emit.OpCodes.Ret);
+        il.MarkLabel(isNull);
+        il.Emit(System.Reflection.Emit.OpCodes.Ldarg_1);
+        il.Emit(shape == "ng-true-guard" ? System.Reflection.Emit.OpCodes.Ldc_I4_1 : System.Reflection.Emit.OpCodes.Ldc_I4_0);
+        il.Emit(System.Reflection.Emit.OpCodes.Stind_I1);
+        il.Emit(System.Reflection.Emit.OpCodes.Ldc_I4_0);
+        il.Emit(System.Reflection.Emit.OpCodes.Ret);
+        Type created = type.CreateType()!;
+        return created.GetMethod("Prefix", BindingFlags.Public | BindingFlags.Static)!;
     }
 
     private static System.Reflection.Emit.ModuleBuilder? _c0Module;
