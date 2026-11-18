@@ -13,8 +13,8 @@ namespace BigDeckOptimization.Patches;
 /// The game's "mod mismatch" error, when it is only about this mod's join list entry (<see cref="CoopModeTag"/>), says why in
 /// plain words. The game lists each side's entries the other lacks: "BigDeckOptimization-v1.1.0+off" against
 /// "BigDeckOptimization-v1.1.0" tells a player nothing. When each side lists exactly one entry and both are this mod's, a
-/// postfix on <c>NetErrorInfo.GetErrorString</c> (the description the joining player's error popup shows) appends, after the
-/// game's own lines: the mod off on one side (the <see cref="CoopModeTag.OffSuffix"/> tag on one side only), the "Co-op state check" option set differently
+/// postfix on <c>NetErrorInfo.GetErrorString</c> (the description the joining player's error popup shows) puts in place of the
+/// game's two lines (when its text is exactly those two lines: <see cref="Compose"/>; else after them): the mod off on one side (the <see cref="CoopModeTag.OffSuffix"/> tag on one side only), the "Co-op state check" option set differently
 /// (<see cref="CoopModeTag.ExactSnapSuffix"/> variants differing), or another version of this mod, then one line saying what
 /// must match. Any other difference (another mod, this mod missing on one side) keeps the game's text alone. The joining
 /// player only (the owner's choice): on v0.111+ the host's failed-join message is built from the same method, with
@@ -121,10 +121,11 @@ public static class JoinMismatchNote
             {
                 return;
             }
-            __result = Append(__result, note.Text);
+            __result = Compose(__result, own![0], theirs![0], note.Text, out bool replaced);
             Explained++;
             Log.Info($"[{ModEntry.Id}] {Name}: join refused over this mod's entry ({note.Kind}, client: "
-                + $"{string.Join(",", own!)} vs {string.Join(",", theirs!)}), explanation {Explained} added: {note.Text.Replace("\n", " / ")}");
+                + $"{string.Join(",", own)} vs {string.Join(",", theirs)}), explanation {Explained} "
+                + $"{(replaced ? "in place of the game's two lines" : "added after the game's lines")}: {note.Text.Replace("\n", " / ")}");
         }
         catch (Exception e)
         {
@@ -171,6 +172,43 @@ public static class JoinMismatchNote
     /// <summary>The game's description, then the explanation on lines of its own.</summary>
     internal static string Append(string game, string note) =>
         game.Length == 0 || game.EndsWith("\n", StringComparison.Ordinal) ? game + note : game + "\n" + note;
+
+    /// <summary>
+    /// The text the popup shows: the explanation alone in place of the game's two lines when the game's text is exactly those two
+    /// lines, the first naming this player's entry <paramref name="own"/> (and not the other), the second the other side's
+    /// <paramref name="theirs"/> (and not this one): "BigDeckOptimization-v1.1.0+off" and "BigDeckOptimization-v1.1.0" read as two
+    /// different mods, while the explanation names the one mod and what differs. Any other shape (a game update adding a line,
+    /// another wording) keeps the game's lines, the explanation after them (<paramref name="replaced"/> false).
+    /// </summary>
+    internal static string Compose(string game, string own, string theirs, string note, out bool replaced)
+    {
+        var lines = new List<string>();
+        foreach (string line in game.Replace("\r", "").Split('\n'))
+        {
+            if (line.Trim().Length > 0)
+            {
+                lines.Add(line);
+            }
+        }
+        replaced = lines.Count == 2 && Names(lines[0], own) && !Names(lines[0], theirs) && Names(lines[1], theirs) && !Names(lines[1], own);
+        return replaced ? note : Append(game, note);
+    }
+
+    /// <summary>The line names this entry whole: not as the start of a longer one ("-v1.1.0" inside "-v1.1.0+off").</summary>
+    internal static bool Names(string line, string entry)
+    {
+        for (int at = line.IndexOf(entry, StringComparison.Ordinal); at >= 0; at = line.IndexOf(entry, at + 1, StringComparison.Ordinal))
+        {
+            int end = at + entry.Length;
+            if ((at == 0 || !EntryChar(line[at - 1])) && (end == line.Length || !EntryChar(line[end])))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static bool EntryChar(char c) => char.IsLetterOrDigit(c) || c is '+' or '-' or '.' or '_';
 
     /// <summary>
     /// This mod's join list entry (<see cref="CoopModeTag"/>): <c>BigDeckOptimization-&lt;version&gt;[tag]</c>, the tag one of

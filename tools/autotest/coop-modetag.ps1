@@ -25,9 +25,9 @@ $refused = (Test-Path $clientLog) -and (Select-String -Path $clientLog -Pattern 
     -and (Select-String -Path $clientLog -Pattern "Mods that (host has that we don't|remote has that local does not): .*BigDeckOptimization-v[0-9.]+(,|$)" -Quiet)
 if ($refused) { Write-Output "ok      coop-modetag: the client with the mod off was refused by the host with it on (the game's refusal names its '+off' entry and the host's)" }
 else { Write-Output "PROBLEM coop-modetag: the client with the mod off was not refused, or the game's refusal doesn't name its '+off' entry against the host's"; $bad++ }
-# The explanation added to the game's error text (JoinMismatchNote's log line, with the text it added): the client's mod off
+# The explanation in place of the game's two lines of the error text (JoinMismatchNote's log line, with its text): the client's mod off
 # against the host's on. The joining player only: the host's failed-join message keeps the game's text (no such line there).
-$explained = (Test-Path $clientLog) -and (Select-String -Path $clientLog -Pattern "JoinMismatchNote: join refused over this mod's entry \(off-you, client: BigDeckOptimization-v[0-9.]+\+off vs BigDeckOptimization-v[0-9.]+\)" -Quiet)
+$explained = (Test-Path $clientLog) -and (Select-String -Path $clientLog -Pattern "JoinMismatchNote: join refused over this mod's entry \(off-you, client: BigDeckOptimization-v[0-9.]+\+off vs BigDeckOptimization-v[0-9.]+\), explanation [0-9]+ in place of the game's two lines" -Quiet)
 if ($explained) { Write-Output "ok      coop-modetag: the client's error text explains it (its mod off, the host's on)" }
 else { Write-Output "PROBLEM coop-modetag: no JoinMismatchNote off-you explanation in the client's error text"; $bad++ }
 if ((Test-Path $hostLog) -and (Select-String -Path $hostLog -Pattern "JoinMismatchNote: join refused" -Quiet)) {

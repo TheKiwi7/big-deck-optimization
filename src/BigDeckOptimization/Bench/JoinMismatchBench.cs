@@ -15,8 +15,8 @@ namespace BigDeckOptimization.Bench;
 /// check fills it: v0.107.1 the client's two missing-mods lists, v0.111+ both sides' <c>PeerVersionInfo.gameplayAffectingMods</c>
 /// and <c>localIsHost</c>) from synthetic lists, and calls the patched <c>GetErrorString</c> twice: the patch off (the game's
 /// text) and on. Required per case: the game's text names the lists' entries (the extra info is read as the game reads it); the
-/// kind <see cref="JoinMismatchNote.Explain"/> gives is the case's; the patched text is the game's text alone (no kind) or the
-/// game's text followed by that explanation; the effect counter grew by one exactly when explained. The joining player's side
+/// kind <see cref="JoinMismatchNote.Explain"/> gives is the case's; the patched text is the game's text alone (no kind) or that
+/// explanation in place of the game's two lines (<see cref="JoinMismatchNote.Compose"/>, no raw entry left); the effect counter grew by one exactly when explained. The joining player's side
 /// only: the host cases (v0.111+, where the error says who hosts) are controls, their text the game's own. Then, outside the
 /// game's method: the English texts exactly (two cases), and in every language file the mod embeds, each kind's text
 /// translated (differs from English), its placeholders
@@ -91,8 +91,19 @@ internal static class JoinMismatchBench
                 long grew = JoinMismatchNote.Explained - before;
                 (string Kind, string Text)? note = reason == "ModMismatch" ? JoinMismatchNote.Explain(own, theirs, language) : null;
                 string? expectedKind = backoff || host ? null : kind;
-                string expected = note is { } n && expectedKind != null ? JoinMismatchNote.Append(game, n.Text) : game;
+                bool replaced = false;
+                string expected = note is { } n && expectedKind != null ? JoinMismatchNote.Compose(game, own[0], theirs[0], n.Text, out replaced) : game;
                 var wrong = new List<string>();
+                // The game's text on the supported versions is exactly its two lines: the explanation takes their place (the
+                // fallback, after them, is for a game text of another shape: a change to review here).
+                if (expectedKind != null && !replaced)
+                {
+                    wrong.Add($"the game's two lines kept, the explanation after them (its text's shape changed?): '{Flat(game)}'");
+                }
+                if (expectedKind != null && (patched.Contains(own[0], StringComparison.Ordinal) || patched.Contains(theirs[0], StringComparison.Ordinal)))
+                {
+                    wrong.Add($"the patched text still names a raw join list entry: '{Flat(patched)}'");
+                }
                 if (reason == "ModMismatch" && own.Concat(theirs).Any(entry => !game.Contains(entry, StringComparison.Ordinal)))
                 {
                     wrong.Add($"the game's text doesn't name every entry (extra info not read as the game reads it): '{Flat(game)}'");
@@ -111,7 +122,7 @@ internal static class JoinMismatchBench
                 }
                 ran++;
                 lines.Add($"JOINMSG case '{name}' ({(host ? "host" : "client")}): {(wrong.Count == 0 ? "ok" : "WRONG: " + string.Join("; ", wrong))}, "
-                    + (expectedKind != null ? $"explained ({expectedKind})" : "the game's text alone"));
+                    + (expectedKind != null ? $"explained ({expectedKind}{(replaced ? ", in place of the game's two lines" : "")})" : "the game's text alone"));
                 problems.AddRange(wrong.Select(w => $"'{name}': {w}"));
             }
         }
@@ -149,6 +160,26 @@ internal static class JoinMismatchBench
         {
             problems.Add($"English version text: '{Flat(version)}'");
         }
+        // Compose's shapes: two lines each naming its own entry whole are replaced; any other shape keeps the game's lines.
+        string a = Ours("v1.1.0", Off), b = Ours("v1.1.0");
+        var shapes = new (string Game, bool Replaced)[]
+        {
+            ($"We have: {a}\nThey have: {b}\n", true),
+            ($"We have: {a}\r\nThey have: {b}\r\n", true),
+            ($"Header\nWe have: {a}\nThey have: {b}\n", false),
+            ($"We have: {a}, {b}\nThey have: {b}\n", false),
+            ($"They have: {b}\nWe have: {a}\n", false),
+            ($"We have: {a}\n", false),
+            ($"We have: {b}+offx\nThey have: {b}\n", false),
+        };
+        foreach ((string game, bool expectReplaced) in shapes)
+        {
+            string composed = JoinMismatchNote.Compose(game, a, b, "NOTE", out bool replaced);
+            if (replaced != expectReplaced || composed != (expectReplaced ? "NOTE" : JoinMismatchNote.Append(game, "NOTE")))
+            {
+                problems.Add($"Compose of '{Flat(game)}': replaced {replaced}, expected {expectReplaced} ('{Flat(composed)}')");
+            }
+        }
         var kinds = new (string[] Own, string[] Theirs)[] { (off, on), (on, off), (snap, on), (on, old) };
         const string prefix = "BigDeckOptimization.Localization.";
         string[] languages = typeof(Translations).Assembly.GetManifestResourceNames()
@@ -177,7 +208,7 @@ internal static class JoinMismatchBench
                 texts++;
             }
         }
-        lines.Add($"JOINMSG texts: English exact, {texts} translated texts checked in {languages.Length} languages ({string.Join(", ", languages)})");
+        lines.Add($"JOINMSG texts: {shapes.Length} text shapes composed as expected, English exact, {texts} translated texts checked in {languages.Length} languages ({string.Join(", ", languages)})");
     }
 
     private static string Flat(string? text) => text?.Replace("\r", "").Replace("\n", " / ") ?? "null";
