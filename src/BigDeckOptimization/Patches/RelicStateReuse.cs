@@ -150,7 +150,7 @@ public static class RelicStateReuse
         PatchSafety.Watch(Name, _relicStateSerialize, () => _allowedUnlimitedOnly);
         if (ScalarApplied)
         {
-            PatchSafety.Watch(Name, _fromInternal, () => _allowedOnFromInternal);
+            PatchSafety.Watch(Name, _fromInternal, () => AllowedOnFromInternal);
             PatchSafety.Watch(Name, _shouldSerialize);
         }
         PatchSafety.WatchNote(Name, NoteRelicSaves);
@@ -332,7 +332,7 @@ public static class RelicStateReuse
 #if BENCH
             ScalarWhy = !ScalarEnabled || !_scalarGuardsPass ? "off or patched" : !_last.TryGetValue(relic, out SerializableRelic? p) ? "no previous" : p.Id != relic.Id || p.FloorAddedToDeck != relic.FloorAddedToDeck ? "id/floor"
                 // No tolerance: serialization reused instead of run.
-                : PatchSafety.IsPatchedByOthers(_fromInternal!, _allowedOnFromInternal) ? "FromInternal patched" : PatchSafety.IsPatchedByOthers(_shouldSerialize!) ? "ShouldSerialize patched"
+                : PatchSafety.IsPatchedByOthers(_fromInternal!, AllowedOnFromInternal) ? "FromInternal patched" : PatchSafety.IsPatchedByOthers(_shouldSerialize!) ? "ShouldSerialize patched"
                 : FieldTargeted(relic.GetType()) ? "BaseLib field on " + relic.GetType().Name : "no plan " + relic.GetType().Name;
 #endif
             return false;
@@ -526,6 +526,8 @@ public static class RelicStateReuse
     internal const string BaseLibFieldsPostfixFingerprint = "860274C6B3FA909C";
     private const string BaseLibFieldsTargetsFingerprint = "791D9757ACB7F0A0";
     private static MethodInfo[] _allowedOnFromInternal = Array.Empty<MethodInfo>();
+    /// <summary>BaseLib's postfix and the bundled copies of it holding no field (rule B: <see cref="BaseLibTypes.WithTwins"/>).</summary>
+    private static MethodInfo[] AllowedOnFromInternal => BaseLibTypes.WithTwins(_allowedOnFromInternal, fromInternal: true);
     private static Func<IList>? _baseLibFields;
     /// <summary>Relic types some registered field targets (its <c>TargetType.IsInstanceOfType</c>), for the fields counted then.</summary>
     private static readonly Dictionary<Type, bool> _fieldTargeted = new();
@@ -547,6 +549,11 @@ public static class RelicStateReuse
     /// <summary>Whether BaseLib's postfix would export a field into this relic type's saved properties (Limitless: Fur Coat, Golden Compass).</summary>
     private static bool FieldTargeted(Type type)
     {
+        // A bundled copy of BaseLib's patch holding a field (rule B): every relic counts (read at each use).
+        if (BaseLibTypes.TwinHoldsField())
+        {
+            return true;
+        }
         if (_baseLibFields == null)
         {
             return false;
@@ -702,7 +709,7 @@ public static class RelicStateReuse
                 && !PatchSafety.IsPatchedByOthers(_toSerializable, _allowedOnToSerializable) && !PatchSafety.IsPatchedByOthers(_serialize, _allowedOnSerialize)
                 && !PatchSafety.IsPatchedByOthers(_savedPropertiesFrom)
                 && !PatchSafety.IsPatchedByOthers(_propertiesSerialize, _allowedUnlimitedOnly) && !PatchSafety.IsPatchedByOthers(_relicStateSerialize, _allowedUnlimitedOnly);
-            _scalarGuardsPass = ScalarApplied && !PatchSafety.IsPatchedByOthers(_fromInternal!, _allowedOnFromInternal) && !PatchSafety.IsPatchedByOthers(_shouldSerialize!);
+            _scalarGuardsPass = ScalarApplied && !PatchSafety.IsPatchedByOthers(_fromInternal!, AllowedOnFromInternal) && !PatchSafety.IsPatchedByOthers(_shouldSerialize!);
             _guardsAt = now;
         }
         return _guardsPass;

@@ -21,6 +21,12 @@ namespace BigDeckOptimization.Bench;
 /// <item>Rule A, controls (must back off): <c>lim-enchantment-gated-postfix</c> on <c>AbstractModel:MutableClone</c> (gated on
 /// an enchantment type: MutableClone also runs on the inner card's enchantment), <c>lim-cardmodel-gated-postfix</c> (gated on
 /// <c>is CardModel</c>: every inner card is one), <c>lim-write-then-gated-postfix</c> (a count before the gate's branch).</item>
+/// <item>Rule B, accepted: <c>lim-twin accepted</c> on <c>SavedProperties:FromInternal</c> / <c>:FillInternal</c>, a copy of
+/// BaseLib's SavedSpireFieldPatch postfixes with BaseLib's IL (Acheron's shape), holding no field.</item>
+/// <item>Rule B, controls (must back off): <c>lim-twin unfiltered</c> (GetFieldsForModel without its filter), <c>lim-twin
+/// alwaysstores</c> (a null result stored), <c>lim-twin impure</c> (its class's initializer counts), <c>lim-twin-prefix accepted</c>
+/// (installed as a prefix), <c>foreignpatch limitless twin patchcallee</c> (its GetFieldsForModel patched), <c>foreignpatch limitless
+/// twin register</c> (a field in its own list: for the rest of the session).</item>
 /// </list>
 /// </summary>
 public static class ForeignShapesLimitless
@@ -28,7 +34,69 @@ public static class ForeignShapesLimitless
     public static readonly string[] Shapes =
     {
         "lim-result-gated-postfix", "lim-enchantment-gated-postfix", "lim-cardmodel-gated-postfix", "lim-write-then-gated-postfix",
+        "lim-twin", "lim-twin-prefix",
     };
+
+    /// <summary>Rule B's twins (Bench/ForeignShapesLimitlessTwins.cs) by variant.</summary>
+    private static Type TwinClass(string variant) => variant switch
+    {
+        "accepted" => typeof(Twins.Accepted.SavedSpireFieldPatch),
+        "unfiltered" => typeof(Twins.Unfiltered.SavedSpireFieldPatch),
+        "alwaysstores" => typeof(Twins.AlwaysStores.SavedSpireFieldPatch),
+        "impure" => typeof(Twins.ImpureInitializer.SavedSpireFieldPatch),
+        _ => throw new ArgumentException("twin variant: accepted, unfiltered, alwaysstores or impure"),
+    };
+
+    /// <summary>The twin's postfix for SavedProperties.FromInternal or FillInternal.</summary>
+    private static MethodInfo TwinPostfix(MethodBase target, string variant)
+    {
+        if (target.DeclaringType != typeof(MegaCrit.Sts2.Core.Saves.Runs.SavedProperties) || target.Name is not ("FromInternal" or "FillInternal"))
+        {
+            throw new ArgumentException("lim-twin goes on MegaCrit.Sts2.Core.Saves.Runs.SavedProperties:FromInternal or :FillInternal");
+        }
+        string name = target.Name == "FromInternal" ? "PostfixFromInternal" : "PostfixFillInternal";
+        return TwinClass(variant).GetMethod(name, BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)
+            ?? throw new ArgumentException($"the {variant} twin has no {name}");
+    }
+
+    /// <summary>
+    /// <c>foreignpatch limitless twin status|register|patchcallee</c>: the twins BaseLibTypes finds now (and whether the accepted
+    /// one's IL is BaseLib's, as the stored constants say); a field registered in the accepted twin's own list (for the session:
+    /// it can't be taken back); a no-op postfix on the accepted twin's GetFieldsForModel (removed with <c>limitless remove</c>).
+    /// </summary>
+    private static IReadOnlyList<string> TwinCommand(string what)
+    {
+        Type accepted = typeof(Twins.Accepted.SavedSpireFieldPatch);
+        switch (what)
+        {
+            case "register":
+                Twins.Accepted.SavedSpireFieldPatch.Register(new Twins.InertField());
+                break;
+            case "patchcallee":
+            {
+                MethodInfo callee = accepted.GetMethod("GetFieldsForModel", BindingFlags.Static | BindingFlags.NonPublic)
+                    ?? throw new MissingMethodException(accepted.Name, "GetFieldsForModel");
+                string id = ForeignPatches.IdPrefix + "lim-twin-callee";
+                new Harmony(id).Patch(callee, postfix: new HarmonyMethod(typeof(LimitlessGates), nameof(LimitlessGates.NoOpPostfix)));
+                lock (_installed)
+                {
+                    _installed.Add((id, callee));
+                }
+                break;
+            }
+            case "status":
+                break;
+            default:
+                throw new ArgumentException("foreignpatch limitless twin status|register|patchcallee");
+        }
+        (MethodInfo[] from, MethodInfo[] fill, bool holds) = BaseLibTypes.TwinsForTest();
+        string Il(string method, string expected) => OwnNormalizedIl.Of(accepted.GetMethod(method, BindingFlags.Static | BindingFlags.NonPublic)!) == expected ? "BaseLib's" : "other";
+        return new[]
+        {
+            $"FOREIGN twin {what}: twins on FromInternal {from.Length} ({string.Join(", ", from.Select(m => m.DeclaringType?.FullName))}), on FillInternal {fill.Length}, one holds a field {holds}",
+            $"FOREIGN twin accepted IL: FromInternal {Il("PostfixFromInternal", "9DD9F273573E3F25")}, FillInternal {Il("PostfixFillInternal", "1441D774E03D0220")}, GetFieldsForModel {Il("GetFieldsForModel", "5D37A68AE0E65B5D")}",
+        };
+    }
 
     private static readonly List<(string Id, MethodBase Target)> _installed = new();
 
@@ -44,7 +112,8 @@ public static class ForeignShapesLimitless
             {
                 "report" => LimitlessShapeCounts.ReportLines(parts.Length > 2 ? parts[2] : "end"),
                 "remove" => Remove(),
-                _ => throw new ArgumentException("foreignpatch limitless report [label] | remove"),
+                "twin" when parts.Length > 2 => TwinCommand(parts[2]),
+                _ => throw new ArgumentException("foreignpatch limitless report [label] | remove | twin status|register|patchcallee"),
             };
         }
         string shape = parts[0];
@@ -79,6 +148,14 @@ public static class ForeignShapesLimitless
             case "lim-write-then-gated-postfix":
                 Gate("squeeze");
                 harmony.Patch(target, postfix: Gated(nameof(LimitlessGates.WriteThenGatedPostfix)));
+                break;
+            case "lim-twin":
+                harmony.Patch(target, postfix: new HarmonyMethod(TwinPostfix(target, gate)) { priority = priority });
+                break;
+            case "lim-twin-prefix":
+                // Control: the accepted twin's postfix installed as a prefix (rule B lets a twin stand as a postfix only).
+                Gate("accepted");
+                harmony.Patch(target, prefix: new HarmonyMethod(TwinPostfix(target, gate)) { priority = priority });
                 break;
             default:
                 throw new ArgumentException($"unknown foreignpatch shape '{shape}': {string.Join(", ", Shapes)}");
@@ -166,6 +243,11 @@ internal static class LimitlessGates
         {
             LimitlessShapeCounts.Count("lim-cardmodel-gated-postfix " + LimitlessShapeCounts.Name(__originalMethod));
         }
+    }
+
+    /// <summary>Rule B's patched-callee control: a postfix doing nothing (on the accepted twin's GetFieldsForModel).</summary>
+    public static void NoOpPostfix()
+    {
     }
 
     /// <summary>Control: a call (a count) before the gate's branch.</summary>

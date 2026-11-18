@@ -6,12 +6,23 @@
 # strict there), (2) a postfix gated on `is CardModel` on CardModel.UpgradeInternal (kept by TypeGated, but every inner card is a
 # CardModel: the per-card strict check backs off), (3) a count before the gate's branch on CardModel.FinalizeUpgradeInternal
 # (not a gate: TypeGated backs off).
+# Rule B (copies of BaseLib's SavedSpireFieldPatch, Bench/ForeignShapesLimitlessTwins.cs, on SavedProperties.FromInternal):
+# (b1) GetFieldsForModel without its filter, (b2) a null result stored, (b3) its class's initializer doing more than make the
+# list, (b4) the accepted copy installed as a prefix, (b5) the accepted copy with its GetFieldsForModel patched, (b6) the accepted
+# copy holding a field (registered for the rest of the session: last). Each backs off: LimitlessCloneMemo idle.
 timeout 1500
 expect FOREIGN runtime LimitlessCloneMemo AbstractModel\.MutableClone \(None\) kept 0 backed off [1-9]
 expect FOREIGN runtime LimitlessCloneMemo CardModel\.UpgradeInternal \(TypeGated\) kept [1-9]
 expect FOREIGN runtime LimitlessCloneMemo CardModel\.UpgradeInternal \(None\) kept 0 backed off [1-9]
 expect FOREIGN classify CardModel\.FinalizeUpgradeInternal: bdtest\.foreign\.lim-write-then-gated-postfix-squeeze Postfix .*TypeGated backs off \(postfix not provably gated
 expect FOREIGN runtime LimitlessCloneMemo CardModel\.FinalizeUpgradeInternal \(TypeGated\) kept 0 backed off [1-9]
+expect LimitlessReserialize: SavedProperties\.FromInternal is also patched by bdtest\.foreign\.lim-twin-unfiltered: normal game for that part
+expect LimitlessReserialize: SavedProperties\.FromInternal is also patched by bdtest\.foreign\.lim-twin-alwaysstores: normal game for that part
+expect LimitlessReserialize: SavedProperties\.FromInternal is also patched by bdtest\.foreign\.lim-twin-impure: normal game for that part
+expect LimitlessReserialize: SavedProperties\.FromInternal is also patched by bdtest\.foreign\.lim-twin-prefix-accepted: normal game for that part
+expect LimitlessReserialize: SavedProperties\.FromInternal is also patched by bdtest\.foreign\.lim-twin-accepted: normal game for that part
+expect FOREIGN twin patchcallee: twins on FromInternal 0 \(\)
+expect FOREIGN twin register: twins on FromInternal 1 .*one holds a field True
 newrun NECROBINDER 1234
 waitfor run 120
 wait 2
@@ -59,6 +70,98 @@ waitfor nocombat 300
 wait 2
 effectcheck LimitlessCloneMemo same a3
 foreignpatch report a3
+foreignpatch limitless remove
+wait 3
+# (b1) Rule B: a copy whose GetFieldsForModel has no filter.
+foreignpatch lim-twin MegaCrit.Sts2.Core.Saves.Runs.SavedProperties:FromInternal unfiltered
+wait 3
+foreignpatch limitless twin status
+effects b1
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd kill all
+waitfor nocombat 300
+wait 2
+effectcheck LimitlessCloneMemo same b1
+foreignpatch report b1
+foreignpatch limitless remove
+wait 3
+# (b2) Rule B: a copy storing a null result.
+foreignpatch lim-twin MegaCrit.Sts2.Core.Saves.Runs.SavedProperties:FromInternal alwaysstores
+wait 3
+foreignpatch limitless twin status
+effects b2
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd kill all
+waitfor nocombat 300
+wait 2
+effectcheck LimitlessCloneMemo same b2
+foreignpatch report b2
+foreignpatch limitless remove
+wait 3
+# (b3) Rule B: a copy whose class's initializer does more than make the list.
+foreignpatch lim-twin MegaCrit.Sts2.Core.Saves.Runs.SavedProperties:FromInternal impure
+wait 3
+foreignpatch limitless twin status
+effects b3
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd kill all
+waitfor nocombat 300
+wait 2
+effectcheck LimitlessCloneMemo same b3
+foreignpatch report b3
+foreignpatch limitless remove
+wait 3
+# (b4) Rule B: the accepted copy installed as a prefix.
+foreignpatch lim-twin-prefix MegaCrit.Sts2.Core.Saves.Runs.SavedProperties:FromInternal accepted
+wait 3
+foreignpatch limitless twin status
+effects b4
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd kill all
+waitfor nocombat 300
+wait 2
+effectcheck LimitlessCloneMemo same b4
+foreignpatch report b4
+foreignpatch limitless remove
+wait 3
+# (b5) Rule B: the accepted copy, its GetFieldsForModel patched.
+foreignpatch lim-twin MegaCrit.Sts2.Core.Saves.Runs.SavedProperties:FromInternal accepted
+foreignpatch limitless twin patchcallee
+wait 3
+foreignpatch limitless twin status
+effects b5
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd kill all
+waitfor nocombat 300
+wait 2
+effectcheck LimitlessCloneMemo same b5
+foreignpatch report b5
+foreignpatch limitless remove
+wait 3
+# (b6) Rule B: the accepted copy holding a field (for the rest of the session).
+foreignpatch lim-twin MegaCrit.Sts2.Core.Saves.Runs.SavedProperties:FromInternal accepted
+foreignpatch limitless twin register
+wait 3
+foreignpatch limitless twin status
+effects b6
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd kill all
+waitfor nocombat 300
+wait 2
+effectcheck LimitlessCloneMemo same b6
+foreignpatch report b6
 foreignpatch limitless remove
 wait 3
 cmd bdopt on

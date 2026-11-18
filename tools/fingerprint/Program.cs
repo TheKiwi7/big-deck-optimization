@@ -1,5 +1,5 @@
 // Prints MethodFingerprint values for a type's methods, to fill the expected fingerprints of mirroring patches.
-// Usage: dotnet run -- <assembly.dll> <type full name> <method name|*> [describe|body]
+// Usage: dotnet run -- <assembly.dll> <type full name> <method name|*> [describe|body|own|own-describe]
 // "body": for async and iterator methods, the fingerprint of their state machine's MoveNext (the code they run).
 using System.Reflection;
 using System.Runtime.Loader;
@@ -100,6 +100,13 @@ foreach (MethodBase m in type.GetMethods(BindingFlags.Public | BindingFlags.NonP
 {
     if (args[2] != "*" && m.Name != args[2]) continue;
     if (m.GetMethodBody() == null) continue; // Abstract or extern: no code to fingerprint ('*' stopped at the first one).
+    // "own" / "own-describe": OwnNormalizedIl (the method's own assembly's types named without namespace: rule B's twins).
+    if (args.Length > 3 && args[3] is "own" or "own-describe")
+    {
+        Console.WriteLine($"{type.Name}.{m.Name}: {OwnNormalizedIl.Of(m)}");
+        if (args[3] == "own-describe") Console.WriteLine(OwnNormalizedIl.Describe(m, null));
+        continue;
+    }
     if (args.Length > 3 && args[3] == "body")
     {
         Type? machine = m.GetCustomAttribute<System.Runtime.CompilerServices.StateMachineAttribute>()?.StateMachineType;

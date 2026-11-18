@@ -398,7 +398,7 @@ public static class LimitlessCloneMemo
                 }
             }
             // No tolerance: the clone chain is skipped for a kept content.
-            else if (PatchSafety.IsPatchedByOthers(method, allowed))
+            else if (PatchSafety.IsPatchedByOthers(method, AllowedNow(method, allowed)))
             {
                 patched = true;
                 break;
@@ -449,6 +449,13 @@ public static class LimitlessCloneMemo
 
     private static (System.Reflection.MethodBase Method, System.Reflection.MethodInfo[] Allowed, bool Gated)[]?[]? _chainParts;
 
+    /// <summary>
+    /// A chain method's allowed patches as of now: on <c>SavedProperties.FillInternal</c>, BaseLib's postfix and the bundled copies
+    /// of it whose own list is empty (rule B, <see cref="BaseLibTypes.WithTwins"/>; one holding a field backs off).
+    /// </summary>
+    private static System.Reflection.MethodInfo[] AllowedNow(System.Reflection.MethodBase method, System.Reflection.MethodInfo[] allowed) =>
+        method.DeclaringType == typeof(SavedProperties) && method.Name == "FillInternal" ? BaseLibTypes.WithTwins(allowed, fromInternal: false) : allowed;
+
     /// <summary>A type's declared methods, read once per type (several chain entries share CardModel's, AbstractModel's...).</summary>
     private static System.Reflection.MethodInfo[] DeclaredMethods(Type type) =>
         _declared.GetOrAdd(type, t => t.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
@@ -467,7 +474,7 @@ public static class LimitlessCloneMemo
         for (int i = 0; i < Chain.Length; i++)
         {
             int index = i;
-            PatchSafety.WatchPairs(patch, () => ChainPart(index).Where(c => !c.Gated).Select(c => ((System.Reflection.MethodBase?)c.Method, (System.Reflection.MethodInfo[]?)c.Allowed)));
+            PatchSafety.WatchPairs(patch, () => ChainPart(index).Where(c => !c.Gated).Select(c => ((System.Reflection.MethodBase?)c.Method, (System.Reflection.MethodInfo[]?)AllowedNow(c.Method, c.Allowed))));
             if (Chain[index].Type == typeof(CardModel) && GatedChain.Contains(Chain[index].Method))
             {
                 PatchSafety.WatchPairs(patch, () => ChainPart(index).Where(c => c.Gated).Select(c => ((System.Reflection.MethodBase?)c.Method, (System.Reflection.MethodInfo[]?)c.Allowed)),

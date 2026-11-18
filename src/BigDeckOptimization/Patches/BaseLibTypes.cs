@@ -106,6 +106,11 @@ internal static class BaseLibTypes
     /// </summary>
     public static bool SpireFieldTargets(Type type)
     {
+        // A bundled copy holding a field (rule B): its fields' targets aren't read, every type counts (asked at each use).
+        if (TwinHoldsField())
+        {
+            return true;
+        }
         System.Collections.IList? fields = SpireFields();
         if (fields == null)
         {
@@ -136,7 +141,9 @@ internal static class BaseLibTypes
     {
         try
         {
-            return SpireFields()?.Count ?? -1;
+            // With the bundled copies' fields (rule B): both only grow, so the sum changes whenever either does.
+            int own = SpireFields()?.Count ?? -1, twins = TwinFieldCount();
+            return twins == 0 ? own : Math.Max(own, 0) + twins;
         }
         catch
         {
@@ -536,6 +543,342 @@ internal static class BaseLibTypes
         }
         return (ids.Distinct().ToArray(), PatchSafety.ModNamesOf(assemblies));
     }
+
+    // --- Rule B (2026-11-18): bundled copies of BaseLib's SavedSpireFieldPatch ("twins") ---
+
+    /// <summary>
+    /// BaseLib 3.4.8's <c>SavedSpireFieldPatch.PostfixFromInternal</c>, <c>PostfixFillInternal</c> and <c>GetFieldsForModel</c> (with
+    /// its lambda), as <see cref="OwnNormalizedIl"/> describes them (BaseLib's own types named without namespace): stored, since a
+    /// mod bundling a copy may run without BaseLib. Acheron's copy describes alike (checked with tools/fingerprint's own mode).
+    /// </summary>
+    private const string TwinFromInternalFingerprint = "9DD9F273573E3F25";
+    private const string TwinFillInternalFingerprint = "1441D774E03D0220";
+    private const string TwinFieldsForModelFingerprint = "5D37A68AE0E65B5D";
+    /// <summary>The game's <c>SavedProperties()</c> constructor (empty; v0.107.1 to v0.113.1): what a twin's FromInternal postfix allocates.</summary>
+    private const string SavedPropertiesConstructorFingerprint = "928FE0813C43F346";
+
+    private sealed class Twin
+    {
+        public Twin(MethodInfo postfix, bool fromInternal, Func<System.Collections.IList?> fields, MethodBase[] code)
+        {
+            Postfix = postfix;
+            FromInternal = fromInternal;
+            Fields = fields;
+            Code = code;
+        }
+
+        public readonly MethodInfo Postfix;
+        public readonly bool FromInternal;
+        /// <summary>The copy's own <c>RegisteredFields</c> list, read at each use.</summary>
+        public readonly Func<System.Collections.IList?> Fields;
+        /// <summary>The postfix, its GetFieldsForModel, the lambda and every method they call: none may be patched.</summary>
+        public readonly MethodBase[] Code;
+    }
+
+    private sealed class TwinSet
+    {
+        public TwinSet(int epoch, long at, Twin[] twins)
+        {
+            Epoch = epoch;
+            At = at;
+            Twins = twins;
+            From = twins.Where(t => t.FromInternal).Select(t => t.Postfix).ToArray();
+            Fill = twins.Where(t => !t.FromInternal).Select(t => t.Postfix).ToArray();
+        }
+
+        public readonly int Epoch;
+        public readonly long At;
+        public readonly Twin[] Twins;
+        public readonly MethodInfo[] From, Fill;
+    }
+
+    private static volatile TwinSet _twins = new(int.MinValue, long.MinValue / 2, Array.Empty<Twin>());
+    private static readonly object _twinLock = new();
+    /// <summary>Per postfix method: the static part of the verdict (its code, its class), or null when it isn't a twin.</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<RuntimeMethodHandle, Twin?> _twinShapes = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _twinsLogged = new();
+    private static (MethodInfo[] Base, MethodInfo[] Twins, MethodInfo[] Both)? _withFrom, _withFill;
+
+    /// <summary>
+    /// The twins found now: other mods' postfixes on <c>SavedProperties.FromInternal</c> / <c>FillInternal</c> whose code is BaseLib's
+    /// (<see cref="JudgeTwin"/>), each on that method as a postfix only, none of their code patched. Worked out again at each
+    /// Harmony change (<see cref="HarmonyWatch.Epoch"/>), every 2 s without HarmonyWatch. Never throws (none then).
+    /// </summary>
+    private static TwinSet CurrentTwins()
+    {
+        TwinSet set = _twins;
+        int epoch = HarmonyWatch.Epoch;
+        long now = Environment.TickCount64;
+        if (HarmonyWatch.Applied ? set.Epoch == epoch : now - set.At < 2000)
+        {
+            return set;
+        }
+        lock (_twinLock)
+        {
+            set = _twins;
+            if (HarmonyWatch.Applied ? set.Epoch == epoch : now - set.At < 2000)
+            {
+                return set;
+            }
+            var found = new System.Collections.Generic.List<Twin>();
+            try
+            {
+                foreach (bool fromInternal in new[] { true, false })
+                {
+                    MethodBase? original = Reflect.Method(typeof(MegaCrit.Sts2.Core.Saves.Runs.SavedProperties), fromInternal ? "FromInternal" : "FillInternal");
+                    if (original == null || HarmonyLib.Harmony.GetPatchInfo(original) is not { } info)
+                    {
+                        continue;
+                    }
+                    foreach (HarmonyLib.Patch patch in info.Postfixes)
+                    {
+                        if (PatchGuard.IsOurs(patch.owner) || PatchSafety.PatchMethodOf(patch) is not { } method
+                            || method.DeclaringType?.Assembly.GetName().Name == "BaseLib")
+                        {
+                            continue; // BaseLib's own postfixes are judged by their real fingerprints (RelicStateReuse, LimitlessReserialize).
+                        }
+                        Twin? twin = _twinShapes.GetOrAdd(method.MethodHandle, _ => JudgeTwin(method, fromInternal));
+                        // Postfix only (the allowed lists match a patch method whatever its kind), and none of its code patched now.
+                        if (twin == null || twin.FromInternal != fromInternal
+                            || info.Prefixes.Concat(info.Transpilers).Concat(info.Finalizers).Concat(info.InnerPrefixes).Concat(info.InnerPostfixes)
+                                .Any(p => PatchSafety.PatchMethodOf(p) is { } other && other.MethodHandle == method.MethodHandle)
+                            || twin.Code.Any(code => HarmonyLib.Harmony.GetPatchInfo(code) is { } patched
+                                && (patched.Prefixes.Count + patched.Postfixes.Count + patched.Transpilers.Count + patched.Finalizers.Count
+                                    + patched.InnerPrefixes.Count + patched.InnerPostfixes.Count) > 0))
+                        {
+                            continue;
+                        }
+                        found.Add(twin);
+                        if (_twinsLogged.TryAdd($"{patch.owner} {method.DeclaringType?.FullName} {fromInternal}", 0))
+                        {
+                            MegaCrit.Sts2.Core.Logging.Log.Info($"[{ModEntry.Id}] {patch.owner}'s bundled copy of BaseLib's saved-field patch on SavedProperties."
+                                + $"{(fromInternal ? "FromInternal" : "FillInternal")} ({method.DeclaringType?.FullName}): read as BaseLib's while it holds no field: kept");
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                found.Clear(); // Can't tell: no twin, every copy counts as another mod's patch (as before rule B).
+            }
+            set = new TwinSet(epoch, now, found.ToArray());
+            _twins = set;
+            return set;
+        }
+    }
+
+    /// <summary>
+    /// A twin, or null: a static void non-generic postfix of a non-generic class outside BaseLib, no HarmonyArgument, whose code
+    /// (<see cref="OwnNormalizedIl"/>, signature included) is BaseLib's for that original; its class declares a static
+    /// <c>GetFieldsForModel(object)</c> with BaseLib's code (its lambda included) and a static readonly <c>RegisteredFields</c>
+    /// list (the one that code reads: the descriptions name it); every class of its own assembly that code uses has no initializer,
+    /// or a pure beforefieldinit one (<see cref="PatchSafety.InitializerFree"/>: run at another time with this mod, it must not
+    /// matter); the game's <c>SavedProperties</c> constructor it may call has the known (empty) code. Faulted: null.
+    /// </summary>
+    private static Twin? JudgeTwin(MethodInfo postfix, bool fromInternal)
+    {
+        try
+        {
+            Type? owner = postfix.DeclaringType;
+            if (owner == null || owner.IsGenericType || !postfix.IsStatic || postfix.IsGenericMethod || postfix.ReturnType != typeof(void))
+            {
+                return null;
+            }
+            static bool Renames(System.Collections.Generic.IEnumerable<CustomAttributeData> attributes) => attributes.Any(a => a.AttributeType.Name == "HarmonyArgument");
+            if (Renames(postfix.GetCustomAttributesData()) || postfix.GetParameters().Any(p => Renames(p.GetCustomAttributesData())))
+            {
+                return null;
+            }
+            for (Type? t = owner; t != null; t = t.BaseType)
+            {
+                if (Renames(t.GetCustomAttributesData()))
+                {
+                    return null;
+                }
+            }
+            var used = new System.Collections.Generic.List<MemberInfo>();
+            if (!Hash(OwnNormalizedIl.Describe(postfix, used.Add)).Equals(fromInternal ? TwinFromInternalFingerprint : TwinFillInternalFingerprint, StringComparison.Ordinal))
+            {
+                return null;
+            }
+            const BindingFlags statics = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+            MethodInfo? fieldsFor = owner.GetMethod("GetFieldsForModel", statics, null, new[] { typeof(object) }, null);
+            if (fieldsFor == null || !Hash(OwnNormalizedIl.Describe(fieldsFor, used.Add)).Equals(TwinFieldsForModelFingerprint, StringComparison.Ordinal))
+            {
+                return null;
+            }
+            FieldInfo? list = owner.GetField("RegisteredFields", statics);
+            if (list == null || !list.IsInitOnly || !typeof(System.Collections.IList).IsAssignableFrom(list.FieldType))
+            {
+                return null;
+            }
+            Assembly own = owner.Assembly;
+            var code = new System.Collections.Generic.List<MethodBase> { postfix, fieldsFor };
+            foreach (MemberInfo member in used)
+            {
+                Type? type = member as Type ?? member.DeclaringType;
+                if (type != null && type.Assembly == own && !PatchSafety.InitializerFree(type.IsGenericType ? type.GetGenericTypeDefinition() : type))
+                {
+                    return null;
+                }
+                if (member is MethodBase method)
+                {
+                    if (method.DeclaringType == typeof(MegaCrit.Sts2.Core.Saves.Runs.SavedProperties)
+                        && !(method.IsConstructor && method.GetParameters().Length == 0
+                            && PatchSafety.FingerprintMatches(MethodFingerprint.Of(method), SavedPropertiesConstructorFingerprint)))
+                    {
+                        return null;
+                    }
+                    code.Add(method);
+                }
+            }
+            if (!PatchSafety.InitializerFree(owner))
+            {
+                return null;
+            }
+            // The descriptions follow the generated methods but not constructors: the lambda's closure class (GetFieldsForModel's
+            // DisplayClass) must have only object's constructor in its own.
+            foreach (ConstructorInfo constructor in used.OfType<ConstructorInfo>().Where(c => c.DeclaringType?.Assembly == own))
+            {
+                if (!TrivialConstructor(constructor))
+                {
+                    return null;
+                }
+            }
+            Func<System.Collections.IList?> fields = System.Linq.Expressions.Expression.Lambda<Func<System.Collections.IList?>>(
+                System.Linq.Expressions.Expression.Convert(System.Linq.Expressions.Expression.Field(null, list), typeof(System.Collections.IList))).Compile();
+            return new Twin(postfix, fromInternal, fields, code.Distinct().ToArray());
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>An instance constructor of no parameter whose code is only <c>ldarg.0; call object::.ctor(); ret</c> (nops aside).</summary>
+    private static bool TrivialConstructor(ConstructorInfo constructor)
+    {
+        if (constructor.IsStatic || constructor.GetParameters().Length != 0)
+        {
+            return false;
+        }
+        var code = MethodFingerprint.Instructions(constructor, strict: true).Where(i => i.Op != System.Reflection.Emit.OpCodes.Nop).ToList();
+        return code.Count == 3 && code[0].Op == System.Reflection.Emit.OpCodes.Ldarg_0
+            && code[1].Op == System.Reflection.Emit.OpCodes.Call && code[1].Operand is ConstructorInfo { DeclaringType: var baseType } baseConstructor
+            && baseType == typeof(object) && baseConstructor.GetParameters().Length == 0
+            && code[2].Op == System.Reflection.Emit.OpCodes.Ret;
+    }
+
+    private static string Hash(string description) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(description)))[..16];
+
+    /// <summary>
+    /// The twins on <c>FromInternal</c> (or <c>FillInternal</c>) a check may let stand now: every twin while none holds a field;
+    /// once one does, only those whose own list is still empty (read now, not from a cached answer). Main thread or any.
+    /// </summary>
+    internal static MethodInfo[] TwinPostfixes(bool fromInternal)
+    {
+        TwinSet set = CurrentTwins();
+        MethodInfo[] all = fromInternal ? set.From : set.Fill;
+        if (all.Length == 0 || !TwinHoldsField(set))
+        {
+            return all;
+        }
+        return set.Twins.Where(t => t.FromInternal == fromInternal && Empty(t)).Select(t => t.Postfix).ToArray();
+    }
+
+    /// <summary>
+    /// <paramref name="allowed"/> and the twins <see cref="TwinPostfixes"/> lets stand on that method: the same array while neither
+    /// changes (the patch checks' caches are keyed on the allowed set).
+    /// </summary>
+    internal static MethodInfo[] WithTwins(MethodInfo[] allowed, bool fromInternal)
+    {
+        MethodInfo[] twins = TwinPostfixes(fromInternal);
+        if (twins.Length == 0)
+        {
+            return allowed;
+        }
+        var known = fromInternal ? _withFrom : _withFill;
+        if (known is { } k && ReferenceEquals(k.Base, allowed) && ReferenceEquals(k.Twins, twins))
+        {
+            return k.Both;
+        }
+        MethodInfo[] both = allowed.Concat(twins).ToArray();
+        if (fromInternal)
+        {
+            _withFrom = (allowed, twins, both);
+        }
+        else
+        {
+            _withFill = (allowed, twins, both);
+        }
+        return both;
+    }
+
+    /// <summary>Whether a twin's own list holds a field now (read at each call; unreadable counts as holding one).</summary>
+    internal static bool TwinHoldsField() => TwinHoldsField(CurrentTwins());
+
+    private static bool TwinHoldsField(TwinSet set)
+    {
+        foreach (Twin twin in set.Twins)
+        {
+            if (!Empty(twin))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static bool Empty(Twin twin)
+    {
+        try
+        {
+            return twin.Fields() is { Count: 0 };
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>The fields the twins hold now (each distinct list once; an unreadable one counts as many).</summary>
+    private static int TwinFieldCount()
+    {
+        TwinSet set = CurrentTwins();
+        if (set.Twins.Length == 0)
+        {
+            return 0;
+        }
+        int count = 0;
+        var seen = new System.Collections.Generic.HashSet<object>(System.Collections.Generic.ReferenceEqualityComparer.Instance);
+        foreach (Twin twin in set.Twins)
+        {
+            try
+            {
+                if (twin.Fields() is { } fields)
+                {
+                    count += seen.Add(fields) ? fields.Count : 0;
+                    continue;
+                }
+            }
+            catch
+            {
+                // Counted below.
+            }
+            count += 1 << 20;
+        }
+        return count;
+    }
+
+#if BENCH
+    /// <summary>The test tooling's view: the twins found now (their postfixes) and whether one holds a field.</summary>
+    internal static (MethodInfo[] From, MethodInfo[] Fill, bool HoldsField) TwinsForTest()
+    {
+        TwinSet set = CurrentTwins();
+        return (set.From, set.Fill, TwinHoldsField(set));
+    }
+#endif
 
     public static bool Defines(Assembly assembly, string baseTypeName)
     {
