@@ -99,6 +99,21 @@ public static class PileIndex
         return _others;
     }
 
+    /// <summary>
+    /// What PileIndex, FastListeners and CardDbScan let stand on <c>CardPile.AddInternal</c> (rule AS, 2026-11-18): what
+    /// <see cref="PatchTolerance.SurroundingOnly"/> does, plus bool prefixes Harmony sorts before every prefix of this mod there
+    /// (<see cref="PatchTolerance.BeforeReplace"/>: its prefix half; the method returns void, so no <c>__result</c>). One
+    /// returning false makes Harmony skip the original and every prefix of this mod taking the card (BeforeAdd, RecordAdd), as
+    /// another mod's skip always could; the parts already judge such a call: PileIndex's <see cref="Judge"/> (pile unchanged,
+    /// or changed by that card through a nested call counted there; else a fault), CardDbScan's skipped add (pile changed: a
+    /// full walk), FastListeners' never-ran bump, now also made by a void prefix sorted after every other one
+    /// (<c>FastListeners.SkippedAddBump</c>) so another mod's postfix walking a hook before the finalizers sees a new version.
+    /// A card such a prefix moves elsewhere goes through these methods again (Chimera's redirect). Still refused: such prefixes
+    /// sorted after one of this mod's, <c>___cards</c> (the list itself), <c>__args</c>, <c>__runOriginal</c> by reference,
+    /// transpilers, finalizers, factories, renamed parameters. RemoveInternal keeps SurroundingOnly.
+    /// </summary>
+    internal const PatchTolerance AddTolerance = PatchTolerance.BeforeReplace;
+
     /// <summary><c>AddInternal</c> and <c>RemoveInternal</c>, whose patches by another mod <see cref="_moveOthers"/> tells.</summary>
     private static MethodBase? _addMethod, _removeMethod;
     /// <summary>Another mod patches AddInternal or RemoveInternal: its patch code may read card.Pile while the index is already updated.</summary>
@@ -124,10 +139,11 @@ public static class PileIndex
             // expects the pile to change by its own card only: a card such a patch (or a game event handler) moves into that
             // same pile during the call faults the index, the game's own scan from then on (safe, not exact). One they throw is
             // judged by the pile's list (Judge). Not seen: a patch writing CardPile._cards through __instance.Cards cast to its
-            // list, reflection or code outside a patch (a ___cards field parameter is refused; DESIGN). The other list methods
-            // (clear, moves, shuffle): no tolerance.
-            others |= method == _addMethod || method == _removeMethod
-                ? PatchSafety.IsPatchedByOthers(method, PatchTolerance.SurroundingOnly)
+            // list, reflection or code outside a patch (a ___cards field parameter is refused; DESIGN). AddInternal also lets
+            // bool prefixes stand when Harmony sorts them before every prefix of this mod there (AddTolerance). The other list
+            // methods (clear, moves, shuffle): no tolerance.
+            others |= method == _addMethod ? PatchSafety.IsPatchedByOthers(method, AddTolerance)
+                : method == _removeMethod ? PatchSafety.IsPatchedByOthers(method, PatchTolerance.SurroundingOnly)
                 : PatchSafety.IsPatchedByOthers(method);
         }
         _others = others;
@@ -237,7 +253,8 @@ public static class PileIndex
         Applied = true;
         // What RefreshOthers and GetterPatched ask about (display only).
         PatchSafety.Watch(Name, _listMethods.Where(m => m != _addMethod && m != _removeMethod));
-        PatchSafety.Watch(Name, new[] { _addMethod, _removeMethod }, PatchTolerance.SurroundingOnly);
+        PatchSafety.Watch(Name, _addMethod, AddTolerance);
+        PatchSafety.Watch(Name, _removeMethod, PatchTolerance.SurroundingOnly);
         PatchSafety.Watch(Name, _getter, PatchTolerance.BeforeReplace);
         PatchSafety.Watch(Name, PatchSafety.ShapeRules ? new[] { _cardsGetter } : new[] { _cardsGetter, _playerPiles });
         try

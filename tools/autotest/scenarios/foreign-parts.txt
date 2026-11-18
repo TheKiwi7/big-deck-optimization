@@ -1,0 +1,45 @@
+# The pile parts' generic rules of 2026-11-18 (mod on, one side): what each rule accepts, judged by PatchSafety (FOREIGN classify
+# lines at each install), and the controls that must still back off ("normal game for that part"), at run time where a combat
+# reaches the method. Synthetic patches of "another mod": Bench/ForeignShapesParts.cs and Bench/ForeignPatches.cs.
+# (AS) CardPile.AddInternal: a bool prefix sorted after this mod's prefixes (priority 0) backs off PileIndex, FastListeners and
+# CardDbScan at run time; one writing the pile's list through ___cards backs off; a plain skipping one (skip-prefix) and Chimera's
+# redirect, at the default priority, are accepted (BeforeReplace).
+timeout 900
+expect FOREIGN classify CardPile\.AddInternal: bdtest\.foreign\.bool-prefix Prefix .*priority 0: .*BeforeReplace backs off \(bool prefix running after a prefix of this mod
+expect CardDbScan: CardPile\.AddInternal is also patched by bdtest\.foreign\.bool-prefix \(postfixes and prefixes running before this mod's not enough\): normal game for that part
+expect PileIndex: CardPile\.AddInternal is also patched by bdtest\.foreign\.bool-prefix \(postfixes and prefixes running before this mod's not enough\): normal game for that part
+expect FOREIGN runtime CardDbScan CardPile\.AddInternal \(BeforeReplace\) kept 0 backed off [1-9]
+expect FOREIGN runtime FastListeners CardPile\.AddInternal \(BeforeReplace\) kept 0 backed off [1-9]
+expect FOREIGN classify CardPile\.AddInternal: bdtest\.foreign\.skip-and-add-prefix-squeeze Prefix .*BeforeReplace backs off \(prefix taking the instance's field _cards
+expect FOREIGN classify CardPile\.AddInternal: bdtest\.foreign\.skip-prefix-squeeze Prefix .*BeforeReplace tolerated
+expect FOREIGN classify CardPile\.AddInternal: bdtest\.foreign\.redirect-prefix-squeeze Prefix .*BeforeReplace tolerated
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+# (AS) controls first: the runtime counts above must come from them alone.
+foreignpatch bool-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal priority 0
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+pilemove hand discard 9
+play 3
+waitfor idle 120
+endturn
+waitfor idle 300
+foreignpatch report as-late
+cmd bdopt why
+foreignpatch remove
+foreignpatch skip-and-add-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal squeeze
+foreignpatch remove
+# (AS) accepted shapes (classified at install; the A/B foreign-parts-1k-on/off runs the redirect).
+foreignpatch skip-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal squeeze
+foreignpatch remove
+foreignpatch redirect-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal squeeze
+foreignpatch remove
+wait 3
+cmd kill all
+waitfor nocombat 300
+wait 2
+quit

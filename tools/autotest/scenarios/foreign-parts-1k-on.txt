@@ -1,0 +1,74 @@
+# The pile parts' generic rules of 2026-11-18 (A/B, mod on; with foreign-parts-1k-off). Rule AS: another mod's bool prefix on
+# CardPile.AddInternal sorted before this mod's prefixes (Chimera's shape, foreignpatch redirect-prefix squeeze): a Squeeze added to
+# a discard pile goes to its owner's draw pile instead, through AddInternal, and the original is skipped. PileIndex, FastListeners
+# and CardDbScan let it stand (their pile tracking judges the skipped add, the nested one is tracked as any other) and keep
+# running; FastListeners' late (bool __runOriginal) prefix bumps the pile version at each skip. The foreign patch changes the
+# game's state the same way with the mod off: CHECKSUM and STATE lines must match the other side line for line.
+expect PileIndex: CardPile\.AddInternal is also patched by bdtest\.foreign\.redirect-prefix-squeeze \(postfixes and prefixes running before this mod's: run around this mod's code as without it\): kept
+expect FastListeners: CardPile\.AddInternal is also patched by bdtest\.foreign\.redirect-prefix-squeeze \(postfixes and prefixes running before this mod's: run around
+expect CardDbScan: CardPile\.AddInternal is also patched by bdtest\.foreign\.redirect-prefix-squeeze \(postfixes and prefixes running before this mod's: run around
+expect FOREIGN classify CardPile\.AddInternal: bdtest\.foreign\.redirect-prefix-squeeze Prefix .*BeforeReplace tolerated
+expect FOREIGN runtime CardDbScan CardPile\.AddInternal \(BeforeReplace\) kept [1-9][0-9]* backed off 0
+expect FOREIGN runtime FastListeners CardPile\.AddInternal \(BeforeReplace\) kept [1-9][0-9]* backed off 0
+expect FOREIGN runtime PileIndex CardPile\.AddInternal \(BeforeReplace\) kept [1-9][0-9]* backed off 0
+expect STATE foreign end redirect-prefix AddInternal [1-9]
+expect FOREIGN parts skippedaddbumps [1-9]
+expect COUNTERS end:.*CardDbScan [^;]*skipped originals [1-9]
+expect EFFECTCHECK CardDbScan grew since 'start'
+expect EFFECTCHECK PileIndex grew since 'start'
+expect EFFECTCHECK FastListeners\.Cache grew since 'start'
+timeout 900
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+foreignpatch redirect-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal squeeze
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+# Room in the hand first: the reference run's relics fill it to 10 at the first turn.
+pilemove hand discard 9
+checksum start
+state start
+effects start
+cmd card SQUEEZE hand
+waitfor idle 60
+cmd card SQUEEZE discard
+waitfor idle 60
+checksum squeezes
+state squeezes
+play 3
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+pilemove draw discard 2
+wait 1
+checksum moved
+endturn
+waitfor idle 300
+checksum reshuffle
+state reshuffle
+play 3
+waitfor idle 120
+checksum t3 plays
+endturn
+waitfor idle 300
+checksum t3 end
+state t3
+foreignpatch report end
+effects end
+effectcheck CardDbScan grew start
+effectcheck PileIndex grew start
+effectcheck FastListeners.Cache grew start
+foreignpatch parts-require skippedaddbumps
+counters end
+cmd kill all
+waitfor nocombat 300
+wait 2
+checksum after combat
+foreignpatch remove
+quit

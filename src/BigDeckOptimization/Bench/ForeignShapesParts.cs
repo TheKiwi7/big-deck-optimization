@@ -1,0 +1,105 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
+using BigDeckOptimization.Patches;
+using HarmonyLib;
+using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Cards;
+
+namespace BigDeckOptimization.Bench;
+
+/// <summary>
+/// Synthetic patches of "another mod" for the generic rules of 2026-11-18 on the pile parts (PileIndex, CardDbScan, FastListeners,
+/// CardSortKeys, CardFlightLimit, RelicFlashMerge), installed through <c>foreignpatch &lt;shape&gt; &lt;Type:Method&gt; [gate]
+/// [priority N]</c> as ForeignPatches' own shapes (removed by <c>foreignpatch remove</c>, counted in <c>foreignpatch report</c>'s
+/// STATE lines). Each shape's own comment says which rule it accepts or controls.
+/// </summary>
+public static class ForeignShapesParts
+{
+    public static readonly string[] Shapes =
+    {
+        "redirect-prefix",
+        // Not a shape: "foreignpatch parts-require <counter>" fails unless that counter of these rules is above zero.
+        "parts-require",
+    };
+
+    /// <summary>The counters <c>foreignpatch parts-require</c> knows (test builds).</summary>
+    private static long Counter(string name) => name switch
+    {
+#if BENCH
+        "skippedaddbumps" => FastListeners.SkippedAddBumps,
+#endif
+        _ => throw new ArgumentException("parts-require: unknown counter " + name),
+    };
+
+    private static Action<string>? _count;
+
+    private static void Count(string key) => _count?.Invoke(key);
+
+    /// <summary>Installs one shape; <paramref name="installed"/> records it for <c>foreignpatch remove</c>, <paramref name="count"/> counts into the report.</summary>
+    internal static IReadOnlyList<string> Install(string[] parts, Action<string, MethodBase> installed, Action<string> count)
+    {
+        _count = count;
+        string shape = parts[0];
+        if (shape == "parts-require")
+        {
+            long value = Counter(parts[1]);
+            if (value <= 0)
+            {
+                throw new InvalidOperationException($"parts-require {parts[1]}: {value}");
+            }
+            return new[] { $"FOREIGN parts {parts[1]} {value}" };
+        }
+        MethodBase target = (parts[1].Contains("::", StringComparison.Ordinal) ? MethodFingerprint.Resolve(typeof(AbstractModel).Assembly, parts[1]) : AccessTools.Method(parts[1]))
+            ?? throw new ArgumentException("no method " + parts[1]);
+        int priority = Priority.Normal;
+        int at = Array.IndexOf(parts, "priority");
+        if (at >= 0 && at + 1 < parts.Length)
+        {
+            priority = int.Parse(parts[at + 1]);
+        }
+        string gate = parts.Length > 2 && parts[2] != "priority" ? parts[2] : "";
+        string id = ForeignPatches.IdPrefix + shape + (gate.Length > 0 ? "-" + gate : "") + (priority != Priority.Normal ? "-p" + priority : "");
+        var harmony = new Harmony(id);
+        HarmonyMethod Fix(string name) => new(typeof(ForeignShapesParts), name) { priority = priority };
+        void Require(Type type, string method)
+        {
+            if (target.DeclaringType != type || target.Name != method)
+            {
+                throw new ArgumentException($"{shape} goes on {type.FullName}:{method}");
+            }
+        }
+        switch (shape)
+        {
+            case "redirect-prefix":
+                // Rule AS (accepted when sorted before every prefix of this mod on AddInternal; the default priority is): Chimera's
+                // shape, a bool prefix putting a card in another pile itself and skipping the original. Here: a Squeeze added to
+                // the discard pile goes to the end of its owner's draw pile instead (through AddInternal: the nested add is tracked
+                // as any other). Changes the game's state: installed on both sides of the A/B alike. With "priority 0" (sorted after
+                // this mod's prefixes) it is the control that backs off.
+                Require(typeof(CardPile), nameof(CardPile.AddInternal));
+                harmony.Patch(target, prefix: Fix(nameof(RedirectPrefix)));
+                break;
+            default:
+                throw new ArgumentException("unknown shape " + shape);
+        }
+        installed(id, target);
+        var lines = new List<string> { $"FOREIGN installed {shape}{(gate.Length > 0 ? " " + gate : "")} on {target.DeclaringType?.Name}.{target.Name} as {id} (priority {priority})" };
+        lines.AddRange(PatchSafety.Describe(target).Select(line => $"FOREIGN classify {target.DeclaringType?.Name}.{target.Name}: {line}"));
+        return lines;
+    }
+
+    /// <summary>redirect-prefix: a Squeeze added to a discard pile goes to its owner's draw pile instead (counted), the original skipped.</summary>
+    private static bool RedirectPrefix(CardPile __instance, CardModel card)
+    {
+        if (card is not Squeeze || __instance.Type != PileType.Discard || card.Owner?.PlayerCombatState == null)
+        {
+            return true;
+        }
+        PileType.Draw.GetPile(card.Owner).AddInternal(card);
+        Count("redirect-prefix AddInternal");
+        return false;
+    }
+}

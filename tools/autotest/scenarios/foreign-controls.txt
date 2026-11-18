@@ -17,10 +17,10 @@ expect HookSkip: Hook\.ModifyHpLost is also patched by bdtest\.foreign\.noop-fin
 expect FOREIGN runtime HookSkip Hook\.ModifyHpLost \(TranspiledOnly\) kept 0 backed off [1-9]
 expect FOREIGN classify Hook\.AfterCardPlayed \(synthetic\): bdtest\.foreign\.inner-postfix InnerPostfix .*SurroundingOnly backs off \(inner postfix
 expect HookSkip: Hook\.AfterSideTurnStart is also patched by bdtest\.foreign\.ref-prefix \(prefixes and postfixes around the transpiled body: run around this mod's code as without it\): kept
-expect PileIndex: CardPile\.AddInternal is also patched by bdtest\.foreign\.identity-transpiler \(postfixes and void prefixes not enough\)
-expect FastListeners: CardPile\.AddInternal is also patched by bdtest\.foreign\.identity-transpiler \(postfixes and void prefixes not enough\)
-expect CardDbScan: CardPile\.AddInternal is also patched by bdtest\.foreign\.identity-transpiler \(postfixes and void prefixes not enough\)
-expect FOREIGN runtime CardDbScan CardPile\.AddInternal \(SurroundingOnly\) kept 0 backed off [1-9]
+expect PileIndex: CardPile\.AddInternal is also patched by bdtest\.foreign\.identity-transpiler \(postfixes and prefixes running before this mod's not enough\)
+expect FastListeners: CardPile\.AddInternal is also patched by bdtest\.foreign\.identity-transpiler \(postfixes and prefixes running before this mod's not enough\)
+expect CardDbScan: CardPile\.AddInternal is also patched by bdtest\.foreign\.identity-transpiler \(postfixes and prefixes running before this mod's not enough\)
+expect FOREIGN runtime CardDbScan CardPile\.AddInternal \(BeforeReplace\) kept 0 backed off [1-9]
 expect FOREIGN classify CardPile\.RemoveInternal: bdtest\.foreign\.noop-prefix Prefix .*priority 0: SurroundingOnly backs off \(void prefix running after a prefix of this mod
 expect FOREIGN classify CardPile\.RemoveInternal: bdtest\.foreign\.byref-postfix Postfix .*SurroundingOnly backs off \(postfix taking card by reference\)
 expect FOREIGN runtime PileIndex CardPile\.RemoveInternal \(SurroundingOnly\) kept 0 backed off [1-9]

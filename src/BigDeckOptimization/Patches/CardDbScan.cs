@@ -26,7 +26,10 @@ namespace BigDeckOptimization.Patches;
 /// Another mod's patch on <c>AddInternal</c> could put a card in a pile unseen (a prefix skipping the original and adding it
 /// itself, a transpiler): while one is there, and until the next combat start rebuilds the tracking from the piles, every walk
 /// is the game's. Postfixes taking their arguments by value and void prefixes sorted before RecordAdd can't, and are let stand
-/// (<see cref="PatchTolerance.SurroundingOnly"/>). An add whose original was skipped but which changed the pile anyway also gives that pile a full walk.
+/// (<see cref="PatchTolerance.SurroundingOnly"/>), and so are bool prefixes sorted before every prefix of this mod there
+/// (<see cref="PileIndex.AddTolerance"/>): one returning false skips RecordAdd with the original, and an add whose original was
+/// skipped but which changed the pile anyway gives that pile a full walk (AfterAdd); a card it puts in another pile goes through
+/// AddInternal again, recorded there.
 /// </summary>
 public static class CardDbScan
 {
@@ -142,7 +145,7 @@ public static class CardDbScan
         // What WalkPrefix asks about (display only); Limitless's allowed id patches built at the preflight, once mods loaded.
         PatchSafety.Watch(Name, walk);
         PatchSafety.Watch(Name, id, AllowedOnId);
-        PatchSafety.Watch(Name, add, PatchTolerance.SurroundingOnly);
+        PatchSafety.Watch(Name, add, PileIndex.AddTolerance);
         // Display only: one gate in front of all it does, any of these back-offs keeps the whole patch vanilla (the menu's red title).
         PatchSafety.WholePatch(Name);
     }
@@ -242,7 +245,7 @@ public static class CardDbScan
     {
         _pending.Clear();
         // Tracking starts again from the piles themselves: earlier unseen adds no longer matter.
-        _addPatchedSinceStart = PatchSafety.IsPatchedByOthers(_add, PatchTolerance.SurroundingOnly);
+        _addPatchedSinceStart = PatchSafety.IsPatchedByOthers(_add, PileIndex.AddTolerance);
         try
         {
             Dictionary<CardModel, uint> ids = _cardToId!(__instance);
@@ -282,8 +285,10 @@ public static class CardDbScan
         // AddInternal: postfixes (arguments by value) and void prefixes sorted before RecordAdd let stand. They can't skip the
         // original (RecordAdd, a prefix taking the card, always runs then), and a card they put in a pile goes through
         // AddInternal again, recorded there in the pile's order (and its own ContentsChanged walks it); the sampled whole-pile
-        // check stays. Not seen: a patch writing CardPile._cards directly (no rule tells it from its shape; DESIGN).
-        if (_addPatchedSinceStart || PatchSafety.IsPatchedByOthers(_add, PatchTolerance.SurroundingOnly))
+        // check stays. Bool prefixes sorted before every prefix of this mod too (PileIndex.AddTolerance): one skipping the
+        // original skips RecordAdd with it, judged by AfterAdd (the pile changed anyway: a full walk). Not seen: a patch writing
+        // CardPile._cards directly (no rule tells it from its shape; DESIGN).
+        if (_addPatchedSinceStart || PatchSafety.IsPatchedByOthers(_add, PileIndex.AddTolerance))
         {
             _addPatchedSinceStart = true;
             return true;

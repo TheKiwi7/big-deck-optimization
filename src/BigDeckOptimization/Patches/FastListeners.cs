@@ -2236,7 +2236,7 @@ public static class FastListeners
             Reflect.Method(typeof(CardPile), nameof(CardPile.MoveToTopInternal)) ?? throw new MissingMethodException(nameof(CardPile), nameof(CardPile.MoveToTopInternal)),
             Reflect.PropertySetter(typeof(CardModel), nameof(CardModel.Affliction)) ?? throw new MissingMethodException(nameof(CardModel), "set_Affliction"),
         };
-        _trackedTolerant = _trackedCode.Select(m => TrackedTolerance(m) != PatchTolerance.None).ToArray();
+        _trackedTolerant = _trackedCode.Select(TrackedTolerance).ToArray();
         foreach (string property in new[] { nameof(CardModel.Enchantment), nameof(CardModel.Affliction) })
         {
             // The setter is the only code changing it (auto-property backing field), so bumping around it is enough.
@@ -2269,6 +2269,9 @@ public static class FastListeners
             {
                 PatchGuard.Patch(harmony, target, prefix: new HarmonyMethod(typeof(FastListeners), nameof(BeforeAdd)) { priority = Priority.Last + 1 },
                     finalizer: new HarmonyMethod(typeof(FastListeners), nameof(AfterAdd)));
+                // After every other prefix (a bool one let stand by AddTolerance included): see SkippedAddBump.
+                // (Priority.Last: Harmony reads -1 as "unset", the default priority.)
+                PatchGuard.Patch(harmony, target, prefix: new HarmonyMethod(typeof(FastListeners), nameof(SkippedAddBump)) { priority = Priority.Last });
             }
             else if (method == nameof(CardPile.RemoveInternal))
             {
@@ -2337,9 +2340,9 @@ public static class FastListeners
         // What TrackedCodePatched asks at each cached walk, checked from the main menu on (display only).
         for (int i = 0; i < _trackedCode.Length; i++)
         {
-            if (_trackedTolerant[i])
+            if (_trackedTolerant[i] != PatchTolerance.None)
             {
-                PatchSafety.Watch(Name, _trackedCode[i], PatchTolerance.SurroundingOnly);
+                PatchSafety.Watch(Name, _trackedCode[i], _trackedTolerant[i]);
             }
             else
             {
@@ -2772,10 +2775,10 @@ public static class FastListeners
     private static bool TrackedCodePatched()
     {
         MethodBase[] getters = _trackedCode;
-        bool[] tolerant = _trackedTolerant;
+        PatchTolerance[] tolerant = _trackedTolerant;
         for (int i = 0; i < getters.Length; i++)
         {
-            if (i < tolerant.Length && tolerant[i] ? PatchSafety.IsPatchedByOthers(getters[i], PatchTolerance.SurroundingOnly) : PatchSafety.IsPatchedByOthers(getters[i]))
+            if (i < tolerant.Length && tolerant[i] != PatchTolerance.None ? PatchSafety.IsPatchedByOthers(getters[i], tolerant[i]) : PatchSafety.IsPatchedByOthers(getters[i]))
             {
                 return true;
             }
@@ -2783,8 +2786,8 @@ public static class FastListeners
         return false;
     }
 
-    /// <summary>Per entry of <see cref="_trackedCode"/>: <see cref="TrackedTolerance"/> is SurroundingOnly.</summary>
-    private static bool[] _trackedTolerant = Array.Empty<bool>();
+    /// <summary>Per entry of <see cref="_trackedCode"/>: its <see cref="TrackedTolerance"/>.</summary>
+    private static PatchTolerance[] _trackedTolerant = Array.Empty<PatchTolerance>();
 
     /// <summary>
     /// <c>AddInternal</c> and <c>RemoveInternal</c> let postfixes and void
@@ -2795,10 +2798,39 @@ public static class FastListeners
     /// before the list changes, a walk it made would be cached at the version the change is read at. A postfix only with its
     /// arguments by value (the finalizer reads the card, pile and index from those slots). The getters (answered from the
     /// cached entries) and the other writers keep no tolerance.
+    /// AddInternal also lets bool prefixes stand when Harmony sorts them before every prefix of this mod there
+    /// (<see cref="PileIndex.AddTolerance"/>): one returning false skips <see cref="BeforeAdd"/> with the original, the finalizer
+    /// then bumps as for any never-ran call, and <see cref="SkippedAddBump"/> (a void prefix sorted after every other one, which
+    /// Harmony runs after a false) bumps before any other mod's postfix can walk a hook.
     /// </summary>
     private static PatchTolerance TrackedTolerance(MethodBase method) =>
-        method.DeclaringType == typeof(CardPile) && method.Name is nameof(CardPile.AddInternal) or nameof(CardPile.RemoveInternal)
-            ? PatchTolerance.SurroundingOnly : PatchTolerance.None;
+        method.DeclaringType != typeof(CardPile) ? PatchTolerance.None
+            : method.Name == nameof(CardPile.AddInternal) ? PileIndex.AddTolerance
+            : method.Name == nameof(CardPile.RemoveInternal) ? PatchTolerance.SurroundingOnly : PatchTolerance.None;
+
+    /// <summary>
+    /// A late prefix on <c>AddInternal</c> (Priority.Last; not order-free, so every other mod's prefix let stand runs before
+    /// it): Harmony runs it even after a prefix returned false (it takes no
+    /// argument but <c>__runOriginal</c>, by value). Then the original and <see cref="BeforeAdd"/> were skipped and the prefix
+    /// may have changed the pile its own way (a list written through <c>__instance.Cards</c>): the version moves now, before
+    /// another mod's postfix (which Harmony runs before this mod's finalizer) can walk a hook and cache the piles at the version
+    /// such a walk would otherwise be read at. Nothing when the original runs (its own prefix and finalizer bump).
+    /// </summary>
+    private static void SkippedAddBump(bool __runOriginal)
+    {
+        if (!__runOriginal)
+        {
+            BumpPileVersion();
+#if BENCH
+            SkippedAddBumps++;
+#endif
+        }
+    }
+
+#if BENCH
+    /// <summary>Adds whose original another mod's prefix skipped, bumped by <see cref="SkippedAddBump"/> (test builds).</summary>
+    public static long SkippedAddBumps;
+#endif
 
     /// <summary>
     /// After the game cleans a run up: the recorded moves hold that run's piles and cards (and through them the whole run)
