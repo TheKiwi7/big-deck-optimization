@@ -158,7 +158,7 @@ try {
             $running.Remove($slot)
         }
         $lines = @("{0}  co-op {1}: {2}/{3} done, {4} running, {5:F0} min so far" -f (Get-Date -Format "HH:mm:ss"), (Get-GameTag $GameDir), $done.Count, $groups.Count, $running.Count, ((Get-Date) - $started).TotalMinutes)
-        Set-Content (Join-Path $Results "status.txt") $lines -Encoding utf8 -ErrorAction SilentlyContinue
+        Set-Content (Join-Path $Results "status-coop-$(Get-GameTag $GameDir).txt") $lines -Encoding utf8 -ErrorAction SilentlyContinue
     }
 }
 finally {

@@ -1,5 +1,6 @@
 # What the parallel sessions are doing now (they have no window): progress, time left, each session's current item. One file per
-# series: results/status.txt (par.ps1, parcoop.ps1, mutations.ps1...), status-<kind>.txt (parsweep.ps1, parsweep-all.ps1's five).
+# series: results/status-par-<version>.txt (par.ps1), status-coop-<version>.txt (parcoop.ps1), status-<kind>-<version>.txt
+# (parsweep.ps1, parsweep-all.ps1's kinds), status.txt (mutations.ps1, vanillacheck.ps1, leakroots.ps1...).
 #   powershell -ExecutionPolicy Bypass -File tools/autotest/status.ps1 [-Watch]
 param([switch]$Watch)
 $folder = Join-Path $PSScriptRoot "results"

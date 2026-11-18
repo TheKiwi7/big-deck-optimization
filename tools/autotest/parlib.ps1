@@ -603,14 +603,114 @@ function Get-FrozenProblem([string]$log, [switch]$Mutated) {
     if ($initialized -and -not (Select-String -Path $log -SimpleMatch "[BigDeckOptimization] Patches applied" -Quiet)) { return "froze while this mod applied its patches (no 'Patches applied' line, log $leaf)" }
 }
 
-# Jobs: objects with Name, Script (scenario path), Log. Runs at most $MaxJobs at once. A session is closed when it passes
-# $TimeoutSec, or when its log stays silent for $StallSec. Returns one result per job: Name, State (done, cached, TIMEOUT,
-# STALLED, FROZEN, CRASHED), Seconds, Failed (its problems: judge.py's, a test mod not loaded, an earlier session that ended early
-# or froze in this mod's code), Restarts. -OnFinish { param($job, $result) ... }: called once per job with its final result (not
-# for a session that starts over); the jobs it returns are queued at once, ahead of the others (parsweep.ps1's continuation of a
-# chunk an item stopped: it starts as soon as a slot frees, not after every session of a round), and their results returned too.
-# -StatusFile: the file in results/ the progress goes to (status.ps1 shows every status*.txt).
-function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$TimeoutSec = 900, [int]$StallSec = 240, [switch]$Rendered, [switch]$UseBaselines, [string]$Label = "sessions", [scriptblock]$OnFinish = $null, [string]$StatusFile = "status.txt") {
+# How long a kind of session took last time, to start the longest first (Invoke-Sessions): results\<version>\durations.tsv, one
+# line per key (Get-DurationKey: the job's name, its script's speed line, rendered or not), its seconds and when, written at each
+# session's end (done or timed out) by every series of that version under one lock. Only the order depends on it, never a result.
+$DurationsFileName = "durations.tsv"
+function Get-DurationKey($job, [bool]$rendered) {
+    $speed = "default"
+    if ($job.Script -and (Test-Path $job.Script)) {
+        $m = Select-String -Path $job.Script -Pattern '^\s*speed\s+(\w+)' | Select-Object -First 1
+        if ($m) { $speed = $m.Matches[0].Groups[1].Value }
+    }
+    "$($job.Name)|$speed$(if ($rendered) { '|rendered' })"
+}
+
+function Read-Durations([string]$file) {
+    $map = @{}
+    if (-not (Test-Path $file)) { return $map }
+    foreach ($line in [IO.File]::ReadAllLines($file)) {
+        $parts = $line -split "`t"
+        if ($parts.Count -ge 2 -and $parts[1] -match '^\d+$') { $map[$parts[0]] = [int]$parts[1] }
+    }
+    $map
+}
+
+# Merges $new (key -> seconds) into the file, under a lock (every series of a version writes it).
+function Save-Durations([string]$file, [hashtable]$new) {
+    if (-not $new.Count) { return }
+    $mutex = [Threading.Mutex]::new($false, "Local\BigDeckOptimization-durations")
+    try { if (-not $mutex.WaitOne(30000)) { $mutex.Dispose(); return } }
+    catch [Threading.AbandonedMutexException] { }
+    try {
+        $when = Get-Date -Format "yyyy-MM-dd HH:mm"
+        $lines = [Collections.Generic.List[string]]::new()
+        if (Test-Path $file) { foreach ($line in [IO.File]::ReadAllLines($file)) { if ($line -and -not $new.ContainsKey(($line -split "`t")[0])) { $lines.Add($line) } } }
+        foreach ($key in $new.Keys) { $lines.Add("$key`t$([int]$new[$key])`t$when") }
+        $temp = "$file.$PID.tmp"
+        [IO.File]::WriteAllLines($temp, [string[]]@($lines | Sort-Object))
+        Move-Item $temp $file -Force
+    }
+    catch { Write-Host "note: session durations not saved ($($_.Exception.Message))" }
+    finally { $mutex.ReleaseMutex(); $mutex.Dispose() }
+}
+
+# A session's length from its log, when that log ran this same script: its last AutoTest time plus the game's start (~15 s).
+function Get-LogDuration([string]$log, [string]$script) {
+    if (-not $log -or -not $script -or -not (Test-Path $log)) { return $null }
+    if (-not (Select-String -Path $log -SimpleMatch "script $script (" -Quiet)) { return $null }
+    $last = @(Get-Content $log -Tail 400 -ErrorAction SilentlyContinue | Select-String -Pattern 'AutoTest\s+([\d.]+)s ') | Select-Object -Last 1
+    if (-not $last) { return $null }
+    [Math]::Round([double]$last.Matches[0].Groups[1].Value + 15)
+}
+
+# The logs of jobs that already ran (Name, Script, Log) into the durations file, for keys it has none of: parsweep.ps1's parts,
+# whose folder is emptied before the next run makes them again.
+function Save-LogDurations([string]$gameDir, $jobs) {
+    $file = Join-Path (Get-VersionDir $gameDir) $DurationsFileName
+    $known = Read-Durations $file
+    $new = @{}
+    foreach ($job in $jobs) {
+        $key = Get-DurationKey $job $false
+        if ($known.ContainsKey($key)) { continue }
+        $seconds = Get-LogDuration $job.Log $job.Script
+        if ($null -ne $seconds) { $new[$key] = $seconds }
+    }
+    Save-Durations $file $new
+}
+
+# The whole script's 'timeout <s>' line (AutoTest's own limit), or 0.
+function Get-ScenarioTimeout([string]$script) {
+    if (-not $script -or -not (Test-Path $script)) { return 0 }
+    $m = Select-String -Path $script -Pattern '^\s*timeout\s+(\d+)\s*$' | Select-Object -First 1
+    if ($m) { [int]$m.Matches[0].Groups[1].Value } else { 0 }
+}
+
+# Series side by side (par on both copies, the sweeps' kinds, mutations) share the solo slots ($SlotPool). Each one running
+# Invoke-Sessions holds a file open in test-slots\queue saying how long its next session should take, while it could start one (a
+# free slot, its -Jobs not reached): a series finding a free slot leaves it to another whose next session is longer (equal: the
+# file name first), so the longest sessions of every series start first, as within one series. A file not held open is a series
+# that ended (deleted on the way); one not rewritten for 15 s is ignored (a series busy elsewhere never holds the others up).
+# Unknown lengths count as the longest ($UnknownLength): a new scenario or chunk starts early, as before this order existed.
+$UnknownLength = 1e9
+function Get-OtherSeriesHeads([string]$queueDir, [string]$mine) {
+    foreach ($file in @(Get-ChildItem $queueDir -Filter *.queue -File -ErrorAction SilentlyContinue)) {
+        if ($file.Name -eq $mine) { continue }
+        try { Remove-Item $file.FullName -Force -ErrorAction Stop; continue } catch { }
+        $text = $null
+        try {
+            $stream = [IO.File]::Open($file.FullName, 'Open', 'Read', 'ReadWrite')
+            try { $text = (New-Object IO.StreamReader($stream)).ReadToEnd() } finally { $stream.Dispose() }
+        }
+        catch { continue }
+        $parts = "$text".Trim() -split ' '
+        if ($parts.Count -ne 2 -or $parts[0] -eq 'none' -or $parts[1] -notmatch '^\d+$') { continue }
+        if (([datetime]::UtcNow.Ticks - [long]$parts[1]) -gt 150000000) { continue }
+        [pscustomobject]@{ Name = $file.Name; Length = [double]$parts[0] }
+    }
+}
+
+# Jobs: objects with Name, Script (scenario path), Log. Runs at most $MaxJobs at once, in the solo slots every series shares
+# ($SlotPool): the longest first (durations.tsv, else the job's last log when it ran this script; unknown ones first, in the order
+# given), and a free slot goes to whichever series has the longest session waiting (Get-OtherSeriesHeads). A slot this series
+# isn't using goes back at once. A session is closed when it passes $TimeoutSec (-ScenarioTimeouts: or its script's own 'timeout'
+# line plus 120 s, whichever is longer), or when its log stays silent for $StallSec. Returns one result per job: Name, State (done,
+# cached, TIMEOUT, STALLED, FROZEN, CRASHED), Seconds, Failed (its problems: judge.py's, a test mod not loaded, an earlier session
+# that ended early or froze in this mod's code), Restarts. -OnFinish { param($job, $result) ... }: called once per job with its
+# final result (not for a session that starts over); the jobs it returns are queued at once, ahead of the others (parsweep.ps1's
+# continuation of a chunk an item stopped: it starts as soon as a slot frees, not after every session of a round), and their
+# results returned too. -StatusFile: the file in results/ the progress goes to (status.ps1 shows every status*.txt).
+function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$TimeoutSec = 900, [int]$StallSec = 240, [switch]$Rendered, [switch]$UseBaselines, [string]$Label = "sessions", [scriptblock]$OnFinish = $null, [string]$StatusFile = "status.txt", [switch]$ScenarioTimeouts) {
     $launchMode = if ($Rendered) { @("--bdhidden", "--windowed", "--resolution", "1920x1080") } else { @("--headless") }
     Add-TestMods $GameDir
     # In order; the jobs OnFinish returns go first.
@@ -619,6 +719,18 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
     $allJobs = [Collections.Generic.List[object]]::new()
     foreach ($job in $Jobs) { $allJobs.Add($job) }
     $baselineDir = Join-Path $BaselineRoot (Get-GameTag $GameDir)
+    $durationFile = Join-Path (Get-VersionDir $GameDir) $DurationsFileName
+    $durations = Read-Durations $durationFile
+    # A job's expected seconds (kept on the job), $UnknownLength when nothing says.
+    $lengthOf = {
+        param($job)
+        if (-not $job.PSObject.Properties["ExpectedSec"]) {
+            $key = Get-DurationKey $job $Rendered.IsPresent
+            $seconds = if ($durations.ContainsKey($key)) { $durations[$key] } else { Get-LogDuration $job.Log $job.Script }
+            $job | Add-Member -NotePropertyName ExpectedSec -NotePropertyValue $(if ($null -ne $seconds) { [double]$seconds } else { $UnknownLength }) -Force
+        }
+        $job.ExpectedSec
+    }
     # Queues a job (-First: ahead of the others), unless a cached mod-off log replaces its session. These two are child scopes: they
     # change the lists, never assign a variable of this function.
     $enqueue = {
@@ -642,7 +754,12 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
         foreach ($newJob in $added) { $allJobs.Add($newJob) }
         for ($k = $added.Count - 1; $k -ge 0; $k--) { & $enqueue $added[$k] $true }
     }
-    foreach ($job in $Jobs) { & $enqueue $job $false }
+    # The longest first; jobs nothing is known of first of all ($UnknownLength), in the order given (the callers put the mod-off
+    # sides first). Sorted on the length then the given place: Windows PowerShell's Sort-Object isn't stable.
+    $index = 0
+    $ranked = @(foreach ($job in $Jobs) { [pscustomobject]@{ Job = $job; Length = (& $lengthOf $job); Index = $index++ } })
+    $ordered = @($ranked | Sort-Object -Property @{ Expression = { $_.Length }; Descending = $true }, @{ Expression = { $_.Index }; Descending = $false } | ForEach-Object { $_.Job })
+    foreach ($job in $ordered) { & $enqueue $job $false }
     $running = @{}
     $retries = @{}
     # Sessions that ended early, not in the known renderer crash: problems of their job, whatever the session that started over did.
@@ -652,16 +769,37 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
     $lastStatus = [datetime]::MinValue
     # The slots are shared by every series, whatever the game copy: a slot another series holds (Lock-Slot) is skipped until free.
     $locked = [Collections.Generic.HashSet[int]]::new()
+    # This series' head in the shared queue (Get-OtherSeriesHeads).
+    $queueDir = Join-Path $SlotRoot "queue"
+    New-Item -ItemType Directory -Force $queueDir | Out-Null
+    $queueName = "{0}-{1}.queue" -f $PID, [guid]::NewGuid().ToString('N')
+    $queueStream = [IO.File]::Open((Join-Path $queueDir $queueName), 'CreateNew', 'ReadWrite', 'Read')
+    $advertise = {
+        param([string]$length)
+        $bytes = [Text.Encoding]::ASCII.GetBytes("$length $([datetime]::UtcNow.Ticks)")
+        $queueStream.SetLength(0)
+        $queueStream.Write($bytes, 0, $bytes.Length)
+        $queueStream.Flush()
+    }
     try {
         while ($pending.Count -gt 0 -or $running.Count -gt 0) {
-            foreach ($slot in 0..($MaxJobs - 1)) {
-                if ($running.ContainsKey($slot) -or $pending.Count -eq 0) { continue }
+            $canStart = $pending.Count -gt 0 -and $running.Count -lt $MaxJobs
+            & $advertise $(if ($canStart) { [string](& $lengthOf $pending[0]) } else { "none" })
+            $others = $null
+            # The slots this series holds idle first (a session that ended or starts over), then the others of the pool.
+            $candidates = @(@($locked | Where-Object { -not $running.ContainsKey($_) } | Sort-Object) + @(0..($SlotPool - 1) | Where-Object { -not $locked.Contains($_) }))
+            foreach ($slot in $candidates) {
+                if ($running.Count -ge $MaxJobs -or $pending.Count -eq 0) { break }
                 # Each session takes 1-2 GB: the PC stays usable, the next one waits.
                 if ($running.Count -gt 0 -and (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory -lt $MinFreeKB) { break }
                 if (-not $locked.Contains($slot)) {
                     if (-not (Lock-Slot $slot -Try)) { continue }
                     [void]$locked.Add($slot)
                 }
+                # Another series' next session is longer: this slot is its (released below, unused).
+                if ($null -eq $others) { $others = @(Get-OtherSeriesHeads $queueDir $queueName) }
+                $head = & $lengthOf $pending[0]
+                if (@($others | Where-Object { $_.Length -gt $head -or ($_.Length -eq $head -and [string]::CompareOrdinal($_.Name, $queueName) -lt 0) }).Count) { break }
                 $job = $pending[0]
                 $pending.RemoveAt(0)
                 Remove-Item $job.Log -ErrorAction SilentlyContinue
@@ -675,9 +813,15 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                 $p = if ($Rendered) { Start-HiddenGame $jobExe $jobDir $launch } else { Start-Process -FilePath $jobExe -WorkingDirectory $jobDir -PassThru -WindowStyle Hidden -ArgumentList $launch }
                 $env:APPDATA = $realAppData
                 [void]$p.Handle # or its exit code is lost
-                $running[$slot] = [pscustomobject]@{ Job = $job; Process = $p; Started = Get-Date; ScriptStarted = $false }
+                $limit = if ($ScenarioTimeouts) { [Math]::Max($TimeoutSec, (Get-ScenarioTimeout $job.Script) + 120) } else { $TimeoutSec }
+                $running[$slot] = [pscustomobject]@{ Job = $job; Process = $p; Started = Get-Date; ScriptStarted = $false; TimeoutSec = $limit }
+                & $advertise $(if ($pending.Count -gt 0 -and $running.Count -lt $MaxJobs) { [string](& $lengthOf $pending[0]) } else { "none" })
             }
-            if ($running.Count -eq 0 -and $locked.Count -eq 0 -and -not $toldBusy) { $toldBusy = $true; Write-Host "every test slot 0-$($MaxJobs - 1) is held by another series: waiting for one" }
+            # A slot this series holds and doesn't use goes back to the other series at once (a sweep's long mod-off tail, a slot left
+            # to a longer session of another series). A session starting over is queued while its slot is still held: it takes it
+            # first at the next pass.
+            foreach ($slot in @($locked)) { if (-not $running.ContainsKey($slot)) { Unlock-Slot $slot; [void]$locked.Remove($slot) } }
+            if ($running.Count -eq 0 -and $pending.Count -gt 0 -and -not $toldBusy) { $toldBusy = $true; Write-Host "every test slot 0-$($SlotPool - 1) is held by another series, or left to its longer sessions: waiting for one" }
             Start-Sleep -Milliseconds 300
             if (((Get-Date) - $lastStatus).TotalSeconds -ge 5) {
                 Write-SessionStatus $Label ($done.Count + $pending.Count + $running.Count) $done.Count $pending.Count $running $started $allJobs $StatusFile
@@ -711,7 +855,8 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                     $why = Get-FrozenProblem $frozenLog -Mutated:(Test-MutatedJob $run.Job)
                     if ($why) { $earlyProblems[$name] = @($earlyProblems[$name]) + @($why) }
                     $running.Remove($slot)
-                    if ($retries[$name] -le 2) { $pending.Add($run.Job) }
+                    # First again: it was started early for being long.
+                    if ($retries[$name] -le 2) { $pending.Insert(0, $run.Job) }
                     else { & $finish $run.Job ([pscustomobject]@{ Name = $name; State = "FROZEN"; Seconds = [int]$age; Failed = @("froze 3 times") + @($earlyProblems[$name] | Where-Object { $_ }); Restarts = $retries[$name] }) }
                     continue
                 }
@@ -730,15 +875,21 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                         if ($why) { $earlyProblems[$name] = @($earlyProblems[$name]) + @($why) }
                         Start-Sleep 1
                         $running.Remove($slot)
-                        if ($retries[$name] -le 2) { $pending.Add($run.Job) }
+                        if ($retries[$name] -le 2) { $pending.Insert(0, $run.Job) }
                         else { & $finish $run.Job ([pscustomobject]@{ Name = $name; State = "CRASHED"; Seconds = [int]$age; Failed = @("stopped early 3 times, exit code $($run.Process.ExitCode)") + @($earlyProblems[$name] | Where-Object { $_ }); Restarts = $retries[$name] }) }
                         continue
                     }
                 }
-                elseif ($age -gt $TimeoutSec) { $state = "TIMEOUT" }
+                elseif ($age -gt $run.TimeoutSec) { $state = "TIMEOUT" }
                 elseif ($age -gt 60 -and (Test-Path $run.Job.Log) -and ((Get-Date) - (Get-Item $run.Job.Log).LastWriteTime).TotalSeconds -gt $StallSec) { $state = "STALLED" }
                 if (-not $state) { continue }
                 if ($state -ne "done") { Stop-Process -Id $run.Process.Id -Force -ErrorAction SilentlyContinue; Start-Sleep 1 }
+                # Its length, for the next series' order (a timed-out one took at least that).
+                if ($state -in "done", "TIMEOUT") {
+                    $key = Get-DurationKey $run.Job $Rendered.IsPresent
+                    $durations[$key] = [int]$age
+                    Save-Durations $durationFile @{ $key = [int]$age }
+                }
                 $failed = @(Get-FailedLines $run.Job.Log -Mutated:(Test-MutatedJob $run.Job)) + @(Get-MissingTestMods $run.Job.Log $GameDir) + @($earlyProblems[$run.Job.Name] | Where-Object { $_ }) + @(Get-LaunchProblem $run.Job $run.Job.Log)
                 $running.Remove($slot)
                 & $finish $run.Job ([pscustomobject]@{ Name = $run.Job.Name; State = $state; Seconds = [int]$age; Failed = $failed; Restarts = [int]$retries[$run.Job.Name] })
@@ -752,11 +903,6 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                     catch { Write-Host "note: $($run.Job.Name) not kept as a baseline: $($_.Exception.Message)" }
                 }
             }
-            # Nothing left to start: a slot whose session ended goes back to the other series (a sweep's long mod-off tail would
-            # otherwise hold idle slots). A session starting over is queued before this, while its slot is still held.
-            if ($pending.Count -eq 0) {
-                foreach ($slot in @($locked)) { if (-not $running.ContainsKey($slot)) { Unlock-Slot $slot; [void]$locked.Remove($slot) } }
-            }
         }
     }
     finally {
@@ -764,6 +910,8 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
         foreach ($run in $running.Values) { Stop-Process -Id $run.Process.Id -Force -ErrorAction SilentlyContinue }
         # Held while this series has sessions to start (each start mirrors the user data into its slot again), released when none is left.
         foreach ($slot in @($locked)) { Unlock-Slot $slot }
+        $queueStream.Dispose()
+        Remove-Item (Join-Path $queueDir $queueName) -Force -ErrorAction SilentlyContinue
     }
     $done
 }
