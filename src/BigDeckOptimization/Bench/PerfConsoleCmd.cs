@@ -33,6 +33,7 @@ namespace BigDeckOptimization.Bench;
 ///   the effect counters (<see cref="EffectCounters"/>). checksum and refresh freeze the game for seconds and refresh writes the
 ///   hand's values (then puts them back): singleplayer only.
 ///   Reports: verify, combatstart, probe, piletimes, costhooks, deckcount, clonememo, reserialize, gcprobe, waitspin.
+///   joinmsg [backoff]: JoinMismatchNote's texts on the game's own mod mismatch error built from synthetic lists (JoinMismatchBench).
 ///   Switches for tests (they change this mod's behaviour, never the game's state): opt (the master switch for this session
 ///   only, never saved: <see cref="Config.Settings.MasterChoice"/>),
 ///   checks, blocks, upgradebits, envrelease, gcmin, movecap, clonememocap, release, purehooks, dirtyreads, snapmoved, segments, relicreuse, fault,
@@ -220,7 +221,7 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
         }
         // Effect counters as the game's own calls left them (see EffectCounters); the benches read their own deltas inside.
         using IDisposable? frozen = sub is "checksum" or "refresh" or "listeners" or "pile" or "text" or "scan" or "plaque" or "grid" or "sortkeys"
-            or "relics" or "upgradebench" or "shufflebench" or "costhooks" or "snapnet"
+            or "relics" or "upgradebench" or "shufflebench" or "costhooks" or "snapnet" or "joinmsg"
             ? EffectCounters.Freeze() : null;
         // Positive controls and limits of the safety nets (Bench/PerfInjections.cs).
         if (Injection(sub, args, coop) is { } injected)
@@ -239,6 +240,20 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                 catch (InvalidOperationException e)
                 {
                     return new CmdResult(success: false, e.Message);
+                }
+            case "joinmsg":
+                // Works with the mod off too (JoinMismatchNote doesn't follow the master switch): no ModOff refusal.
+                try
+                {
+                    return new CmdResult(success: true, JoinMismatchBench.Run(args.Length >= 2 ? args[1] : null));
+                }
+                catch (InvalidOperationException e)
+                {
+                    return new CmdResult(success: false, e.Message);
+                }
+                catch (Exception e)
+                {
+                    return new CmdResult(success: false, $"JOINMSG failed: {e}");
                 }
             case "modorder":
                 try

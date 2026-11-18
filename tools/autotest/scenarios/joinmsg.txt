@@ -1,0 +1,23 @@
+# JoinMismatchNote (bdperf joinmsg, Bench/JoinMismatchBench.cs): the game's own mod mismatch error built from synthetic join
+# lists, its description taken with the patch off and on: explained exactly when only this mod's entry differs (off against on,
+# the "Co-op state check" tags, versions; client wording and, on v0.111+, the host's), the game's text alone otherwise, and
+# every embedded language translated. Then with the whole mod off (bdopt off: this patch doesn't follow the master switch, the
+# player whose mod is off needs it most), with another mod's postfix on GetErrorString (a back-off: the game's text alone),
+# that postfix removed again (explained again), and in French. No run, no network.
+timeout 180
+expect JOINMSG all \d+ cases ok, game language
+expect JOINMSG all \d+ cases ok \(backoff
+expect JOINMSG all \d+ cases ok, game language fra
+cmd bdperf joinmsg
+cmd bdopt off
+cmd bdperf joinmsg
+cmd bdopt on
+foreignpatch noop-postfix MegaCrit.Sts2.Core.Entities.Multiplayer.NetErrorInfo:GetErrorString
+wait 3
+cmd bdperf joinmsg backoff
+foreignpatch remove
+wait 3
+cmd bdperf joinmsg
+language fra
+cmd bdperf joinmsg
+quit

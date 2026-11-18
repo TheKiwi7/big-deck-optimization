@@ -122,7 +122,7 @@ public static class JoinMismatchNote
             __result = Append(__result, note.Text);
             Explained++;
             Log.Info($"[{ModEntry.Id}] {Name}: join refused over this mod's entry ({note.Kind}, {(isHost ? "host" : "client")}: "
-                + $"{string.Join(",", own!)} vs {string.Join(",", theirs!)}), explanation added: {note.Text.Replace("\n", " / ")}");
+                + $"{string.Join(",", own!)} vs {string.Join(",", theirs!)}), explanation {Explained} added: {note.Text.Replace("\n", " / ")}");
         }
         catch (Exception e)
         {

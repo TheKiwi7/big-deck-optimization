@@ -67,6 +67,7 @@ internal static class EffectCounters
         (typeof(ListenerCache), nameof(ListenerCache.SnapshotMemosCompared)), (typeof(ListenerCache), nameof(ListenerCache.SnapshotSealChanges)),
         (typeof(ListenerCache), nameof(ListenerCache.SnapshotSealUnrestored)), (typeof(ListenerCache), nameof(ListenerCache.SnapshotNetErrors)),
         (typeof(SnapshotVerifier), nameof(SnapshotVerifier.RebuiltAfterThrow)),
+        (typeof(JoinMismatchNote), nameof(JoinMismatchNote.Explained)),
     };
 
     /// <summary>Each counter's getter and setter (private setters included), resolved once.</summary>
