@@ -168,6 +168,119 @@ public static partial class PatchSafety
         }
     });
 
+    /// <summary>A null-fill answer per getter, for the Harmony epoch and 2 s it was worked out at.</summary>
+    private sealed record FillAnswer(int Epoch, long CheckedAt, bool Only, string[] Mods);
+
+    private static readonly ConcurrentDictionary<MethodBase, FillAnswer> _nullFills = new();
+    private static readonly ConcurrentDictionary<RuntimeMethodHandle, bool> _fillShapes = new();
+
+    /// <summary>
+    /// Rule null-fill (2026-11-18, CardFusion's <c>FusedCard_CombatState_Patch</c>): whether every patch on the getter
+    /// <paramref name="method"/> is another mod's postfix that does nothing when the getter's result isn't null (it may only
+    /// replace a null result: <see cref="NullFillShape"/>), its own method unpatched, no hidden IL hook on the getter, nothing of
+    /// this mod there. A caller mirroring the getter's non-null answers from fields (CardSortKeys' OwnerCombat) then reads the
+    /// real getter for what a null-filling postfix may give instead. Asked again per Harmony epoch and at most every 2 s. Never
+    /// throws (false when it can't tell).
+    /// </summary>
+    internal static bool NullFillOnly(MethodBase? method) => NullFillAnswer(method).Only;
+
+    /// <summary>The mods of the null-fill postfixes <see cref="NullFillOnly"/> last accepted (display).</summary>
+    internal static string[] NullFillMods(MethodBase? method) => NullFillAnswer(method) is { Only: true } answer ? answer.Mods : Array.Empty<string>();
+
+    private static FillAnswer NullFillAnswer(MethodBase? method)
+    {
+        int epoch = HarmonyWatch.Epoch;
+        long now = Environment.TickCount64;
+        if (method == null)
+        {
+            return new FillAnswer(epoch, now, false, Array.Empty<string>());
+        }
+        if (_nullFills.TryGetValue(method, out FillAnswer? known) && known.Epoch == epoch && now - known.CheckedAt < RecheckAfterMs)
+        {
+            return known;
+        }
+        bool only = false;
+        string[] mods = Array.Empty<string>();
+        try
+        {
+            if (method is MethodInfo { ReturnType: { IsValueType: false } } && HarmonyWatch.HiddenOwners(method).Length == 0 && Harmony.GetPatchInfo(method) is { } info)
+            {
+                Patch[] all = AllPatches(info).ToArray();
+                only = all.Length > 0 && all.All(p => !PatchGuard.IsOurs(p.owner) && info.Postfixes.Contains(p) && PatchMethodOf(p) is { } postfix
+                    && NullFillShape(postfix) && !(Harmony.GetPatchInfo(postfix) is { } own && AllPatches(own).Any()));
+                if (only)
+                {
+                    mods = ModNames(all);
+                }
+            }
+        }
+        catch
+        {
+            only = false;
+        }
+        var answer = new FillAnswer(epoch, now, only, mods);
+        _nullFills[method] = answer;
+        return answer;
+    }
+
+    /// <summary>
+    /// A postfix doing nothing for a non-null result: static, void, not generic, no factory, no renamed parameters, a
+    /// <c>ref __result</c> of a reference type, and from its first instruction (nops aside) <c>ldarg __result; ldind.ref; brtrue L</c>
+    /// with only nops, unconditional branches and <c>ret</c> from L (<see cref="NullResultGated"/> the other way round: what it
+    /// does with a null result is the caller's to judge).
+    /// </summary>
+    private static bool NullFillShape(MethodInfo postfix) => _fillShapes.GetOrAdd(postfix.MethodHandle, _ =>
+    {
+        try
+        {
+            if (!postfix.IsStatic || postfix.ContainsGenericParameters || postfix.ReturnType != typeof(void) || IsFactory(postfix) || RenamesParameters(postfix))
+            {
+                return false;
+            }
+            ParameterInfo[] parameters = postfix.GetParameters();
+            int result = Array.FindIndex(parameters, p => p.Name == "__result");
+            if (result < 0 || !parameters[result].ParameterType.IsByRef || parameters[result].ParameterType.GetElementType() is not { IsValueType: false })
+            {
+                return false;
+            }
+            List<MethodFingerprint.Instruction> code = MethodFingerprint.Instructions(postfix);
+            var at = new Dictionary<int, int>();
+            for (int i = 0; i < code.Count; i++)
+            {
+                at[code[i].Offset] = i;
+            }
+            int index = SkipNops(code, 0);
+            if (index + 2 >= code.Count || !LoadsArgument(code[index], result) || code[index + 1].Op != OpCodes.Ldind_Ref
+                || (code[index + 2].Op != OpCodes.Brtrue && code[index + 2].Op != OpCodes.Brtrue_S) || code[index + 2].Operand is not int to
+                || !at.TryGetValue(to, out int next))
+            {
+                return false;
+            }
+            var visited = new HashSet<int>();
+            while (next >= 0 && next < code.Count && visited.Add(next))
+            {
+                OpCode op = code[next].Op;
+                if (op == OpCodes.Nop)
+                {
+                    next++;
+                }
+                else if (op == OpCodes.Br || op == OpCodes.Br_S)
+                {
+                    next = code[next].Operand is int target && at.TryGetValue(target, out int jumped) ? jumped : -1;
+                }
+                else
+                {
+                    return op == OpCodes.Ret;
+                }
+            }
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
+    });
+
     /// <summary>The first instruction at or after <paramref name="index"/> that isn't a nop (unconditional branches not followed: none in the shape).</summary>
     private static int SkipNops(List<MethodFingerprint.Instruction> code, int index)
     {

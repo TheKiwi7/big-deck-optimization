@@ -43,6 +43,25 @@ checksum reshuffle nearmiss
 state reshuffle nearmiss
 foreignpatch parts-report nearmiss
 foreignpatch remove
+foreignpatch nullfill-postfix MegaCrit.Sts2.Core.Models.CardModel:get_CombatState
+wait 3
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 300
+checksum reshuffle nullfill
+state reshuffle nullfill
+foreignpatch remove
+foreignpatch nullfill-nearmiss-postfix MegaCrit.Sts2.Core.Models.CardModel:get_CombatState
+wait 3
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 300
+checksum reshuffle nullfill nearmiss
+state reshuffle nullfill nearmiss
+foreignpatch parts-report nullfill
+foreignpatch remove
 cmd kill all
 waitfor nocombat 300
 wait 2

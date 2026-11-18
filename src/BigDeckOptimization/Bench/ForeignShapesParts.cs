@@ -23,6 +23,7 @@ public static class ForeignShapesParts
         "redirect-prefix",
         "sort-gated-postfix", "sort-nearmiss-postfix",
         "ng-guard", "ng-true-guard", "ng-call-guard",
+        "nullfill-postfix", "nullfill-nearmiss-postfix",
         // Not a shape: "foreignpatch c0-override constant|patch|subclass|stateful" (rule C0: classes of "another mod" emitted into a
         // dynamic assembly, overriding PowerModel.OwnerIsSecondaryEnemy, which CardFlightLimit's combat-end check reaches).
         "c0-override",
@@ -69,6 +70,7 @@ public static class ForeignShapesParts
             {
                 $"FOREIGN display {parts[1]} sort-gated-postfix squeeze calls {SortGates.SqueezeCalls}",
                 $"FOREIGN display {parts[1]} sort-nearmiss-postfix every call {SortGates.EveryCall}",
+                $"FOREIGN display {parts[1]} nullfill-postfix null results {NullFillNulls}, nearmiss every call {NullFillEvery}",
             };
         }
         MethodBase target = (parts[1].Contains("::", StringComparison.Ordinal) ? MethodFingerprint.Resolve(typeof(AbstractModel).Assembly, parts[1]) : AccessTools.Method(parts[1]))
@@ -126,6 +128,17 @@ public static class ForeignShapesParts
                 }
                 harmony.Patch(target, prefix: new HarmonyMethod(EmitGuard(shape)) { priority = priority });
                 break;
+            case "nullfill-postfix":
+            case "nullfill-nearmiss-postfix":
+                // Rule null-fill (CardFusion's FusedCard_CombatState_Patch on CardModel.CombatState): a postfix doing nothing for a
+                // non-null result (here it only counts the null ones: no game state changes), Release-build IL emitted; its near
+                // miss counts every call before the test (a sort is the game's then).
+                if (target.DeclaringType != typeof(CardModel) || target.Name != "get_CombatState")
+                {
+                    throw new ArgumentException(shape + " goes on MegaCrit.Sts2.Core.Models.CardModel:get_CombatState");
+                }
+                harmony.Patch(target, postfix: new HarmonyMethod(EmitNullFill(shape == "nullfill-nearmiss-postfix")) { priority = priority });
+                break;
             default:
                 throw new ArgumentException("unknown shape " + shape);
         }
@@ -136,6 +149,45 @@ public static class ForeignShapesParts
     }
 
     private static int _guards;
+
+    public static long NullFillNulls, NullFillEvery;
+
+    public static void CountNullFill() => NullFillNulls++;
+
+    public static void CountNullFillEvery() => NullFillEvery++;
+
+    /// <summary>
+    /// The null-fill postfix as a Release build gives it: <c>ldarg.1; ldind.ref; brtrue.s L; call CountNullFill; L: ret</c>
+    /// (parameters __instance and __result), or the near miss with a call before the test.
+    /// </summary>
+    private static MethodInfo EmitNullFill(bool nearMiss)
+    {
+        if (_c0Module == null)
+        {
+            string unique = "BdoC0Shapes" + Environment.TickCount64.ToString("X");
+            _c0Module = System.Reflection.Emit.AssemblyBuilder.DefineDynamicAssembly(new AssemblyName(unique), System.Reflection.Emit.AssemblyBuilderAccess.Run)
+                .DefineDynamicModule(unique);
+        }
+        System.Reflection.Emit.TypeBuilder type = _c0Module.DefineType("BdoNullFill" + (++_guards),
+            TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed | TypeAttributes.Class | TypeAttributes.BeforeFieldInit);
+        System.Reflection.Emit.MethodBuilder method = type.DefineMethod("Postfix", MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.HideBySig,
+            typeof(void), new[] { typeof(CardModel), typeof(MegaCrit.Sts2.Core.Combat.ICombatState).MakeByRefType() });
+        method.DefineParameter(1, ParameterAttributes.None, "__instance");
+        method.DefineParameter(2, ParameterAttributes.None, "__result");
+        System.Reflection.Emit.ILGenerator il = method.GetILGenerator();
+        System.Reflection.Emit.Label done = il.DefineLabel();
+        if (nearMiss)
+        {
+            il.Emit(System.Reflection.Emit.OpCodes.Call, typeof(ForeignShapesParts).GetMethod(nameof(CountNullFillEvery))!);
+        }
+        il.Emit(System.Reflection.Emit.OpCodes.Ldarg_1);
+        il.Emit(System.Reflection.Emit.OpCodes.Ldind_Ref);
+        il.Emit(System.Reflection.Emit.OpCodes.Brtrue_S, done);
+        il.Emit(System.Reflection.Emit.OpCodes.Call, typeof(ForeignShapesParts).GetMethod(nameof(CountNullFill))!);
+        il.MarkLabel(done);
+        il.Emit(System.Reflection.Emit.OpCodes.Ret);
+        return type.CreateType()!.GetMethod("Postfix", BindingFlags.Public | BindingFlags.Static)!;
+    }
 
     /// <summary>A call the ng-call-guard control makes on its non-null path (does nothing).</summary>
     public static void GuardCall()

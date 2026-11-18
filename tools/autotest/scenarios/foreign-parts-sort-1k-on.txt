@@ -5,6 +5,8 @@
 # patch acts on it; CardSortKeys same, the refusal names the gate). (3) The near miss (a static write before the test,
 # sort-nearmiss-postfix squeeze): every sort the game's. The patches' counts are display lines (DynamicVars is read at the
 # display's pace too); CHECKSUM and STATE lines must match the other side line for line. On v0.111 requiregame logs SKIPPED.
+# Rule null-fill (CardFusion's shape): (4) a postfix on CardModel.CombatState doing nothing for a non-null result (it counts the
+# null ones): sorts answered, each card's real getter judged too; (5) its near miss (a call before the test): the game's sorts.
 requiregame v0.113
 expect CardSortKeys: CardModel\.get_DynamicVars is also patched by bdtest\.foreign\.sort-gated-postfix-squeeze \(patches gated on the listener's type: Squeeze treated as overriding it
 expect FOREIGN classify CardModel\.get_DynamicVars: bdtest\.foreign\.sort-gated-postfix-squeeze Postfix .*TypeGated tolerated, gates Squeeze
@@ -15,6 +17,11 @@ expect FOREIGN classify CardModel\.get_DynamicVars: bdtest\.foreign\.sort-nearmi
 expect CardSortKeys: CardModel\.get_DynamicVars is also patched by bdtest\.foreign\.sort-nearmiss-postfix-squeeze \(patches gated on the listener's type not enough\): normal game for that part
 expect EFFECTCHECK CardSortKeys same since 'nearmiss'
 expect COUNTERS end:.*CardSortKeys sorts [1-9]\d*, answered [1-9]\d*, refused [1-9]\d* \(last: another mod patches CardModel\.get_DynamicVars\), checks \d+, mismatches 0
+expect CardSortKeys: other mods' code on a card's combat \(CardModel\.CombatState\) that only fills in a missing answer
+expect EFFECTCHECK CardSortKeys grew since 'nullfill': [0-9]+ -> [1-9]
+expect CardSortKeys: CardModel\.get_CombatState is also patched by bdtest\.foreign\.nullfill-nearmiss-postfix \(patches gated on the listener's type not enough\): normal game for that part
+expect EFFECTCHECK CardSortKeys same since 'nullfillnm'
+expect COUNTERS nullfill:.*CardSortKeys sorts [1-9]\d*, answered [1-9]\d*, refused \d+ \([^)]*\), checks \d+, mismatches 0
 timeout 1200
 newrun NECROBINDER 1234
 waitfor run 120
@@ -69,6 +76,35 @@ effects nearmiss end
 effectcheck CardSortKeys same nearmiss
 foreignpatch parts-report nearmiss
 counters end
+foreignpatch remove
+# (4) null-fill.
+foreignpatch nullfill-postfix MegaCrit.Sts2.Core.Models.CardModel:get_CombatState
+wait 3
+cmd bdopt why
+effects nullfill
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 300
+checksum reshuffle nullfill
+state reshuffle nullfill
+effects nullfill end
+effectcheck CardSortKeys grew nullfill
+counters nullfill
+foreignpatch remove
+# (5) its near miss.
+foreignpatch nullfill-nearmiss-postfix MegaCrit.Sts2.Core.Models.CardModel:get_CombatState
+wait 3
+effects nullfillnm
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 300
+checksum reshuffle nullfill nearmiss
+state reshuffle nullfill nearmiss
+effects nullfillnm end
+effectcheck CardSortKeys same nullfillnm
+foreignpatch parts-report nullfill
 foreignpatch remove
 cmd kill all
 waitfor nocombat 300

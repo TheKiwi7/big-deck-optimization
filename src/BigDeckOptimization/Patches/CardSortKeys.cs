@@ -203,6 +203,35 @@ public static class CardSortKeys
     /// <summary>What a sort answered here reproduces or skips calling: another mod's patch on one leaves the sort to the game.</summary>
     private static MethodBase?[] _watched = Array.Empty<MethodBase?>();
 
+    /// <summary><c>CardModel.CombatState</c>, one of <see cref="_watched"/>, judged apart (rule null-fill: <see cref="NullFillNow"/>).</summary>
+    private static MethodBase? _cardCombat;
+
+    /// <summary>
+    /// Rule null-fill (2026-11-18, CardFusion): every other mod's patch on <c>CardModel.CombatState</c> only replaces a null result
+    /// (<see cref="PatchSafety.NullFillOnly"/>). <see cref="OwnerCombat"/> mirrors the getter's non-null answers from the fields;
+    /// what such a postfix may give where the game's getter gives null isn't there, so each card's real getter is read too and its
+    /// combat judged with the others (a superset again: more refusals, never fewer). The getter then runs once per card in a sort
+    /// instead of once per cost read: the sort-cost premise's scope (it is read by the cost chain).
+    /// </summary>
+    private static bool NullFillNow() => PatchSafety.ShapeRules && PatchSafety.NullFillOnly(_cardCombat);
+
+    /// <summary>The null-fill kept note (display; the getter's back-off otherwise, as the runtime check records it).</summary>
+    private static void NoteNullFill()
+    {
+        if (_cardCombat == null)
+        {
+            return;
+        }
+        if (NullFillNow())
+        {
+            PatchSafety.Kept(Name, "null_fill", "other mods' code on a card's combat (CardModel.CombatState) that only fills in a missing answer: "
+                + "each sorted card's own combat is read once per sort and judged too", PatchSafety.NullFillMods(_cardCombat));
+            return;
+        }
+        PatchSafety.ClearKept(Name, "null_fill");
+        _ = PatchSafety.IsPatchedByOthers(_cardCombat, out _, Name);
+    }
+
     /// <summary>
     /// The cost chain a sort reads live once per card (<see cref="Cost"/>): strict with the shape rules off, under the sort-cost
     /// premise with them (another mod's patch there runs once per card instead of once per comparison).
@@ -268,6 +297,7 @@ public static class CardSortKeys
         _creatureCombat = Reflect.FieldRefAccess<MegaCrit.Sts2.Core.Entities.Creatures.Creature, ICombatState?>("<CombatState>k__BackingField");
         _modelIdCompare = (Func<ModelId?, ModelId?, int>)Delegate.CreateDelegate(typeof(Func<ModelId?, ModelId?, int>), modelIdCompare);
         _pileGetter = pile;
+        _cardCombat = cardCombat;
         try
         {
             _pileReads = CombatPileReads.Select(r => (MethodBase)Require(Reflect.DeclaredMethod(r.Type, r.Method, Type.EmptyTypes), r.Fingerprint, r.Type.Name + "." + r.Method)).ToArray();
@@ -343,7 +373,9 @@ public static class CardSortKeys
         // hooks of the combat's listener types (ImpureCostListener) depend on who is in the combat: those of the types met so
         // far are asked again at each preflight. The keyword reads (_keywordWatched) only matter in a combat where a cost hook
         // reads keywords (Veilpiercer): not known at the menu, so they show when such a sort checks them.
-        PatchSafety.Watch(Name, _watched, PatchTolerance.TypeGated);
+        // CardModel.CombatState through the null-fill note (the runtime asks NullFillNow first).
+        PatchSafety.Watch(Name, _watched.Where(m => m != _cardCombat), PatchTolerance.TypeGated);
+        PatchSafety.WatchNote(Name, NoteNullFill);
         PatchSafety.Watch(Name, Strict().Except(_watched));
         PatchSafety.Watch(Name, _costDefaults, PatchTolerance.TypeGated);
         PatchSafety.WatchAll(Name, HookFilter.CombatHookWalkParts);
@@ -364,7 +396,7 @@ public static class CardSortKeys
         // shown as what would run once on, as before).
         // A patch there gated on the card's type (TypeGated) leaves sorts answered (those holding a gate type aside): asked as the
         // preflight asks (the patch name as caller: not counted as a runtime check).
-        if (PatchSafety.ShapeRules && Applied && !PatchSafety.IsFaulted(Name) && !_watched.Any(m => PatchSafety.IsPatchedByOthers(m, out _, Name)))
+        if (PatchSafety.ShapeRules && Applied && !PatchSafety.IsFaulted(Name) && !_watched.Any(m => !(m == _cardCombat && NullFillNow()) && PatchSafety.IsPatchedByOthers(m, out _, Name)))
         {
             patched.AddRange(_costChain.OfType<MethodBase>().Where(PatchSafety.HasOtherPatches));
         }
@@ -509,8 +541,14 @@ public static class CardSortKeys
         try
         {
             Type[]? watchedGates = null;
+            bool nullFill = false;
             foreach (MethodBase? method in _watched)
             {
+                if (method == _cardCombat && NullFillNow())
+                {
+                    nullFill = true;
+                    continue;
+                }
                 // The comparison and its keys are computed here once per card instead of per comparison: only patches gated on
                 // the instance's type stand (TypeGated, rule TG of 2026-11-18: they do nothing unless the instance is of a gate
                 // type), and a sort holding a card of a gate type is the game's (below). On a method whose instance isn't a card
@@ -583,6 +621,12 @@ public static class CardSortKeys
                     last = combat;
                     combats ??= new List<ICombatState>();
                     combats.Add(combat);
+                }
+                // Null-fill: the real getter, another mod's postfix included (what the cost chain reads).
+                if (nullFill && card.CombatState is { } real && (combats == null || !combats.Any(c => ReferenceEquals(c, real))))
+                {
+                    combats ??= new List<ICombatState>();
+                    combats.Add(real);
                 }
             }
             if (combats != null)
