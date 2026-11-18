@@ -2,6 +2,9 @@
 # and the checks after them must fail: what rebuild-check passing means.
 expect PATCHES LOST
 expect PROBLEM without detour
+# HarmonyWatch sees each raw rebuild that threw (the test tooling's Harmony counts as another mod's, HarmonyWatch.OwnCall)
+# and warns on the next frame: the failure this control plants, reported as it should be.
+expect HarmonyWatch: another mod's Patch or Unpatch of (NRewardButton\._Ready|NRelicInventory\.AnimShow|NGlobalUi\._Ready) failed
 onfail continue
 timeout 300
 wait 3

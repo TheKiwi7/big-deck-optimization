@@ -1,9 +1,11 @@
 # A whole-game A/B in parallel: sweep-<Kind>-2k-off and -on (scenarios/) cut into chunks with the same boundaries on both
 # sides, so an item stopping its session only spoils its own chunk. An item leaving the game stuck ends that session; a new
 # one goes on from the next item, up to the end of the chunk (as sweep.ps1), queued as soon as that session ends. sweepreport.py
-# then says what differs, down to the values. Live progress: results/status-<Kind>.txt (status.ps1). Logs and report-<Kind>.md:
-# results/<game version>/. The five kinds at once on one copy: parsweep-all.ps1 (slots are shared, each series takes free ones).
-#   powershell -ExecutionPolicy Bypass -File tools/autotest/parsweep.ps1 -Kind cards -GameDir C:\Games\StS2-public-0.111.1 [-Jobs 16] [-ChunkItems 20] [-ItemTimeout 45] [-Speed instant|fast] [-UseBaselines]
+# then says what differs, down to the values. Live progress: results/status-<Kind>-<version>.txt (status.ps1). Logs and
+# report-<Kind>.md: results/<game version>/. The five kinds at once, on one copy or both: parsweep-all.ps1 (the solo slot pool is
+# shared, parlib.ps1's $SlotPool: the longest waiting session of any series takes a free slot; -Jobs, by default the whole pool,
+# caps this series only). Parts start longest first (results/<version>/durations.tsv, filled from the last run's part logs too).
+#   powershell -ExecutionPolicy Bypass -File tools/autotest/parsweep.ps1 -Kind cards -GameDir C:\Games\StS2-public-0.111.1 [-Jobs 14] [-ChunkItems 20] [-ItemTimeout 45] [-Speed instant|fast] [-UseBaselines]
 # -Speed instant (default) skips animation waits: same results (checked on whole sweeps), about 4 times faster mod on. Once
 # per release, -Speed fast for what only shows with animations playing.
 # -Chunks 27,28: only those chunks, to rerun what a report says wasn't compared (the same -ChunkItems).
@@ -15,11 +17,13 @@
 # -PatchedOff (vanillacheck.ps1): no mod-on side, but the mod-off scenario a second time on the "on" side, the old way: every patch
 # installed then 'bdopt off' (never cached). Both must be identical: 'bdopt off' is the unmodified game. Parts and report in
 # results/<version>/vanillacheck/.
-param([Parameter(Mandatory)][ValidateSet("cards", "relics", "potions", "encounters", "powers")][string]$Kind, [string]$GameDir = "", [int]$Jobs = [Environment]::ProcessorCount, [int]$ChunkItems = 0, [int]$ItemTimeout = 45, [ValidateSet("instant", "fast")][string]$Speed = "instant", [int]$TimeoutSec = 1800, [int]$StallSec = 300, [switch]$UseBaselines, [string]$OnExtra = "", [int[]]$Chunks = @(), [int]$Imports = 0, [switch]$PatchedOff)
+param([Parameter(Mandatory)][ValidateSet("cards", "relics", "potions", "encounters", "powers")][string]$Kind, [string]$GameDir = "", [int]$Jobs = 0, [int]$ChunkItems = 0, [int]$ItemTimeout = 45, [ValidateSet("instant", "fast")][string]$Speed = "instant", [int]$TimeoutSec = 1800, [int]$StallSec = 300, [switch]$UseBaselines, [string]$OnExtra = "", [int[]]$Chunks = @(), [int]$Imports = 0, [switch]$PatchedOff)
 $copy = $GameDir
 . (Join-Path $PSScriptRoot "parlib.ps1")
 $GameDir = Resolve-GameCopy $copy
 $out = Get-VersionDir $GameDir
+if ($Jobs -le 0) { $Jobs = $SlotPool }
+$statusFile = "status-$Kind-$(Get-GameTag $GameDir).txt"
 if ($PatchedOff -and $Imports) { throw "-PatchedOff compares mod off both ways: not with -Imports" }
 # Where the parts and the report go: the A/B's own, or vanillacheck's (a real sweep's parts are never overwritten by it).
 $reportDir = if ($PatchedOff) { Join-Path $out "vanillacheck" } else { $out }
@@ -33,6 +37,11 @@ $source = @{ off = Get-Content (Join-Path $Scenarios "sweep-$Kind-2k-off.txt"); 
 $plan = "chunk items $ChunkItems, speed $Speed, item timeout $ItemTimeout, on extra '$OnExtra'$(if ($PatchedOff) { ', patched off' }), game $(Get-GameTag $GameDir), scenarios " +
     (Get-FileHash -InputStream ([IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes(($source.off + $source.on) -join "`n")))).Hash.Substring(0, 16)
 $planFile = Join-Path $work "plan.txt"
+# The last run's part logs give the next run's order (longest first), for the parts durations.tsv doesn't know yet: read before
+# the folder is emptied.
+if (Test-Path $work) {
+    Save-LogDurations $GameDir @(Get-ChildItem $work -Filter "$Kind-*-c*-p*.log" -File | ForEach-Object { [pscustomobject]@{ Name = $_.BaseName; Script = [IO.Path]::ChangeExtension($_.FullName, ".txt"); Log = $_.FullName } })
+}
 if ($Chunks.Count) {
     if (-not (Test-Path $planFile) -or [IO.File]::ReadAllText($planFile).Trim() -ne $plan) {
         throw "-Chunks reruns chunks of the last whole $Kind run in $work, made the same way: $(if (Test-Path $planFile) { "it was '$([IO.File]::ReadAllText($planFile).Trim())', now '$plan'" } else { 'there is none' }). Run the whole sweep."
@@ -95,7 +104,7 @@ if ($countFile -and (Test-Path $countFile) -and ([IO.File]::ReadAllText($countFi
     Write-Output "$Kind`: $items items (counted before with this game, these mods, this build and these scenarios: $(Split-Path $countFile -Leaf))"
 }
 else {
-    Invoke-Sessions -Jobs @([pscustomobject]@{ Name = "count"; Script = $countScript; Log = $countLog }) -GameDir $GameDir -MaxJobs $Jobs -TimeoutSec 180 -StallSec 120 -Label "$Kind count" -StatusFile "status-$Kind.txt" | Out-Null
+    Invoke-Sessions -Jobs @([pscustomobject]@{ Name = "count"; Script = $countScript; Log = $countLog }) -GameDir $GameDir -MaxJobs $Jobs -TimeoutSec 180 -StallSec 120 -Label "$Kind count" -StatusFile $statusFile | Out-Null
     $match = Select-String -Path $countLog -Pattern "SWEEP $Kind`: (\d+) items" | Select-Object -First 1
     if (-not $match) { throw "No item count in $countLog" }
     $items = [int]$match.Matches[0].Groups[1].Value
@@ -112,7 +121,8 @@ $parts = foreach ($chunk in 0..($chunkCount - 1)) {
     foreach ($side in $(if ($Imports) { @("on") } else { @("off", "on") })) { New-PartJob $side $chunk 0 ($chunk * $ChunkItems) ([Math]::Min($ChunkItems, $items - $chunk * $ChunkItems)) }
 }
 # The mod-off parts first: 5 to 20 times longer each, they set the sweep's length; the mod-on ones then fill the free slots
-# instead of a long mod-off part starting last.
+# instead of a long mod-off part starting last. Invoke-Sessions then puts the parts it knows the length of longest first (those it
+# doesn't, in this order, before them).
 $parts = @($parts | Where-Object { $_.Side -eq "off" }) + @($parts | Where-Object { $_.Side -ne "off" })
 $sessionProblems = [Collections.Generic.List[string]]::new()
 # Each part's end, as soon as its session ends (Invoke-Sessions -OnFinish): its problems, and the chunk's next part when an item
@@ -129,7 +139,7 @@ $onPartEnd = {
         if ($from -lt $part.End) { New-PartJob $part.Side $part.Chunk ($part.Part + 1) $from ($part.End - $from) }
     }
 }
-$outcome = @(Invoke-Sessions -Jobs $parts -GameDir $GameDir -MaxJobs $Jobs -TimeoutSec $TimeoutSec -StallSec $StallSec -UseBaselines:$UseBaselines -Label "$Kind $(Get-GameTag $GameDir)" -OnFinish $onPartEnd -StatusFile "status-$Kind.txt")
+$outcome = @(Invoke-Sessions -Jobs $parts -GameDir $GameDir -MaxJobs $Jobs -TimeoutSec $TimeoutSec -StallSec $StallSec -UseBaselines:$UseBaselines -Label "$Kind $(Get-GameTag $GameDir)" -OnFinish $onPartEnd -StatusFile $statusFile)
 $count = $outcome.Count
 # The count every part saw: a cached count that no longer holds is dropped (the next run counts again) and said here.
 $seen = @(Get-ChildItem $work -Filter "$Kind-*-c*-p*.log" -File | ForEach-Object { Select-String -Path $_.FullName -Pattern "SWEEP $Kind`: (\d+) items" | Select-Object -First 1 } | Where-Object { $_ } | ForEach-Object { [int]$_.Matches[0].Groups[1].Value } | Sort-Object -Unique)

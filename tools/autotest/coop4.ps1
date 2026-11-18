@@ -4,7 +4,9 @@
 # Logs: results/<game version>/<name>-host.log, -client1.log...
 #   powershell -ExecutionPolicy Bypass -File tools/autotest/coop4.ps1 -Name coop4 -GameDir C:\Games\StS2-public-0.111.1 [-Peers 4] [-Rendered]
 # -Rendered: the host renders, off screen, for fps and frame times; the clients stay headless (one GPU). -RenderedClient: the first
-# client renders and the host is headless, for what a player who is not hosting sees.
+# client renders and the host is headless, for what a player who is not hosting sees. Several at once (coop4 and coop4leak, both
+# copies): each takes the first free test slot of 49-52, its own user data and port (34000 + slot); -Rendered ones want the GPU
+# to themselves.
 param([Parameter(Mandatory)][string]$Name, [string]$GameDir = "", [int]$Peers = 4, [int]$TimeoutSec = 1200, [int]$StallSec = 240, [switch]$Rendered, [switch]$RenderedClient)
 $copy = $GameDir
 . (Join-Path $PSScriptRoot "parlib.ps1")
@@ -18,8 +20,12 @@ $characters = "IRONCLAD", "SILENT", "DEFECT", "REGENT"
 $realAppData = $env:APPDATA
 $procs = [Collections.Generic.List[object]]::new()
 $logs = [Collections.Generic.List[string]]::new()
-# The slot's own port (parlib.ps1's Get-SlotPort): never one a parcoop series on another slot uses.
-$port = Get-SlotPort 49
+# The first free slot of 49-52 (parcoop.ps1 uses 40 and up from its -Jobs), held until the end; its own port (parlib.ps1's
+# Get-SlotPort): never one another series on another slot uses.
+$slotNumber = $null
+foreach ($candidate in 49..52) { if (Lock-Slot $candidate -Try) { $slotNumber = $candidate; break } }
+if ($null -eq $slotNumber) { throw "Test slots 49-52 are all in use by other coop4.ps1 runs: wait for one to end." }
+$port = Get-SlotPort $slotNumber
 function Start-Peer([string]$log, [string]$script, [string[]]$mode) {
     Remove-Item $log -ErrorAction SilentlyContinue
     $logs.Add($log)
@@ -29,10 +35,9 @@ function Start-Peer([string]$log, [string]$script, [string[]]$mode) {
 }
 $started = Get-Date
 $state = $null
-$slotLocked = $false
+$slotLocked = $true
 try {
-    $slotLocked = Lock-Slot 49
-    $slot = Sync-Slot 49 -Coop
+    $slot = Sync-Slot $slotNumber -Coop
     $profiles = Join-Path $slot "SlayTheSpire2\default"
     # The third peer and up: the first client's profile (2 peers: none; 2..1 would count down and mirror 1001 onto itself).
     if ($Peers -gt 2) {
@@ -67,7 +72,7 @@ try {
 finally {
     $env:APPDATA = $realAppData
     foreach ($p in $procs) { if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }
-    if ($slotLocked) { Unlock-Slot 49 }
+    if ($slotLocked) { Unlock-Slot $slotNumber }
     Remove-TestMods $GameDir
 }
 $problems = @()

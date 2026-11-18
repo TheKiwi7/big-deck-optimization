@@ -10,7 +10,7 @@
 # mod off (outside-2k-off on v0.113: its rest site's clone makes the next combat start last minutes and automap gives up):
 # compared up to what both sessions reached, a failure both share listed, not counted (compare.py --prefix).
 # -SweepKind: a whole sweep both ways (parsweep.ps1 -PatchedOff; parts and report in results/<version>/vanillacheck/), none to skip.
-param([string]$GameDir = "", [int]$Jobs = [Environment]::ProcessorCount, [string[]]$Names = @("ab-2k-off", "outside-2k-off"),
+param([string]$GameDir = "", [int]$Jobs = 0, [string[]]$Names = @("ab-2k-off", "outside-2k-off"),
     [string[]]$PrefixNames = @("outside-2k-off"), [ValidateSet("cards", "relics", "potions", "encounters", "powers", "none")][string]$SweepKind = "potions",
     [int]$TimeoutSec = 3600, [int]$StallSec = 600)
 $Names = @($Names | ForEach-Object { $_ -split "," } | Where-Object { $_ })  # "-Names a,b" through powershell -File is one string
@@ -18,6 +18,7 @@ $PrefixNames = @($PrefixNames | ForEach-Object { $_ -split "," } | Where-Object 
 $copy = $GameDir
 . (Join-Path $PSScriptRoot "parlib.ps1")
 $GameDir = Resolve-GameCopy $copy
+if ($Jobs -le 0) { $Jobs = $SlotPool }
 $out = Join-Path (Get-VersionDir $GameDir) "vanillacheck"
 New-Item -ItemType Directory -Force $out | Out-Null
 $started = Get-Date
