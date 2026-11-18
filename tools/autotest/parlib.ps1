@@ -446,7 +446,154 @@ function Get-BaselineBenchFiles([string]$scriptText) {
     }
 }
 
-function Get-BaselineKey([string]$gameDir, [string]$scriptPath) {
+# A Bench file's part of the key: the hash of its code without comments nor the whitespace between tokens (BdCodeText.Normalize:
+# string and char literals kept byte for byte, line breaks kept), so a comment-only or layout-only edit leaves every baseline
+# valid; the hash of the file as it is when the lexer is unsure of anything (an unclosed literal, a raw string literal). Checked
+# exact on every Bench file (2026-11-18): a Debug build of the normalized sources decompiles (ilspycmd) to the same C# as the
+# original's. Only line numbers move, which no compared line holds (compare.py replaces numbers in the game errors it counts).
+# -Legacy: the whole file's hash, the key before this (Invoke-Sessions still reads baselines kept under it).
+if (-not ("BdCodeText" -as [type])) {
+    Add-Type -TypeDefinition @'
+using System; using System.Text;
+public static class BdCodeText {
+    // C# source without its comments and without the whitespace between tokens (runs of spaces and tabs become one space, the
+    // indentation and blank lines go, line breaks stay); string and char literals kept byte for byte. Null when unsure (an
+    // unclosed literal or comment, a raw string literal, $$ interpolation): the caller then hashes the file as it is.
+    public static string Normalize(string s) {
+        var sb = new StringBuilder(s.Length);
+        int i = 0;
+        bool pendingSpace = false, pendingLine = false;
+        if (!Code(s, ref i, sb, ref pendingSpace, ref pendingLine, false)) return null;
+        return sb.ToString();
+    }
+
+    static void Flush(StringBuilder sb, ref bool pendingSpace, ref bool pendingLine) {
+        if (pendingLine) { if (sb.Length > 0) sb.Append('\n'); }
+        else if (pendingSpace) { if (sb.Length > 0) sb.Append(' '); }
+        pendingSpace = false; pendingLine = false;
+    }
+
+    // Code until the end (hole = false) or until the '}' closing an interpolation hole at nesting 0, or its format ':' (hole = true:
+    // i is left on that '}' or ':').
+    static bool Code(string s, ref int i, StringBuilder sb, ref bool pendingSpace, ref bool pendingLine, bool hole) {
+        int nest = 0;
+        while (i < s.Length) {
+            char c = s[i];
+            char n = i + 1 < s.Length ? s[i + 1] : '\0';
+            if (c == '\r' || c == '\n') { pendingLine = true; i++; continue; }
+            if (c == ' ' || c == '\t' || c == '\f' || c == '\v') { pendingSpace = true; i++; continue; }
+            if (c == '/' && n == '/') {
+                while (i < s.Length && s[i] != '\n' && s[i] != '\r') i++;
+                continue;
+            }
+            if (c == '/' && n == '*') {
+                int end = s.IndexOf("*/", i + 2, StringComparison.Ordinal);
+                if (end < 0) return false;
+                // A comment separates tokens as a space does.
+                for (int k = i; k < end; k++) if (s[k] == '\n') pendingLine = true;
+                pendingSpace = true;
+                i = end + 2;
+                continue;
+            }
+            if (hole && nest == 0 && (c == '}' || c == ':')) return true;
+            if (c == '"' && n == '"' && i + 2 < s.Length && s[i + 2] == '"') return false; // raw string literal
+            if (c == '$' && n == '$') return false;
+            if (c == '"' || c == '\'' || (c == '@' && n == '"') || (c == '$' && (n == '"' || n == '@')) || (c == '@' && n == '$')) {
+                Flush(sb, ref pendingSpace, ref pendingLine);
+                if (!Literal(s, ref i, sb)) return false;
+                continue;
+            }
+            Flush(sb, ref pendingSpace, ref pendingLine);
+            if (c == '(' || c == '[' || c == '{') nest++;
+            else if (c == ')' || c == ']' || c == '}') nest--;
+            sb.Append(c);
+            i++;
+        }
+        return !hole;
+    }
+
+    // A string or char literal at i, copied as it is; i past its end.
+    static bool Literal(string s, ref int i, StringBuilder sb) {
+        int start = i;
+        bool interpolated = false, verbatim = false;
+        while (i < s.Length && (s[i] == '$' || s[i] == '@')) { if (s[i] == '$') interpolated = true; else verbatim = true; i++; }
+        if (i >= s.Length) return false;
+        char quote = s[i];
+        if (quote == '\'') {
+            if (interpolated || verbatim) return false;
+            i++;
+            while (i < s.Length && s[i] != '\'') {
+                if (s[i] == '\n' || s[i] == '\r') return false;
+                if (s[i] == '\\') i++;
+                i++;
+            }
+            if (i >= s.Length) return false;
+            i++;
+            sb.Append(s, start, i - start);
+            return true;
+        }
+        if (quote != '"') return false;
+        sb.Append(s, start, i - start + 1);
+        i++;
+        while (i < s.Length) {
+            char c = s[i];
+            if (!verbatim && (c == '\n' || c == '\r')) return false;
+            if (!verbatim && c == '\\') {
+                if (i + 1 >= s.Length) return false;
+                sb.Append(c).Append(s[i + 1]);
+                i += 2;
+                continue;
+            }
+            if (c == '"') {
+                if (verbatim && i + 1 < s.Length && s[i + 1] == '"') { sb.Append("\"\""); i += 2; continue; }
+                sb.Append('"');
+                i++;
+                return true;
+            }
+            if (interpolated && (c == '{' || c == '}')) {
+                if (i + 1 < s.Length && s[i + 1] == c) { sb.Append(c).Append(c); i += 2; continue; }
+                if (c == '}') return false;
+                // A hole: code (its own literals, comments and whitespace normalized as code), then an optional format up to '}'.
+                sb.Append('{');
+                i++;
+                bool space = false, line = false;
+                if (!Code(s, ref i, sb, ref space, ref line, true)) return false;
+                if (i >= s.Length) return false;
+                if (s[i] == ':') {
+                    while (i < s.Length && s[i] != '}') {
+                        if (s[i] == '"' || s[i] == '\n' || s[i] == '\r') return false;
+                        sb.Append(s[i]);
+                        i++;
+                    }
+                    if (i >= s.Length) return false;
+                }
+                sb.Append('}');
+                i++;
+                continue;
+            }
+            sb.Append(c);
+            i++;
+        }
+        return false;
+    }
+}
+'@
+}
+$script:BenchCodeHashes = @{}
+function Get-BenchFileHash($file, [bool]$legacy) {
+    if ($legacy) { return (Get-FileHash $file.FullName -Algorithm SHA256).Hash }
+    $id = "$($file.FullName)|$($file.Length)|$($file.LastWriteTimeUtc.Ticks)"
+    if (-not $script:BenchCodeHashes.ContainsKey($id)) {
+        $code = [BdCodeText]::Normalize([IO.File]::ReadAllText($file.FullName))
+        $script:BenchCodeHashes[$id] = if ($null -eq $code) { (Get-FileHash $file.FullName -Algorithm SHA256).Hash } else {
+            $sha = [Security.Cryptography.SHA256]::Create()
+            "code:" + ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($code))) -replace "-", "")
+        }
+    }
+    $script:BenchCodeHashes[$id]
+}
+
+function Get-BaselineSalt([string]$gameDir) {
     if (-not $script:BaselineSalt) {
         $profileSaves = Join-Path (Get-SteamAccountDir) "modded\profile3\saves"
         # Every file of the test mods' Workshop folders, not only DLLs: a mod's own data and settings change the game too (Unlimited
@@ -458,10 +605,20 @@ function Get-BaselineKey([string]$gameDir, [string]$scriptPath) {
             @(Get-ChildItem (Join-Path $UserData "mod_data") -Recurse -File -ErrorAction SilentlyContinue)
         $script:BaselineSalt = "ref=vanilla1|no-steam|mods=" + (@(Get-TestModIds) -join ",") + "|" + (($files | Sort-Object FullName | ForEach-Object { "$($_.Name)=" + (Get-FileHash $_.FullName -Algorithm SHA256).Hash }) -join "")
     }
+    $script:BaselineSalt
+}
+
+# The Bench part of a key: the files the script text runs (Get-BaselineBenchFiles), each with its hash.
+function Get-BaselineBench([string]$scriptText, [bool]$legacy) {
+    (@(Get-BaselineBenchFiles $scriptText) | Sort-Object Name | ForEach-Object { "$($_.Name)=" + (Get-BenchFileHash $_ $legacy) }) -join ""
+}
+
+function Get-BaselineKey([string]$gameDir, [string]$scriptPath, [switch]$Legacy) {
+    $salt = Get-BaselineSalt $gameDir
     $scriptText = [IO.File]::ReadAllText($scriptPath)
-    $bench = (@(Get-BaselineBenchFiles $scriptText) | Sort-Object Name | ForEach-Object { "$($_.Name)=" + (Get-FileHash $_.FullName -Algorithm SHA256).Hash }) -join ""
+    $bench = Get-BaselineBench $scriptText $Legacy.IsPresent
     $sha = [Security.Cryptography.SHA256]::Create()
-    $bytes = [Text.Encoding]::UTF8.GetBytes($script:BaselineSalt + "|bench=" + $bench + "|" + $scriptText)
+    $bytes = [Text.Encoding]::UTF8.GetBytes($salt + "|bench=" + $bench + "|" + $scriptText)
     ([BitConverter]::ToString($sha.ComputeHash($bytes)) -replace "-", "").Substring(0, 16)
 }
 
@@ -737,6 +894,8 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
         param($newJob, [bool]$first)
         if ($UseBaselines -and (Test-BaselineJob $newJob)) {
             $cached = Join-Path $baselineDir "$($newJob.Name)-$(Get-BaselineKey $GameDir $newJob.Script).log"
+            # Kept before the Bench files' code hash (Get-BenchFileHash): its key hashed them whole, a stricter key.
+            if (-not (Test-Path $cached)) { $cached = Join-Path $baselineDir "$($newJob.Name)-$(Get-BaselineKey $GameDir $newJob.Script -Legacy).log" }
             if (Test-Path $cached) {
                 Copy-Item $cached $newJob.Log -Force
                 & $finish $newJob ([pscustomobject]@{ Name = $newJob.Name; State = "cached"; Seconds = 0; Failed = @(Get-FailedLines $newJob.Log -Mutated:(Test-MutatedJob $newJob)) + @(Get-LaunchProblem $newJob $newJob.Log) })
