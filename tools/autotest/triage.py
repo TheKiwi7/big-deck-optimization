@@ -8,6 +8,7 @@ confirm each). Output is at most --lines lines (default 40), real problems first
 --since HH:MM: only logs modified today at or after that time. --pairs: compare.py's verdict of each on/off pair present
 (<x>-off/<x>-on, <x>-autooff-<peer>/<x>-<peer>), non-IDENTICAL ones listed. Exit code 1 when a problem has no label.
 A label says "looks like": it is a lead to confirm with the catalogue's recipe, not a verdict.
+A results directory is read flat: results/<version>/ holds the sessions, the mutation logs and run.ps1's logs on a copy; the progress files (status-par-<v>.txt ...) are not logs and are left out.
 """
 import contextlib
 import datetime

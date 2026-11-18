@@ -7,6 +7,7 @@
 #   - FAIL lines (a failed STEP line too when no FAIL line follows it), CHECK FAILED, BATTERY ABORT;
 #   - STALL when the grace period has passed and no file under the results folder changed for 10 minutes (once per 10 minutes);
 #   - the line holding <done-marker> (e.g. "BATTERY DONE"), then exits 0 (1 for "BATTERY ABORT").
+# Any file under the results folder counts as activity (the sessions' logs, results/<version>/mutation-*.log, status-par-<v>.txt, status-coop-<v>.txt, status-<kind>-<v>.txt).
 # The first minutes are quiet while sessions boot: no stall before --grace seconds (default 300) after the start.
 # Environment (tests): RESULTS_DIR (default: ./results next to this script), STALL_SEC (600), POLL_SEC (15).
 set -u
