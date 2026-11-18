@@ -16,9 +16,10 @@ namespace BigDeckOptimization.Bench;
 /// and <c>localIsHost</c>) from synthetic lists, and calls the patched <c>GetErrorString</c> twice: the patch off (the game's
 /// text) and on. Required per case: the game's text names the lists' entries (the extra info is read as the game reads it); the
 /// kind <see cref="JoinMismatchNote.Explain"/> gives is the case's; the patched text is the game's text alone (no kind) or the
-/// game's text followed by that explanation; the effect counter grew by one exactly when explained. Host cases only where the
-/// game has a host variant (v0.111+). Then, outside the game's method: the English texts exactly (two cases), and in every
-/// language file the mod embeds, each kind's text (client and host) translated (differs from English), its placeholders
+/// game's text followed by that explanation; the effect counter grew by one exactly when explained. The joining player's side
+/// only: the host cases (v0.111+, where the error says who hosts) are controls, their text the game's own. Then, outside the
+/// game's method: the English texts exactly (two cases), and in every language file the mod embeds, each kind's text
+/// translated (differs from English), its placeholders
 /// filled, no square bracket (the popup reads BBCode). <c>backoff</c>: another mod's patch is on <c>GetErrorString</c>
 /// (scenario <c>joinmsg</c>'s <c>foreignpatch</c>): every case must give the game's text alone. Changes no state: the patch's
 /// switch is put back, and the effect counters (bdperf's freeze).
@@ -29,7 +30,10 @@ internal static class JoinMismatchBench
 
     private static string Ours(string version, string tag = "") => ModEntry.Id + "-" + version + tag;
 
-    /// <summary>Name, this player's entries the other side lacks, the other side's this player lacks, host, the kind expected (null: none).</summary>
+    /// <summary>
+    /// Name, this player's entries the other side lacks, the other side's this player lacks, host, the kind
+    /// <see cref="JoinMismatchNote.Explain"/> must give (null: none; explained only on the joining player's side).
+    /// </summary>
     private static readonly (string Name, string[] Own, string[] Theirs, bool Host, string? Kind, string Reason)[] Cases =
     {
         ("you off, host on", new[] { Ours("v1.1.0", Off) }, new[] { Ours("v1.1.0") }, false, "off-you", "ModMismatch"),
@@ -40,11 +44,10 @@ internal static class JoinMismatchBench
         ("you none, host exactsnap-c", new[] { Ours("v1.1.0") }, new[] { Ours("v1.1.0", "+exactsnap-c") }, false, "exactsnap", "ModMismatch"),
         ("versions differ", new[] { Ours("v1.1.0") }, new[] { Ours("v1.0.3") }, false, "version", "ModMismatch"),
         ("versions and tags differ", new[] { Ours("v1.1.0", Off) }, new[] { Ours("v1.0.3") }, false, "version", "ModMismatch"),
-        ("host: you on, joining player off", new[] { Ours("v1.1.0") }, new[] { Ours("v1.1.0", Off) }, true, "on-you", "ModMismatch"),
-        ("host: you off, joining player on", new[] { Ours("v1.1.0", Off) }, new[] { Ours("v1.1.0") }, true, "off-you", "ModMismatch"),
-        ("host: exactsnap differs", new[] { Ours("v1.1.0") }, new[] { Ours("v1.1.0", "+exactsnap") }, true, "exactsnap", "ModMismatch"),
-        ("host: versions differ", new[] { Ours("v1.0.3") }, new[] { Ours("v1.1.0") }, true, "version", "ModMismatch"),
-        // Controls: the game's text alone.
+        // Controls: the game's text alone. The host's failed-join message (v0.111+) never gets the explanation (the owner's choice),
+        // even for lists the joining player's popup explains.
+        ("host's message: you on, joining player off", new[] { Ours("v1.1.0") }, new[] { Ours("v1.1.0", Off) }, true, "on-you", "ModMismatch"),
+        ("host's message: versions differ", new[] { Ours("v1.0.3") }, new[] { Ours("v1.1.0") }, true, "version", "ModMismatch"),
         ("another mod differs too", new[] { Ours("v1.1.0", Off), "OtherMod-v1.0" }, new[] { Ours("v1.1.0") }, false, null, "ModMismatch"),
         ("this mod missing on the host", new[] { Ours("v1.1.0", Off) }, Array.Empty<string>(), false, null, "ModMismatch"),
         ("this mod missing here", Array.Empty<string>(), new[] { Ours("v1.1.0") }, false, null, "ModMismatch"),
@@ -76,7 +79,7 @@ internal static class JoinMismatchBench
             {
                 if (host && !JoinMismatchNote.HasHostVariant)
                 {
-                    lines.Add($"JOINMSG case '{name}': skipped (no host variant on this game version)");
+                    lines.Add($"JOINMSG case '{name}': skipped (the game's error doesn't say who hosts on this version: the host gets no lists)");
                     continue;
                 }
                 NetErrorInfo info = Make(reason, own.ToList(), theirs.ToList(), host);
@@ -86,8 +89,8 @@ internal static class JoinMismatchBench
                 long before = JoinMismatchNote.Explained;
                 string patched = info.GetErrorString();
                 long grew = JoinMismatchNote.Explained - before;
-                (string Kind, string Text)? note = reason == "ModMismatch" ? JoinMismatchNote.Explain(own, theirs, host, language) : null;
-                string? expectedKind = backoff ? null : kind;
+                (string Kind, string Text)? note = reason == "ModMismatch" ? JoinMismatchNote.Explain(own, theirs, language) : null;
+                string? expectedKind = backoff || host ? null : kind;
                 string expected = note is { } n && expectedKind != null ? JoinMismatchNote.Append(game, n.Text) : game;
                 var wrong = new List<string>();
                 if (reason == "ModMismatch" && own.Concat(theirs).Any(entry => !game.Contains(entry, StringComparison.Ordinal)))
@@ -136,20 +139,17 @@ internal static class JoinMismatchBench
     private static void Texts(List<string> lines, List<string> problems)
     {
         string[] on = { Ours("v1.1.0") }, off = { Ours("v1.1.0", Off) }, snap = { Ours("v1.1.0", "+exactsnap") }, old = { Ours("v1.0.3") };
-        string? english = JoinMismatchNote.Explain(off, on, false, null)?.Text;
+        string? english = JoinMismatchNote.Explain(off, on, null)?.Text;
         if (english != JoinMismatchNote.OffYouText + "\n" + JoinMismatchNote.MustMatchText)
         {
             problems.Add($"English off-you text: '{Flat(english)}'");
         }
-        string? version = JoinMismatchNote.Explain(on, old, false, null)?.Text;
+        string? version = JoinMismatchNote.Explain(on, old, null)?.Text;
         if (version == null || !version.StartsWith("Every player needs the same version of Big Deck Optimization (yours: v1.1.0, the host's: v1.0.3).\n", StringComparison.Ordinal))
         {
             problems.Add($"English version text: '{Flat(version)}'");
         }
-        var kinds = new (string[] Own, string[] Theirs, bool Host)[]
-        {
-            (off, on, false), (on, off, false), (snap, on, false), (on, old, false), (off, on, true), (on, off, true), (snap, on, true), (on, old, true),
-        };
+        var kinds = new (string[] Own, string[] Theirs)[] { (off, on), (on, off), (snap, on), (on, old) };
         const string prefix = "BigDeckOptimization.Localization.";
         string[] languages = typeof(Translations).Assembly.GetManifestResourceNames()
             .Where(r => r.StartsWith(prefix, StringComparison.Ordinal) && r.EndsWith(".json", StringComparison.Ordinal))
@@ -157,11 +157,11 @@ internal static class JoinMismatchBench
         int texts = 0;
         foreach (string language in languages)
         {
-            foreach ((string[] own, string[] theirs, bool host) in kinds)
+            foreach ((string[] own, string[] theirs) in kinds)
             {
-                string? text = JoinMismatchNote.Explain(own, theirs, host, language)?.Text;
-                string? inEnglish = JoinMismatchNote.Explain(own, theirs, host, null)?.Text;
-                string what = $"{language} {JoinMismatchNote.Explain(own, theirs, host, null)?.Kind} ({(host ? "host" : "client")})";
+                string? text = JoinMismatchNote.Explain(own, theirs, language)?.Text;
+                string? inEnglish = JoinMismatchNote.Explain(own, theirs, null)?.Text;
+                string what = $"{language} {JoinMismatchNote.Explain(own, theirs, null)?.Kind}";
                 if (text == null || text == inEnglish || text.Split('\n').Intersect(inEnglish?.Split('\n') ?? Array.Empty<string>()).Any())
                 {
                     problems.Add($"{what}: not translated ('{Flat(text)}')");

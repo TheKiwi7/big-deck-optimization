@@ -2,9 +2,8 @@
 # row). Two local co-op sessions through coop.ps1 (its test slot 70: your own settings are never touched), the mod turned off
 # from the launch (a scenario's 'launchoff' line: --bdoff, before the main menu's --fastmp lobby builds the join lists):
 #   1. coopmixed: the host on, the client off: the game's join check refuses the client, its detail lines naming this mod's
-#      "+off" entry on the client's side and the host's untagged entry on the other. The game's error text explained
-#      (JoinMismatchNote): on the client "off-you" (its mod off, the host's on), and on v0.111+ also on the host "on-you"
-#      (v0.107.1's host gets no mod lists: nothing to explain there).
+#      "+off" entry on the client's side and the host's untagged entry on the other. The client's error text explained
+#      (JoinMismatchNote "off-you": its mod off, the host's on); the host's failed-join message keeps the game's text.
 #   2. coopbothoff: both off: they join, and the join list each game compares says "+off" (coopmodetag lines).
 #   powershell -ExecutionPolicy Bypass -File tools/autotest/coop-modetag.ps1
 # Exit code 1 when the mixed pair was not refused, the off pair did not join, or coop.ps1 found a problem in a log.
@@ -27,17 +26,14 @@ $refused = (Test-Path $clientLog) -and (Select-String -Path $clientLog -Pattern 
 if ($refused) { Write-Output "ok      coop-modetag: the client with the mod off was refused by the host with it on (the game's refusal names its '+off' entry and the host's)" }
 else { Write-Output "PROBLEM coop-modetag: the client with the mod off was not refused, or the game's refusal doesn't name its '+off' entry against the host's"; $bad++ }
 # The explanation added to the game's error text (JoinMismatchNote's log line, with the text it added): the client's mod off
-# against the host's on; on v0.111+ the host's failed-join message says it too, from the host's side.
+# against the host's on. The joining player only: the host's failed-join message keeps the game's text (no such line there).
 $explained = (Test-Path $clientLog) -and (Select-String -Path $clientLog -Pattern "JoinMismatchNote: join refused over this mod's entry \(off-you, client: BigDeckOptimization-v[0-9.]+\+off vs BigDeckOptimization-v[0-9.]+\)" -Quiet)
 if ($explained) { Write-Output "ok      coop-modetag: the client's error text explains it (its mod off, the host's on)" }
 else { Write-Output "PROBLEM coop-modetag: no JoinMismatchNote off-you explanation in the client's error text"; $bad++ }
-if ((Test-Path $hostLog) -and (Select-String -Path $hostLog -Pattern "Game declares v0\.107\." -Quiet)) {
-    Write-Output "ok      coop-modetag: host on v0.107.1, whose failed join carries no mod lists (no host explanation expected)"
+if ((Test-Path $hostLog) -and (Select-String -Path $hostLog -Pattern "JoinMismatchNote: join refused" -Quiet)) {
+    Write-Output "PROBLEM coop-modetag: JoinMismatchNote explained the host's failed-join message (the joining player only)"; $bad++
 }
-elseif ((Test-Path $hostLog) -and (Select-String -Path $hostLog -Pattern "JoinMismatchNote: join refused over this mod's entry \(on-you, host: BigDeckOptimization-v[0-9.]+ vs BigDeckOptimization-v[0-9.]+\+off\)" -Quiet)) {
-    Write-Output "ok      coop-modetag: the host's failed-join message explains it (its mod on, the joining player's off)"
-}
-else { Write-Output "PROBLEM coop-modetag: no JoinMismatchNote on-you explanation in the host's failed-join message (v0.111+)"; $bad++ }
+else { Write-Output "ok      coop-modetag: the host's failed-join message keeps the game's text" }
 # The mixed pair's games were just closed: coop.ps1 refuses to start while one is still exiting. Only the games that run
 # started are waited for (not a game the player opened meanwhile), 60 s at most; one still there is said, and the off pair isn't
 # run (coop.ps1 would refuse it, and an earlier session's logs would be judged instead).

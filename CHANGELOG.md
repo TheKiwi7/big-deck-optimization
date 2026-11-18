@@ -4,7 +4,7 @@
 
 <!-- Not released yet: waits for its in-game checks (DESIGN, the JoinMismatchNote row: scenario joinmsg, coop-modetag.ps1, started-off.ps1, on every supported game version). -->
 
-- Co-op: when the game refuses to let you join only because of this mod (it is on for one player and off for the other, its "Co-op state check" option is set differently next to mods like RitsuLib, or the versions differ), the game's "mods don't match" message now says which in plain words, in your language, and what to change: for the player joining, and on the game's newer versions (v0.111 and later) for the host too. It also says what every player must have the same (the mod on or off, its version, that option next to such mods), and that its other settings may differ.
+- Co-op: when the game refuses to let you join only because of this mod (it is on for one player and off for the other, its "Co-op state check" option is set differently next to mods like RitsuLib, or the versions differ), the "mods don't match" message the joining player gets now says which in plain words, in your language, and what to change. It also says what every player must have the same (the mod on or off, its version, that option next to such mods), and that its other settings may differ.
 
 ## v1.1.0
 

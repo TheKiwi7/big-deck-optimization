@@ -13,11 +13,12 @@ namespace BigDeckOptimization.Patches;
 /// The game's "mod mismatch" error, when it is only about this mod's join list entry (<see cref="CoopModeTag"/>), says why in
 /// plain words. The game lists each side's entries the other lacks: "BigDeckOptimization-v1.1.0+off" against
 /// "BigDeckOptimization-v1.1.0" tells a player nothing. When each side lists exactly one entry and both are this mod's, a
-/// postfix on <c>NetErrorInfo.GetErrorString</c> (the description the error popup shows: the joining player's popup, and on
-/// v0.111+ the host's failed-join message too, <c>localIsHost</c>) appends, after the game's own lines: the mod off on one
-/// side (the <see cref="CoopModeTag.OffSuffix"/> tag on one side only), the "Co-op state check" option set differently
+/// postfix on <c>NetErrorInfo.GetErrorString</c> (the description the joining player's error popup shows) appends, after the
+/// game's own lines: the mod off on one side (the <see cref="CoopModeTag.OffSuffix"/> tag on one side only), the "Co-op state check" option set differently
 /// (<see cref="CoopModeTag.ExactSnapSuffix"/> variants differing), or another version of this mod, then one line saying what
-/// must match. Any other difference (another mod, this mod missing on one side) keeps the game's text alone.
+/// must match. Any other difference (another mod, this mod missing on one side) keeps the game's text alone. The joining
+/// player only (the owner's choice): on v0.111+ the host's failed-join message is built from the same method, with
+/// <c>localIsHost</c> set, and keeps the game's text.
 ///
 /// Display only: the string the popup shows, built after the game decided to refuse the join; the join decision, the
 /// handshake and the lists are the game's (read, never changed). Applied even when the mod was turned off at the start
@@ -35,7 +36,7 @@ public static class JoinMismatchNote
     /// <summary><c>NetErrorInfo.GetErrorString</c>, game v0.107.1 (the extra info's two list fields, client only).</summary>
     private const string ErrorStringFingerprint107 = "5887659BB23A2849";
 
-    /// <summary><c>NetErrorInfo.GetErrorString</c>, game v0.111.0 to v0.113.1 (the extra info's list methods, host variant).</summary>
+    /// <summary><c>NetErrorInfo.GetErrorString</c>, game v0.111.0 to v0.113.1 (the extra info's list methods, client and host).</summary>
     private const string ErrorStringFingerprint111 = "2BAB11851CD139CA";
 
     /// <summary><c>ConnectionFailureExtraInfo.GetMissingModsOnRemote</c> / <c>GetMissingModsOnLocal</c>, game v0.111.0 to v0.113.1.</summary>
@@ -98,7 +99,7 @@ public static class JoinMismatchNote
         PatchSafety.WholePatch(Name);
     }
 
-    /// <summary>The game version's reading has a host variant (v0.111+: the host's failed-join message uses the same text).</summary>
+    /// <summary>The game version's error says which side hosts (v0.111+: the host's failed-join message uses the same text, left as the game's).</summary>
     internal static bool HasHostVariant => _extraGetter != null;
 
     private static void Postfix(ref NetErrorInfo __instance, ref string __result)
@@ -110,18 +111,19 @@ public static class JoinMismatchNote
         try
         {
             object boxed = __instance;
-            if (_reason!.GetValue(boxed)?.ToString() != "ModMismatch" || !Lists(boxed, out List<string>? own, out List<string>? theirs, out bool isHost))
+            // The joining player only: the host's failed-join message (v0.111+) keeps the game's text.
+            if (_reason!.GetValue(boxed)?.ToString() != "ModMismatch" || !Lists(boxed, out List<string>? own, out List<string>? theirs, out bool isHost) || isHost)
             {
                 return;
             }
             // Before the back-off check: a mismatch over other mods records no back-off of this patch.
-            if (Explain(own, theirs, isHost, LocManager.Instance?.Language) is not { } note || PatchSafety.IsFaulted(Name) || PatchSafety.IsPatchedByOthers(_original))
+            if (Explain(own, theirs, LocManager.Instance?.Language) is not { } note || PatchSafety.IsFaulted(Name) || PatchSafety.IsPatchedByOthers(_original))
             {
                 return;
             }
             __result = Append(__result, note.Text);
             Explained++;
-            Log.Info($"[{ModEntry.Id}] {Name}: join refused over this mod's entry ({note.Kind}, {(isHost ? "host" : "client")}: "
+            Log.Info($"[{ModEntry.Id}] {Name}: join refused over this mod's entry ({note.Kind}, client: "
                 + $"{string.Join(",", own!)} vs {string.Join(",", theirs!)}), explanation {Explained} added: {note.Text.Replace("\n", " / ")}");
         }
         catch (Exception e)
@@ -200,9 +202,10 @@ public static class JoinMismatchNote
     /// <summary>
     /// The explanation for these lists (see <see cref="Lists"/>), in this game language code (English without a translation),
     /// or null when they differ by more than this mod's entry: exactly one entry on each side, both this mod's. Kind: "version",
-    /// "off-you" (this player has the mod off, the other on), "on-you", "exactsnap". Pure (the bench feeds it synthetic lists).
+    /// "off-you" (this player, joining, has the mod off and the host on), "on-you", "exactsnap". The joining player's wording
+    /// (the host's message is left as the game's). Pure (the bench feeds it synthetic lists).
     /// </summary>
-    internal static (string Kind, string Text)? Explain(IReadOnlyList<string>? own, IReadOnlyList<string>? theirs, bool isHost, string? language)
+    internal static (string Kind, string Text)? Explain(IReadOnlyList<string>? own, IReadOnlyList<string>? theirs, string? language)
     {
         if (own is not { Count: 1 } || theirs is not { Count: 1 }
             || !TryParse(own[0], out string ownVersion, out string ownTag) || !TryParse(theirs[0], out string theirVersion, out string theirTag))
@@ -214,8 +217,7 @@ public static class JoinMismatchNote
         if (ownVersion != theirVersion)
         {
             kind = "version";
-            text = (isHost ? Translations.Get(language, "join.host.version", HostVersionText) : Translations.Get(language, "join.version", VersionText))
-                .Replace("{yours}", ownVersion).Replace("{theirs}", theirVersion);
+            text = Translations.Get(language, "join.version", VersionText).Replace("{yours}", ownVersion).Replace("{theirs}", theirVersion);
         }
         else if (ownTag == theirTag)
         {
@@ -224,17 +226,17 @@ public static class JoinMismatchNote
         else if (ownTag == CoopModeTag.OffSuffix)
         {
             kind = "off-you";
-            text = isHost ? Translations.Get(language, "join.host.off_you", HostOffYouText) : Translations.Get(language, "join.off_you", OffYouText);
+            text = Translations.Get(language, "join.off_you", OffYouText);
         }
         else if (theirTag == CoopModeTag.OffSuffix)
         {
             kind = "on-you";
-            text = isHost ? Translations.Get(language, "join.host.on_you", HostOnYouText) : Translations.Get(language, "join.on_you", OnYouText);
+            text = Translations.Get(language, "join.on_you", OnYouText);
         }
         else
         {
             kind = "exactsnap";
-            text = isHost ? Translations.Get(language, "join.host.exactsnap", HostExactSnapText) : Translations.Get(language, "join.exactsnap", ExactSnapText);
+            text = Translations.Get(language, "join.exactsnap", ExactSnapText);
         }
         return (kind, text + "\n" + Translations.Get(language, "join.must_match", MustMatchText));
     }
@@ -246,23 +248,11 @@ public static class JoinMismatchNote
     public const string OnYouText =
         "Big Deck Optimization is on for you but turned off for the host. Every player must have it on, or every player off: turn it off (its settings, or bdopt off in the console), or ask the host to turn it on, then join again.";
 
-    public const string HostOffYouText =
-        "Big Deck Optimization is turned off for you but on for the player who tried to join. Every player must have it on, or every player off: turn it on (its settings, or bdopt on in the console; restart the game if it asks), or ask them to turn it off, then they can join again.";
-
-    public const string HostOnYouText =
-        "Big Deck Optimization is on for you but turned off for the player who tried to join. Every player must have it on, or every player off: turn it off (its settings, or bdopt off in the console), or ask them to turn it on, then they can join again.";
-
     public const string ExactSnapText =
         "The \"Co-op state check\" option of Big Deck Optimization isn't set the same way as the host's (next to mods like RitsuLib, it decides how that check works): set it the same way, then join again. If it already is, load the same mods in the same order as the host and restart the game.";
 
-    public const string HostExactSnapText =
-        "The \"Co-op state check\" option of Big Deck Optimization isn't set the same way for you and for the player who tried to join (next to mods like RitsuLib, it decides how that check works): set it the same way, then they can join again. If it already is, both games must load the same mods in the same order (restart them).";
-
     public const string VersionText =
         "Every player needs the same version of Big Deck Optimization (yours: {yours}, the host's: {theirs}).";
-
-    public const string HostVersionText =
-        "Every player needs the same version of Big Deck Optimization (yours: {yours}, the joining player's: {theirs}).";
 
     public const string MustMatchText =
         "What every player must have the same for Big Deck Optimization: the mod on or off, its version and, next to mods like RitsuLib, its \"Co-op state check\" option. Its other settings may differ (the fast combat start is on for every player in co-op anyway).";

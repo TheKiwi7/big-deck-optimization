@@ -71,11 +71,7 @@
   "card_type_line.desc": "配合 BaseLib：在没有已安装模组修改卡牌类型栏时，显示每张卡牌的类型栏而无需在战斗中的所有卡牌里查找修改它的模组（滚动抽牌堆、刷新手牌）。文本相同。",
   "join.off_you": "你的 Big Deck Optimization 已关闭，但房主的已开启。所有玩家必须都开启或都关闭：开启它（在其设置中，或在控制台输入 bdopt on；如有提示请重启游戏），或请房主关闭它，然后重新加入。",
   "join.on_you": "你的 Big Deck Optimization 已开启，但房主的已关闭。所有玩家必须都开启或都关闭：关闭它（在其设置中，或在控制台输入 bdopt off），或请房主开启它，然后重新加入。",
-  "join.host.off_you": "你的 Big Deck Optimization 已关闭，但尝试加入的玩家的已开启。所有玩家必须都开启或都关闭：开启它（在其设置中，或在控制台输入 bdopt on；如有提示请重启游戏），或请该玩家关闭它，之后对方即可重新加入。",
-  "join.host.on_you": "你的 Big Deck Optimization 已开启，但尝试加入的玩家的已关闭。所有玩家必须都开启或都关闭：关闭它（在其设置中，或在控制台输入 bdopt off），或请该玩家开启它，之后对方即可重新加入。",
   "join.exactsnap": "Big Deck Optimization 的“联机状态校验”选项与房主的设置不同（与 RitsuLib 等模组一起使用时，它决定该校验的工作方式）：请设为相同，然后重新加入。如果已经相同，请按与房主相同的顺序加载相同的模组，并重启游戏。",
-  "join.host.exactsnap": "你和尝试加入的玩家的 Big Deck Optimization“联机状态校验”选项设置不同（与 RitsuLib 等模组一起使用时，它决定该校验的工作方式）：设为相同后，对方即可重新加入。如果已经相同，两边的游戏必须按相同顺序加载相同的模组（请重启）。",
   "join.version": "所有玩家都需要相同版本的 Big Deck Optimization（你的：{yours}，房主的：{theirs}）。",
-  "join.host.version": "所有玩家都需要相同版本的 Big Deck Optimization（你的：{yours}，尝试加入的玩家的：{theirs}）。",
   "join.must_match": "Big Deck Optimization 中所有玩家必须相同的项：模组开启或关闭、版本，以及与 RitsuLib 等模组一起使用时的“联机状态校验”选项。其他设置可以不同（合作模式下快速开始战斗对所有玩家都始终开启）。"
 }
