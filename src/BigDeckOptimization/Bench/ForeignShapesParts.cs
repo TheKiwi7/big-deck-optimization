@@ -24,6 +24,7 @@ public static class ForeignShapesParts
         "sort-gated-postfix", "sort-nearmiss-postfix",
         "ng-guard", "ng-true-guard", "ng-call-guard",
         "nullfill-postfix", "nullfill-nearmiss-postfix",
+        "latch-postfix", "latch-reset-postfix", "latch-open-postfix",
         // Not a shape: "foreignpatch c0-override constant|patch|subclass|stateful" (rule C0: classes of "another mod" emitted into a
         // dynamic assembly, overriding PowerModel.OwnerIsSecondaryEnemy, which CardFlightLimit's combat-end check reaches).
         "c0-override",
@@ -38,6 +39,7 @@ public static class ForeignShapesParts
     {
 #if BENCH
         "skippedaddbumps" => FastListeners.SkippedAddBumps,
+        "latched" => LazyGuard.LatchedChecks,
 #endif
         _ => throw new ArgumentException("parts-require: unknown counter " + name),
     };
@@ -71,6 +73,7 @@ public static class ForeignShapesParts
                 $"FOREIGN display {parts[1]} sort-gated-postfix squeeze calls {SortGates.SqueezeCalls}",
                 $"FOREIGN display {parts[1]} sort-nearmiss-postfix every call {SortGates.EveryCall}",
                 $"FOREIGN display {parts[1]} nullfill-postfix null results {NullFillNulls}, nearmiss every call {NullFillEvery}",
+                $"FOREIGN display {parts[1]} latch runs {LatchRuns}",
             };
         }
         MethodBase target = (parts[1].Contains("::", StringComparison.Ordinal) ? MethodFingerprint.Resolve(typeof(AbstractModel).Assembly, parts[1]) : AccessTools.Method(parts[1]))
@@ -139,6 +142,23 @@ public static class ForeignShapesParts
                 }
                 harmony.Patch(target, postfix: new HarmonyMethod(EmitNullFill(shape == "nullfill-nearmiss-postfix")) { priority = priority });
                 break;
+            case "latch-postfix":
+            case "latch-reset-postfix":
+            case "latch-open-postfix":
+            {
+                // Rule latch (All Timeline Unlock's GetProgressPatch on SaveManager.Progress): a postfix returning at once when its
+                // private flag is set, the flag only ever set (latch-postfix: accepted once it ran, which the install makes happen by
+                // reading the getter once); controls: the class also clears the flag in another method (latch-reset-postfix), the
+                // flag set only by a method nobody calls (latch-open-postfix: the latch stays open). Release-build IL emitted. They
+                // count their runs only (display).
+                MethodInfo postfix = EmitLatch(shape);
+                harmony.Patch(target, postfix: new HarmonyMethod(postfix) { priority = priority });
+                if (target is MethodInfo { IsStatic: false } getter && getter.GetParameters().Length == 0 && target.DeclaringType == typeof(MegaCrit.Sts2.Core.Saves.SaveManager))
+                {
+                    _ = getter.Invoke(MegaCrit.Sts2.Core.Saves.SaveManager.Instance, null);
+                }
+                break;
+            }
             default:
                 throw new ArgumentException("unknown shape " + shape);
         }
@@ -150,7 +170,50 @@ public static class ForeignShapesParts
 
     private static int _guards;
 
-    public static long NullFillNulls, NullFillEvery;
+    public static long NullFillNulls, NullFillEvery, LatchRuns;
+
+    public static void CountLatch() => LatchRuns++;
+
+    /// <summary>
+    /// The latch postfix as a Release build gives it: <c>ldsfld _ran; brtrue.s L; ldc.i4.1; stsfld _ran; call CountLatch; L: ret</c>
+    /// (_ran private static bool of its own class). latch-reset-postfix adds a method storing false; latch-open-postfix stores the
+    /// flag in a method of its own nobody calls, not in the postfix.
+    /// </summary>
+    private static MethodInfo EmitLatch(string shape)
+    {
+        if (_c0Module == null)
+        {
+            string unique = "BdoC0Shapes" + Environment.TickCount64.ToString("X");
+            _c0Module = System.Reflection.Emit.AssemblyBuilder.DefineDynamicAssembly(new AssemblyName(unique), System.Reflection.Emit.AssemblyBuilderAccess.Run)
+                .DefineDynamicModule(unique);
+        }
+        System.Reflection.Emit.TypeBuilder type = _c0Module.DefineType("BdoLatch" + (++_guards),
+            TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed | TypeAttributes.Class | TypeAttributes.BeforeFieldInit);
+        System.Reflection.Emit.FieldBuilder ran = type.DefineField("_ran", typeof(bool), FieldAttributes.Private | FieldAttributes.Static);
+        System.Reflection.Emit.MethodBuilder method = type.DefineMethod("Postfix", MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.HideBySig,
+            typeof(void), Type.EmptyTypes);
+        System.Reflection.Emit.ILGenerator il = method.GetILGenerator();
+        System.Reflection.Emit.Label done = il.DefineLabel();
+        il.Emit(System.Reflection.Emit.OpCodes.Ldsfld, ran);
+        il.Emit(System.Reflection.Emit.OpCodes.Brtrue_S, done);
+        if (shape != "latch-open-postfix")
+        {
+            il.Emit(System.Reflection.Emit.OpCodes.Ldc_I4_1);
+            il.Emit(System.Reflection.Emit.OpCodes.Stsfld, ran);
+        }
+        il.Emit(System.Reflection.Emit.OpCodes.Call, typeof(ForeignShapesParts).GetMethod(nameof(CountLatch))!);
+        il.MarkLabel(done);
+        il.Emit(System.Reflection.Emit.OpCodes.Ret);
+        if (shape != "latch-postfix")
+        {
+            System.Reflection.Emit.ILGenerator other = type.DefineMethod(shape == "latch-reset-postfix" ? "Reset" : "Set",
+                MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.HideBySig, typeof(void), Type.EmptyTypes).GetILGenerator();
+            other.Emit(shape == "latch-reset-postfix" ? System.Reflection.Emit.OpCodes.Ldc_I4_0 : System.Reflection.Emit.OpCodes.Ldc_I4_1);
+            other.Emit(System.Reflection.Emit.OpCodes.Stsfld, ran);
+            other.Emit(System.Reflection.Emit.OpCodes.Ret);
+        }
+        return type.CreateType()!.GetMethod("Postfix", BindingFlags.Public | BindingFlags.Static)!;
+    }
 
     public static void CountNullFill() => NullFillNulls++;
 

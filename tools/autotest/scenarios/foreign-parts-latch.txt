@@ -1,0 +1,76 @@
+# RelicFlashMerge next to a one-time patch of another mod on save code (mod on, one side; rule latch of 2026-11-18, All Timeline
+# Unlock's GetProgressPatch on SaveManager.Progress): a postfix returning at once when its private flag is set, the flag only ever
+# set. Once it ran (the install reads the getter once), none of its code can run again: flashes still merge (RelicFlashMerge grew),
+# a kept note names it. Controls (each a new run): the same class also clearing the flag elsewhere (latch-reset-postfix), and a
+# flag nobody sets (latch-open-postfix): every flash kept (RelicFlashMerge same), the back-off recorded. Release-build IL emitted
+# (Bench/ForeignShapesParts.cs). A campfire clone (~945 cards, Bing Bong) per phase.
+timeout 2000
+expect FOREIGN kept RelicFlashMerge: other mods' code that has already run once and can't run again \(.*SaveManager\.get_Progress.*\)
+expect EFFECTCHECK RelicFlashMerge grew since 'latch'
+expect FOREIGN parts latched [1-9]
+expect RelicFlashMerge: SaveManager\.get_Progress is also patched by bdtest\.foreign\.latch-reset-postfix: normal game for that part
+expect EFFECTCHECK RelicFlashMerge same since 'latchreset'
+expect RelicFlashMerge: SaveManager\.get_Progress is also patched by bdtest\.foreign\.latch-open-postfix: normal game for that part
+expect EFFECTCHECK RelicFlashMerge same since 'latchopen'
+# Phase latch: accepted once it ran.
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+foreignpatch latch-postfix MegaCrit.Sts2.Core.Saves.SaveManager:get_Progress
+wait 3
+effects latch
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+effects latch end
+effectcheck RelicFlashMerge grew latch
+foreignpatch report latch
+foreignpatch parts-require latched
+foreignpatch parts-report latch
+cmd bdopt why
+foreignpatch remove
+# Phase latchreset (control).
+tomenu
+wait 2
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+foreignpatch latch-reset-postfix MegaCrit.Sts2.Core.Saves.SaveManager:get_Progress
+wait 3
+effects latchreset
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+effects latchreset end
+effectcheck RelicFlashMerge same latchreset
+cmd bdopt why
+foreignpatch remove
+# Phase latchopen (control).
+tomenu
+wait 2
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+foreignpatch latch-open-postfix MegaCrit.Sts2.Core.Saves.SaveManager:get_Progress
+wait 3
+effects latchopen
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+effects latchopen end
+effectcheck RelicFlashMerge same latchopen
+cmd bdopt why
+foreignpatch remove
+quit
