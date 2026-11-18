@@ -18,10 +18,12 @@ public enum PatchTolerance
 
     /// <summary>
     /// Only for a call site where the original always runs and this mod's code around it keeps its effect identical (no prefix of
-    /// this mod skips it), or where every prefix of this mod that may skip it backs off from any other mod's postfix itself
-    /// (HookSkip's <c>Hook</c> methods that HookFilter also mirrors: the mirror checks the same method with
-    /// <see cref="PrefixesOnly"/>, so with a postfix there the original runs; an invariant both call sites name): patches that
-    /// run around that code and can't change how it runs are let stand.
+    /// this mod skips it), or where every prefix of this mod that may skip it answers exactly as the original, throws from the
+    /// prefix what the original's own code would throw (Harmony then runs no postfix, as the game runs none) and backs off
+    /// itself from the postfixes that could see the difference (HookSkip's <c>Hook</c> methods that HookFilter also mirrors: the
+    /// mirror checks the same method with <see cref="BeforeReplace"/>, which refuses postfixes reading <c>__runOriginal</c> or
+    /// <c>__args</c> or writing by reference, so with one of those there the original runs; an invariant both call sites name):
+    /// patches that run around that code and can't change how it runs are let stand.
     /// <list type="bullet">
     /// <item>A postfix whose parameters are all by value, except <c>__result</c> (the caller gets what it leaves there, as without
     /// this mod) and <c>__state</c> (its own prefix's): no other <c>ref</c>/<c>out</c> parameter (this mod's finalizers read the
@@ -45,14 +47,6 @@ public enum PatchTolerance
     SurroundingOnly,
 
     /// <summary>
-    /// For a call site where a prefix of this mod answers for the original and skips it (HookFilter's mirrors): only the void
-    /// prefixes <see cref="SurroundingOnly"/> lets stand, sorted before every prefix of this mod. No postfix: after a skipping
-    /// prefix Harmony still runs them, where the game would not always (a listener exception passed on after the skip: vanilla
-    /// runs no postfix), and they would see <c>__runOriginal</c> false.
-    /// </summary>
-    PrefixesOnly,
-
-    /// <summary>
     /// Only for a method whose calls this mod skips for instances of some types and keeps for the others: HookSkip's
     /// <c>AbstractModel</c> defaults (skipped for listener types keeping the default), LimitlessCloneMemo's card methods one
     /// level down its clone chain (skipped with the chain, per saved card type; LimitlessHookSkip's storage card too). A prefix
@@ -67,7 +61,9 @@ public enum PatchTolerance
     /// <summary>
     /// For a call site where a bool prefix of this mod answers for the original from its own state and skips it, with no
     /// bookkeeping of its own that must run and no code of this mod reading around the method (PileIndex's
-    /// <c>CardModel.Pile</c>): what <see cref="SurroundingOnly"/> lets stand, plus prefixes of other mods returning bool or taking
+    /// <c>CardModel.Pile</c>), or answers exactly as the original's code would and throws from the prefix the exception that code
+    /// would throw at the same point (HookFilter's mirrors, since 2026-11-18: a listener's own exception rethrown, so Harmony runs
+    /// no postfix then, as the game runs none): what <see cref="SurroundingOnly"/> lets stand, plus prefixes of other mods returning bool or taking
     /// <c>ref __result</c>, when Harmony sorts them before every prefix of this mod on the method (each copy). Exact: one that
     /// returns false (or leaves <c>__runOriginal</c> false) makes Harmony skip this mod's prefix as it skips the original, the
     /// caller getting its answer as without this mod; one that returns true leaves the call to this mod's prefix, whose answer
@@ -95,8 +91,9 @@ public enum PatchTolerance
     /// <summary>
     /// For a method whose only code of this mod is a transpiler that keeps what the body does (HookSkip's <c>Hook</c> methods:
     /// its walk redirect drops only listeners whose calls are no-ops), plus at most HookFilter's mirror (which checks the same
-    /// method with <see cref="PrefixesOnly"/> itself, once per ListenerCache scope, and runs the original whenever anything more
-    /// than a void prefix sorted before it is there), this mod's read-only guard finalizer and order-free prefixes
+    /// method with <see cref="BeforeReplace"/> itself, once per ListenerCache scope, and runs the original whenever anything that
+    /// tolerance refuses is there: a postfix reading <c>__runOriginal</c> or <c>__args</c> or writing by reference, a bool prefix
+    /// sorted after the mirror, a finalizer), this mod's read-only guard finalizer and order-free prefixes
     /// (<see cref="OrderFreePrefixAttribute"/>: LimitlessHookSkip's sampling prefixes, the test builds' probes): prefixes and
     /// postfixes of every shape stand (bool,
     /// <c>ref __result</c>, arguments written by reference, <c>__args</c>, <c>__runOriginal</c>, factories, renamed parameters).
@@ -168,7 +165,6 @@ public static partial class PatchSafety
     internal static string ToleranceText(PatchTolerance tolerance) => tolerance switch
     {
         PatchTolerance.SurroundingOnly => "postfixes and void prefixes",
-        PatchTolerance.PrefixesOnly => "void prefixes",
         PatchTolerance.TypeGated => "patches gated on the listener's type",
         PatchTolerance.BeforeReplace => "postfixes and prefixes running before this mod's",
         PatchTolerance.NullSkipped => "postfixes doing nothing for a null result",
@@ -507,7 +503,7 @@ public static partial class PatchSafety
                 };
             }
             // TranspiledOnly: no prefix or finalizer of this mod skips or reads around the body there (the caller checks this
-            // mod's own patches; HookFilter's mirror checks PrefixesOnly itself and runs the original when one of these is
+            // mod's own patches; HookFilter's mirror checks BeforeReplace itself and runs the original when one of these is
             // there), so any prefix or postfix runs exactly as without this mod: no shape to judge, factories and renamed
             // parameters included (Harmony binds and builds them the same with or without this mod).
             if (tolerance == PatchTolerance.TranspiledOnly)
@@ -615,10 +611,6 @@ public static partial class PatchSafety
         if (kind == PatchKind.Postfix)
         {
             // BeforeReplace: postfixes as SurroundingOnly's (below).
-            if (tolerance == PatchTolerance.PrefixesOnly)
-            {
-                return "postfix (a prefix of this mod skips the original here: Harmony runs postfixes where the game may not)";
-            }
             ParameterInfo[] postfixParameters = method.GetParameters();
             foreach (ParameterInfo parameter in postfixParameters)
             {
@@ -1014,7 +1006,7 @@ public static partial class PatchSafety
             string gated = Intolerable(method, info, patch, kind, PatchTolerance.TypeGated, gates) is { } whyGated ? "backs off (" + whyGated + ")"
                 : "tolerated, gates " + string.Join("|", gates.Select(g => g.Name));
             lines.Add($"{patch.owner} {kind} {patchMethod?.DeclaringType?.Name}.{patchMethod?.Name} priority {patch.priority}: SurroundingOnly {Verdict(PatchTolerance.SurroundingOnly)}; "
-                + $"PrefixesOnly {Verdict(PatchTolerance.PrefixesOnly)}; TypeGated {gated}; BeforeReplace {Verdict(PatchTolerance.BeforeReplace)}; "
+                + $"TypeGated {gated}; BeforeReplace {Verdict(PatchTolerance.BeforeReplace)}; "
                 + $"NullSkipped {Verdict(PatchTolerance.NullSkipped)}; TranspiledOnly {Verdict(PatchTolerance.TranspiledOnly)}");
         }
         return lines;

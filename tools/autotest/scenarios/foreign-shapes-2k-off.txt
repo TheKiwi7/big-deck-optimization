@@ -10,7 +10,7 @@ enemyhp 999999
 # (1) no-op postfix and void prefixes: tolerated, the optimizations keep running.
 foreignpatch noop-postfix MegaCrit.Sts2.Core.Hooks.Hook:AfterCardDrawn
 foreignpatch noop-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:RemoveInternal
-# Void prefixes Harmony runs before HookFilter's mirrors (priority First): tolerated (PrefixesOnly). On the cost color helper a
+# Void prefixes Harmony runs before HookFilter's mirrors (priority First): tolerated (BeforeReplace). On the cost color helper a
 # no-op only: the Debug re-check (on side) calls that helper again 1 in 64, a counting shape there would differ for that reason.
 foreignpatch noop-prefix MegaCrit.Sts2.Core.Hooks.Hook:ShouldPlay priority 800
 foreignpatch noop-prefix MegaCrit.Sts2.Core.Helpers.Models.CardCostHelper:TryModifyEnergyCostWithHooks priority 800
@@ -24,7 +24,8 @@ foreignpatch state-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal
 foreignpatch nested-postfix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal
 # (4) effects the checksums see. Squeeze gets Retain from a void prefix before HookFilter's keyword mirror (let stand there and by
 # HookSkip; SnapshotCardReuse's local keyword reads skip the hook, so they must back off). Squeeze costs 1 more from a postfix
-# changing the hook's result (HookSkip lets it stand; HookFilter's mirror and SnapshotCardReuse's cost reads back off). Each added
+# changing the hook's result (HookSkip and, since 2026-11-18, HookFilter's mirror let it stand: it sees the mirror's answer;
+# SnapshotCardReuse's cost reads, which skip the hook, back off). Each added
 # card's cost read before and after the add (prefix at the default priority, before this mod's tracking; postfix): a hook walk over
 # the cached piles while a card moves, summed as STATE lines.
 foreignpatch keyword-prefix MegaCrit.Sts2.Core.Hooks.Hook:ModifyKeywordsInCombat squeeze priority 800

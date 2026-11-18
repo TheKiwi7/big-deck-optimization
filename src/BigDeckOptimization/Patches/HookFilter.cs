@@ -23,16 +23,23 @@ namespace BigDeckOptimization.Patches;
 /// overrides the hook, in the same order, so results are identical.
 ///
 /// Each mirrored hook backs off (vanilla) whenever another mod has Harmony-patched that hook or its base method, since
-/// our mirror of the hook body would then no longer match what vanilla peers run; on the hook itself, only void prefixes Harmony
-/// runs before the mirror are let stand (<see cref="PatchTolerance.PrefixesOnly"/>). BaseLib patches
-/// <c>Hook.ModifyDamage</c> but not <c>Hook.ModifyDamageInternal</c>, which holds the listener loops.
+/// our mirror of the hook body would then no longer match what vanilla peers run; on the hook itself, the patches that run
+/// around the mirror exactly as around the original are let stand (<see cref="PatchTolerance.BeforeReplace"/>, since
+/// 2026-11-18): prefixes Harmony runs before the mirror (void, or bool and <c>ref __result</c>: one skipping the original skips
+/// the mirror the same), and postfixes by value or <c>ref __result</c> (they see the mirror's answer, the original's). Still
+/// refused: postfixes reading <c>__runOriginal</c> (false behind the mirror) or <c>__args</c>, by-reference writes,
+/// finalizers, transpilers, inner patches, prefixes sorted after the mirror. BaseLib patches <c>Hook.ModifyDamage</c> but not
+/// <c>Hook.ModifyDamageInternal</c>, which holds the listener loops.
 ///
 /// Exceptions: one thrown by this mod's code turns HookFilter off and the call runs the game's hook. One thrown by a
 /// listener's own code (the game's or a mod's, no frame of this mod between the throw and the mirror) is the one the game's
-/// loop throws at the same listener after the same calls: it goes on to the hook's caller as is (<see cref="PassOn"/>),
-/// nothing called twice, HookFilter stays on. When a frame of this mod is on the way (another patch of this mod the
-/// listener reached, or a listener the JIT inlined into the mirror), it counts as this mod's: HookFilter turns off and the
-/// game's hook calls the listeners before the thrower again (pure Try/Should/Modify methods: same results).
+/// loop throws at the same listener after the same calls: the mirror rethrows it from its prefix (<see cref="PassOn"/>), so
+/// Harmony runs no postfix (as the game runs none after a throw) and it goes on to the hook's caller as is, nothing called
+/// twice, HookFilter stays on. (Returning true there instead would rerun the game's hook: every listener before the thrower
+/// called again, a listener throwing only once then returning a value where the game threw.) When a frame of this mod is on the
+/// way (another patch of this mod the listener reached, or a listener the JIT inlined into the mirror), it counts as this
+/// mod's: HookFilter turns off and the game's hook calls the listeners before the thrower again (pure Try/Should/Modify
+/// methods: same results).
 /// </summary>
 public static class HookFilter
 {
@@ -74,14 +81,15 @@ public static class HookFilter
             }
         }
 
-        // The hook: only void prefixes Harmony runs before every prefix of this mod are let stand (PrefixesOnly: they run before
-        // the mirror as before the original without this mod). No postfix: the mirror skips the original, and Harmony then runs
-        // postfixes even when a listener threw (PassOn: the game runs none then) and hands them __runOriginal false.
-        // The default: no tolerance, a skipped listener skips its call to it. Callers that skip the hook call altogether
-        // (SnapshotCardReuse's fast reads) check the hook strictly themselves (HookMethodOf). HookSkip's SurroundingOnly check of
-        // these same Hook methods lets postfixes stand only because this PrefixesOnly check refuses them (the mirror then runs
-        // the original): an invariant, a change here needs one there.
-        public bool IsSafe() => _defaultHolds && !PatchSafety.IsPatchedByOthers(BaseMethod) && !PatchSafety.IsPatchedByOthers(_hookMethod, PatchTolerance.PrefixesOnly)
+        // The hook: BeforeReplace. Prefixes Harmony runs before every prefix of this mod run before the mirror as before the
+        // original (a bool one returning false skips both); postfixes see the mirror's __result and out values, the original's,
+        // and none runs when a listener threw (the mirror rethrows from its prefix: PassOn), as in the game. Postfixes reading
+        // __runOriginal (false behind the mirror) or __args, by-reference writes, finalizers and prefixes sorted after the mirror
+        // back off. The default: no tolerance, a skipped listener skips its call to it. Callers that skip the hook call altogether
+        // (SnapshotCardReuse's fast reads) check the hook strictly themselves (HookMethodOf). HookSkip's checks of these same Hook
+        // methods (SurroundingOnly, TranspiledOnly) let stand shapes this check refuses only because it refuses them (the mirror
+        // then runs the original, transpiled): an invariant, a change here needs one there.
+        public bool IsSafe() => _defaultHolds && !PatchSafety.IsPatchedByOthers(BaseMethod) && !PatchSafety.IsPatchedByOthers(_hookMethod, PatchTolerance.BeforeReplace)
             && (!_combatWalk || !CombatHookWalkPatched());
 
         /// <summary>The hook (or helper) method whose call this list stands for.</summary>
@@ -95,7 +103,7 @@ public static class HookFilter
                 return;
             }
             PatchSafety.Watch(Name, BaseMethod);
-            PatchSafety.Watch(Name, _hookMethod, PatchTolerance.PrefixesOnly);
+            PatchSafety.Watch(Name, _hookMethod, PatchTolerance.BeforeReplace);
             if (_combatWalk)
             {
                 PatchSafety.WatchAll(Name, CombatHookWalkParts);
@@ -397,8 +405,8 @@ public static class HookFilter
         {
             hook.Watch();
         }
-        PatchSafety.Watch(Name, HookFilterCostColors.EnergyCostColor, PatchTolerance.PrefixesOnly);
-        PatchSafety.Watch(Name, HookFilterCostColors.StarCostColor, PatchTolerance.PrefixesOnly);
+        PatchSafety.Watch(Name, HookFilterCostColors.EnergyCostColor, PatchTolerance.BeforeReplace);
+        PatchSafety.Watch(Name, HookFilterCostColors.StarCostColor, PatchTolerance.BeforeReplace);
         // Display only: the lists come from ListenerCache's scopes, which hand them to this class only while no other mod patches
         // the two walks (ListenerCache.IsCaching: postfixes there are let stand for the walks' own calls, not for lists used
         // directly). Any patch there keeps all of this class vanilla (the menu's red title), not only a hook.
@@ -723,16 +731,16 @@ public static class HookFilter
     }
 
     /// <summary>
-    /// The listener exception a mirror caught, thrown from its hook by <see cref="RethrowFinalizer"/>. Between the two only
-    /// Harmony's postfixes and other finalizers of that hook run: other mods' postfixes and finalizers back off (IsSafe,
-    /// PrefixesOnly), so no other mirrored hook can run there and find it. Not cleared at a mirror's entry: a nested mirror would
-    /// erase an outer pending exception, and the outer hook return its partial result.
+    /// The listener exception a mirror rethrows from its prefix, until its hook's <see cref="RethrowFinalizer"/> runs: the mark
+    /// PatchGuard's guard reads (<see cref="IsPassedOn"/>), its stack trace holding the mirror's frame, which isn't this mod's
+    /// fault. Between the two only the hook's finalizers run (other mods' finalizers back off: BeforeReplace), so no other
+    /// mirrored hook runs there. Not cleared at a mirror's entry: a nested mirror would erase an outer pending mark.
     /// </summary>
     [ThreadStatic] private static Exception? _passOn;
 
     /// <summary>
-    /// A mirror's catch: true when <paramref name="e"/> is a listener's own exception (then thrown from the hook after the
-    /// prefix returns, see <see cref="RethrowFinalizer"/>: the prefix returns false); false when this mod's code threw it
+    /// A mirror's catch: true when <paramref name="e"/> is a listener's own exception (marked, then rethrown by the prefix:
+    /// <c>throw;</c>, so Harmony runs no postfix and the hook's finalizers pass it on); false when this mod's code threw it
     /// (HookFilter off, the prefix returns true: the game's hook runs).
     /// </summary>
     internal static bool PassOn(Exception e, Type mirror)
@@ -745,6 +753,12 @@ public static class HookFilter
         _passOn = e;
         return true;
     }
+
+    /// <summary>
+    /// The exception a mirror is passing on from its listener (PatchGuard's guard leaves it alone: the game's loop throws it at
+    /// the same point, and the mirror's frame in its trace is no fault of this mod). Read only when a guard sees an exception.
+    /// </summary>
+    internal static bool IsPassedOn(Exception e) => ReferenceEquals(e, _passOn);
 
     /// <summary>
     /// Whether no code of this mod lies between where <paramref name="e"/> was thrown and the mirror that caught it: the
@@ -774,24 +788,23 @@ public static class HookFilter
     }
 
     /// <summary>
-    /// Last finalizer of each mirrored hook (<see cref="Priority.Last"/>: after PatchGuard's guard, which then sees no
-    /// exception, so HookFilter isn't faulted by its frames): throws the listener exception the mirror caught, from the hook.
-    /// Harmony throws a returned exception with its stack trace restarting at the hook (this mod's frames gone, so no guard
-    /// further up blames this patch either). A method with a finalizer returning an exception does that for every exception,
-    /// so the game's own exceptions passing through these hooks lose their trace too, whether the mirror ran or not (outside
-    /// scopes, HookFilter or the mod off: the finalizer stays for the session): both are logged here with their full trace
-    /// first, the only place it is kept (one warning per exception).
+    /// Last finalizer of each mirrored hook (<see cref="Priority.Last"/>: after PatchGuard's guard, which leaves a listener
+    /// exception a mirror rethrew alone, <see cref="IsPassedOn"/>): clears that mark and returns the exception. Harmony throws a
+    /// returned exception with its stack trace restarting at the hook (the mirror's frame gone, so no guard further up blames
+    /// this patch either). A method with a finalizer returning an exception does that for every exception, so the game's own
+    /// exceptions passing through these hooks lose their trace too, whether the mirror ran or not (outside scopes, HookFilter
+    /// or the mod off: the finalizer stays for the session): both are logged here with their full trace first, the only place
+    /// it is kept (one warning per exception).
     /// </summary>
     internal static Exception? RethrowFinalizer(Exception? __exception)
     {
-        // Runs at every call of these hot hooks: one thread-static read, no __originalMethod (a method lookup per call).
-        Exception? thrown = __exception ?? _passOn;
-        if (thrown != null)
+        // Runs at every call of these hot hooks: a null test, no __originalMethod (a method lookup per call).
+        if (__exception != null)
         {
             _passOn = null;
-            Log.Warn($"[{ModEntry.Id}] {Name}: a mirrored hook threw (passed on to its caller as the game would): {thrown}");
+            Log.Warn($"[{ModEntry.Id}] {Name}: a mirrored hook threw (passed on to its caller as the game would): {__exception}");
         }
-        return thrown;
+        return __exception;
     }
 
     internal static HarmonyMethod Finalizer => new(typeof(HookFilter), nameof(RethrowFinalizer)) { priority = Priority.Last };
@@ -809,9 +822,9 @@ public static class HookFilter
 
     /// <summary>
     /// One of HookFilter's mirror prefixes or its rethrowing finalizer. Each mirror checks its hook with
-    /// <see cref="PatchTolerance.PrefixesOnly"/> once per ListenerCache scope (<see cref="FilteredHook.IsSafe"/>, cached in the
-    /// thread-static <c>_safe</c> until the scope ends) and runs the game's hook when another mod has anything there but void
-    /// prefixes sorted before it. HookSkip's TranspiledOnly doesn't depend on when that check runs: a mirror skipping the hook
+    /// <see cref="PatchTolerance.BeforeReplace"/> once per ListenerCache scope (<see cref="FilteredHook.IsSafe"/>, cached in the
+    /// thread-static <c>_safe</c> until the scope ends) and runs the game's hook when another mod has anything there that
+    /// tolerance refuses. HookSkip's TranspiledOnly doesn't depend on when that check runs: a mirror skipping the hook
     /// skips the transpiled body with it (HookSkip changes nothing on that call), and a patch added mid-scope is HookFilter's
     /// own concern with or without HookSkip.
     /// </summary>
@@ -992,8 +1005,13 @@ internal static class HookFilterDamage
         }
         catch (Exception e)
         {
-            // A listener's own exception goes on to the caller as the game's loop throws it; this mod's: the game's hook.
-            return !HookFilter.PassOn(e, typeof(HookFilterDamage));
+            // A listener's own exception goes on to the caller from here, as the game's loop throws it (Harmony then runs no
+            // postfix, as the game runs none); this mod's: the game's hook.
+            if (HookFilter.PassOn(e, typeof(HookFilterDamage)))
+            {
+                throw;
+            }
+            return true;
         }
     }
 }
@@ -1059,8 +1077,13 @@ internal static class HookFilterEnergyCost
         }
         catch (Exception e)
         {
-            // A listener's own exception goes on to the caller as the game's loop throws it; this mod's: the game's hook.
-            return !HookFilter.PassOn(e, typeof(HookFilterEnergyCost));
+            // A listener's own exception goes on to the caller from here, as the game's loop throws it (Harmony then runs no
+            // postfix, as the game runs none); this mod's: the game's hook.
+            if (HookFilter.PassOn(e, typeof(HookFilterEnergyCost)))
+            {
+                throw;
+            }
+            return true;
         }
     }
 }
@@ -1105,8 +1128,13 @@ internal static class HookFilterKeywords
         }
         catch (Exception e)
         {
-            // A listener's own exception goes on to the caller as the game's loop throws it; this mod's: the game's hook.
-            return !HookFilter.PassOn(e, typeof(HookFilterKeywords));
+            // A listener's own exception goes on to the caller from here, as the game's loop throws it (Harmony then runs no
+            // postfix, as the game runs none); this mod's: the game's hook.
+            if (HookFilter.PassOn(e, typeof(HookFilterKeywords)))
+            {
+                throw;
+            }
+            return true;
         }
     }
 }
@@ -1175,8 +1203,13 @@ internal static class HookFilterShouldPlay
         }
         catch (Exception e)
         {
-            // A listener's own exception goes on to the caller as the game's loop throws it; this mod's: the game's hook.
-            return !HookFilter.PassOn(e, typeof(HookFilterShouldPlay));
+            // A listener's own exception goes on to the caller from here, as the game's loop throws it (Harmony then runs no
+            // postfix, as the game runs none); this mod's: the game's hook.
+            if (HookFilter.PassOn(e, typeof(HookFilterShouldPlay)))
+            {
+                throw;
+            }
+            return true;
         }
     }
 }
@@ -1253,8 +1286,13 @@ internal static class HookFilterHitting
         }
         catch (Exception e)
         {
-            // A listener's own exception goes on to the caller as the game's loop throws it; this mod's: the game's hook.
-            return !HookFilter.PassOn(e, typeof(HookFilterHitting));
+            // A listener's own exception goes on to the caller from here, as the game's loop throws it (Harmony then runs no
+            // postfix, as the game runs none); this mod's: the game's hook.
+            if (HookFilter.PassOn(e, typeof(HookFilterHitting)))
+            {
+                throw;
+            }
+            return true;
         }
     }
 }
@@ -1271,8 +1309,9 @@ internal static class HookFilterCostColors
     /// </summary>
     internal static bool EnergyCostColorPrefix(CardModel card, ICombatState state, ref decimal hookModifiedCost, ref bool __result)
     {
-        // Mirror of the whole helper, skipping it: only void prefixes sorted before this one are let stand (as the mirrored hooks).
-        if (!HookFilter.Active || state is not CombatState combat || PatchSafety.IsPatchedByOthers(EnergyCostColor, PatchTolerance.PrefixesOnly))
+        // Mirror of the whole helper, skipping it: what runs around it as around the helper is let stand (BeforeReplace, as the
+        // mirrored hooks).
+        if (!HookFilter.Active || state is not CombatState combat || PatchSafety.IsPatchedByOthers(EnergyCostColor, PatchTolerance.BeforeReplace))
         {
             return true;
         }
@@ -1316,8 +1355,13 @@ internal static class HookFilterCostColors
         }
         catch (Exception e)
         {
-            // A listener's own exception goes on to the caller as the game's loop throws it; this mod's: the game's hook.
-            return !HookFilter.PassOn(e, typeof(HookFilterCostColors));
+            // A listener's own exception goes on to the caller from here, as the game's loop throws it (Harmony then runs no
+            // postfix, as the game runs none); this mod's: the game's hook.
+            if (HookFilter.PassOn(e, typeof(HookFilterCostColors)))
+            {
+                throw;
+            }
+            return true;
         }
     }
 
@@ -1325,7 +1369,7 @@ internal static class HookFilterCostColors
     internal static bool StarCostColorPrefix(CardModel card, ICombatState state, ref decimal hookModifiedCost, ref bool __result)
     {
         // As the energy cost color helper.
-        if (!HookFilter.Active || state is not CombatState combat || PatchSafety.IsPatchedByOthers(StarCostColor, PatchTolerance.PrefixesOnly))
+        if (!HookFilter.Active || state is not CombatState combat || PatchSafety.IsPatchedByOthers(StarCostColor, PatchTolerance.BeforeReplace))
         {
             return true;
         }
@@ -1363,8 +1407,13 @@ internal static class HookFilterCostColors
         }
         catch (Exception e)
         {
-            // A listener's own exception goes on to the caller as the game's loop throws it; this mod's: the game's hook.
-            return !HookFilter.PassOn(e, typeof(HookFilterCostColors));
+            // A listener's own exception goes on to the caller from here, as the game's loop throws it (Harmony then runs no
+            // postfix, as the game runs none); this mod's: the game's hook.
+            if (HookFilter.PassOn(e, typeof(HookFilterCostColors)))
+            {
+                throw;
+            }
+            return true;
         }
     }
 

@@ -11,10 +11,10 @@ expect PileIndex: CardPile\.AddInternal is also patched by .*bdtest\.foreign\.pr
 expect PileIndex: CardPile\.RemoveInternal is also patched by bdtest\.foreign\.noop-prefix \(postfixes and void prefixes
 expect FastListeners: CardPile\.AddInternal is also patched by .*bdtest\.foreign\.probe-prefix.* \(postfixes
 expect CardDbScan: CardPile\.AddInternal is also patched by .*bdtest\.foreign\.probe-prefix.* \(postfixes
-expect HookFilter: Hook\.ShouldPlay is also patched by bdtest\.foreign\.noop-prefix \(void prefixes: run around
-expect HookFilter: Hook\.ModifyKeywordsInCombat is also patched by bdtest\.foreign\.keyword-prefix-squeeze \(void prefixes: run around
-expect HookFilter: CardCostHelper\.TryModifyEnergyCostWithHooks is also patched by bdtest\.foreign\.noop-prefix \(void prefixes: run around
-expect HookFilter: Hook\.ModifyEnergyCostInCombat is also patched by bdtest\.foreign\.cost-postfix-squeeze \(void prefixes not enough\): normal game for that part
+expect HookFilter: Hook\.ShouldPlay is also patched by bdtest\.foreign\.noop-prefix \(postfixes and prefixes running before this mod's: run around
+expect HookFilter: Hook\.ModifyKeywordsInCombat is also patched by bdtest\.foreign\.keyword-prefix-squeeze \(postfixes and prefixes running before this mod's: run around
+expect HookFilter: CardCostHelper\.TryModifyEnergyCostWithHooks is also patched by bdtest\.foreign\.noop-prefix \(postfixes and prefixes running before this mod's: run around
+expect HookFilter: Hook\.ModifyEnergyCostInCombat is also patched by bdtest\.foreign\.cost-postfix-squeeze \(postfixes and prefixes running before this mod's: run around this mod's code as without it\): kept
 expect HookSkip: Hook\.ModifyEnergyCostInCombat is also patched by bdtest\.foreign\.cost-postfix-squeeze \(prefixes and postfixes around the transpiled body: run around
 expect SnapshotCardReuse: Hook\.ModifyKeywordsInCombat is also patched by bdtest\.foreign\.keyword-prefix-squeeze: normal game for that part
 expect HookSkip: AbstractModel\.AfterCardPlayed is also patched by bdtest\.foreign\.gated-postfix-squeeze \(patches gated on the listener's type: Squeeze treated as overriding it, gated on the instance\): kept
@@ -41,9 +41,10 @@ expect FOREIGN runtime HookSkip Hook\.ModifyEnergyCostInCombat \(TranspiledOnly\
 expect FOREIGN runtime HookSkip AbstractModel\.AfterCardPlayed \(TypeGated\) kept [1-9]
 expect FOREIGN runtime HookSkip AbstractModel\.AfterPlayerTurnStartLate \(TypeGated\) kept [1-9]
 expect FOREIGN runtime HookSkip AbstractModel\.AfterSideTurnEnd \(TypeGated\) kept 0 backed off [1-9]
-expect FOREIGN runtime HookFilter Hook\.ModifyKeywordsInCombat \(PrefixesOnly\) kept [1-9]
-expect FOREIGN runtime HookFilter Hook\.ShouldPlay \(PrefixesOnly\) kept [1-9]
-expect FOREIGN runtime HookFilter Hook\.ModifyEnergyCostInCombat \(PrefixesOnly\) kept 0 backed off [1-9]
+expect FOREIGN runtime HookFilter Hook\.ModifyKeywordsInCombat \(BeforeReplace\) kept [1-9]
+expect FOREIGN runtime HookFilter Hook\.ShouldPlay \(BeforeReplace\) kept [1-9]
+expect FOREIGN runtime HookFilter Hook\.ModifyEnergyCostInCombat \(BeforeReplace\) kept [1-9]
+expect EFFECTCHECK HookFilter\.EnergyCost grew since 'start': [0-9]+ -> [1-9]
 expect FOREIGN runtime PileIndex CardPile\.AddInternal \(SurroundingOnly\) kept [1-9]
 expect FOREIGN runtime FastListeners CardPile\.AddInternal \(SurroundingOnly\) kept [1-9]
 expect FOREIGN runtime FastListeners CardPile\.RemoveInternal \(SurroundingOnly\) kept [1-9]
@@ -63,7 +64,7 @@ enemyhp 999999
 # (1) no-op postfix and void prefixes: tolerated, the optimizations keep running.
 foreignpatch noop-postfix MegaCrit.Sts2.Core.Hooks.Hook:AfterCardDrawn
 foreignpatch noop-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:RemoveInternal
-# Void prefixes Harmony runs before HookFilter's mirrors (priority First): tolerated (PrefixesOnly). On the cost color helper a
+# Void prefixes Harmony runs before HookFilter's mirrors (priority First): tolerated (BeforeReplace). On the cost color helper a
 # no-op only: the Debug re-check (on side) calls that helper again 1 in 64, a counting shape there would differ for that reason.
 foreignpatch noop-prefix MegaCrit.Sts2.Core.Hooks.Hook:ShouldPlay priority 800
 foreignpatch noop-prefix MegaCrit.Sts2.Core.Helpers.Models.CardCostHelper:TryModifyEnergyCostWithHooks priority 800
@@ -77,7 +78,8 @@ foreignpatch state-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal
 foreignpatch nested-postfix MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal
 # (4) effects the checksums see. Squeeze gets Retain from a void prefix before HookFilter's keyword mirror (let stand there and by
 # HookSkip; SnapshotCardReuse's local keyword reads skip the hook, so they must back off). Squeeze costs 1 more from a postfix
-# changing the hook's result (HookSkip lets it stand; HookFilter's mirror and SnapshotCardReuse's cost reads back off). Each added
+# changing the hook's result (HookSkip and, since 2026-11-18, HookFilter's mirror let it stand: it sees the mirror's answer;
+# SnapshotCardReuse's cost reads, which skip the hook, back off). Each added
 # card's cost read before and after the add (prefix at the default priority, before this mod's tracking; postfix): a hook walk over
 # the cached piles while a card moves, summed as STATE lines.
 foreignpatch keyword-prefix MegaCrit.Sts2.Core.Hooks.Hook:ModifyKeywordsInCombat squeeze priority 800
@@ -182,6 +184,7 @@ effectcheck HookSkip grew start
 effectcheck PileIndex grew start
 effectcheck FastListeners.Cache grew start
 effectcheck HookFilter grew start
+effectcheck HookFilter.EnergyCost grew start
 foreignpatch require tolerated
 cmd bdperf conflicts
 counters end

@@ -1170,10 +1170,11 @@ public static partial class HookSkip
             // Finalizers, transpilers (the IL judge aside) and inner patches still back off. Not on an async hook's state
             // machine: a patch there can read the machine's fields, the walk's enumerator among them, which the redirect makes
             // another object (strict, below). A postfix of an async hook subscribing to ExecutionFinished: Entry.Subscribed.
-            // Invariant with HookFilter: on the hooks it mirrors (a bool prefix of this mod skipping the original), anything but
-            // void prefixes sorted before the mirror stands here only because FilteredHook.IsSafe checks the same method with
-            // PrefixesOnly (once per ListenerCache scope), turning the mirror off (the original, transpiled, runs) whenever another
-            // mod has more there: a change to either check needs the other.
+            // Invariant with HookFilter: on the hooks it mirrors (a bool prefix of this mod skipping the original), what
+            // BeforeReplace refuses (postfixes reading __runOriginal or __args or writing by reference, prefixes sorted after the
+            // mirror) stands here only because FilteredHook.IsSafe checks the same method with BeforeReplace (once per
+            // ListenerCache scope), turning the mirror off (the original, transpiled, runs) whenever another mod has one there:
+            // a change to either check needs the other.
             // Other mods' transpilers on the transpiled code stand only when TranspilerJudge accepts what they produce (inserted
             // observers outside the listener iterations, or calls gated on the current listener's type: those types keep their
             // iterations, as gated defaults' do below). Everything else there still backs off.

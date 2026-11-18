@@ -4,8 +4,8 @@
 # EnchantLib's shape: a bool prefix answering Hook.ModifyBlock itself for an even block (ref __result, the out modifiers written)
 # with Harmony's __runOriginal idiom in a postfix there; Zone's: a postfix writing ModifyHpLost's out modifiers and __result
 # (monsters lose 1 HP more) and ShouldAllowTargeting's out preventer; a void prefix taking __args on ModifyHpLost and ShouldDie;
-# a bool prefix (returns true) on ModifyEnergyCostInCombat, where HookFilter's mirror backs off (PrefixesOnly) and HookSkip's
-# filtered walk stays. ~945 cards. The hooks keep running filtered (require filtered: names of the other game version listed and
+# a bool prefix (returns true) on ModifyEnergyCostInCombat, sorted before HookFilter's mirror (Priority.Last): kept there too
+# since 2026-11-18 (BeforeReplace), and HookSkip's filtered walk stays. ~945 cards. The hooks keep running filtered (require filtered: names of the other game version listed and
 # skipped), the patches' counts the same as mod off (STATE). A Shrug It Off played free (8 block, even) makes the replacing
 # prefix answer ModifyBlock at least once; ShouldDie is reached by the final kill (CreatureCmd.Kill, not forced).
 timeout 2400
@@ -13,7 +13,7 @@ expect HookSkip: Hook\.ModifyBlock is also patched by .*bdtest\.foreign\.hook-re
 expect HookSkip: Hook\.ModifyHpLost is also patched by .*bdtest\.foreign\.hook-out-write-postfix.* \(prefixes and postfixes around the transpiled body: run around this mod's code as without it\): kept
 expect HookSkip: Hook\.ShouldAllowTargeting is also patched by .*bdtest\.foreign\.hook-out-write-postfix.* \(prefixes and postfixes around the transpiled body: run around
 expect HookSkip: Hook\.ModifyEnergyCostInCombat is also patched by .*bdtest\.foreign\.bool-prefix.* \(prefixes and postfixes around the transpiled body: run around
-expect HookFilter: Hook\.ModifyEnergyCostInCombat is also patched by bdtest\.foreign\.bool-prefix \(void prefixes not enough\): normal game for that part
+expect HookFilter: Hook\.ModifyEnergyCostInCombat is also patched by bdtest\.foreign\.bool-prefix \(postfixes and prefixes running before this mod's: run around this mod's code as without it\): kept
 expect FOREIGN classify Hook\.ShouldDie: bdtest\.foreign\.hook-args-prefix Prefix .*SurroundingOnly backs off \(prefix taking __args.*TranspiledOnly tolerated
 expect FOREIGN classify Hook\.ModifyBlock: bdtest\.foreign\.hook-replacing-prefix Prefix .*SurroundingOnly backs off \(prefix returning Boolean.*TranspiledOnly tolerated
 expect FOREIGN runtime HookSkip Hook\.ModifyHpLost \(TranspiledOnly\) kept [1-9][0-9]* backed off 0
