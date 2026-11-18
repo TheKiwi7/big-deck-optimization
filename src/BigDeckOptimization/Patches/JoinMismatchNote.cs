@@ -25,7 +25,9 @@ namespace BigDeckOptimization.Patches;
 /// (<see cref="ModEntry.StartedOff"/>), as CoopModeTag is, and not tied to the master switch: the player whose mod is off is
 /// the one who most needs the explanation. Its own <see cref="Enabled"/> flag (test tooling only); an exception turns it off
 /// for the session (the game's text unchanged); another mod patching <c>GetErrorString</c> keeps the game's (and that mod's)
-/// text. Where the lists come from, per game version (the method's fingerprint picks the reading): v0.107.1 the client's
+/// text, but for postfixes Harmony runs before this one (Priority.Last; PostfixesBefore, 2026-11-18): they see the game's text
+/// as without this mod, and this one explains on the text they leave (in place of the game's two lines when it is still exactly
+/// those, else after it). Where the lists come from, per game version (the method's fingerprint picks the reading): v0.107.1 the client's
 /// <c>ConnectionFailureExtraInfo.missingModsOnHost</c> / <c>missingModsOnLocal</c> fields (JoinFlow's lists, client only);
 /// v0.111+ its <c>GetMissingModsOnRemote</c> / <c>GetMissingModsOnLocal</c> (the calls GetErrorString makes; both pure).
 /// </summary>
@@ -97,7 +99,7 @@ public static class JoinMismatchNote
         PatchGuard.Patch(harmony, original, postfix: new HarmonyMethod(typeof(JoinMismatchNote), nameof(Postfix)) { priority = Priority.Last });
         Applied = true;
         // The one gate in front of everything it does (display only).
-        PatchSafety.Watch(Name, original);
+        PatchSafety.Watch(Name, original, PatchTolerance.PostfixesBefore);
         PatchSafety.WholePatch(Name);
     }
 
@@ -119,7 +121,7 @@ public static class JoinMismatchNote
                 return;
             }
             // Before the back-off check: a mismatch over other mods records no back-off of this patch.
-            if (Explain(own, theirs, LocManager.Instance?.Language) is not { } note || PatchSafety.IsFaulted(Name) || PatchSafety.IsPatchedByOthers(_original))
+            if (Explain(own, theirs, LocManager.Instance?.Language) is not { } note || PatchSafety.IsFaulted(Name) || PatchSafety.IsPatchedByOthers(_original, PatchTolerance.PostfixesBefore))
             {
                 return;
             }

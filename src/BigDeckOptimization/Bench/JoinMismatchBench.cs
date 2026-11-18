@@ -20,8 +20,9 @@ namespace BigDeckOptimization.Bench;
 /// only: the host cases (v0.111+, where the error says who hosts) are controls, their text the game's own. Then, outside the
 /// game's method: the English texts exactly (two cases), and in every language file the mod embeds, each kind's text
 /// translated (differs from English), its placeholders
-/// filled, no square bracket (the popup reads BBCode). <c>backoff</c>: another mod's patch is on <c>GetErrorString</c>
-/// (scenario <c>joinmsg</c>'s <c>foreignpatch</c>): every case must give the game's text alone. Changes no state: the patch's
+/// filled, no square bracket (the popup reads BBCode). <c>backoff</c>: another mod's patch this patch can't run around is on
+/// <c>GetErrorString</c> (scenario <c>joinmsg</c>'s <c>foreignpatch</c>: a postfix sorted after this one): every case must give
+/// the game's text alone. A postfix sorted before this one is let stand: run without <c>backoff</c>, every case explained. Changes no state: the patch's
 /// switch is put back, and the effect counters (bdperf's freeze).
 /// </summary>
 internal static class JoinMismatchBench
