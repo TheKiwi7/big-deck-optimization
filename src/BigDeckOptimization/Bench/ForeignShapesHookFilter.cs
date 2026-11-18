@@ -22,6 +22,10 @@ namespace BigDeckOptimization.Bench;
 /// the default's result when the listener is a Squeeze (or a relic), nothing otherwise: gated on the instance's type, so HookFilter's
 /// damage lists keep those listeners (their calls reach the patched default) and every damage changes by the same amount on or off.</item>
 /// </list>
+/// <c>foreignpatch hookfilter synthetic &lt;Type:Method&gt;</c>: PatchSafety's verdicts on synthetic patches added to the method's real
+/// patch list, nothing installed (ReplayStateSkip's and JoinMismatchNote's controls, next to an accepted patch installed for real):
+/// a no-op postfix and a bool prefix at the default priority (each registered after every patch there), and a postfix and a bool
+/// prefix at Priority.Last registered after this mod's (sorted after them).
 /// <c>foreignpatch hookfilter gatedlists</c> (in combat): inside a refresh scope, each damage default's filtered run list against
 /// the run's listeners: every listener kept overrides the default or matches this scope's gates, and every listener matching a gate
 /// without overriding is kept (run again after a second gated postfix: the lists built with the first gates must not be reused).
@@ -49,7 +53,8 @@ public static class ForeignShapesHookFilter
             {
                 "throwonce" => ThrowOnce(),
                 "gatedlists" => GatedLists(),
-                _ => throw new ArgumentException("foreignpatch hookfilter throwonce|gatedlists"),
+                "synthetic" when parts.Length > 2 => Synthetic(AccessTools.Method(parts[2]) ?? throw new ArgumentException("no method " + parts[2])),
+                _ => throw new ArgumentException("foreignpatch hookfilter throwonce|gatedlists|synthetic <Type:Method>"),
             };
         }
         string shape = parts[0];
@@ -108,6 +113,31 @@ public static class ForeignShapesHookFilter
     {
         decimal same = hookModifiedCost;
         hookModifiedCost = same;
+    }
+
+    private static bool SyntheticTruePrefix() => true;
+
+    private static void SyntheticNoOpPostfix()
+    {
+    }
+
+    private static IReadOnlyList<string> Synthetic(MethodBase target)
+    {
+        HarmonyLib.Patches real = Harmony.GetPatchInfo(target) ?? throw new InvalidOperationException(Name(target) + " has no patch (this mod's should be there)");
+        int next = real.Prefixes.Concat(real.Postfixes).Select(p => p.index).DefaultIfEmpty(-1).Max() + 1;
+        MethodInfo prefix = AccessTools.Method(typeof(ForeignShapesHookFilter), nameof(SyntheticTruePrefix));
+        MethodInfo postfix = AccessTools.Method(typeof(ForeignShapesHookFilter), nameof(SyntheticNoOpPostfix));
+        var lines = new List<string>();
+        foreach ((string label, int priority) in new[] { ("default", Priority.Normal), ("last", Priority.Last) })
+        {
+            var addedPrefix = new Patch(prefix, next, ForeignPatches.IdPrefix + "synthetic-bool-prefix-" + label, priority, null, null, false);
+            var addedPostfix = new Patch(postfix, next + 1, ForeignPatches.IdPrefix + "synthetic-postfix-" + label, priority, null, null, false);
+            var info = new HarmonyLib.Patches(real.Prefixes.Append(addedPrefix).ToArray(), real.Postfixes.Append(addedPostfix).ToArray(),
+                real.Transpilers.ToArray(), real.Finalizers.ToArray(), real.InnerPrefixes.ToArray(), real.InnerPostfixes.ToArray());
+            lines.AddRange(PatchSafety.Describe(target, info).Where(l => l.Contains("synthetic-", StringComparison.Ordinal))
+                .Select(l => $"FOREIGN classify {Name(target)} (synthetic): {l}"));
+        }
+        return lines;
     }
 
     /// <summary>The gated damage postfixes: no static field nor initializer (a static constructor would refuse the gate).</summary>

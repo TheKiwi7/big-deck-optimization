@@ -103,6 +103,17 @@ public enum PatchTolerance
     /// (HookSkip.OwnPatchesOnly), else it asks <see cref="SurroundingOnly"/>.
     /// </summary>
     TranspiledOnly,
+
+    /// <summary>
+    /// For a call site where a bool prefix of this mod skips the original without answering for it, leaving out its effect by
+    /// design (ReplayStateSkip's <c>CombatReplayWriter.RecordChecksum</c>: the state left out of the debug recording, 2026-11-18):
+    /// the prefixes <see cref="BeforeReplace"/> lets stand, Harmony running them before every prefix of this mod (a void one runs as
+    /// before the original; a bool one returning false skips this mod's prefix as it skips the original, one returning true
+    /// leaves the call to it). No postfix: after this mod's skip it would run without the original's effect (a recording without
+    /// the entry), where the game runs it after one. Transpilers, finalizers, inner patches, factories, renamed parameters and
+    /// prefixes sorted after this mod's back off.
+    /// </summary>
+    BeforeSkip,
 }
 
 /// <summary>
@@ -167,6 +178,7 @@ public static partial class PatchSafety
         PatchTolerance.SurroundingOnly => "postfixes and void prefixes",
         PatchTolerance.TypeGated => "patches gated on the listener's type",
         PatchTolerance.BeforeReplace => "postfixes and prefixes running before this mod's",
+        PatchTolerance.BeforeSkip => "prefixes running before this mod's",
         PatchTolerance.NullSkipped => "postfixes doing nothing for a null result",
         PatchTolerance.TranspiledOnly => "prefixes and postfixes around the transpiled body",
         _ => "nothing",
@@ -610,6 +622,10 @@ public static partial class PatchSafety
         }
         if (kind == PatchKind.Postfix)
         {
+            if (tolerance == PatchTolerance.BeforeSkip)
+            {
+                return "postfix (a prefix of this mod skips the original here: it would run without the original's effect)";
+            }
             // BeforeReplace: postfixes as SurroundingOnly's (below).
             ParameterInfo[] postfixParameters = method.GetParameters();
             foreach (ParameterInfo parameter in postfixParameters)
@@ -639,7 +655,7 @@ public static partial class PatchSafety
         }
         // BeforeReplace: a prefix may answer for the original (return bool, set __result) when it runs before this mod's
         // (PrecedenceRefusal, asked by Intolerable): it skips this mod's answer exactly as it skips the original.
-        bool answers = tolerance == PatchTolerance.BeforeReplace;
+        bool answers = tolerance is PatchTolerance.BeforeReplace or PatchTolerance.BeforeSkip;
         if (method.ReturnType != typeof(void) && !(answers && method.ReturnType == typeof(bool)))
         {
             return $"prefix returning {method.ReturnType.Name} (may skip the original)";
@@ -1007,7 +1023,8 @@ public static partial class PatchSafety
                 : "tolerated, gates " + string.Join("|", gates.Select(g => g.Name));
             lines.Add($"{patch.owner} {kind} {patchMethod?.DeclaringType?.Name}.{patchMethod?.Name} priority {patch.priority}: SurroundingOnly {Verdict(PatchTolerance.SurroundingOnly)}; "
                 + $"TypeGated {gated}; BeforeReplace {Verdict(PatchTolerance.BeforeReplace)}; "
-                + $"NullSkipped {Verdict(PatchTolerance.NullSkipped)}; TranspiledOnly {Verdict(PatchTolerance.TranspiledOnly)}");
+                + $"NullSkipped {Verdict(PatchTolerance.NullSkipped)}; TranspiledOnly {Verdict(PatchTolerance.TranspiledOnly)}; "
+                + $"BeforeSkip {Verdict(PatchTolerance.BeforeSkip)}");
         }
         return lines;
     }

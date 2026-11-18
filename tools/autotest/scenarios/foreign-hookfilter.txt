@@ -10,6 +10,10 @@
 # R3's controls on the damage defaults (no gate read: the damage lists stay the game's): a static write before the type test, a gated
 # postfix in a class with a static initializer, a gated postfix whose own method is patched. Its accepted case:
 # foreign-hookfilter-2k-on/off.
+# ReplayStateSkip (rule "sorted before", BeforeSkip): a bool prefix at the default priority on RecordChecksum (sorted before its
+# prefix, Priority.Last) stands, the states above 1,000 combat cards still left out (game v0.111+ records a solo combat's
+# checksums); a postfix and a bool prefix sorted after it back off (synthetic, classified only; a real postfix there:
+# audit-conflict-display-1k-on).
 # A listener throwing once inside the energy cost mirror (foreignpatch hookfilter throwonce, Spiked Gauntlets' override): the same
 # exception as the game's loop after the same calls, no postfix run, HookFilter not faulted.
 timeout 900
@@ -32,6 +36,12 @@ expect HookFilter: AbstractModel\.ModifyDamageCap is also patched by bdtest\.for
 expect HookFilter: AbstractModel\.ModifyDamageAdditive is also patched by bdtest\.foreign\.gated-patched-postfix-squeeze \(patches gated on the listener's type not enough\): normal game for that part
 expect FOREIGN runtime HookFilter AbstractModel\.ModifyDamageAdditive \(TypeGated\) kept 0 backed off [1-9]
 expect FOREIGN hookfilter gatedlists ModifyDamageAdditive: not filtered
+expect ReplayStateSkip: CombatReplayWriter\.RecordChecksum is also patched by bdtest\.foreign\.bool-prefix \(prefixes running before this mod's: run around this mod's code as without it\): kept
+expect FOREIGN runtime ReplayStateSkip CombatReplayWriter\.RecordChecksum \(BeforeSkip\) kept [1-9]
+expect EFFECTCHECK ReplayStateSkip grew since 'start': [0-9]+ -> [1-9]
+expect FOREIGN classify CombatReplayWriter\.RecordChecksum \(synthetic\): bdtest\.foreign\.synthetic-postfix-default Postfix .*BeforeSkip backs off \(postfix \(a prefix of this mod skips the original here
+expect FOREIGN classify CombatReplayWriter\.RecordChecksum \(synthetic\): bdtest\.foreign\.synthetic-bool-prefix-default Prefix .*BeforeSkip tolerated
+expect FOREIGN classify CombatReplayWriter\.RecordChecksum \(synthetic\): bdtest\.foreign\.synthetic-bool-prefix-last Prefix .*BeforeSkip backs off \(bool prefix running after a prefix of this mod
 expect FOREIGN hookfilter throwonce TryModifyEnergyCostInCombat(Late)?: thrower .*: same as the game's
 expect EFFECTCHECK HookFilter\.Hitting grew since 'start': [0-9]+ -> [1-9]
 expect EFFECTCHECK HookFilter\.ShouldPlay grew since 'start': [0-9]+ -> [1-9]
@@ -55,6 +65,8 @@ foreignpatch runoriginal-postfix MegaCrit.Sts2.Core.Hooks.Hook:ModifyDamageInter
 foreignpatch nearmiss-postfix MegaCrit.Sts2.Core.Models.AbstractModel:ModifyDamageMultiplicative squeeze
 foreignpatch cctor-gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:ModifyDamageCap squeeze
 foreignpatch gated-patched-postfix MegaCrit.Sts2.Core.Models.AbstractModel:ModifyDamageAdditive squeeze
+foreignpatch bool-prefix MegaCrit.Sts2.Core.Multiplayer.Replay.CombatReplayWriter:RecordChecksum
+foreignpatch hookfilter synthetic MegaCrit.Sts2.Core.Multiplayer.Replay.CombatReplayWriter:RecordChecksum
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 1
@@ -76,6 +88,7 @@ effects end
 effectcheck HookFilter.Hitting grew start
 effectcheck HookFilter.ShouldPlay grew start
 effectcheck HookFilter.EnergyCost grew start
+effectcheck ReplayStateSkip grew start
 cmd bdopt why
 cmd bdperf conflicts
 cmd kill all
