@@ -472,7 +472,7 @@ function Test-PatchedOffJob($job) { [bool]($job.PSObject.Properties["PatchedOff"
 # A real mod-off session, launched with --bdvanilla (nothing of this mod installed but the test tooling and the co-op check) and
 # kept as a baseline: its name says off and its script turns the whole mod off ('cmd bdopt off') before the run exists (newrun,
 # mplobby, autoslay, continuerun) and before any other console command (that 'bdopt off' then changes nothing: the mod started
-# off). A scenario named -off that turns one option off (hookskip-off, turns-32k-off, snapcheck-5k-off) runs this mod's code:
+# off). A scenario named -off that turns one option off (hookskip-off, turns-32k-off, snapcheck-5k-a-off) runs this mod's code:
 # launched as any other, never cached. Solo only: parcoop.ps1, coop.ps1 and coop4.ps1 launch their own sessions (--bdoff, every
 # patch installed).
 function Test-BaselineJob($job) {

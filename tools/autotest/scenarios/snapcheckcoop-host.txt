@@ -1,6 +1,6 @@
 # Co-op snapshots against the game's own (host, with snapcheckcoop-client.txt): ~4,700 cards per player, after each step
 # "checksum x" with moved piles kept, then "checksum x same" read in full (snapmoved off): the line fails unless both match: the game's own snapshot takes ~17 s at this size
-# and the client would time out (snapcheck-5k compares with it, solo). Peers diverging would fail the session too.
+# and the client would time out (snapcheck-5k-a and -b compare with it, solo). Peers diverging would fail the session too.
 timeout 1500
 mplobby NECROBINDER 2
 waitfor run 240

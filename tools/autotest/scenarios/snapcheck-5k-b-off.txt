@@ -1,12 +1,17 @@
 # Co-op snapshot pieces against the game's own, same session: after each step, the optimized checksum then the vanilla one
 # ("checksum x" / "checksum x vanilla" must print the same value). ~4,700 cards + the reference relics, plays over turns (piles moving).
-# compare-with: snapcheck-5k-off
-# 7 turns, the same on both sides of the pair (compare.py wants the same lines). Not more: `immortal` only clamps
+# Moved piles off (snapmoved off): the reference of snapcheck-5k-b (compare-with), its CHECKSUM and STATE lines line for line.
+# Part b of the 7-turn check (formerly snapcheck-5k, one session of ~8 min: each vanilla checksum takes ~7 s at this size, the
+# plays ~1 s a turn): the same seed and plays as part a (snapcheck-5k-a) up to turn 3's end, with its optimized checksums but not
+# its vanilla ones (part a compares those), then turns 4-7 with every step's vanilla checksum. A vanilla checksum turns the whole
+# mod off and back on: turn 4's first comparison here follows three turns of optimized checksums alone, a state no step of the
+# one-session check had.
+# 7 turns in all, the same on both sides of each pair (compare.py wants the same lines). Not more: `immortal` only clamps
 # Creature.LoseHpInternal, while Doom (most likely: No Escape adds half the Doom already there, v0.113 also checks it after
 # the player's turn) kills through CreatureCmd.Kill once it reaches the enemy's HP: on v0.113.1 the Calcified Cultist is
 # gone before turn 7's enemy turn, the Damp Cultist dies at turn 8's end, the combat is won and the next 'waitfor idle'
 # waits out its 300 s.
-timeout 1500
+timeout 900
 newrun NECROBINDER 1234
 waitfor run 120
 wait 2
@@ -18,82 +23,64 @@ cmd bigdeck import ref all cards
 cmd bdperf checks off
 cmd bdperf probe off
 cmd bdperf segments verify off
+cmd bdperf snapmoved off
 enemyhp 999999
 immortal
 cmd fight CULTISTS_NORMAL
 waitfor idle 300
 wait 1
 checksum start
-checksum start vanilla
 cmd energy 50
 checksum t1 energy
-checksum t1 energy vanilla
 play 2
 waitfor idle 120
 checksum t1 p1
-checksum t1 p1 vanilla
 play 2
 waitfor idle 120
 checksum t1 p2
-checksum t1 p2 vanilla
 play 2
 waitfor idle 120
 checksum t1 p3
-checksum t1 p3 vanilla
 play 2
 waitfor idle 120
 checksum t1 p4
-checksum t1 p4 vanilla
 endturn
 waitfor idle 300
 checksum t1 end
-checksum t1 end vanilla
 cmd energy 50
 checksum t2 energy
-checksum t2 energy vanilla
 play 2
 waitfor idle 120
 checksum t2 p1
-checksum t2 p1 vanilla
 play 2
 waitfor idle 120
 checksum t2 p2
-checksum t2 p2 vanilla
 play 2
 waitfor idle 120
 checksum t2 p3
-checksum t2 p3 vanilla
 play 2
 waitfor idle 120
 checksum t2 p4
-checksum t2 p4 vanilla
 endturn
 waitfor idle 300
 checksum t2 end
-checksum t2 end vanilla
 cmd energy 50
 checksum t3 energy
-checksum t3 energy vanilla
 play 2
 waitfor idle 120
 checksum t3 p1
-checksum t3 p1 vanilla
 play 2
 waitfor idle 120
 checksum t3 p2
-checksum t3 p2 vanilla
 play 2
 waitfor idle 120
 checksum t3 p3
-checksum t3 p3 vanilla
 play 2
 waitfor idle 120
 checksum t3 p4
-checksum t3 p4 vanilla
 endturn
 waitfor idle 300
 checksum t3 end
-checksum t3 end vanilla
 cmd energy 50
 checksum t4 energy
 checksum t4 energy vanilla
@@ -186,5 +173,4 @@ endturn
 waitfor idle 300
 checksum t7 end
 checksum t7 end vanilla
-effects end
 quit
