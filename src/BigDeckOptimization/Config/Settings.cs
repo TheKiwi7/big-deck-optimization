@@ -174,12 +174,16 @@ public static class Settings
 
     public const string ConflictText = "Partly inactive: what this optimization speeds up is also changed by {mods} (normal game for that part).";
 
+    /// <summary>The label HarmonyWatch puts after a mod's name for its hooks on Harmony's own methods.</summary>
+    public const string HiddenHooksSuffix = " (hidden IL hooks)";
+
     public const string ConflictSummaryText =
         "With your other mods, part of these optimizations runs the normal game: {mods}. Hover an option for details; bdopt why in the console lists them.";
 
     /// <summary>
-    /// The settings page's line under the co-op note when other mods keep part of the optimizations vanilla: each mod with
-    /// its count of back-offs and notes; null when there is none.
+    /// The settings page's line under the co-op note when other mods keep part of the optimizations vanilla: each mod once, by
+    /// name only (most back-offs first; a mod's hidden IL hooks under its own name), the counts staying in bdopt why; null when
+    /// there is none.
     /// </summary>
     public static string? ConflictSummary(string? language)
     {
@@ -193,7 +197,10 @@ public static class Settings
         {
             return null;
         }
-        IEnumerable<string> mods = perMod.Select(m => $"{m.Mod} ({m.Count})");
+        // Names only (the owner's choice): "RitsuLib (hidden IL hooks)", HarmonyWatch's label for a mod's hooks on Harmony
+        // itself, shows as that mod.
+        IEnumerable<string> mods = perMod.Select(m => m.Mod.EndsWith(HiddenHooksSuffix, StringComparison.Ordinal) ? m.Mod[..^HiddenHooksSuffix.Length] : m.Mod)
+            .Distinct(StringComparer.OrdinalIgnoreCase);
         if (unnamed)
         {
             mods = mods.Append(Translations.Get(language, "other_mods", OtherModsText));

@@ -1,0 +1,14 @@
+# The settings page's conflict summary names each mod once, without counts (owner's choice, 2026-11-18): run with a mod that
+# keeps parts vanilla, both by its patches and by hidden IL hooks (RitsuLib: BDTEST_EXTRA_MODS=STS2-RitsuLib), e.g.
+#   $env:BDTEST_EXTRA_MODS = "STS2-RitsuLib"; par.ps1 -Names conflict-summary -GameDir <copy>
+timeout 300
+expect HarmonyWatch: RitsuLib patch Harmony's own MMReflectionImporter\.ImportReference
+expect HarmonyWatch: RitsuLib patch Harmony's own DefaultReflectionImporter\.ImportReference
+# Each mod once: RitsuLib's patches and its hidden IL hooks both show as "RitsuLib", no count.
+expect Settings page summary: With your other mods, part of these optimizations runs the normal game: RitsuLib\. Hover
+expect Settings page summary: With your other mods, part of these optimizations runs the normal game: .*RitsuLib
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bdperf conflicts
+quit

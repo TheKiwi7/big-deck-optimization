@@ -300,7 +300,7 @@ public static class HarmonyWatch
             try
             {
                 return _suspects.Contains((method.Module, method.MetadataToken))
-                    ? _hidden.Values.SelectMany(owners => owners).Distinct().Select(owner => owner + " (hidden IL hooks)").ToArray()
+                    ? _hidden.Values.SelectMany(owners => owners).Distinct().Select(owner => owner + Config.Settings.HiddenHooksSuffix).ToArray()
                     : Array.Empty<string>();
             }
             catch (Exception)

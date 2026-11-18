@@ -277,6 +277,7 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                 // bdopt why's report, plus the preflight's effect counters (checks run, back-offs and notes recorded).
                 Config.Settings.RefreshConflicts();
                 return new CmdResult(success: true, Config.Settings.WhyReport()
+                    + $"\nSettings page summary: {Config.Settings.ConflictSummary(null) ?? "(none)"}"
                     + $"\nPreflight: {PatchSafety.PreflightRuns} runs, {PatchSafety.PreflightChecks} checks, {PatchSafety.RecordedBackOffs} back-offs and notes recorded"
                     + $"\nTolerated: {PatchSafety.ToleratedChecks} checks" + string.Concat(PatchSafety.ToleratedReport().Select(t => "\n  " + t))
                     + "\nRuntime (other mods' patches, per call site):" + string.Concat(PatchSafety.RuntimeReport().Select(t => "\n  " + t)));
