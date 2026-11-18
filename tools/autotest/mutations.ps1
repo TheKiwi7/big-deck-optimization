@@ -13,15 +13,18 @@
 #   powershell -ExecutionPolicy Bypass -File tools/autotest/mutations.ps1 [-GameDir C:\Games\StS2-public-0.111.1] [-Only renumber-hooks,energy-hook] [-Scenario effects-check] [-AllowUndefined]
 # tools/mutate is built first: a build that fails stops the run (an old mutate.dll would run old mutations). A mutation of the
 # table that tools/mutate doesn't define is a failure, unless -AllowUndefined (a name in -Only that isn't in the table stops the run).
-# One run at a time on this PC (its thin copies, its results/mutation-*.log).
+# One run at a time per copy (its thin copies, bdmut-copies-<copy> beside it, and its results/<version>/mutation-*.log): the two
+# supported copies' runs go side by side, their sessions sharing the solo test slots (parlib.ps1's $SlotPool).
 # Each mutation runs in parallel in its own folder of hard links to the copy (no disk used) holding only its modified file,
 # headless and without Steam, so the copy itself is never modified and stopping this script leaves nothing behind.
 # Debug build deployed in the copy first.
-param([string]$GameDir = "C:\Games\StS2-public-0.111.1", [string[]]$Only = @(), [string]$Scenario = "effects-check", [int]$TimeoutSec = 600, [int]$Jobs = [Environment]::ProcessorCount, [switch]$AllowUndefined)
+param([string]$GameDir = "C:\Games\StS2-public-0.111.1", [string[]]$Only = @(), [string]$Scenario = "effects-check", [int]$TimeoutSec = 600, [int]$Jobs = 0, [switch]$AllowUndefined)
 $copy = $GameDir
 . (Join-Path $PSScriptRoot "parlib.ps1")
+if ($Jobs -le 0) { $Jobs = $SlotPool }
 if ($copy -like "*steamapps*") { throw "Use a game copy, not the Steam install" }
 $GameDir = Resolve-GameCopy $copy
+$out = Get-VersionDir $GameDir
 $Only = @($Only | ForEach-Object { $_ -split "," } | Where-Object { $_ })  # "-Only a,b" through powershell -File arrives as one string
 $Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $Data = Join-Path $GameDir "data_sts2_windows_x86_64"
@@ -90,22 +93,31 @@ $Expected = [ordered]@{
 }
 $unknown = @($Only | Where-Object { -not $Expected.Contains($_) })
 if ($unknown.Count) { throw "-Only: no such mutation in the table: $($unknown -join ', ')" }
-# One run at a time: two would delete each other's thin copies and write the same results/mutation-<name>.log.
-$runLock = [Threading.Mutex]::new($false, "Local\BigDeckOptimization-mutations")
-try { if (-not $runLock.WaitOne(0)) { throw "another mutations.ps1 is running on this PC: wait for it to end" } }
+# One run at a time per copy: two would delete each other's thin copies and write the same results/<version>/mutation-<name>.log.
+$sha = [Security.Cryptography.SHA256]::Create()
+$copyHash = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes((Get-CopyKey $GameDir)))) -replace "-", "").Substring(0, 16)
+$runLock = [Threading.Mutex]::new($false, "Local\BigDeckOptimization-mutations-$copyHash")
+try { if (-not $runLock.WaitOne(0)) { throw "another mutations.ps1 is running on $GameDir`: wait for it to end" } }
 catch [Threading.AbandonedMutexException] { }
-$buildOutput = @(dotnet build (Join-Path $Root "tools\mutate") -c Release -v q 2>&1)
-if ($LASTEXITCODE -ne 0) { $buildOutput | Select-Object -Last 20 | ForEach-Object { Write-Output "  $_" }; throw "tools/mutate did not build: its old mutate.dll would run old mutations" }
-$mutate = Join-Path $Root "tools\mutate\bin\Release\net9.0\mutate.dll"
-# A mutation tools/mutate doesn't define (yet) is said, not run: mutate would fail on it and stop every other. It counts as a failure,
-# unless -AllowUndefined.
-$defined = @(dotnet $mutate list | ForEach-Object { ($_ -split '\s+')[0] } | Where-Object { $_ })
-if ($LASTEXITCODE -ne 0 -or $defined.Count -eq 0) { throw "tools/mutate lists no mutation (exit code $LASTEXITCODE)" }
+# tools/mutate is built by one run at a time (the other copy's run may be building it): the second waits, then finds it built.
+$buildLock = [Threading.Mutex]::new($false, "Local\BigDeckOptimization-mutate-build")
+try { if (-not $buildLock.WaitOne(600000)) { throw "tools/mutate: another mutations.ps1 kept building it for 10 minutes" } }
+catch [Threading.AbandonedMutexException] { }
+try {
+    $buildOutput = @(dotnet build (Join-Path $Root "tools\mutate") -c Release -v q 2>&1)
+    if ($LASTEXITCODE -ne 0) { $buildOutput | Select-Object -Last 20 | ForEach-Object { Write-Output "  $_" }; throw "tools/mutate did not build: its old mutate.dll would run old mutations" }
+    $mutate = Join-Path $Root "tools\mutate\bin\Release\net9.0\mutate.dll"
+    # A mutation tools/mutate doesn't define (yet) is said, not run: mutate would fail on it and stop every other. It counts as a
+    # failure, unless -AllowUndefined.
+    $defined = @(dotnet $mutate list | ForEach-Object { ($_ -split '\s+')[0] } | Where-Object { $_ })
+    if ($LASTEXITCODE -ne 0 -or $defined.Count -eq 0) { throw "tools/mutate lists no mutation (exit code $LASTEXITCODE)" }
+}
+finally { $buildLock.ReleaseMutex(); $buildLock.Dispose() }
 $undefined = @()
 foreach ($name in @($Expected.Keys)) { if ($defined -notcontains $name -and ($Only.Count -eq 0 -or $Only -contains $name)) { Write-Output "NOT DEFINED in tools/mutate: $name (not run)"; $undefined += $name; $Expected.Remove($name) } }
 $started = Get-Date
 Add-TestMods $GameDir
-$thinRoot = Join-Path (Split-Path $GameDir) "bdmut-copies"
+$thinRoot = Join-Path (Split-Path $GameDir) "bdmut-copies-$(Split-Path $GameDir -Leaf)"
 Remove-Item $thinRoot -Recurse -Force -ErrorAction SilentlyContinue
 $scriptPath = Join-Path $Scenarios "$Scenario.txt"
 # The copy must come out as it went in: hard links share their content with it.
@@ -128,23 +140,23 @@ try {
             $search = @("`"$Data`"", "`"$($source.DirectoryName)`"")
         }
         Remove-Item $out -Force
-        $process = Start-Process -FilePath "dotnet" -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $Results "mutation-$name.build.txt") -ArgumentList (@("`"$mutate`"", "`"$in`"", "`"$out`"", $name) + $search)
+        $process = Start-Process -FilePath "dotnet" -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $out "mutation-$name.build.txt") -ArgumentList (@("`"$mutate`"", "`"$in`"", "`"$out`"", $name) + $search)
         [void]$process.Handle
         [pscustomobject]@{ Name = $name; Process = $process; Out = $out }
     }
     foreach ($b in $building) {
         $b.Process.WaitForExit()
-        if ($b.Process.ExitCode -ne 0 -or -not (Test-Path $b.Out)) { throw "mutate failed for $($b.Name), see results\mutation-$($b.Name).build.txt" }
+        if ($b.Process.ExitCode -ne 0 -or -not (Test-Path $b.Out)) { throw "mutate failed for $($b.Name), see $(Join-Path $out "mutation-$($b.Name).build.txt")" }
     }
     Write-Output ("{0} mutations built in {1:F0} s" -f $names.Count, ((Get-Date) - $started).TotalSeconds)
     New-ThinCopy $GameDir (Join-Path $thinRoot "reference")
     # The reference: every effect must have fired on the unmodified game, or the check below proves nothing.
-    $sessions = @([pscustomobject]@{ Name = "reference"; Script = $scriptPath; Log = Join-Path $Results "mutation-reference.log"; GameDir = Join-Path $thinRoot "reference" })
+    $sessions = @([pscustomobject]@{ Name = "reference"; Script = $scriptPath; Log = Join-Path $out "mutation-reference.log"; GameDir = Join-Path $thinRoot "reference" })
     # Mutated: judge.py --mutated (parlib.ps1's Test-MutatedJob): a part the mutation leaves vanilla compares nothing and counts no
     # effect there, which this script checks against its table, not judge.py.
-    $sessions += foreach ($name in $names) { [pscustomobject]@{ Name = $name; Script = $scriptPath; Log = Join-Path $Results "mutation-$name.log"; GameDir = Join-Path $thinRoot $name; Mutated = $true } }
+    $sessions += foreach ($name in $names) { [pscustomobject]@{ Name = $name; Script = $scriptPath; Log = Join-Path $out "mutation-$name.log"; GameDir = Join-Path $thinRoot $name; Mutated = $true } }
     $runs = Invoke-Sessions -Jobs $sessions -GameDir $GameDir -MaxJobs $Jobs -TimeoutSec $TimeoutSec -Label "mutations"
-    $Reference = Join-Path $Results "mutation-reference.log"
+    $Reference = Join-Path $out "mutation-reference.log"
     # Co-op only: effects-check, solo, can't make SyncedCardRelease run, nor ReplayStateSkip on v0.107.x (the game checksums solo
     # combats from v0.111 on: there it must run). SnapshotCardReuse.Hooks must run (effects-check applies Curious): a mutation losing
     # it is seen. (judge.py checks the same from effects-check's '# effects-ran' lines: the reference's problems below.)
@@ -170,7 +182,7 @@ try {
     $summary = @()
     foreach ($name in $names) {
         $target, $pattern, $mayLose = $Expected[$name]
-        $log = Join-Path $Results "mutation-$name.log"
+        $log = Join-Path $out "mutation-$name.log"
         $text = Get-Content $log
         $listed = @(python -I (Join-Path $Root "tools\check_versions.py") --local --log $log)
         # Exit code 2: it crashed (1 only says versions differ): a list cut short could make "nothing left vanilla" pass.

@@ -2,18 +2,23 @@
 # for timings. Logs in results/<game version>/. Every <x>-off / <x>-on pair in the list is compared, and every scenario with a
 # '# compare-with: <reference>' header line with that reference when both are in the list (one alone: a note, not a problem).
 #   powershell -ExecutionPolicy Bypass -File tools/autotest/par.ps1 -Names ab-2k-off,ab-2k-on,shuffle-off,shuffle-on -GameDir C:\Games\StS2-public-0.111.1 [-Jobs n] [-TimeoutSec 900] [-StallSec 240] [-Rendered] [-UseBaselines] [-Instant] [-PatchedOff]
+# -Jobs: this series' own cap (default: the whole solo slot pool, parlib.ps1's $SlotPool, 14 on 16 logical processors); series
+# side by side (the other copy's par, the sweeps) share the pool, the longest waiting session of any of them taking a free slot.
+# Sessions start longest first (results/<version>/durations.tsv, else the last log of that scenario). -TimeoutSec: per session, or
+# the scenario's own 'timeout' line plus 120 s when longer (turns-off, pile-cards-off: 2,400 s).
 # A mod-off scenario (its first console command 'cmd bdopt off', parlib.ps1's Test-BaselineJob) is launched with --bdvanilla:
 # the mod off from the game's start, no patch of it installed. -UseBaselines: such a log already made with this game, these
 # Workshop mods, this test tooling and this scenario isn't run again. -PatchedOff: mod-off scenarios the old way instead, every
 # patch installed then 'bdopt off' (never cached; vanillacheck.ps1 compares both ways). -Instant: no animation waits, same
 # results, several times faster mod on (not for what depends on animations playing; a scenario's own speed line is replaced):
 # it finds bugs and result differences only, its fps and timings mean nothing.
-param([Parameter(Mandatory)][string[]]$Names, [string]$GameDir = "", [int]$Jobs = [Environment]::ProcessorCount, [int]$TimeoutSec = 900, [int]$StallSec = 240, [switch]$Rendered, [switch]$UseBaselines, [switch]$Instant, [switch]$PatchedOff)
+param([Parameter(Mandatory)][string[]]$Names, [string]$GameDir = "", [int]$Jobs = 0, [int]$TimeoutSec = 900, [int]$StallSec = 240, [switch]$Rendered, [switch]$UseBaselines, [switch]$Instant, [switch]$PatchedOff)
 $Names = @($Names | ForEach-Object { $_ -split "," } | Where-Object { $_ })  # "-Names a,b" through powershell -File is one string
 $copy = $GameDir
 . (Join-Path $PSScriptRoot "parlib.ps1")
 $GameDir = Resolve-GameCopy $copy
 $out = Get-VersionDir $GameDir
+if ($Jobs -le 0) { $Jobs = $SlotPool }
 $list = foreach ($name in $Names) {
     $script = Join-Path $Scenarios "$name.txt"
     if (-not (Test-Path $script)) { throw "No scenario $script" }
@@ -26,10 +31,11 @@ $list = foreach ($name in $Names) {
     }
     [pscustomobject]@{ Name = $name; Script = $script; Log = Join-Path $out "$name.log"; PatchedOff = [bool]($PatchedOff -and $name -match '-off(\d*$|-)') }
 }
-# Mod-off sessions first (the longest by far at these deck sizes): shorter ones fill the free slots instead of one starting last.
+# Invoke-Sessions starts the longest first from their last lengths; those it knows nothing of first, mod-off sessions first among
+# them (the longest by far at these deck sizes): shorter ones fill the free slots instead of one starting last.
 $list = @($list | Where-Object { $_.Name -match '-off(\d*$|-)' }) + @($list | Where-Object { $_.Name -notmatch '-off(\d*$|-)' })
 $started = Get-Date
-$runs = Invoke-Sessions -Jobs $list -GameDir $GameDir -MaxJobs $Jobs -TimeoutSec $TimeoutSec -StallSec $StallSec -Rendered:$Rendered -UseBaselines:$UseBaselines -Label "par $(Get-GameTag $GameDir)"
+$runs = Invoke-Sessions -Jobs $list -GameDir $GameDir -MaxJobs $Jobs -TimeoutSec $TimeoutSec -StallSec $StallSec -Rendered:$Rendered -UseBaselines:$UseBaselines -Label "par $(Get-GameTag $GameDir)" -StatusFile "status-par-$(Get-GameTag $GameDir).txt" -ScenarioTimeouts
 Remove-TestMods $GameDir
 $bad = 0
 foreach ($r in $runs) {

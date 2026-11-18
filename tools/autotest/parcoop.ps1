@@ -2,7 +2,7 @@
 # local port and its own copy of the user data, so nothing shows on screen and your settings aren't touched. Equivalence only:
 # the peers must agree (no divergence, same enemy states), timings aren't meaningful; coop.ps1 for fps or hands-on.
 # Logs: results/<game version>/<name>-host.log, -client.log.
-#   powershell -ExecutionPolicy Bypass -File tools/autotest/parcoop.ps1 -Names coopfast,coopclone -GameDir C:\Games\StS2-public-0.111.1 [-Plain] [-Jobs 6] [-TimeoutSec 900] [-Instant] [-OnOff]
+#   powershell -ExecutionPolicy Bypass -File tools/autotest/parcoop.ps1 -Names coopfast,coopclone -GameDir C:\Games\StS2-public-0.111.1 [-Plain] [-Jobs 6] [-OffJobs 1] [-TimeoutSec 900] [-Instant] [-OnOff [-UseBaselines] [-PatchedOff]] [-FrameLimitMs 10000]
 # -Plain: only this mod, no other Workshop mod (coop.ps1 without -WithMods).
 # Mod on vs mod off: peers agreeing says nothing of what the game would have done (both run the same code). Each scenario
 # <x> whose mod-off twin <x>off or <x>-off is in -Names too is compared with it, peer by peer (host with host, client with
@@ -12,9 +12,23 @@
 # every scenario also runs as its own mod-off twin (<x>-autooff: launched with the mod off, 'launchoff', so the co-op join lists
 # and the run's creation are the game's own too, without its bdperf, bdopt, counters, effects and expect lines), compared the same
 # way. No twin for a scenario that is a mod-off side itself (its host launched off, 'launchoff'; a name ending off or van), nor for
-# one whose own mod-off pair (<x>off, <x>-off, <x>van) is in -Names: it is compared with that one. The mod-off sides start first
-# (the longest by far at these deck sizes).
-param([Parameter(Mandatory)][string[]]$Names, [string]$GameDir = "", [int]$Jobs = 6, [int]$TimeoutSec = 900, [int]$StallSec = 240, [switch]$Plain, [switch]$Instant, [switch]$OnOff)
+# one whose own mod-off pair (<x>off, <x>-off, <x>van) is in -Names: it is compared with that one. The pairs start longest first
+# (results/<version>/durations.tsv, else the host's last log of that script; unknown ones first, the mod-off sides first among
+# them: the longest by far at these deck sizes).
+# The -autooff twins are vanilla pairs: both peers launched with --bdvanilla too (no patch of this mod installed but the test
+# tooling and CoopModeTag, whose join entry then says "+off", as a player's who started with the mod off: the twin's 'coopmodetag
+# off' line checks it, and --bdoff from its 'launchoff' line still turns the switch off before the lobby), as solo mod-off sides
+# are; each log must say so (BDVANILLA) and no other may. Kept when the pair passed (results/baselines/<version>/coop/, keyed by
+# Get-CoopBaselineKey), reused with -UseBaselines. -PatchedOff: the twins the old way, every patch installed then off (--bdoff),
+# never kept. The explicit mod-off scenarios (coopoff, coopleakoff, outside-coopoff...) still run patched-off, never cached.
+# -OffJobs: at most that many mod-off pairs at once (default -Jobs), mod-on pairs filling the other slots: '-OffJobs 1 -Jobs 3'
+# runs a 1,900-card mod-off pair, which must not be slowed past the network timeout, beside two mod-on pairs.
+# -FrameLimitMs: each peer's longest frame (CombatStartTimer's 'longest frames' at each combat start, where a mod-off co-op pair
+# freezes) and the host's highest ping (NetQualityTracker, every 20 s) are printed per pair, and one at or above it is a problem
+# (NETWORK MARGIN): the game drops a peer silent for 20 s (ENet's timeout), half of it by default. A pair cut short by a
+# disconnect fails anyway; this says when one came near, or which pair may not run beside others.
+param([Parameter(Mandatory)][string[]]$Names, [string]$GameDir = "", [int]$Jobs = 6, [int]$OffJobs = 0, [int]$TimeoutSec = 900, [int]$StallSec = 240, [switch]$Plain, [switch]$Instant, [switch]$OnOff, [switch]$UseBaselines, [switch]$PatchedOff, [int]$FrameLimitMs = 10000)
+if ($OffJobs -le 0) { $OffJobs = $Jobs }
 $Names = @($Names | ForEach-Object { $_ -split "," } | Where-Object { $_ })
 $copy = $GameDir
 . (Join-Path $PSScriptRoot "parlib.ps1")
@@ -29,7 +43,7 @@ if ($Plain) {
 else { Add-TestMods $GameDir }
 $folder = Join-Path $out "coop-scripts"
 New-Item -ItemType Directory -Force $folder | Out-Null
-$waiting = [Collections.Generic.Queue[object]]::new()
+$waiting = [Collections.Generic.List[object]]::new()
 # A scenario's mod-off twin: each peer launched with the mod off ('launchoff': Start-Peer adds --bdoff, which turns it off for
 # the session before the main menu's --fastmp lobby exists; a script line comes too late there: the lobby is already open, so
 # 'bdopt off' would ask for 'bdopt off yes', and v0.111+ would have built its join list with the mod on). Then 'coopmodetag
@@ -84,13 +98,41 @@ $groups = @(foreach ($name in $Names) {
                 $scripts[$role] = $twinScript
             }
         }
-        # Port: set from the slot the group runs in (Start-Peer's caller), unique while that slot is locked.
-        [pscustomobject]@{ Name = $groupName; Scripts = $scripts; Port = 0; HostLog = Join-Path $out "$groupName-host.log"; ClientLog = Join-Path $out "$groupName-client.log" }
+        # Port: set from the slot the group runs in (Start-Peer's caller), unique while that slot is locked. Vanilla: an -autooff twin
+        # launched with --bdvanilla on both peers (not with -PatchedOff).
+        [pscustomobject]@{ Name = $groupName; Scripts = $scripts; Port = 0; HostLog = Join-Path $out "$groupName-host.log"; ClientLog = Join-Path $out "$groupName-client.log"; Vanilla = ($twin -and -not $PatchedOff) }
     }
 })
-# The mod-off sides first: several times longer than the mod-on ones, a long one starting last would set the series' length.
 $modOffSide = '(-autooff|off|van|vanilla)$'
-foreach ($group in @($groups | Where-Object { $_.Name -match $modOffSide }) + @($groups | Where-Object { $_.Name -notmatch $modOffSide })) { $waiting.Enqueue($group) }
+$done = [Collections.Generic.List[object]]::new()
+# A vanilla twin kept from an earlier series with the same key (-UseBaselines): its logs copied, not run.
+$coopBaselines = Join-Path $BaselineRoot "$(Get-GameTag $GameDir)\coop"
+foreach ($group in $groups | Where-Object { $_.Vanilla }) {
+    $key = Get-CoopBaselineKey $GameDir $group.Scripts["host"] $group.Scripts["client"] $Plain.IsPresent
+    $group | Add-Member -NotePropertyName CacheHost -NotePropertyValue (Join-Path $coopBaselines "$($group.Name)-$key-host.log")
+    $group | Add-Member -NotePropertyName CacheClient -NotePropertyValue (Join-Path $coopBaselines "$($group.Name)-$key-client.log")
+}
+# Longest first (durations.tsv, else the host's last log of that script), those nothing is known of first: the mod-off sides
+# first among them (several times longer than the mod-on ones: a long one starting last would set the series' length).
+$durationFile = Join-Path $out $DurationsFileName
+$durations = Read-Durations $durationFile
+$index = 0
+$ranked = foreach ($group in @($groups | Where-Object { $_.Name -match $modOffSide }) + @($groups | Where-Object { $_.Name -notmatch $modOffSide })) {
+    $key = Get-DurationKey ([pscustomobject]@{ Name = "coop:$($group.Name)"; Script = $group.Scripts["host"] }) $false
+    $seconds = if ($durations.ContainsKey($key)) { $durations[$key] } else { Get-LogDuration $group.HostLog $group.Scripts["host"] }
+    $group | Add-Member -NotePropertyName DurationKey -NotePropertyValue $key
+    [pscustomobject]@{ Group = $group; Length = $(if ($null -ne $seconds) { [double]$seconds } else { $UnknownLength }); Index = $index++ }
+}
+foreach ($entry in @($ranked | Sort-Object -Property @{ Expression = { $_.Length }; Descending = $true }, @{ Expression = { $_.Index }; Descending = $false })) {
+    $group = $entry.Group
+    if ($UseBaselines -and $group.Vanilla -and (Test-Path $group.CacheHost) -and (Test-Path $group.CacheClient)) {
+        Copy-Item $group.CacheHost $group.HostLog -Force
+        Copy-Item $group.CacheClient $group.ClientLog -Force
+        $done.Add([pscustomobject]@{ Group = $group; State = "cached"; Seconds = 0 })
+        continue
+    }
+    $waiting.Add($group)
+}
 # Mod on / mod off pairs: <x> with <x>off, <x>-off, <x>van (scenarios) or <x>-autooff (-OnOff).
 $pairs = @(foreach ($group in $groups) {
     foreach ($suffix in "off", "-off", "van", "-autooff") {
@@ -101,13 +143,13 @@ $pairs = @(foreach ($group in $groups) {
 function Start-Peer($group, [string]$role, [string[]]$mode) {
     $log = if ($role -eq "host") { $group.HostLog } else { $group.ClientLog }
     Remove-Item $log -ErrorAction SilentlyContinue
-    # --bdoff for a script with a 'launchoff' line (the -autooff twins, the mod-off controls).
+    # --bdoff for a script with a 'launchoff' line (the -autooff twins, the mod-off controls); --bdvanilla for a vanilla twin.
     $arguments = @("--headless", "--force-steam", "off", "--bdport", $group.Port, "--bdturnstates", "--bdmute", "--log-file", "`"$log`"", "--bdtest", "`"$($group.Scripts[$role])`"") + $mode + @(Get-ScenarioLaunchArgs $group.Scripts[$role])
+    if ($group.Vanilla) { $arguments += $VanillaArg }
     Start-Process -FilePath $exe -WorkingDirectory $GameDir -PassThru -WindowStyle Hidden -ArgumentList $arguments
 }
 $started = Get-Date
 $running = @{}
-$done = [Collections.Generic.List[object]]::new()
 $realAppData = $env:APPDATA
 # Slots 40 and up, each held for the whole series (Lock-Slot): a slot another series holds is skipped.
 $locked = [Collections.Generic.HashSet[int]]::new()
@@ -115,11 +157,15 @@ try {
     while ($waiting.Count -gt 0 -or $running.Count -gt 0) {
         foreach ($slot in 0..($Jobs - 1)) {
             if ($running.ContainsKey($slot) -or $waiting.Count -eq 0) { continue }
+            # The first waiting pair this slot may take: a mod-off one only while fewer than -OffJobs run.
+            $offRunning = @($running.Values | Where-Object { $_.Group.Name -match $modOffSide }).Count
+            $group = $waiting | Where-Object { $_.Name -notmatch $modOffSide -or $offRunning -lt $OffJobs } | Select-Object -First 1
+            if (-not $group) { break }
             if (-not $locked.Contains(40 + $slot)) {
                 if (-not (Lock-Slot (40 + $slot) -Try)) { continue }
                 [void]$locked.Add(40 + $slot)
             }
-            $group = $waiting.Dequeue()
+            [void]$waiting.Remove($group)
             # Each test slot has its own port: two series side by side (other slots) never share one, as a port per group of this
             # series would (both from 33800: a host failing to listen, a client joining the other series' lobby).
             $group.Port = Get-SlotPort (40 + $slot)
@@ -155,10 +201,12 @@ try {
             if (-not $state) { continue }
             foreach ($p in $run.Host, $run.Client) { if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }
             $done.Add([pscustomobject]@{ Group = $run.Group; State = $state; Seconds = [int]$age })
+            # Its length, for the next series' order.
+            if ($state -in "done", "TIMEOUT") { Save-Durations $durationFile @{ $run.Group.DurationKey = [int]$age } }
             $running.Remove($slot)
         }
         $lines = @("{0}  co-op {1}: {2}/{3} done, {4} running, {5:F0} min so far" -f (Get-Date -Format "HH:mm:ss"), (Get-GameTag $GameDir), $done.Count, $groups.Count, $running.Count, ((Get-Date) - $started).TotalMinutes)
-        Set-Content (Join-Path $Results "status.txt") $lines -Encoding utf8 -ErrorAction SilentlyContinue
+        Set-Content (Join-Path $Results "status-coop-$(Get-GameTag $GameDir).txt") $lines -Encoding utf8 -ErrorAction SilentlyContinue
     }
 }
 finally {
@@ -170,7 +218,7 @@ finally {
 $bad = 0
 foreach ($entry in $done) {
     $problems = @()
-    if ($entry.State -ne "done") { $problems += $entry.State }
+    if ($entry.State -notin "done", "cached") { $problems += $entry.State }
     foreach ($log in $entry.Group.HostLog, $entry.Group.ClientLog) {
         $role = if ($log -eq $entry.Group.HostLog) { "host" } else { "client" }
         # judge.py: not ended, a failed line, an error or a difference this mod found itself, a positive control that saw nothing...
@@ -181,7 +229,23 @@ foreach ($entry in $done) {
         Select-String -Path $log -CaseSensitive -Pattern "State divergence" -ErrorAction SilentlyContinue | Select-Object -First 1 | ForEach-Object { $problems += "$role`: state divergence" }
         # The Workshop mods its game must have found (none with -Plain): a mods_STEAMTEST emptied by another series would go unseen.
         if (-not $Plain) { Get-MissingTestMods $log $GameDir | Select-Object -First 2 | ForEach-Object { $problems += "$role`: $_" } }
+        # Launched as its group says: a vanilla twin's peers both vanilla (BDVANILLA), no other peer (a mod-on side launched vanilla
+        # would compare the game with itself).
+        $vanilla = (Test-Path $log) -and [bool](Select-String -Path $log -Pattern $VanillaLinePattern -Quiet)
+        if ($entry.Group.Vanilla -and -not $vanilla -and (Test-Path $log)) { $problems += "$role`: launched with $VanillaArg, but its log has no BDVANILLA line: not a vanilla peer" }
+        elseif (-not $entry.Group.Vanilla -and $vanilla) { $problems += "$role`: its log has the BDVANILLA line, but this pair is not a vanilla twin: it ran without the mod's patches" }
     }
+    # How near the network timeout each peer came: its longest frame at a combat start (CombatStartTimer's list, longest first) and
+    # the host's highest ping. Not every frame of the session: those of a combat start, where the long freezes are.
+    $margins = foreach ($log in $entry.Group.HostLog, $entry.Group.ClientLog) {
+        $role = if ($log -eq $entry.Group.HostLog) { "host" } else { "client" }
+        $frame = (@(Select-String -Path $log -Pattern "combat start: \d+ ms total.*longest frames: (\d+) ms" -ErrorAction SilentlyContinue | ForEach-Object { [int]$_.Matches[0].Groups[1].Value }) | Measure-Object -Maximum).Maximum
+        $ping = (@(Select-String -Path $log -Pattern "\[NetQualityTracker\]\s+\d+ - Ping: (\d+(?:\.\d+)?)" -ErrorAction SilentlyContinue | ForEach-Object { [double]$_.Matches[0].Groups[1].Value }) | Measure-Object -Maximum).Maximum
+        [pscustomobject]@{ Role = $role; Frame = $frame; Ping = $ping }
+        if ($frame -ge $FrameLimitMs) { $problems += "NETWORK MARGIN: the $role's longest frame $frame ms at a combat start, at or above -FrameLimitMs $FrameLimitMs (the game drops a peer silent for 20 s): too near a disconnect; run it with fewer pairs beside it (-OffJobs, -Jobs) or not at all" }
+        if ($ping -ge $FrameLimitMs) { $problems += "NETWORK MARGIN: the $role saw a ping of $([int]$ping) ms, at or above -FrameLimitMs $FrameLimitMs" }
+    }
+    $marginText = ($margins | ForEach-Object { "{0} {1} ms{2}" -f $_.Role, $(if ($null -ne $_.Frame) { $_.Frame } else { "?" }), $(if ($null -ne $_.Ping) { ", ping {0:F0}" -f $_.Ping } else { "" }) }) -join "; "
     # Each peer logs its own player and plays; the enemies are the same for both. At each turn start only (--bdturnstates): a
     # script's state line comes when that peer gets there, maybe after the other one's plays of the turn.
     $enemies = foreach ($log in $entry.Group.HostLog, $entry.Group.ClientLog) { ,@(Select-String -Path $log -Pattern "STATE floor .*: enemy " -ErrorAction SilentlyContinue | ForEach-Object { $_.Line -replace '^.*STATE ', '' }) }
@@ -191,8 +255,17 @@ foreach ($entry in $done) {
     $runStates = foreach ($log in $entry.Group.HostLog, $entry.Group.ClientLog) { ,@(Select-String -Path $log -Pattern "STATE (?![^:]*\(local\))[^:]+: (floor \d+, act |\S+ gold )" -ErrorAction SilentlyContinue | ForEach-Object { $_.Line -replace '^.*STATE ', '' }) }
     if (($runStates[0] -join "`n") -ne ($runStates[1] -join "`n")) { $problems += "run states differ ($($runStates[0].Count) vs $($runStates[1].Count) lines)" }
     if ($enemies[0].Count -eq 0 -and $runStates[0].Count -eq 0) { $problems += "no enemy or run state line" }
-    Write-Output ("{0,-16} {1,-8} {2,4} s  {3} enemy, {4} run state lines{5}" -f $entry.Group.Name, $entry.State, $entry.Seconds, $enemies[0].Count, $runStates[0].Count, $(if ($problems.Count) { "  PROBLEMS: " + ($problems -join "; ") } else { "  agree" }))
+    Write-Output ("{0,-16} {1,-8} {2,4} s  {3} enemy, {4} run state lines, longest frame {5}{6}" -f $entry.Group.Name, $entry.State, $entry.Seconds, $enemies[0].Count, $runStates[0].Count, $marginText, $(if ($problems.Count) { "  PROBLEMS: " + ($problems -join "; ") } else { "  agree" }))
     if ($problems.Count) { $bad++ }
+    # A vanilla twin that ran to its end with nothing to say: kept for -UseBaselines (both peers' logs, under its key).
+    if ($entry.Group.Vanilla -and $entry.State -eq "done" -and -not $problems.Count) {
+        try {
+            New-Item -ItemType Directory -Force $coopBaselines | Out-Null
+            Copy-Item $entry.Group.HostLog $entry.Group.CacheHost -Force
+            Copy-Item $entry.Group.ClientLog $entry.Group.CacheClient -Force
+        }
+        catch { Write-Output "note: $($entry.Group.Name) not kept as a baseline: $($_.Exception.Message)" }
+    }
 }
 # The labels of a script's checksums taken where both peers are settled: right after a barrier (every player got there) or the
 # combat's end, 'wait' lines and other such checksums between allowed. Elsewhere a checksum comes when that peer gets there, maybe

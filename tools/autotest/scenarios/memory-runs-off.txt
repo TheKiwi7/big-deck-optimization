@@ -1,4 +1,6 @@
-# Memory check across fights and runs (mod off), ~945 cards: the reference of memory-runs-on.
+# Memory check across fights and runs (mod off), ~945 cards: the reference of memory-runs-on. No `leakcheck current`: that
+# positive control needs the mod's statics to reach the current run, which mod off (or a --bdvanilla baseline, no patch
+# applied) they don't; judge.py would count its "no static of the mod reaches the current run" as a blind walk.
 timeout 900
 cmd bdopt off
 newrun NECROBINDER 1234
@@ -12,7 +14,6 @@ cmd fight CULTISTS_NORMAL
 waitfor idle 60
 play 4
 waitfor idle 30
-leakcheck current
 endturn
 waitfor idle 60
 cmd kill all

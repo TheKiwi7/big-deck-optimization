@@ -8,7 +8,16 @@ $BaselineRoot = Join-Path $Results "baselines"
 $MinFreeKB = 3 * 1024 * 1024
 $StartLimitSec = 60
 $FreezeSilenceSec = 20
-# run.ps1 -KeepSlot: the slot of the sessions that follow each other and share their user data.
+# The solo test slots every series on this PC shares (par, parsweep, vanillacheck, mutations: slots 0 to $SlotPool - 1): at most
+# that many solo sessions at once whatever each series' -Jobs, which caps only that series. Two series side by side (both copies'
+# par blocks, the sweeps) share them; Invoke-Sessions gives a free slot to the series whose next session is the longest
+# (Test-OtherSeriesFirst). BDTEST_SLOTS sets the pool (1 to 40: parcoop's slots start at 40); by default the logical processors
+# less two (14 on 16). The memory guard ($MinFreeKB) still holds every start.
+$SlotPool = [Math]::Max(1, [Environment]::ProcessorCount - 2)
+if ("$env:BDTEST_SLOTS" -match '^\d+$') { $SlotPool = [Math]::Min(40, [Math]::Max(1, [int]$env:BDTEST_SLOTS)) }
+# run.ps1 -KeepSlot: the slot of the sessions that follow each other and share their user data (Lock-KeptSlot: one per process,
+# 80 to 89, so settings.ps1 and the like run on two copies at once). $KeptSlot: the one a script locked (80 until then).
+$KeptSlots = 80..89
 $KeptSlot = 80
 # A solo mod-off session's launch argument (Invoke-Sessions, Test-BaselineJob): the mod starts off as a player's saved off would
 # leave it, no optimization patch installed (ModEntry.VanillaArg, Debug builds only). Its log says so in this line.
@@ -28,17 +37,45 @@ function Resolve-GameCopy([string]$dir) {
 
 # started-off-nomenu.ps1 sets this mod's menu DLL aside for one session: one stopped from outside left it there, and every later
 # session on the copy would run without the settings menu (a warning only). Put back, unless that script may be running (it holds
-# the kept slot: this process, or another one).
+# the copy's menu-aside lock, Lock-MenuAside: this process, or another one).
 function Restore-AsideMenu([string]$gameDir) {
     $menu = Join-Path $gameDir "mods\BigDeckOptimization\BigDeckOptimization.Menu.dll"
     $aside = "$menu.bdtest-aside"
-    if (-not (Test-Path $aside) -or $global:BdSlotLocks.ContainsKey($KeptSlot) -or -not (Lock-Slot $KeptSlot -Try)) { return }
+    if (-not (Test-Path $aside)) { return }
+    $lock = Lock-MenuAside $gameDir -Try
+    if (-not $lock) { return }
     try {
         # A menu DLL there was deployed since: the one set aside is older.
         if (Test-Path $menu) { Remove-Item $aside -Force } else { Move-Item $aside $menu }
         Write-Host "put back $menu, set aside by an interrupted started-off-nomenu.ps1"
     }
-    finally { Unlock-Slot $KeptSlot }
+    finally { $lock.Dispose() }
+}
+
+# Held by started-off-nomenu.ps1 while the copy's menu DLL is set aside: a file in the test slots' folder, open until disposed (or
+# the process ends). -Try: $null when another process holds it; this process holding it already counts as held.
+function Lock-MenuAside([string]$gameDir, [switch]$Try) {
+    New-Item -ItemType Directory -Force $SlotRoot | Out-Null
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $hash = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes((Get-CopyKey $gameDir)))) -replace "-", "").Substring(0, 16)
+    try { [IO.File]::Open((Join-Path $SlotRoot "menuaside-$hash.lock"), 'OpenOrCreate', 'ReadWrite', 'None') }
+    catch {
+        if ($Try) { return $null }
+        throw "$gameDir's settings menu is set aside by another started-off-nomenu.ps1: wait for it to end."
+    }
+}
+
+# The kept slot of this process (run.ps1 -KeepSlot and the scripts calling it: settings.ps1, baselib-optional.ps1...): the one it
+# holds already (one level deeper, Lock-Slot's Depth), else the first free one of $KeptSlots. Released with Unlock-Slot.
+function Lock-KeptSlot {
+    if ($null -ne $global:BdKeptSlot -and $global:BdSlotLocks.ContainsKey([int]$global:BdKeptSlot)) {
+        [void](Lock-Slot $global:BdKeptSlot)
+        return [int]$global:BdKeptSlot
+    }
+    foreach ($slot in $KeptSlots) {
+        if (Lock-Slot $slot -Try) { $global:BdKeptSlot = $slot; return $slot }
+    }
+    throw "Every kept test slot ($($KeptSlots[0])-$($KeptSlots[-1]), $SlotRoot) is in use by another test series: wait for one to end."
 }
 
 # Sessions run without Steam (--force-steam off): with it the game writes saves straight to Steam Cloud through Steam's API,
@@ -356,8 +393,10 @@ function Set-SlotModEnabled([string]$slot, [string]$id, [bool]$enabled) {
 # EXPECT and EXPECTDECL lines): 'CHECKSUM x' is the result, '> checksum x' only the request.
 $SessionEnd = 'AutoTest\s+[\d.]+s\s+(script finished|> quit\b|handed over to the player)'
 $ScriptOwnLine = 'AutoTest\s+[\d.]+s\s+(> |EXPECT |EXPECTDECL )|Executing DevConsole command|DevConsole: '
+# The log is run.ps1's on the calling script's copy ($GameDir: results\<version>\<name>.log, the same script on the other copy at the
+# same time writing its own), or results\<name>.log (BD_NO_VERSIONED_LOGS, or no copy).
 function Test-SessionLog([string]$name, [string]$pattern, [bool]$expected, [string]$meaning) {
-    $log = Join-Path $Results "$name.log"
+    $log = if ($GameDir -and -not $env:BD_NO_VERSIONED_LOGS) { Join-Path (Get-VersionDir $GameDir) "$name.log" } else { Join-Path $Results "$name.log" }
     if (-not (Test-Path $log)) { $ok = $false; $meaning += " (no session log)" }
     else {
         $seen = [bool](Select-String -Path $log -Pattern $pattern -CaseSensitive | Where-Object { $_.Line -cnotmatch $ScriptOwnLine } | Select-Object -First 1)
@@ -374,7 +413,7 @@ function Test-SessionLog([string]$name, [string]$pattern, [bool]$expected, [stri
 # runs or the scenario changes. Not this mod's patches: a mod-off session is launched with --bdvanilla and none of them is
 # installed (vanillacheck.ps1 proves a patched-off session, every patch installed then bdopt off, logs the same lines).
 # 'ref=vanilla1': the logs of patched-off sessions, kept before --bdvanilla, never serve as vanilla ones.
-$script:BaselineSalt = $null
+$script:CoopProfilesSalt = $null
 # The test tooling a script runs: the scenario engine and its helpers always, each optional part only when one of its commands is
 # in the script (AutoTest.cs reaches them only through those commands; a few CPU-time helpers feed timings, which no comparison
 # reads). A change elsewhere in Bench/ leaves this scenario's baseline valid. A console command counts through 'cmd' and through
@@ -407,22 +446,205 @@ function Get-BaselineBenchFiles([string]$scriptText) {
     }
 }
 
-function Get-BaselineKey([string]$gameDir, [string]$scriptPath) {
-    if (-not $script:BaselineSalt) {
+# A Bench file's part of the key: the hash of its code without comments nor the whitespace between tokens (BdCodeText.Normalize:
+# string and char literals kept byte for byte, line breaks kept), so a comment-only or layout-only edit leaves every baseline
+# valid; the hash of the file as it is when the lexer is unsure of anything (an unclosed literal, a raw string literal). Checked
+# exact on every Bench file (2026-11-18): a Debug build of the normalized sources decompiles (ilspycmd) to the same C# as the
+# original's. Only line numbers move, which no compared line holds (compare.py replaces numbers in the game errors it counts).
+# -Legacy: the whole file's hash, the key before this (Invoke-Sessions still reads baselines kept under it).
+if (-not ("BdCodeText" -as [type])) {
+    Add-Type -TypeDefinition @'
+using System; using System.Text;
+public static class BdCodeText {
+    // C# source without its comments and without the whitespace between tokens (runs of spaces and tabs become one space, the
+    // indentation and blank lines go, line breaks stay); string and char literals kept byte for byte. Null when unsure (an
+    // unclosed literal or comment, a raw string literal, $$ interpolation): the caller then hashes the file as it is.
+    public static string Normalize(string s) {
+        var sb = new StringBuilder(s.Length);
+        int i = 0;
+        bool pendingSpace = false, pendingLine = false;
+        if (!Code(s, ref i, sb, ref pendingSpace, ref pendingLine, false)) return null;
+        return sb.ToString();
+    }
+
+    static void Flush(StringBuilder sb, ref bool pendingSpace, ref bool pendingLine) {
+        if (pendingLine) { if (sb.Length > 0) sb.Append('\n'); }
+        else if (pendingSpace) { if (sb.Length > 0) sb.Append(' '); }
+        pendingSpace = false; pendingLine = false;
+    }
+
+    // Code until the end (hole = false) or until the '}' closing an interpolation hole at nesting 0, or its format ':' (hole = true:
+    // i is left on that '}' or ':').
+    static bool Code(string s, ref int i, StringBuilder sb, ref bool pendingSpace, ref bool pendingLine, bool hole) {
+        int nest = 0;
+        while (i < s.Length) {
+            char c = s[i];
+            char n = i + 1 < s.Length ? s[i + 1] : '\0';
+            if (c == '\r' || c == '\n') { pendingLine = true; i++; continue; }
+            if (c == ' ' || c == '\t' || c == '\f' || c == '\v') { pendingSpace = true; i++; continue; }
+            if (c == '/' && n == '/') {
+                while (i < s.Length && s[i] != '\n' && s[i] != '\r') i++;
+                continue;
+            }
+            if (c == '/' && n == '*') {
+                int end = s.IndexOf("*/", i + 2, StringComparison.Ordinal);
+                if (end < 0) return false;
+                // A comment separates tokens as a space does.
+                for (int k = i; k < end; k++) if (s[k] == '\n') pendingLine = true;
+                pendingSpace = true;
+                i = end + 2;
+                continue;
+            }
+            if (hole && nest == 0 && (c == '}' || c == ':')) return true;
+            if (c == '"' && n == '"' && i + 2 < s.Length && s[i + 2] == '"') return false; // raw string literal
+            if (c == '$' && n == '$') return false;
+            if (c == '"' || c == '\'' || (c == '@' && n == '"') || (c == '$' && (n == '"' || n == '@')) || (c == '@' && n == '$')) {
+                Flush(sb, ref pendingSpace, ref pendingLine);
+                if (!Literal(s, ref i, sb)) return false;
+                continue;
+            }
+            Flush(sb, ref pendingSpace, ref pendingLine);
+            if (c == '(' || c == '[' || c == '{') nest++;
+            else if (c == ')' || c == ']' || c == '}') nest--;
+            sb.Append(c);
+            i++;
+        }
+        return !hole;
+    }
+
+    // A string or char literal at i, copied as it is; i past its end.
+    static bool Literal(string s, ref int i, StringBuilder sb) {
+        int start = i;
+        bool interpolated = false, verbatim = false;
+        while (i < s.Length && (s[i] == '$' || s[i] == '@')) { if (s[i] == '$') interpolated = true; else verbatim = true; i++; }
+        if (i >= s.Length) return false;
+        char quote = s[i];
+        if (quote == '\'') {
+            if (interpolated || verbatim) return false;
+            i++;
+            while (i < s.Length && s[i] != '\'') {
+                if (s[i] == '\n' || s[i] == '\r') return false;
+                if (s[i] == '\\') i++;
+                i++;
+            }
+            if (i >= s.Length) return false;
+            i++;
+            sb.Append(s, start, i - start);
+            return true;
+        }
+        if (quote != '"') return false;
+        sb.Append(s, start, i - start + 1);
+        i++;
+        while (i < s.Length) {
+            char c = s[i];
+            if (!verbatim && (c == '\n' || c == '\r')) return false;
+            if (!verbatim && c == '\\') {
+                if (i + 1 >= s.Length) return false;
+                sb.Append(c).Append(s[i + 1]);
+                i += 2;
+                continue;
+            }
+            if (c == '"') {
+                if (verbatim && i + 1 < s.Length && s[i + 1] == '"') { sb.Append("\"\""); i += 2; continue; }
+                sb.Append('"');
+                i++;
+                return true;
+            }
+            if (interpolated && (c == '{' || c == '}')) {
+                if (i + 1 < s.Length && s[i + 1] == c) { sb.Append(c).Append(c); i += 2; continue; }
+                if (c == '}') return false;
+                // A hole: code (its own literals, comments and whitespace normalized as code), then an optional format up to '}'.
+                sb.Append('{');
+                i++;
+                bool space = false, line = false;
+                if (!Code(s, ref i, sb, ref space, ref line, true)) return false;
+                if (i >= s.Length) return false;
+                if (s[i] == ':') {
+                    while (i < s.Length && s[i] != '}') {
+                        if (s[i] == '"' || s[i] == '\n' || s[i] == '\r') return false;
+                        sb.Append(s[i]);
+                        i++;
+                    }
+                    if (i >= s.Length) return false;
+                }
+                sb.Append('}');
+                i++;
+                continue;
+            }
+            sb.Append(c);
+            i++;
+        }
+        return false;
+    }
+}
+'@
+}
+$script:BenchCodeHashes = @{}
+function Get-BenchFileHash($file, [bool]$legacy) {
+    if ($legacy) { return (Get-FileHash $file.FullName -Algorithm SHA256).Hash }
+    $id = "$($file.FullName)|$($file.Length)|$($file.LastWriteTimeUtc.Ticks)"
+    if (-not $script:BenchCodeHashes.ContainsKey($id)) {
+        $code = [BdCodeText]::Normalize([IO.File]::ReadAllText($file.FullName))
+        $script:BenchCodeHashes[$id] = if ($null -eq $code) { (Get-FileHash $file.FullName -Algorithm SHA256).Hash } else {
+            $sha = [Security.Cryptography.SHA256]::Create()
+            "code:" + ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($code))) -replace "-", "")
+        }
+    }
+    $script:BenchCodeHashes[$id]
+}
+
+# -Plain: no test mod loaded (parcoop.ps1 -Plain), whatever BDTEST_MODS says.
+$script:BaselineSalts = @{}
+function Get-BaselineSalt([string]$gameDir, [switch]$Plain) {
+    $id = "$(Get-CopyKey $gameDir)|$($Plain.IsPresent)"
+    if (-not $script:BaselineSalts.ContainsKey($id)) {
         $profileSaves = Join-Path (Get-SteamAccountDir) "modded\profile3\saves"
         # Every file of the test mods' Workshop folders, not only DLLs: a mod's own data and settings change the game too (Unlimited
         # 2.0.0's sts2unlimited.settings.json: its difficulty scaling).
-        $files = @(Get-ChildItem (Join-Path $gameDir "data_sts2_windows_x86_64\sts2.dll")) + @(Get-TestModItems | ForEach-Object { Get-ChildItem $_.FullName -Recurse -File }) +
+        $files = @(Get-ChildItem (Join-Path $gameDir "data_sts2_windows_x86_64\sts2.dll")) + @(if (-not $Plain) { Get-TestModItems | ForEach-Object { Get-ChildItem $_.FullName -Recurse -File } }) +
             @(Get-ChildItem (Join-Path $UserData "bigdeck") -Filter *.run -ErrorAction SilentlyContinue) +
             @(Get-ChildItem (Join-Path $profileSaves "*") -File -Include progress.save, prefs.save -ErrorAction SilentlyContinue) +
             @(Get-ChildItem (Join-Path $UserData "mod_configs") -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne "BigDeckOptimization.cfg" }) +
             @(Get-ChildItem (Join-Path $UserData "mod_data") -Recurse -File -ErrorAction SilentlyContinue)
-        $script:BaselineSalt = "ref=vanilla1|no-steam|mods=" + (@(Get-TestModIds) -join ",") + "|" + (($files | Sort-Object FullName | ForEach-Object { "$($_.Name)=" + (Get-FileHash $_.FullName -Algorithm SHA256).Hash }) -join "")
+        $mods = if ($Plain) { "none" } else { @(Get-TestModIds) -join "," }
+        $script:BaselineSalts[$id] = "ref=vanilla1|no-steam|mods=$mods|" + (($files | Sort-Object FullName | ForEach-Object { "$($_.Name)=" + (Get-FileHash $_.FullName -Algorithm SHA256).Hash }) -join "")
     }
+    $script:BaselineSalts[$id]
+}
+
+# The Bench part of a key: the files the script text runs (Get-BaselineBenchFiles), each with its hash.
+function Get-BaselineBench([string]$scriptText, [bool]$legacy) {
+    (@(Get-BaselineBenchFiles $scriptText) | Sort-Object Name | ForEach-Object { "$($_.Name)=" + (Get-BenchFileHash $_ $legacy) }) -join ""
+}
+
+function Get-BaselineKey([string]$gameDir, [string]$scriptPath, [switch]$Legacy) {
+    $salt = Get-BaselineSalt $gameDir
     $scriptText = [IO.File]::ReadAllText($scriptPath)
-    $bench = (@(Get-BaselineBenchFiles $scriptText) | Sort-Object Name | ForEach-Object { "$($_.Name)=" + (Get-FileHash $_.FullName -Algorithm SHA256).Hash }) -join ""
+    $bench = Get-BaselineBench $scriptText $Legacy.IsPresent
     $sha = [Security.Cryptography.SHA256]::Create()
-    $bytes = [Text.Encoding]::UTF8.GetBytes($script:BaselineSalt + "|bench=" + $bench + "|" + $scriptText)
+    $bytes = [Text.Encoding]::UTF8.GetBytes($salt + "|bench=" + $bench + "|" + $scriptText)
+    ([BitConverter]::ToString($sha.ComputeHash($bytes)) -replace "-", "").Substring(0, 16)
+}
+
+# A co-op vanilla pair's key (parcoop.ps1 -OnOff's -autooff twins, both peers launched with --bdvanilla): the solo key's parts
+# (the game, the test mods unless -Plain, run files, profile 3, mod_configs, mod_data), the co-op profiles the peers play
+# (default\1 and default\1001: their saves and mod data, which Sync-Slot -Coop mirrors), CoopModeTag.cs's code (the one patch a
+# vanilla peer installs: its "+off" join entry, which the twin's 'coopmodetag off' checks), the Bench files both scripts run
+# and both scripts' text.
+function Get-CoopBaselineKey([string]$gameDir, [string]$hostScript, [string]$clientScript, [bool]$plain) {
+    if ($null -eq $script:CoopProfilesSalt) {
+        $files = foreach ($id in "1", "1001") {
+            $dir = Join-Path $UserData "default\$id"
+            if (Test-Path $dir) { Get-ChildItem $dir -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -in "progress.save", "prefs.save", "profile.save", "settings.save" -or $_.FullName -match '\\mod_data\\' } }
+        }
+        $script:CoopProfilesSalt = (@($files) | Sort-Object FullName | ForEach-Object { "$($_.FullName.Substring($UserData.Length))=" + (Get-FileHash $_.FullName -Algorithm SHA256).Hash }) -join ""
+    }
+    $hostText = [IO.File]::ReadAllText($hostScript)
+    $clientText = [IO.File]::ReadAllText($clientScript)
+    $tag = Get-Item (Join-Path $PSScriptRoot "..\..\src\BigDeckOptimization\Patches\CoopModeTag.cs")
+    $bench = Get-BaselineBench ($hostText + "`n" + $clientText) $false
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $bytes = [Text.Encoding]::UTF8.GetBytes((Get-BaselineSalt $gameDir -Plain:$plain) + "|coop-vanilla1|profiles=" + $script:CoopProfilesSalt + "|tag=" + (Get-BenchFileHash $tag $false) + "|bench=" + $bench + "|host=" + $hostText + "|client=" + $clientText)
     ([BitConverter]::ToString($sha.ComputeHash($bytes)) -replace "-", "").Substring(0, 16)
 }
 
@@ -433,7 +655,7 @@ function Test-PatchedOffJob($job) { [bool]($job.PSObject.Properties["PatchedOff"
 # A real mod-off session, launched with --bdvanilla (nothing of this mod installed but the test tooling and the co-op check) and
 # kept as a baseline: its name says off and its script turns the whole mod off ('cmd bdopt off') before the run exists (newrun,
 # mplobby, autoslay, continuerun) and before any other console command (that 'bdopt off' then changes nothing: the mod started
-# off). A scenario named -off that turns one option off (hookskip-off, turns-32k-off, snapcheck-5k-off) runs this mod's code:
+# off). A scenario named -off that turns one option off (hookskip-off, turns-32k-off, snapcheck-5k-a-off) runs this mod's code:
 # launched as any other, never cached. Solo only: parcoop.ps1, coop.ps1 and coop4.ps1 launch their own sessions (--bdoff, every
 # patch installed).
 function Test-BaselineJob($job) {
@@ -564,14 +786,114 @@ function Get-FrozenProblem([string]$log, [switch]$Mutated) {
     if ($initialized -and -not (Select-String -Path $log -SimpleMatch "[BigDeckOptimization] Patches applied" -Quiet)) { return "froze while this mod applied its patches (no 'Patches applied' line, log $leaf)" }
 }
 
-# Jobs: objects with Name, Script (scenario path), Log. Runs at most $MaxJobs at once. A session is closed when it passes
-# $TimeoutSec, or when its log stays silent for $StallSec. Returns one result per job: Name, State (done, cached, TIMEOUT,
-# STALLED, FROZEN, CRASHED), Seconds, Failed (its problems: judge.py's, a test mod not loaded, an earlier session that ended early
-# or froze in this mod's code), Restarts. -OnFinish { param($job, $result) ... }: called once per job with its final result (not
-# for a session that starts over); the jobs it returns are queued at once, ahead of the others (parsweep.ps1's continuation of a
-# chunk an item stopped: it starts as soon as a slot frees, not after every session of a round), and their results returned too.
-# -StatusFile: the file in results/ the progress goes to (status.ps1 shows every status*.txt).
-function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$TimeoutSec = 900, [int]$StallSec = 240, [switch]$Rendered, [switch]$UseBaselines, [string]$Label = "sessions", [scriptblock]$OnFinish = $null, [string]$StatusFile = "status.txt") {
+# How long a kind of session took last time, to start the longest first (Invoke-Sessions): results\<version>\durations.tsv, one
+# line per key (Get-DurationKey: the job's name, its script's speed line, rendered or not), its seconds and when, written at each
+# session's end (done or timed out) by every series of that version under one lock. Only the order depends on it, never a result.
+$DurationsFileName = "durations.tsv"
+function Get-DurationKey($job, [bool]$rendered) {
+    $speed = "default"
+    if ($job.Script -and (Test-Path $job.Script)) {
+        $m = Select-String -Path $job.Script -Pattern '^\s*speed\s+(\w+)' | Select-Object -First 1
+        if ($m) { $speed = $m.Matches[0].Groups[1].Value }
+    }
+    "$($job.Name)|$speed$(if ($rendered) { '|rendered' })"
+}
+
+function Read-Durations([string]$file) {
+    $map = @{}
+    if (-not (Test-Path $file)) { return $map }
+    foreach ($line in [IO.File]::ReadAllLines($file)) {
+        $parts = $line -split "`t"
+        if ($parts.Count -ge 2 -and $parts[1] -match '^\d+$') { $map[$parts[0]] = [int]$parts[1] }
+    }
+    $map
+}
+
+# Merges $new (key -> seconds) into the file, under a lock (every series of a version writes it).
+function Save-Durations([string]$file, [hashtable]$new) {
+    if (-not $new.Count) { return }
+    $mutex = [Threading.Mutex]::new($false, "Local\BigDeckOptimization-durations")
+    try { if (-not $mutex.WaitOne(30000)) { $mutex.Dispose(); return } }
+    catch [Threading.AbandonedMutexException] { }
+    try {
+        $when = Get-Date -Format "yyyy-MM-dd HH:mm"
+        $lines = [Collections.Generic.List[string]]::new()
+        if (Test-Path $file) { foreach ($line in [IO.File]::ReadAllLines($file)) { if ($line -and -not $new.ContainsKey(($line -split "`t")[0])) { $lines.Add($line) } } }
+        foreach ($key in $new.Keys) { $lines.Add("$key`t$([int]$new[$key])`t$when") }
+        $temp = "$file.$PID.tmp"
+        [IO.File]::WriteAllLines($temp, [string[]]@($lines | Sort-Object))
+        Move-Item $temp $file -Force
+    }
+    catch { Write-Host "note: session durations not saved ($($_.Exception.Message))" }
+    finally { $mutex.ReleaseMutex(); $mutex.Dispose() }
+}
+
+# A session's length from its log, when that log ran this same script: its last AutoTest time plus the game's start (~15 s).
+function Get-LogDuration([string]$log, [string]$script) {
+    if (-not $log -or -not $script -or -not (Test-Path $log)) { return $null }
+    if (-not (Select-String -Path $log -SimpleMatch "script $script (" -Quiet)) { return $null }
+    $last = @(Get-Content $log -Tail 400 -ErrorAction SilentlyContinue | Select-String -Pattern 'AutoTest\s+([\d.]+)s ') | Select-Object -Last 1
+    if (-not $last) { return $null }
+    [Math]::Round([double]$last.Matches[0].Groups[1].Value + 15)
+}
+
+# The logs of jobs that already ran (Name, Script, Log) into the durations file, for keys it has none of: parsweep.ps1's parts,
+# whose folder is emptied before the next run makes them again.
+function Save-LogDurations([string]$gameDir, $jobs) {
+    $file = Join-Path (Get-VersionDir $gameDir) $DurationsFileName
+    $known = Read-Durations $file
+    $new = @{}
+    foreach ($job in $jobs) {
+        $key = Get-DurationKey $job $false
+        if ($known.ContainsKey($key)) { continue }
+        $seconds = Get-LogDuration $job.Log $job.Script
+        if ($null -ne $seconds) { $new[$key] = $seconds }
+    }
+    Save-Durations $file $new
+}
+
+# The whole script's 'timeout <s>' line (AutoTest's own limit), or 0.
+function Get-ScenarioTimeout([string]$script) {
+    if (-not $script -or -not (Test-Path $script)) { return 0 }
+    $m = Select-String -Path $script -Pattern '^\s*timeout\s+(\d+)\s*$' | Select-Object -First 1
+    if ($m) { [int]$m.Matches[0].Groups[1].Value } else { 0 }
+}
+
+# Series side by side (par on both copies, the sweeps' kinds, mutations) share the solo slots ($SlotPool). Each one running
+# Invoke-Sessions holds a file open in test-slots\queue saying how long its next session should take, while it could start one (a
+# free slot, its -Jobs not reached): a series finding a free slot leaves it to another whose next session is longer (equal: the
+# file name first), so the longest sessions of every series start first, as within one series. A file not held open is a series
+# that ended (deleted on the way); one not rewritten for 15 s is ignored (a series busy elsewhere never holds the others up).
+# Unknown lengths count as the longest ($UnknownLength): a new scenario or chunk starts early, as before this order existed.
+$UnknownLength = 1e9
+function Get-OtherSeriesHeads([string]$queueDir, [string]$mine) {
+    foreach ($file in @(Get-ChildItem $queueDir -Filter *.queue -File -ErrorAction SilentlyContinue)) {
+        if ($file.Name -eq $mine) { continue }
+        try { Remove-Item $file.FullName -Force -ErrorAction Stop; continue } catch { }
+        $text = $null
+        try {
+            $stream = [IO.File]::Open($file.FullName, 'Open', 'Read', 'ReadWrite')
+            try { $text = (New-Object IO.StreamReader($stream)).ReadToEnd() } finally { $stream.Dispose() }
+        }
+        catch { continue }
+        $parts = "$text".Trim() -split ' '
+        if ($parts.Count -ne 2 -or $parts[0] -eq 'none' -or $parts[1] -notmatch '^\d+$') { continue }
+        if (([datetime]::UtcNow.Ticks - [long]$parts[1]) -gt 150000000) { continue }
+        [pscustomobject]@{ Name = $file.Name; Length = [double]$parts[0] }
+    }
+}
+
+# Jobs: objects with Name, Script (scenario path), Log. Runs at most $MaxJobs at once, in the solo slots every series shares
+# ($SlotPool): the longest first (durations.tsv, else the job's last log when it ran this script; unknown ones first, in the order
+# given), and a free slot goes to whichever series has the longest session waiting (Get-OtherSeriesHeads). A slot this series
+# isn't using goes back at once. A session is closed when it passes $TimeoutSec (-ScenarioTimeouts: or its script's own 'timeout'
+# line plus 120 s, whichever is longer), or when its log stays silent for $StallSec. Returns one result per job: Name, State (done,
+# cached, TIMEOUT, STALLED, FROZEN, CRASHED), Seconds, Failed (its problems: judge.py's, a test mod not loaded, an earlier session
+# that ended early or froze in this mod's code), Restarts. -OnFinish { param($job, $result) ... }: called once per job with its
+# final result (not for a session that starts over); the jobs it returns are queued at once, ahead of the others (parsweep.ps1's
+# continuation of a chunk an item stopped: it starts as soon as a slot frees, not after every session of a round), and their
+# results returned too. -StatusFile: the file in results/ the progress goes to (status.ps1 shows every status*.txt).
+function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$TimeoutSec = 900, [int]$StallSec = 240, [switch]$Rendered, [switch]$UseBaselines, [string]$Label = "sessions", [scriptblock]$OnFinish = $null, [string]$StatusFile = "status.txt", [switch]$ScenarioTimeouts) {
     $launchMode = if ($Rendered) { @("--bdhidden", "--windowed", "--resolution", "1920x1080") } else { @("--headless") }
     Add-TestMods $GameDir
     # In order; the jobs OnFinish returns go first.
@@ -580,12 +902,26 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
     $allJobs = [Collections.Generic.List[object]]::new()
     foreach ($job in $Jobs) { $allJobs.Add($job) }
     $baselineDir = Join-Path $BaselineRoot (Get-GameTag $GameDir)
+    $durationFile = Join-Path (Get-VersionDir $GameDir) $DurationsFileName
+    $durations = Read-Durations $durationFile
+    # A job's expected seconds (kept on the job), $UnknownLength when nothing says.
+    $lengthOf = {
+        param($job)
+        if (-not $job.PSObject.Properties["ExpectedSec"]) {
+            $key = Get-DurationKey $job $Rendered.IsPresent
+            $seconds = if ($durations.ContainsKey($key)) { $durations[$key] } else { Get-LogDuration $job.Log $job.Script }
+            $job | Add-Member -NotePropertyName ExpectedSec -NotePropertyValue $(if ($null -ne $seconds) { [double]$seconds } else { $UnknownLength }) -Force
+        }
+        $job.ExpectedSec
+    }
     # Queues a job (-First: ahead of the others), unless a cached mod-off log replaces its session. These two are child scopes: they
     # change the lists, never assign a variable of this function.
     $enqueue = {
         param($newJob, [bool]$first)
         if ($UseBaselines -and (Test-BaselineJob $newJob)) {
             $cached = Join-Path $baselineDir "$($newJob.Name)-$(Get-BaselineKey $GameDir $newJob.Script).log"
+            # Kept before the Bench files' code hash (Get-BenchFileHash): its key hashed them whole, a stricter key.
+            if (-not (Test-Path $cached)) { $cached = Join-Path $baselineDir "$($newJob.Name)-$(Get-BaselineKey $GameDir $newJob.Script -Legacy).log" }
             if (Test-Path $cached) {
                 Copy-Item $cached $newJob.Log -Force
                 & $finish $newJob ([pscustomobject]@{ Name = $newJob.Name; State = "cached"; Seconds = 0; Failed = @(Get-FailedLines $newJob.Log -Mutated:(Test-MutatedJob $newJob)) + @(Get-LaunchProblem $newJob $newJob.Log) })
@@ -603,7 +939,12 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
         foreach ($newJob in $added) { $allJobs.Add($newJob) }
         for ($k = $added.Count - 1; $k -ge 0; $k--) { & $enqueue $added[$k] $true }
     }
-    foreach ($job in $Jobs) { & $enqueue $job $false }
+    # The longest first; jobs nothing is known of first of all ($UnknownLength), in the order given (the callers put the mod-off
+    # sides first). Sorted on the length then the given place: Windows PowerShell's Sort-Object isn't stable.
+    $index = 0
+    $ranked = @(foreach ($job in $Jobs) { [pscustomobject]@{ Job = $job; Length = (& $lengthOf $job); Index = $index++ } })
+    $ordered = @($ranked | Sort-Object -Property @{ Expression = { $_.Length }; Descending = $true }, @{ Expression = { $_.Index }; Descending = $false } | ForEach-Object { $_.Job })
+    foreach ($job in $ordered) { & $enqueue $job $false }
     $running = @{}
     $retries = @{}
     # Sessions that ended early, not in the known renderer crash: problems of their job, whatever the session that started over did.
@@ -613,16 +954,37 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
     $lastStatus = [datetime]::MinValue
     # The slots are shared by every series, whatever the game copy: a slot another series holds (Lock-Slot) is skipped until free.
     $locked = [Collections.Generic.HashSet[int]]::new()
+    # This series' head in the shared queue (Get-OtherSeriesHeads).
+    $queueDir = Join-Path $SlotRoot "queue"
+    New-Item -ItemType Directory -Force $queueDir | Out-Null
+    $queueName = "{0}-{1}.queue" -f $PID, [guid]::NewGuid().ToString('N')
+    $queueStream = [IO.File]::Open((Join-Path $queueDir $queueName), 'CreateNew', 'ReadWrite', 'Read')
+    $advertise = {
+        param([string]$length)
+        $bytes = [Text.Encoding]::ASCII.GetBytes("$length $([datetime]::UtcNow.Ticks)")
+        $queueStream.SetLength(0)
+        $queueStream.Write($bytes, 0, $bytes.Length)
+        $queueStream.Flush()
+    }
     try {
         while ($pending.Count -gt 0 -or $running.Count -gt 0) {
-            foreach ($slot in 0..($MaxJobs - 1)) {
-                if ($running.ContainsKey($slot) -or $pending.Count -eq 0) { continue }
-                # Each session takes 1-2 GB: the PC stays usable, the next one waits.
-                if ($running.Count -gt 0 -and (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory -lt $MinFreeKB) { break }
+            $canStart = $pending.Count -gt 0 -and $running.Count -lt $MaxJobs
+            & $advertise $(if ($canStart) { [string](& $lengthOf $pending[0]) } else { "none" })
+            $others = $null
+            # The slots this series holds idle first (a session that ended or starts over), then the others of the pool.
+            $candidates = @(@($locked | Where-Object { -not $running.ContainsKey($_) } | Sort-Object) + @(0..($SlotPool - 1) | Where-Object { -not $locked.Contains($_) }))
+            foreach ($slot in $candidates) {
+                if ($running.Count -ge $MaxJobs -or $pending.Count -eq 0) { break }
                 if (-not $locked.Contains($slot)) {
                     if (-not (Lock-Slot $slot -Try)) { continue }
                     [void]$locked.Add($slot)
                 }
+                # Another series' next session is longer: this slot is its (released below, unused).
+                if ($null -eq $others) { $others = @(Get-OtherSeriesHeads $queueDir $queueName) }
+                $head = & $lengthOf $pending[0]
+                if (@($others | Where-Object { $_.Length -gt $head -or ($_.Length -eq $head -and [string]::CompareOrdinal($_.Name, $queueName) -lt 0) }).Count) { break }
+                # Each session takes 1-2 GB: the PC stays usable, the next one waits. Asked only with a slot in hand (every series polls).
+                if ($running.Count -gt 0 -and (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory -lt $MinFreeKB) { break }
                 $job = $pending[0]
                 $pending.RemoveAt(0)
                 Remove-Item $job.Log -ErrorAction SilentlyContinue
@@ -636,9 +998,15 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                 $p = if ($Rendered) { Start-HiddenGame $jobExe $jobDir $launch } else { Start-Process -FilePath $jobExe -WorkingDirectory $jobDir -PassThru -WindowStyle Hidden -ArgumentList $launch }
                 $env:APPDATA = $realAppData
                 [void]$p.Handle # or its exit code is lost
-                $running[$slot] = [pscustomobject]@{ Job = $job; Process = $p; Started = Get-Date; ScriptStarted = $false }
+                $limit = if ($ScenarioTimeouts) { [Math]::Max($TimeoutSec, (Get-ScenarioTimeout $job.Script) + 120) } else { $TimeoutSec }
+                $running[$slot] = [pscustomobject]@{ Job = $job; Process = $p; Started = Get-Date; ScriptStarted = $false; TimeoutSec = $limit }
+                & $advertise $(if ($pending.Count -gt 0 -and $running.Count -lt $MaxJobs) { [string](& $lengthOf $pending[0]) } else { "none" })
             }
-            if ($running.Count -eq 0 -and $locked.Count -eq 0 -and -not $toldBusy) { $toldBusy = $true; Write-Host "every test slot 0-$($MaxJobs - 1) is held by another series: waiting for one" }
+            # A slot this series holds and doesn't use goes back to the other series at once (a sweep's long mod-off tail, a slot left
+            # to a longer session of another series). A session starting over is queued while its slot is still held: it takes it
+            # first at the next pass.
+            foreach ($slot in @($locked)) { if (-not $running.ContainsKey($slot)) { Unlock-Slot $slot; [void]$locked.Remove($slot) } }
+            if ($running.Count -eq 0 -and $pending.Count -gt 0 -and -not $toldBusy) { $toldBusy = $true; Write-Host "every test slot 0-$($SlotPool - 1) is held by another series, or left to its longer sessions: waiting for one" }
             Start-Sleep -Milliseconds 300
             if (((Get-Date) - $lastStatus).TotalSeconds -ge 5) {
                 Write-SessionStatus $Label ($done.Count + $pending.Count + $running.Count) $done.Count $pending.Count $running $started $allJobs $StatusFile
@@ -672,7 +1040,8 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                     $why = Get-FrozenProblem $frozenLog -Mutated:(Test-MutatedJob $run.Job)
                     if ($why) { $earlyProblems[$name] = @($earlyProblems[$name]) + @($why) }
                     $running.Remove($slot)
-                    if ($retries[$name] -le 2) { $pending.Add($run.Job) }
+                    # First again: it was started early for being long.
+                    if ($retries[$name] -le 2) { $pending.Insert(0, $run.Job) }
                     else { & $finish $run.Job ([pscustomobject]@{ Name = $name; State = "FROZEN"; Seconds = [int]$age; Failed = @("froze 3 times") + @($earlyProblems[$name] | Where-Object { $_ }); Restarts = $retries[$name] }) }
                     continue
                 }
@@ -691,15 +1060,21 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                         if ($why) { $earlyProblems[$name] = @($earlyProblems[$name]) + @($why) }
                         Start-Sleep 1
                         $running.Remove($slot)
-                        if ($retries[$name] -le 2) { $pending.Add($run.Job) }
+                        if ($retries[$name] -le 2) { $pending.Insert(0, $run.Job) }
                         else { & $finish $run.Job ([pscustomobject]@{ Name = $name; State = "CRASHED"; Seconds = [int]$age; Failed = @("stopped early 3 times, exit code $($run.Process.ExitCode)") + @($earlyProblems[$name] | Where-Object { $_ }); Restarts = $retries[$name] }) }
                         continue
                     }
                 }
-                elseif ($age -gt $TimeoutSec) { $state = "TIMEOUT" }
+                elseif ($age -gt $run.TimeoutSec) { $state = "TIMEOUT" }
                 elseif ($age -gt 60 -and (Test-Path $run.Job.Log) -and ((Get-Date) - (Get-Item $run.Job.Log).LastWriteTime).TotalSeconds -gt $StallSec) { $state = "STALLED" }
                 if (-not $state) { continue }
                 if ($state -ne "done") { Stop-Process -Id $run.Process.Id -Force -ErrorAction SilentlyContinue; Start-Sleep 1 }
+                # Its length, for the next series' order (a timed-out one took at least that).
+                if ($state -in "done", "TIMEOUT") {
+                    $key = Get-DurationKey $run.Job $Rendered.IsPresent
+                    $durations[$key] = [int]$age
+                    Save-Durations $durationFile @{ $key = [int]$age }
+                }
                 $failed = @(Get-FailedLines $run.Job.Log -Mutated:(Test-MutatedJob $run.Job)) + @(Get-MissingTestMods $run.Job.Log $GameDir) + @($earlyProblems[$run.Job.Name] | Where-Object { $_ }) + @(Get-LaunchProblem $run.Job $run.Job.Log)
                 $running.Remove($slot)
                 & $finish $run.Job ([pscustomobject]@{ Name = $run.Job.Name; State = $state; Seconds = [int]$age; Failed = $failed; Restarts = [int]$retries[$run.Job.Name] })
@@ -713,11 +1088,6 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                     catch { Write-Host "note: $($run.Job.Name) not kept as a baseline: $($_.Exception.Message)" }
                 }
             }
-            # Nothing left to start: a slot whose session ended goes back to the other series (a sweep's long mod-off tail would
-            # otherwise hold idle slots). A session starting over is queued before this, while its slot is still held.
-            if ($pending.Count -eq 0) {
-                foreach ($slot in @($locked)) { if (-not $running.ContainsKey($slot)) { Unlock-Slot $slot; [void]$locked.Remove($slot) } }
-            }
         }
     }
     finally {
@@ -725,6 +1095,8 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
         foreach ($run in $running.Values) { Stop-Process -Id $run.Process.Id -Force -ErrorAction SilentlyContinue }
         # Held while this series has sessions to start (each start mirrors the user data into its slot again), released when none is left.
         foreach ($slot in @($locked)) { Unlock-Slot $slot }
+        $queueStream.Dispose()
+        Remove-Item (Join-Path $queueDir $queueName) -Force -ErrorAction SilentlyContinue
     }
     $done
 }

@@ -1,5 +1,8 @@
 # Positive control of CardSortKeys (game v0.113+ only: not applied before): answers reversed on purpose must be caught by
-# bdperf sortkeys and by the part's own check (it turns itself off).
+# bdperf sortkeys and by the part's own check (it turns itself off). On v0.107.1 and v0.111.1 (the game's comparison is cheap,
+# the part not applied) requiregame logs SKIPPED and the session ends there (its first line: the expect lines after it never
+# run there, judge.py doesn't require them).
+requiregame v0.113
 expect SORTKEYS .*MISMATCH
 expect CardSortKeys disabled, the game compares its cards
 expect CardSortKeys sorts .*mismatches [1-9]

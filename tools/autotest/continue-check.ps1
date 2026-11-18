@@ -11,7 +11,7 @@ $copy = $GameDir
 $GameDir = Resolve-GameCopy $copy
 Assert-GameNotRunning
 $runProblems = 0
-[void](Lock-Slot $KeptSlot)
+$KeptSlot = Lock-KeptSlot
 try {
     $slot = Sync-Slot $KeptSlot
     $data = Join-Path $slot "SlayTheSpire2"
