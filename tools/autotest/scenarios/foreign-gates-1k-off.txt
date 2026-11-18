@@ -10,6 +10,12 @@ cmd bdperf checks off
 enemyhp 999999
 foreignpatch gates-passthrough-finalizer MegaCrit.Sts2.Core.Hooks.Hook:AfterCardPlayed
 foreignpatch gates-passthrough-finalizer-debug MegaCrit.Sts2.Core.Hooks.Hook:BeforeCardPlayed
+foreignpatch gates-debug-gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardPlayed
+foreignpatch gates-debug-gated-prefix MegaCrit.Sts2.Core.Models.AbstractModel:BeforeCardPlayed
+foreignpatch gates-bitor-gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterPlayerTurnStart
+foreignpatch gates-bool-local-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardDrawnEarly
+foreignpatch gates-copy-prologue-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardDrawn
+foreignpatch gates-call-first-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterEnergyReset
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 1

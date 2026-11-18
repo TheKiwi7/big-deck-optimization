@@ -5,6 +5,8 @@ using System.Reflection;
 using System.Reflection.Emit;
 using BigDeckOptimization.Patches;
 using HarmonyLib;
+using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Cards;
 
 namespace BigDeckOptimization.Bench;
 
@@ -27,16 +29,15 @@ public static class ForeignShapesGates
     public static readonly string[] Shapes =
     {
         "gates-passthrough-finalizer", "gates-passthrough-finalizer-debug", "gates-swallow-finalizer", "gates-ternary-finalizer",
+        "gates-debug-gated-postfix", "gates-debug-gated-prefix", "gates-bitor-gated-postfix", "gates-bool-local-postfix",
+        "gates-copy-prologue-postfix", "gates-call-first-postfix",
     };
 
     /// <summary>Whether a <c>foreignpatch</c> line is one of this file's.</summary>
     public static bool Handles(string[] parts) => parts.Length >= 2 && (parts[0] == "gates" || Shapes.Contains(parts[0]));
 
-    /// <summary>Counted by the emitted shapes (public: the dynamic assembly calls it): a STATE line of the foreign report.</summary>
-    public static void Hit(string key) => IlJudgeShapes.Count(key);
-
-    /// <summary>Read by the ternary finalizer (a value the judge can't know).</summary>
-    public static bool Swallow;
+    /// <summary>Counts through <see cref="GatesCounter.Hit"/> (a class without an initializer: the gate rules judge what a gated path reaches).</summary>
+    public static void Hit(string key) => GatesCounter.Hit(key);
 
     /// <summary>Runs one line: the self-test, or one shape installed on a target. <paramref name="installed"/> records it for removal.</summary>
     public static IReadOnlyList<string> Run(string[] parts, Action<string, MethodBase> installed, Func<MethodBase, IReadOnlyList<string>> classify)
@@ -74,6 +75,12 @@ public static class ForeignShapesGates
             "gates-passthrough-finalizer-debug" => (PassThroughDebug(key), PatchSafety.PatchKind.Finalizer),
             "gates-swallow-finalizer" => (SwallowFinalizer(key), PatchSafety.PatchKind.Finalizer),
             "gates-ternary-finalizer" => (TernaryFinalizer(key), PatchSafety.PatchKind.Finalizer),
+            "gates-debug-gated-postfix" => (DebugGatedPostfix(key), PatchSafety.PatchKind.Postfix),
+            "gates-debug-gated-prefix" => (DebugGatedPrefix(key), PatchSafety.PatchKind.Prefix),
+            "gates-bitor-gated-postfix" => (BitOrGatedPostfix(key), PatchSafety.PatchKind.Postfix),
+            "gates-bool-local-postfix" => (BoolLocalPostfix(key), PatchSafety.PatchKind.Postfix),
+            "gates-copy-prologue-postfix" => (CopyProloguePostfix(key), PatchSafety.PatchKind.Postfix),
+            "gates-call-first-postfix" => (CallFirstPostfix(key), PatchSafety.PatchKind.Postfix),
             _ => throw new ArgumentException("unknown gates shape " + shape),
         };
     }
@@ -113,7 +120,7 @@ public static class ForeignShapesGates
         }
     }
 
-    private static readonly MethodInfo HitMethod = typeof(ForeignShapesGates).GetMethod(nameof(Hit))!;
+    private static readonly MethodInfo HitMethod = typeof(GatesCounter).GetMethod(nameof(GatesCounter.Hit))!;
 
     private static void EmitHit(ILGenerator il, string key)
     {
@@ -165,7 +172,7 @@ public static class ForeignShapesGates
     {
         Label passOn = il.DefineLabel(), exit = il.DefineLabel();
         EmitHit(il, key);
-        il.Emit(OpCodes.Ldsfld, typeof(ForeignShapesGates).GetField(nameof(Swallow))!);
+        il.Emit(OpCodes.Ldsfld, typeof(GatesCounter).GetField(nameof(GatesCounter.Swallow))!);
         il.Emit(OpCodes.Brfalse_S, passOn);
         il.Emit(OpCodes.Ldnull);
         il.Emit(OpCodes.Br_S, exit);
@@ -232,6 +239,301 @@ public static class ForeignShapesGates
         return __exception;
     }
 
+    // --- E: the type gates' path evaluated (Roslyn's Debug IL, emitted) ---
+
+    private static readonly (Type, string)[] InstanceOnly = { (typeof(AbstractModel), "__instance") };
+
+    /// <summary><c>ldarg.0; isinst T; ldnull; cgt.un</c>: Roslyn's Debug test of <c>__instance is T</c>.</summary>
+    private static void EmitIs(ILGenerator il, Type type, int argument = 0)
+    {
+        il.Emit(argument == 0 ? OpCodes.Ldarg_0 : OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Isinst, type);
+        il.Emit(OpCodes.Ldnull);
+        il.Emit(OpCodes.Cgt_Un);
+    }
+
+    /// <summary>Debug IL of <c>if (__instance is Squeeze) { Hit(key); }</c>: the test through a bool local. Stands, gated on Squeeze.</summary>
+    private static MethodInfo DebugGatedPostfix(string key) => Emit("debug_gated_postfix", typeof(void), InstanceOnly, il =>
+    {
+        il.DeclareLocal(typeof(bool));
+        Label end = il.DefineLabel();
+        il.Emit(OpCodes.Nop);
+        EmitIs(il, typeof(Squeeze));
+        il.Emit(OpCodes.Stloc_0);
+        il.Emit(OpCodes.Ldloc_0);
+        il.Emit(OpCodes.Brfalse_S, end);
+        il.Emit(OpCodes.Nop);
+        EmitHit(il, key);
+        il.Emit(OpCodes.Nop);
+        il.Emit(OpCodes.Nop);
+        il.MarkLabel(end);
+        il.Emit(OpCodes.Ret);
+    });
+
+    /// <summary>
+    /// Debug IL of <c>if (!(__instance is Squeeze)) return true; Hit(key); return true;</c>: the negation as <c>ldc.i4.0; ceq</c>,
+    /// both returns through a local and a jump. Stands, gated on Squeeze.
+    /// </summary>
+    private static MethodInfo DebugGatedPrefix(string key) => Emit("debug_gated_prefix", typeof(bool), InstanceOnly, il =>
+    {
+        il.DeclareLocal(typeof(bool));
+        il.DeclareLocal(typeof(bool));
+        Label work = il.DefineLabel(), exit = il.DefineLabel();
+        il.Emit(OpCodes.Nop);
+        EmitIs(il, typeof(Squeeze));
+        il.Emit(OpCodes.Ldc_I4_0);
+        il.Emit(OpCodes.Ceq);
+        il.Emit(OpCodes.Stloc_0);
+        il.Emit(OpCodes.Ldloc_0);
+        il.Emit(OpCodes.Brfalse_S, work);
+        il.Emit(OpCodes.Ldc_I4_1);
+        il.Emit(OpCodes.Stloc_1);
+        il.Emit(OpCodes.Br_S, exit);
+        il.MarkLabel(work);
+        EmitHit(il, key);
+        il.Emit(OpCodes.Nop);
+        il.Emit(OpCodes.Ldc_I4_1);
+        il.Emit(OpCodes.Stloc_1);
+        il.Emit(OpCodes.Br_S, exit);
+        il.MarkLabel(exit);
+        il.Emit(OpCodes.Ldloc_1);
+        il.Emit(OpCodes.Ret);
+    });
+
+    /// <summary><c>if (__instance is Squeeze | __instance is RelicModel) Hit(key);</c> (a non-short-circuit <c>or</c>, YutaMod's): gated on both.</summary>
+    private static MethodInfo BitOrGatedPostfix(string key) => Emit("bitor_gated_postfix", typeof(void), InstanceOnly, il =>
+    {
+        il.DeclareLocal(typeof(bool));
+        Label end = il.DefineLabel();
+        EmitIs(il, typeof(Squeeze));
+        EmitIs(il, typeof(RelicModel));
+        il.Emit(OpCodes.Or);
+        il.Emit(OpCodes.Stloc_0);
+        il.Emit(OpCodes.Ldloc_0);
+        il.Emit(OpCodes.Brfalse_S, end);
+        EmitHit(il, key);
+        il.MarkLabel(end);
+        il.Emit(OpCodes.Ret);
+    });
+
+    /// <summary>BL: <c>bool hit = false; if (__instance is Squeeze) hit = true; if (hit) Hit(key);</c>: stands, gated on Squeeze.</summary>
+    private static MethodInfo BoolLocalPostfix(string key) => Emit("bool_local_postfix", typeof(void), InstanceOnly, il =>
+    {
+        il.DeclareLocal(typeof(bool));
+        Label join = il.DefineLabel(), end = il.DefineLabel();
+        il.Emit(OpCodes.Ldc_I4_0);
+        il.Emit(OpCodes.Stloc_0);
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Isinst, typeof(Squeeze));
+        il.Emit(OpCodes.Brfalse_S, join);
+        il.Emit(OpCodes.Ldc_I4_1);
+        il.Emit(OpCodes.Stloc_0);
+        il.MarkLabel(join);
+        il.Emit(OpCodes.Ldloc_0);
+        il.Emit(OpCodes.Brfalse_S, end);
+        EmitHit(il, key);
+        il.MarkLabel(end);
+        il.Emit(OpCodes.Ret);
+    });
+
+    private static readonly (Type, string)[] InstanceAndOther = { (typeof(AbstractModel), "__instance"), (typeof(object), "card") };
+
+    /// <summary>C: a copy prologue (<c>ldarg.1; stloc.0</c>, SynergyMod's) before the gate: stands, gated on Squeeze.</summary>
+    private static MethodInfo CopyProloguePostfix(string key) => Emit("copy_prologue_postfix", typeof(void), InstanceAndOther, il =>
+    {
+        il.DeclareLocal(typeof(object));
+        Label end = il.DefineLabel();
+        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Stloc_0);
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Isinst, typeof(Squeeze));
+        il.Emit(OpCodes.Brfalse_S, end);
+        il.Emit(OpCodes.Ldloc_0);
+        il.Emit(OpCodes.Pop);
+        EmitHit(il, key);
+        il.MarkLabel(end);
+        il.Emit(OpCodes.Ret);
+    });
+
+    private static readonly (Type, string)[] PassthroughParameters = { (typeof(bool), "__result"), (typeof(AbstractModel), "__instance") };
+
+    /// <summary>
+    /// A passthrough postfix (Debug IL): <c>if (__instance is Squeeze) { Hit(key); return false; } return __result;</c>, both
+    /// returns through a local. Stands, gated on Squeeze; with <paramref name="constant"/> the no-op path returns true instead of
+    /// <c>__result</c> (a control: it changes a false result); with <paramref name="name"/> the first parameter has another name.
+    /// </summary>
+    private static MethodInfo PassthroughPostfix(string key, bool constant = false, string name = "__result") =>
+        Emit("passthrough_postfix", typeof(bool), new[] { (typeof(bool), name), (typeof(AbstractModel), "__instance") }, il =>
+        {
+            il.DeclareLocal(typeof(bool));
+            il.DeclareLocal(typeof(bool));
+            Label keep = il.DefineLabel(), exit = il.DefineLabel();
+            EmitIs(il, typeof(Squeeze), 1);
+            il.Emit(OpCodes.Stloc_0);
+            il.Emit(OpCodes.Ldloc_0);
+            il.Emit(OpCodes.Brfalse_S, keep);
+            EmitHit(il, key);
+            il.Emit(OpCodes.Ldc_I4_0);
+            il.Emit(OpCodes.Stloc_1);
+            il.Emit(OpCodes.Br_S, exit);
+            il.MarkLabel(keep);
+            il.Emit(constant ? OpCodes.Ldc_I4_1 : OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Stloc_1);
+            il.Emit(OpCodes.Br_S, exit);
+            il.MarkLabel(exit);
+            il.Emit(OpCodes.Ldloc_1);
+            il.Emit(OpCodes.Ret);
+        });
+
+    /// <summary>Debug IL of the name test <c>if (__instance.GetType().Name != "Squeeze") return; Hit(key);</c>: a name gate.</summary>
+    private static MethodInfo DebugNameGatedPostfix(string key) => Emit("debug_name_gated_postfix", typeof(void), InstanceOnly, il =>
+    {
+        il.DeclareLocal(typeof(bool));
+        Label work = il.DefineLabel(), end = il.DefineLabel();
+        il.Emit(OpCodes.Nop);
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Callvirt, typeof(object).GetMethod(nameof(GetType))!);
+        il.Emit(OpCodes.Callvirt, typeof(MemberInfo).GetProperty(nameof(MemberInfo.Name))!.GetGetMethod()!);
+        il.Emit(OpCodes.Ldstr, "Squeeze");
+        il.Emit(OpCodes.Call, typeof(string).GetMethod("op_Inequality", new[] { typeof(string), typeof(string) })!);
+        il.Emit(OpCodes.Stloc_0);
+        il.Emit(OpCodes.Ldloc_0);
+        il.Emit(OpCodes.Brfalse_S, work);
+        il.Emit(OpCodes.Br_S, end);
+        il.MarkLabel(work);
+        EmitHit(il, key);
+        il.MarkLabel(end);
+        il.Emit(OpCodes.Ret);
+    });
+
+    /// <summary>The runtime control of rule E: a count of every call before the Debug gate (counted with this mod on or off alike).</summary>
+    private static MethodInfo CallFirstPostfix(string key) => Emit("call_first_postfix", typeof(void), InstanceOnly, il =>
+    {
+        il.DeclareLocal(typeof(bool));
+        Label end = il.DefineLabel();
+        EmitHit(il, key + " every call");
+        EmitIs(il, typeof(Squeeze));
+        il.Emit(OpCodes.Stloc_0);
+        il.Emit(OpCodes.Ldloc_0);
+        il.Emit(OpCodes.Brfalse_S, end);
+        EmitHit(il, key);
+        il.MarkLabel(end);
+        il.Emit(OpCodes.Ret);
+    });
+
+    /// <summary>Controls of rule E, each refused for its own reason (see the self-test's names).</summary>
+    private static MethodInfo GateControl(string kind) => kind switch
+    {
+        // A branch on another argument (unknown) before the gate.
+        "unknown-branch" => Emit("unknown_branch", typeof(void), new[] { (typeof(AbstractModel), "__instance"), (typeof(bool), "flag") }, il =>
+        {
+            Label end = il.DefineLabel();
+            il.Emit(OpCodes.Ldarg_1);
+            il.Emit(OpCodes.Brtrue_S, end);
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Isinst, typeof(Squeeze));
+            il.Emit(OpCodes.Brfalse_S, end);
+            EmitHit(il, "control");
+            il.MarkLabel(end);
+            il.Emit(OpCodes.Ret);
+        }),
+        // A local never stored on the path, branched on (its zero isn't assumed).
+        "unwritten-local" => Emit("unwritten_local", typeof(void), InstanceOnly, il =>
+        {
+            il.DeclareLocal(typeof(bool));
+            Label end = il.DefineLabel();
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Isinst, typeof(Squeeze));
+            il.Emit(OpCodes.Pop);
+            il.Emit(OpCodes.Ldloc_0);
+            il.Emit(OpCodes.Brtrue_S, end);
+            il.Emit(OpCodes.Ret);
+            il.MarkLabel(end);
+            EmitHit(il, "control");
+            il.Emit(OpCodes.Ret);
+        }),
+        // A test against a value type.
+        "valuetype-gate" => Emit("valuetype_gate", typeof(void), InstanceOnly, il =>
+        {
+            Label end = il.DefineLabel();
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Isinst, typeof(int));
+            il.Emit(OpCodes.Brfalse_S, end);
+            EmitHit(il, "control");
+            il.MarkLabel(end);
+            il.Emit(OpCodes.Ret);
+        }),
+        // A call before the gate.
+        "call-first" => Emit("call_first", typeof(void), InstanceOnly, il =>
+        {
+            Label end = il.DefineLabel();
+            EmitHit(il, "control");
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Isinst, typeof(Squeeze));
+            il.Emit(OpCodes.Brfalse_S, end);
+            EmitHit(il, "control");
+            il.MarkLabel(end);
+            il.Emit(OpCodes.Ret);
+        }),
+        // A loop back to the test.
+        "loop" => Emit("loop", typeof(void), InstanceOnly, il =>
+        {
+            Label top = il.DefineLabel();
+            il.MarkLabel(top);
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Isinst, typeof(Squeeze));
+            il.Emit(OpCodes.Brfalse_S, top);
+            il.Emit(OpCodes.Ret);
+        }),
+        // A bool prefix returning false for every other listener (skips the original).
+        "false-prefix" => Emit("false_prefix", typeof(bool), InstanceOnly, il =>
+        {
+            Label gated = il.DefineLabel();
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Isinst, typeof(Squeeze));
+            il.Emit(OpCodes.Brtrue_S, gated);
+            il.Emit(OpCodes.Ldc_I4_0);
+            il.Emit(OpCodes.Ret);
+            il.MarkLabel(gated);
+            il.Emit(OpCodes.Ldc_I4_1);
+            il.Emit(OpCodes.Ret);
+        }),
+        // A bool prefix returning (gate | 2): nonzero but not 1 (an or with a nonzero constant isn't taken as true).
+        "or-two-prefix" => Emit("or_two_prefix", typeof(bool), InstanceOnly, il =>
+        {
+            EmitIs(il, typeof(Squeeze));
+            il.Emit(OpCodes.Ldc_I4_2);
+            il.Emit(OpCodes.Or);
+            il.Emit(OpCodes.Ret);
+        }),
+        _ => throw new ArgumentException(kind),
+    };
+
+    /// <summary>NullSkipped through rule E: Debug IL of <c>if (__result != null) Hit(key);</c>, by value or through <c>ref __result</c>.</summary>
+    private static MethodInfo DebugNullGatedPostfix(string key, bool byRef, bool callFirst = false) =>
+        Emit("debug_null_gated", typeof(void), new[] { (byRef ? typeof(object).MakeByRefType() : typeof(object), "__result") }, il =>
+        {
+            il.DeclareLocal(typeof(bool));
+            Label end = il.DefineLabel();
+            if (callFirst)
+            {
+                EmitHit(il, key);
+            }
+            il.Emit(OpCodes.Ldarg_0);
+            if (byRef)
+            {
+                il.Emit(OpCodes.Ldind_Ref);
+            }
+            il.Emit(OpCodes.Ldnull);
+            il.Emit(OpCodes.Cgt_Un);
+            il.Emit(OpCodes.Stloc_0);
+            il.Emit(OpCodes.Ldloc_0);
+            il.Emit(OpCodes.Brfalse_S, end);
+            EmitHit(il, key);
+            il.MarkLabel(end);
+            il.Emit(OpCodes.Ret);
+        });
+
     // --- The self-test ---
 
     private readonly record struct Case(string Name, MethodInfo Patch, PatchSafety.PatchKind Kind, MethodBase Original, PatchTolerance Tolerance,
@@ -255,6 +557,34 @@ public static class ForeignShapesGates
         yield return new Case("F1 control: exception clauses", Own(nameof(TryFinalizer)), finalizer, hook, PatchTolerance.TranspiledOnly, false);
         yield return new Case("F1 control: a pass-through finalizer under SurroundingOnly", PassThroughRelease("selftest"), finalizer, hook, PatchTolerance.SurroundingOnly, false);
         yield return new Case("F1 control: a pass-through finalizer under PrefixesOnly (HookFilter's mirror)", PassThroughRelease("selftest"), finalizer, hook, PatchTolerance.PrefixesOnly, false);
+        // E: Debug IL gates on an AbstractModel default (the instance is the listener).
+        MethodBase model = AccessTools.Method(typeof(AbstractModel), nameof(AbstractModel.AfterCardPlayed));
+        const PatchSafety.PatchKind postfix = PatchSafety.PatchKind.Postfix, prefix = PatchSafety.PatchKind.Prefix;
+        const PatchTolerance gated = PatchTolerance.TypeGated;
+        yield return new Case("E Debug gated postfix (bool local)", DebugGatedPostfix("selftest"), postfix, model, gated, true, "Squeeze");
+        yield return new Case("E Debug gated bool prefix (ceq negation, returns through a local)", DebugGatedPrefix("selftest"), prefix, model, gated, true, "Squeeze");
+        yield return new Case("E non-short-circuit or of two tests", BitOrGatedPostfix("selftest"), postfix, model, gated, true, "RelicModel|Squeeze");
+        yield return new Case("E (BL) a bool set as a constant before the branch", BoolLocalPostfix("selftest"), postfix, model, gated, true, "Squeeze");
+        yield return new Case("E (C) a copy prologue before the gate", CopyProloguePostfix("selftest"), postfix, model, gated, true, "Squeeze");
+        yield return new Case("E passthrough postfix returning its __result", PassthroughPostfix("selftest"), postfix, model, gated, true, "Squeeze");
+        if (PatchSafety.TypesNamedForTest(false, "Squeeze") is { Length: > 0 })
+        {
+            yield return new Case("E Debug name test", DebugNameGatedPostfix("selftest"), postfix, model, gated, true, "Squeeze");
+        }
+        yield return new Case("E control: passthrough returning a constant", PassthroughPostfix("selftest", constant: true), postfix, model, gated, false);
+        yield return new Case("E control: passthrough's first parameter not named __result", PassthroughPostfix("selftest", name: "result"), postfix, model, gated, false);
+        yield return new Case("E control: a branch on another argument", GateControl("unknown-branch"), postfix, model, gated, false);
+        yield return new Case("E control: a branch on a local never stored", GateControl("unwritten-local"), postfix, model, gated, false);
+        yield return new Case("E control: a value-type gate", GateControl("valuetype-gate"), postfix, model, gated, false);
+        yield return new Case("E control: a call before the gate", GateControl("call-first"), postfix, model, gated, false);
+        yield return new Case("E control: a loop", GateControl("loop"), postfix, model, gated, false);
+        yield return new Case("E control: a bool prefix returning false for other listeners", GateControl("false-prefix"), prefix, model, gated, false);
+        yield return new Case("E control: a bool prefix returning (gate | 2)", GateControl("or-two-prefix"), prefix, model, gated, false);
+        yield return new Case("E control: a Debug gated postfix under SurroundingOnly is judged by its parameters only", DebugGatedPostfix("selftest"), postfix, model, PatchTolerance.SurroundingOnly, true);
+        // E in NullSkipped (NullResultGated).
+        yield return new Case("E NullSkipped: Debug null test by value", DebugNullGatedPostfix("selftest", byRef: false), postfix, hook, PatchTolerance.NullSkipped, true);
+        yield return new Case("E NullSkipped: Debug null test through ref __result", DebugNullGatedPostfix("selftest", byRef: true), postfix, hook, PatchTolerance.NullSkipped, true);
+        yield return new Case("E NullSkipped control: a call before the null test", DebugNullGatedPostfix("selftest", byRef: false, callFirst: true), postfix, hook, PatchTolerance.NullSkipped, false);
     }
 
     /// <summary>
@@ -289,4 +619,17 @@ public static class ForeignShapesGates
         lines.Add($"FOREIGN gates selftest: {lines.Count} cases as expected");
         return lines;
     }
+}
+
+/// <summary>
+/// What the emitted shapes call and read (public: the dynamic assembly calls it). No static initializer, so a gated path reaching
+/// it is judged for its own shape only (InitializersFree).
+/// </summary>
+public static class GatesCounter
+{
+    /// <summary>A STATE line of the foreign report (IlJudgeShapes' counts).</summary>
+    public static void Hit(string key) => IlJudgeShapes.Count(key);
+
+    /// <summary>Read by the ternary finalizer (a value the judge can't know).</summary>
+    public static bool Swallow;
 }

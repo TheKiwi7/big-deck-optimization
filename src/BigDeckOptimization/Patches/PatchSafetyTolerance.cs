@@ -543,7 +543,8 @@ public static partial class PatchSafety
                 // ShapeRefusal let only a null-gated postfix through. The code that runs is its replacement when anyone patches
                 // it, not the IL read: asked at each recheck.
                 return Harmony.GetPatchInfo(method) is { } patchedNull && AllPatches(patchedNull).Any()
-                    ? $"{KindText(kind, method)} whose own method is patched (judged a no-op for a null result from its IL)" : null;
+                    ? $"{KindText(kind, method)} whose own method is patched (judged a no-op for a null result from its IL)"
+                    : PatchedPathCallee(method) is { } calleeNull ? $"{KindText(kind, method)} calling {calleeNull.DeclaringType?.Name}.{calleeNull.Name}, which is patched" : null;
             }
             // A postfix let stand because its IL only reads through a by-reference argument (OnlyReadThrough): the code that runs
             // is its replacement when anyone patches it, not the IL read. Asked at each recheck, as TypeGated's gates are.
@@ -1301,14 +1302,14 @@ public static partial class PatchSafety
 
     /// <summary>
     /// The types a prefix or postfix of another mod is gated on: it provably does nothing (returns at once, a bool prefix
-    /// returning true) unless <c>__instance</c> is an instance of one of them. Null when the code isn't exactly that shape:
-    /// from its first instruction (nops aside), only tests <c>ldarg __instance; isinst T; [stloc n; ldloc n;] brfalse/brtrue</c>
-    /// along the path a non-matching instance takes (isinst gives null there: brfalse taken, brtrue not), unconditional
-    /// branches, and then the no-op exit: <c>ret</c> (void), or <c>ldc.i4.1; ret</c> (bool prefix). Nothing else on that path:
-    /// no call, no field or static write, no other argument read. A postfix returning a value (passthrough) never matches, nor
-    /// a method whose class has a static constructor run at its first use (a <c>beforefieldinit</c> one doing only lookups and constant stores stands, see
-    /// <see cref="AnalyseGates"/>). <c>__instance</c> is found by its declared name: <see cref="Intolerable"/> refuses a patch
-    /// renaming its parameters (<c>HarmonyArgument</c>) before asking, and a patch whose own method is patched.
+    /// returning true, a passthrough postfix returning its <c>__result</c>) unless <c>__instance</c> is an instance of one of
+    /// them. Null unless the path a listener of none of them takes is evaluated to a no-op exit (<see cref="EvaluatePath"/>,
+    /// rule E of 2026-11-18: constants, null, the listener and unknown values through the stack and locals, any IL form, Debug
+    /// builds' included), nor a method whose class has a static constructor run at its first use (a <c>beforefieldinit</c> one
+    /// doing only lookups and constant stores stands, see <see cref="InitializersFree"/>). <c>__instance</c> is found by its
+    /// declared name: <see cref="Intolerable"/> refuses a patch renaming its parameters (<c>HarmonyArgument</c>) before asking,
+    /// and a patch whose own method is patched; the methods its no-op path calls (rule G's static getters, rule FW's forwarded
+    /// method) are asked here at each answer.
     /// </summary>
     public static Type[]? TypeGates(MethodInfo patch, PatchKind kind) => TypeGates(patch, kind, null);
 
@@ -1347,8 +1348,32 @@ public static partial class PatchSafety
         {
             shape = _gateNames.TryGetValue(gateKey, out (bool Full, string Name)[]? names) ? WithNamedTypes(shape, names) : null;
         }
-        // The initializers after the shape (a refusal then says which of the two failed: GateRefusal).
-        return shape != null && InitializersFree(patch) ? shape : null;
+        // The initializers after the shape (a refusal then says which of the two failed: GateRefusal), then the methods the no-op
+        // path calls, unpatched at each answer (their replacement isn't the IL read).
+        return shape != null && InitializersFree(patch) && PatchedPathCallee(patch) == null ? shape : null;
+    }
+
+    /// <summary>
+    /// Per analysed patch method, the methods its no-op path calls (rule G's static getters, rule FW's forwarded method): the
+    /// verdict holds while none of them is patched by anyone.
+    /// </summary>
+    private static readonly ConcurrentDictionary<RuntimeMethodHandle, MethodBase[]> _pathCallees = new();
+
+    /// <summary>A method the patch's no-op path calls that anyone patches now, or null.</summary>
+    private static MethodBase? PatchedPathCallee(MethodInfo patch)
+    {
+        if (!_pathCallees.TryGetValue(patch.MethodHandle, out MethodBase[]? callees))
+        {
+            return null;
+        }
+        foreach (MethodBase callee in callees)
+        {
+            if (Harmony.GetPatchInfo(callee) is { } info && AllPatches(info).Any())
+            {
+                return callee;
+            }
+        }
+        return null;
     }
 
     /// <summary>Stands for the name gates of one analysed patch in <see cref="_gates"/> (never a listener's type).</summary>
@@ -1460,17 +1485,18 @@ public static partial class PatchSafety
     /// The reflection-reads premise's name test (owner-approved 2026-11-17, DESIGN "Owner-approved premises"; Skin Changer's
     /// <c>__instance.GetType().Name != "MultiplayerScalingModel"</c>): at <paramref name="index"/>,
     /// <c>ldarg &lt;the instance&gt;; callvirt object.GetType(); callvirt get_Name()|get_FullName() (MemberInfo or Type);
-    /// ldstr S; call string.op_Equality|op_Inequality(string, string); [stloc n; ldloc n;] brtrue|brfalse L</c>. On a non-null
-    /// instance none of these can throw or do anything but read. <paramref name="next"/>: where a listener whose runtime type
-    /// isn't named S goes (the branch target or the next instruction).
+    /// ldstr S; call string.op_Equality|op_Inequality(string, string)</c>, read as one instruction (rule E: what follows, a branch
+    /// or a store, is evaluated as any other value's). On a non-null instance none of these can throw or do anything but read.
+    /// <paramref name="value"/>: what it gives for a listener whose runtime type isn't named S (op_Inequality true, op_Equality
+    /// false).
     /// </summary>
-    private static bool NameTest(List<MethodFingerprint.Instruction> code, int index, int[] bound, Dictionary<int, int> at,
-        out bool full, out string name, out int next)
+    private static bool NameCompare(List<MethodFingerprint.Instruction> code, int index, int[] bound,
+        out bool full, out string name, out bool value)
     {
         full = false;
         name = "";
-        next = -1;
-        if (index + 5 >= code.Count || !bound.Any(b => LoadsArgument(code[index], b)))
+        value = false;
+        if (index + 4 >= code.Count || !bound.Any(b => LoadsArgument(code[index], b)))
         {
             return false;
         }
@@ -1499,25 +1525,8 @@ public static partial class PatchSafety
         {
             return false;
         }
-        int branch = index + 5;
-        if (StoresLocal(code[branch], out int local) && branch + 1 < code.Count && LoadsLocal(code[branch + 1], local))
-        {
-            branch += 2;
-        }
-        if (branch >= code.Count)
-        {
-            return false;
-        }
-        MethodFingerprint.Instruction test = code[branch];
-        bool onTrue = test.Op == OpCodes.Brtrue || test.Op == OpCodes.Brtrue_S;
-        bool onFalse = test.Op == OpCodes.Brfalse || test.Op == OpCodes.Brfalse_S;
-        if ((!onTrue && !onFalse) || test.Operand is not int to || !at.TryGetValue(to, out int taken))
-        {
-            return false;
-        }
         // A listener not named S: op_Inequality true, op_Equality false.
-        bool value = compare.Name == "op_Inequality";
-        next = value == onTrue ? taken : branch + 1;
+        value = compare.Name == "op_Inequality";
         full = getName.Name == "get_FullName";
         name = literal;
         return true;
@@ -1537,6 +1546,10 @@ public static partial class PatchSafety
         if (shaped && InitializerRefusal(patch) is { } why)
         {
             return $"{KindText(kind, patch)} gated, but {why}";
+        }
+        if (shaped && PatchedPathCallee(patch) is { } callee)
+        {
+            return $"{KindText(kind, patch)} gated, but {callee.DeclaringType?.Name}.{callee.Name}, which it calls on every call, is patched (its code isn't the one read)";
         }
         return $"{KindText(kind, patch)} not provably gated on the listener's type" + listener;
     }
@@ -1559,21 +1572,22 @@ public static partial class PatchSafety
     {
         try
         {
-            if (!patch.IsStatic || patch.ContainsGenericParameters)
+            if (!patch.IsStatic || patch.ContainsGenericParameters || patch.DeclaringType == null)
             {
                 return null;
             }
-            // The IL shape only: the type initializers the patch may run are judged after (TypeGates: InitializersFree).
-            if (patch.DeclaringType == null)
-            {
-                return null;
-            }
+            // The IL path only: the type initializers the patch may run are judged after (TypeGates: InitializersFree).
             bool boolPrefix = kind == PatchKind.Prefix && patch.ReturnType == typeof(bool);
-            if (patch.ReturnType != typeof(void) && !boolPrefix)
+            ParameterInfo[] parameters = patch.GetParameters();
+            // A passthrough postfix (Harmony hands its first parameter the result and keeps what it returns): its no-op exit gives
+            // that parameter back as it came. Only one named __result (rule E's trap: Harmony passes the result to the first
+            // parameter whatever its name, but another name would be read as an argument elsewhere: refused).
+            bool passthrough = kind == PatchKind.Postfix && patch.ReturnType != typeof(void) && parameters.Length > 0
+                && parameters[0].Name == "__result" && parameters[0].ParameterType == patch.ReturnType;
+            if (patch.ReturnType != typeof(void) && !boolPrefix && !passthrough)
             {
                 return null;
             }
-            ParameterInfo[] parameters = patch.GetParameters();
             // The patch parameters Harmony binds to the listener's argument: its name, or "__N" for the original's N-th argument.
             int[] bound = Enumerable.Range(0, parameters.Length)
                 .Where(i => parameters[i].Name == listener || (position >= 0 && parameters[i].Name == "__" + position)).ToArray();
@@ -1581,81 +1595,320 @@ public static partial class PatchSafety
             {
                 return null;
             }
-            List<MethodFingerprint.Instruction> code = MethodFingerprint.Instructions(patch);
-            var at = new Dictionary<int, int>();
-            for (int i = 0; i < code.Count; i++)
+            var arguments = new PathValue[parameters.Length];
+            foreach (int i in bound)
             {
-                at[code[i].Offset] = i;
+                arguments[i] = new PathValue(PathKind.Listener);
             }
-            var gates = new List<Type>();
-            var names = new List<(bool Full, string Name)>();
-            var visited = new HashSet<int>();
-            int index = 0;
-            while (index >= 0 && index < code.Count && visited.Add(index))
+            if (passthrough)
             {
-                MethodFingerprint.Instruction ins = code[index];
-                if (ins.Op == OpCodes.Nop)
-                {
-                    index++;
-                    continue;
-                }
-                if (ins.Op == OpCodes.Br || ins.Op == OpCodes.Br_S)
-                {
-                    index = ins.Operand is int target && at.TryGetValue(target, out int next) ? next : -1;
-                    continue;
-                }
-                if (ins.Op == OpCodes.Ret)
-                {
-                    // Void exit: nothing on the stack. A bool prefix must push true first (handled below).
-                    return boolPrefix ? null : Gated(gates, names, patch, kind, listener, position);
-                }
-                if (boolPrefix && ins.Op == OpCodes.Ldc_I4_1 && index + 1 < code.Count && code[index + 1].Op == OpCodes.Ret)
-                {
-                    return Gated(gates, names, patch, kind, listener, position);
-                }
-                // The reflection-reads premise (shape rules on): a name test on the instance's runtime type (NameTest).
-                if (PatchSafety.ShapeRules && position < 0 && NameTest(code, index, bound, at, out bool full, out string name, out int afterName))
-                {
-                    names.Add((full, name));
-                    if (!gates.Contains(typeof(NameGateMarker)))
-                    {
-                        gates.Add(typeof(NameGateMarker));
-                    }
-                    index = afterName;
-                    continue;
-                }
-                // A test: ldarg <the listener's parameter>; isinst T; [stloc n; ldloc n;] brfalse/brtrue L.
-                if (!bound.Any(b => LoadsArgument(ins, b)) || index + 2 >= code.Count || code[index + 1].Op != OpCodes.Isinst
-                    || code[index + 1].Operand is not Type gate || gate.IsValueType || gate.ContainsGenericParameters)
-                {
-                    return null;
-                }
-                int branch = index + 2;
-                if (StoresLocal(code[branch], out int local) && branch + 1 < code.Count && LoadsLocal(code[branch + 1], local))
-                {
-                    branch += 2;
-                }
-                if (branch >= code.Count)
-                {
-                    return null;
-                }
-                MethodFingerprint.Instruction test = code[branch];
-                bool onFalse = test.Op == OpCodes.Brfalse || test.Op == OpCodes.Brfalse_S;
-                bool onTrue = test.Op == OpCodes.Brtrue || test.Op == OpCodes.Brtrue_S;
-                if (!onFalse && !onTrue || test.Operand is not int to || !at.TryGetValue(to, out int taken))
-                {
-                    return null;
-                }
-                gates.Add(gate);
-                // Not an instance of the gate: null, so brfalse is taken and brtrue falls through.
-                index = onFalse ? taken : branch + 1;
+                arguments[0] = new PathValue(PathKind.Result);
             }
-            return null;
+            var outcome = new PathOutcome(patch.Module.Assembly);
+            // The reflection-reads premise's name tests only on the instance (shape rules on).
+            if (EvaluatePath(patch, arguments, boolPrefix ? PathExit.True : passthrough ? PathExit.Result : PathExit.Void,
+                ShapeRules && position < 0, 0, outcome, null) != null || (outcome.Gates.Count == 0 && outcome.Names.Count == 0))
+            {
+                return null;
+            }
+            _pathCallees[patch.MethodHandle] = outcome.Callees.Distinct().ToArray();
+            if (outcome.Names.Count > 0)
+            {
+                outcome.Gates.Add(typeof(NameGateMarker));
+            }
+            return Gated(outcome.Gates.Distinct().ToList(), outcome.Names, patch, kind, listener, position);
         }
         catch
         {
             return null;
         }
+    }
+
+    // --- Rule E (2026-11-18): the path a listener of none of the gate types takes, evaluated ---
+
+    /// <summary>What a value on the evaluated path is known to be.</summary>
+    private enum PathKind : byte
+    {
+        /// <summary>Nothing known (another argument, an address, a comparison of unknown values): never branched on.</summary>
+        Unknown,
+
+        /// <summary>An integer constant (<see cref="PathValue.Number"/>).</summary>
+        Int,
+
+        /// <summary>An integer known to be nonzero (an <c>or</c> with a nonzero constant), its exact value unknown.</summary>
+        NonZero,
+
+        /// <summary>The null reference (<c>ldnull</c>, <c>isinst</c> on the listener).</summary>
+        Null,
+
+        /// <summary>The listener: a non-null reference of none of the gate types (the calls this mod skips have one).</summary>
+        Listener,
+
+        /// <summary>The value a no-op exit must give back as it came (a passthrough postfix's <c>__result</c>).</summary>
+        Result,
+
+        /// <summary>The address of a null reference (NullSkipped's <c>ref __result</c>): <c>ldind.ref</c> through it gives null.</summary>
+        NullAddress,
+    }
+
+    private readonly record struct PathValue(PathKind Kind, int Number = 0);
+
+    /// <summary>How the evaluated method's no-op path must end.</summary>
+    private enum PathExit : byte
+    {
+        /// <summary><c>ret</c> with nothing on the stack (a void prefix or postfix).</summary>
+        Void,
+
+        /// <summary><c>ret</c> of the constant 1 (a bool prefix letting the original run).</summary>
+        True,
+
+        /// <summary><c>ret</c> of <see cref="PathKind.Result"/> (a passthrough postfix).</summary>
+        Result,
+
+        /// <summary>Any <c>ret</c> (an inlined callee: its value goes back to the caller's path).</summary>
+        Any,
+    }
+
+    /// <summary>What the evaluation found over every path it followed.</summary>
+    private sealed class PathOutcome
+    {
+        public PathOutcome(Assembly assembly) => Assembly = assembly;
+
+        /// <summary>The patch's assembly (an inlined callee must be of it).</summary>
+        public readonly Assembly Assembly;
+
+        public readonly List<Type> Gates = new();
+        public readonly List<(bool Full, string Name)> Names = new();
+
+        /// <summary>The methods the paths call (inlined callees): unpatched at each answer (<see cref="PatchedPathCallee"/>).</summary>
+        public readonly List<MethodBase> Callees = new();
+
+        public int Paths = 1;
+        public int Steps;
+    }
+
+    private const int MaxPathSteps = 4096;
+
+    /// <summary>
+    /// Rule E (2026-11-18, replacing the fixed shape of the type gates): follows the path the calls this mod skips take through
+    /// <paramref name="method"/>, every value tracked as a constant, null, the listener (non-null, of none of the types tested so
+    /// far: an <c>isinst</c> on it gives null and records its type as a gate) or unknown, through the stack and the locals
+    /// (Debug builds route every test and return through locals: the strict shapes refused them all). Allowed: <c>nop</c>,
+    /// <c>ldarg</c> (by value), <c>isinst</c> (a value type or open generic type on the listener refused), <c>stloc</c>/<c>ldloc</c>
+    /// (a local not stored yet on this path is unknown, never its zero), <c>ldnull</c>, <c>ldc.i4</c>, <c>ceq</c>, <c>cgt</c>,
+    /// <c>cgt.un</c>, <c>clt</c>, <c>clt.un</c>, <c>or</c>/<c>and</c> (with an absorbing constant: an <c>or</c> with a nonzero
+    /// constant is nonzero, not 1), <c>dup</c>, <c>pop</c>, <c>br</c>, <c>brtrue</c>/<c>brfalse</c>, <c>beq</c>/<c>bne.un</c> on a
+    /// known value, the reflection-reads premise's name test on the instance as one instruction (<see cref="NameCompare"/>), and
+    /// the exit <paramref name="exit"/> asks for. Anything else refuses: any call, field access, store outside the locals, address
+    /// taken, a branch on an unknown value, a loop. Returns why the path isn't a no-op, or null. <paramref name="arguments"/>: what
+    /// each argument is on entry. Throws on IL it can't decode (the caller refuses).
+    /// </summary>
+    private static string? EvaluatePath(MethodBase method, PathValue[] arguments, PathExit exit, bool nameTests, int depth, PathOutcome outcome,
+        List<PathValue?>? returned)
+    {
+        List<MethodFingerprint.Instruction> code = MethodFingerprint.Instructions(method);
+        Dictionary<int, int> at = IndexByOffset(code);
+        int[] listeners = Enumerable.Range(0, arguments.Length).Where(i => arguments[i].Kind == PathKind.Listener).ToArray();
+        var work = new Stack<(int Index, List<PathValue> Stack, Dictionary<int, PathValue> Locals, HashSet<int> Visited)>();
+        work.Push((0, new List<PathValue>(), new Dictionary<int, PathValue>(), new HashSet<int>()));
+        while (work.Count > 0)
+        {
+            (int i, List<PathValue> stack, Dictionary<int, PathValue> locals, HashSet<int> visited) = work.Pop();
+            while (true)
+            {
+                if (++outcome.Steps > MaxPathSteps)
+                {
+                    return "too long a path";
+                }
+                if (i < 0 || i >= code.Count)
+                {
+                    return "a path running off the code";
+                }
+                if (!visited.Add(i))
+                {
+                    return "a loop on the path";
+                }
+                MethodFingerprint.Instruction ins = code[i];
+                OpCode op = ins.Op;
+                int next = i + 1;
+                PathValue Pop()
+                {
+                    PathValue top = stack[^1];
+                    stack.RemoveAt(stack.Count - 1);
+                    return top;
+                }
+                if (op == OpCodes.Nop)
+                {
+                }
+                else if (nameTests && NameCompare(code, i, listeners, out bool full, out string name, out bool value))
+                {
+                    outcome.Names.Add((full, name));
+                    stack.Add(new PathValue(PathKind.Int, value ? 1 : 0));
+                    next = i + 5;
+                }
+                else if (ArgumentLoaded(ins) is { } argument)
+                {
+                    stack.Add(argument < arguments.Length ? arguments[argument] : new PathValue(PathKind.Unknown));
+                }
+                else if (op == OpCodes.Isinst)
+                {
+                    PathValue tested = Pop();
+                    if (tested.Kind == PathKind.Listener)
+                    {
+                        if (ins.Operand is not Type gate || gate.IsValueType || gate.ContainsGenericParameters)
+                        {
+                            return "a type test on the listener against a value type or an open generic type";
+                        }
+                        outcome.Gates.Add(gate);
+                        stack.Add(new PathValue(PathKind.Null));
+                    }
+                    else
+                    {
+                        stack.Add(tested.Kind == PathKind.Null ? tested : new PathValue(PathKind.Unknown));
+                    }
+                }
+                else if (StoresLocal(ins, out int stored))
+                {
+                    locals[stored] = Pop();
+                }
+                else if (LocalLoaded(ins) is { } loaded)
+                {
+                    stack.Add(locals.TryGetValue(loaded, out PathValue local) ? local : new PathValue(PathKind.Unknown));
+                }
+                else if (op == OpCodes.Ldnull)
+                {
+                    stack.Add(new PathValue(PathKind.Null));
+                }
+                else if (op == OpCodes.Ldind_Ref && stack.Count > 0 && stack[^1].Kind == PathKind.NullAddress)
+                {
+                    Pop();
+                    stack.Add(new PathValue(PathKind.Null));
+                }
+                else if (IntConstant(ins) is { } constant)
+                {
+                    stack.Add(new PathValue(PathKind.Int, constant));
+                }
+                else if (op == OpCodes.Ceq || op == OpCodes.Cgt || op == OpCodes.Cgt_Un || op == OpCodes.Clt || op == OpCodes.Clt_Un)
+                {
+                    PathValue right = Pop(), left = Pop();
+                    stack.Add(PathCompare(op, left, right));
+                }
+                else if (op == OpCodes.Or || op == OpCodes.And)
+                {
+                    PathValue right = Pop(), left = Pop();
+                    stack.Add(PathLogic(op == OpCodes.Or, left, right));
+                }
+                else if (op == OpCodes.Dup)
+                {
+                    stack.Add(stack[^1]);
+                }
+                else if (op == OpCodes.Pop)
+                {
+                    Pop();
+                }
+                else if (op == OpCodes.Br || op == OpCodes.Br_S)
+                {
+                    next = at[(int)ins.Operand!];
+                }
+                else if (op == OpCodes.Brtrue || op == OpCodes.Brtrue_S || op == OpCodes.Brfalse || op == OpCodes.Brfalse_S
+                    || op == OpCodes.Beq || op == OpCodes.Beq_S || op == OpCodes.Bne_Un || op == OpCodes.Bne_Un_S)
+                {
+                    bool equality = op == OpCodes.Beq || op == OpCodes.Beq_S || op == OpCodes.Bne_Un || op == OpCodes.Bne_Un_S;
+                    PathValue condition = equality ? PathCompare(OpCodes.Ceq, Pop(), Pop()) : Pop();
+                    bool onTrue = op == OpCodes.Brtrue || op == OpCodes.Brtrue_S || op == OpCodes.Beq || op == OpCodes.Beq_S;
+                    bool? truth = PathTruth(condition);
+                    if (truth == null)
+                    {
+                        return "a branch on a value it can't tell";
+                    }
+                    next = truth == onTrue ? at[(int)ins.Operand!] : i + 1;
+                }
+                else if (op == OpCodes.Ret)
+                {
+                    PathValue? exitValue = stack.Count == 1 ? stack[0] : null;
+                    if (stack.Count > 1 || (exit != PathExit.Any && (exit == PathExit.Void) != (stack.Count == 0)))
+                    {
+                        return "an exit leaving another stack";
+                    }
+                    if (exit == PathExit.True && exitValue is not { Kind: PathKind.Int, Number: 1 })
+                    {
+                        return "a bool prefix returning anything but true on that path (it may skip the original)";
+                    }
+                    if (exit == PathExit.Result && exitValue is not { Kind: PathKind.Result })
+                    {
+                        return "a postfix returning anything but its __result on that path";
+                    }
+                    returned?.Add(exitValue);
+                    break;
+                }
+                else
+                {
+                    return $"{op.Name} on the path (it may do something)";
+                }
+                i = next;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>The argument an <c>ldarg</c> (by value) loads, else null.</summary>
+    private static int? ArgumentLoaded(MethodFingerprint.Instruction ins) =>
+        ins.Op == OpCodes.Ldarg_0 ? 0 : ins.Op == OpCodes.Ldarg_1 ? 1 : ins.Op == OpCodes.Ldarg_2 ? 2 : ins.Op == OpCodes.Ldarg_3 ? 3
+        : (ins.Op == OpCodes.Ldarg_S || ins.Op == OpCodes.Ldarg) && ins.Operand is int n ? n : null;
+
+    /// <summary>Whether a branch on the value is taken as on true: null when it can't be told.</summary>
+    private static bool? PathTruth(PathValue value) => value.Kind switch
+    {
+        PathKind.Int => value.Number != 0,
+        PathKind.NonZero or PathKind.Listener => true,
+        PathKind.Null => false,
+        _ => null,
+    };
+
+    private static bool KnownNonZero(PathValue value) => value.Kind == PathKind.NonZero || (value.Kind == PathKind.Int && value.Number != 0);
+
+    private static bool KnownZero(PathValue value) => value.Kind == PathKind.Null || (value.Kind == PathKind.Int && value.Number == 0);
+
+    /// <summary><c>ceq</c>, <c>cgt</c>, <c>cgt.un</c>, <c>clt</c>, <c>clt.un</c> on two path values (unknown when either is).</summary>
+    private static PathValue PathCompare(OpCode op, PathValue left, PathValue right)
+    {
+        var unknown = new PathValue(PathKind.Unknown);
+        static PathValue Bool(bool b) => new(PathKind.Int, b ? 1 : 0);
+        if (left.Kind is PathKind.Unknown or PathKind.Result or PathKind.NullAddress || right.Kind is PathKind.Unknown or PathKind.Result or PathKind.NullAddress)
+        {
+            return unknown;
+        }
+        bool leftWide = left.Kind is PathKind.Listener or PathKind.NonZero, rightWide = right.Kind is PathKind.Listener or PathKind.NonZero;
+        if (leftWide || rightWide)
+        {
+            // A non-null reference or a nonzero integer against null or zero: only the equality and the unsigned order are known.
+            if ((leftWide && rightWide) || !(KnownZero(left) || KnownZero(right)))
+            {
+                return unknown;
+            }
+            return op == OpCodes.Ceq ? Bool(false) : op == OpCodes.Cgt_Un ? Bool(leftWide) : op == OpCodes.Clt_Un ? Bool(rightWide) : unknown;
+        }
+        int x = left.Kind == PathKind.Null ? 0 : left.Number, y = right.Kind == PathKind.Null ? 0 : right.Number;
+        return Bool(op == OpCodes.Ceq ? x == y : op == OpCodes.Cgt ? x > y : op == OpCodes.Cgt_Un ? (uint)x > (uint)y
+            : op == OpCodes.Clt ? x < y : (uint)x < (uint)y);
+    }
+
+    /// <summary><c>or</c> / <c>and</c> on two path values: computed on constants, absorbing constants kept (an <c>or</c> with a nonzero one is nonzero).</summary>
+    private static PathValue PathLogic(bool or, PathValue left, PathValue right)
+    {
+        if (left.Kind == PathKind.Int && right.Kind == PathKind.Int)
+        {
+            return new PathValue(PathKind.Int, or ? left.Number | right.Number : left.Number & right.Number);
+        }
+        if (or && (KnownNonZero(left) || KnownNonZero(right)))
+        {
+            return new PathValue(PathKind.NonZero);
+        }
+        if (!or && ((left.Kind == PathKind.Int && left.Number == 0) || (right.Kind == PathKind.Int && right.Number == 0)))
+        {
+            return new PathValue(PathKind.Int, 0);
+        }
+        return new PathValue(PathKind.Unknown);
     }
 
     /// <summary>
@@ -2132,10 +2385,11 @@ public static partial class PatchSafety
 
     /// <summary>
     /// A postfix that provably does nothing when <c>__result</c> is null (<see cref="PatchTolerance.NullSkipped"/>): static,
-    /// returns void, not generic, a <c>__result</c> parameter of a reference type (by value, or by reference: <c>ref __result</c>), and from its first instruction (nops
-    /// aside) only <c>ldarg __result; [ldind.ref when by reference]; brfalse L</c> (taken on null) or <c>... brtrue L</c> (not
-    /// taken on null), unconditional branches, then <c>ret</c>: on that path nothing but that one load (no call, no field, no
-    /// store, no other argument). Harmony runs postfixes after a prefix that skipped the original, on the <c>__result</c> it
+    /// returns void, not generic, a <c>__result</c> parameter of a reference type (by value, or by reference: <c>ref __result</c>),
+    /// and the path a null <c>__result</c> takes evaluated to a plain <c>ret</c> by rule E (<see cref="EvaluatePath"/>, 2026-11-18:
+    /// <c>__result</c> null, read through <c>ldind.ref</c> when by reference; constants, locals and comparisons followed as for
+    /// the type gates, Debug IL included; no call, no field, no store but to locals, no branch on another argument). Harmony runs
+    /// postfixes after a prefix that skipped the original, on the <c>__result</c> it
     /// left: null there. Renamed parameters (<c>HarmonyArgument</c>) and factories are refused before (ShapeRefusal); a patch
     /// whose own method is patched at each recheck (Intolerable). No initializer is judged (B1, re-audit round 2 of
     /// 2026-11-17): the postfix runs at every call, a skipped one included, and the first call is never a skip, so it is compiled
@@ -2164,62 +2418,15 @@ public static partial class PatchSafety
             {
                 return false;
             }
-            List<MethodFingerprint.Instruction> code = MethodFingerprint.Instructions(patch);
-            var at = new Dictionary<int, int>();
-            for (int i = 0; i < code.Count; i++)
+            var arguments = new PathValue[parameters.Length];
+            arguments[result] = new PathValue(byRef ? PathKind.NullAddress : PathKind.Null);
+            var outcome = new PathOutcome(patch.Module.Assembly);
+            if (EvaluatePath(patch, arguments, PathExit.Void, false, 0, outcome, null) != null)
             {
-                at[code[i].Offset] = i;
+                return false;
             }
-            var visited = new HashSet<int>();
-            bool tested = false;
-            int index = 0;
-            while (index >= 0 && index < code.Count && visited.Add(index))
-            {
-                MethodFingerprint.Instruction ins = code[index];
-                if (ins.Op == OpCodes.Nop)
-                {
-                    index++;
-                    continue;
-                }
-                if (ins.Op == OpCodes.Br || ins.Op == OpCodes.Br_S)
-                {
-                    index = ins.Operand is int target && at.TryGetValue(target, out int next) ? next : -1;
-                    continue;
-                }
-                if (ins.Op == OpCodes.Ret)
-                {
-                    return tested;
-                }
-                // The test, once: ldarg __result; [ldind.ref]; brfalse|brtrue L.
-                if (tested || !LoadsArgument(ins, result))
-                {
-                    return false;
-                }
-                int branch = index + 1;
-                if (byRef)
-                {
-                    if (branch >= code.Count || code[branch].Op != OpCodes.Ldind_Ref)
-                    {
-                        return false;
-                    }
-                    branch++;
-                }
-                if (branch >= code.Count)
-                {
-                    return false;
-                }
-                MethodFingerprint.Instruction test = code[branch];
-                bool onFalse = test.Op == OpCodes.Brfalse || test.Op == OpCodes.Brfalse_S;
-                bool onTrue = test.Op == OpCodes.Brtrue || test.Op == OpCodes.Brtrue_S;
-                if (!onFalse && !onTrue || test.Operand is not int to || !at.TryGetValue(to, out int taken))
-                {
-                    return false;
-                }
-                tested = true;
-                // Null: brfalse is taken, brtrue falls through.
-                index = onFalse ? taken : branch + 1;
-            }
-            return false;
+            _pathCallees[patch.MethodHandle] = outcome.Callees.Distinct().ToArray();
+            return true;
         }
         catch
         {
