@@ -112,6 +112,7 @@ public static class CombatStartTimer
         }
     }
 
+    [Patches.ReadOnlyProbePostfix]
     private static void SyncPostfix(System.Reflection.MethodBase __originalMethod)
     {
         if (_running && _labels.TryGetValue(__originalMethod, out var info))
@@ -120,6 +121,9 @@ public static class CombatStartTimer
         }
     }
 
+    // Read-only probe (test builds only): __result by value, the continuation only marks the clock and ends this timer, so
+    // HookSkip judges other mods' patches on Hook.AfterRoomEntered / BeforeCombatStart as a Release build would.
+    [Patches.ReadOnlyProbePostfix]
     private static void AsyncPostfix(System.Reflection.MethodBase __originalMethod, Task __result)
     {
         if (!_running || !_labels.TryGetValue(__originalMethod, out var info))

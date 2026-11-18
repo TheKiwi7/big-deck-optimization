@@ -227,6 +227,7 @@ public static class PerfProbe
         __state = Enabled ? Stopwatch.GetTimestamp() : 0;
     }
 
+    [Patches.ReadOnlyProbePostfix]
     private static void SyncPostfix(MethodBase __originalMethod, long __state)
     {
         if (__state != 0)
@@ -235,6 +236,7 @@ public static class PerfProbe
         }
     }
 
+    [Patches.ReadOnlyProbePostfix]
     private static void AsyncPostfix(MethodBase __originalMethod, object? __result, long __state)
     {
         if (__state == 0)

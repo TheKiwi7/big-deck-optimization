@@ -57,10 +57,13 @@ foreignpatch ref-prefix MegaCrit.Sts2.Core.Hooks.Hook:AfterSideTurnStart
 foreignpatch identity-transpiler MegaCrit.Sts2.Core.Entities.Cards.CardPile:AddInternal
 foreignpatch inner-postfix MegaCrit.Sts2.Core.Hooks.Hook:AfterCardPlayed
 # Rule A's controls: a finalizer on a hook HookSkip transpiles, an inner postfix on another (classified only).
-# Rule A next to another patch of this mod: the test build's CombatStartTimer postfix on Hook.BeforeCombatStart keeps
-# SurroundingOnly there (HookSkip.MethodTolerance), so this bool prefix backs off, in the preflight (bdopt why, the same
-# tolerance function since 2026-11-17) as at run time. AfterCardPlayed above carries LimitlessHookSkip's sampling prefix
-# (Limitless loaded): order-free, TranspiledOnly at run time and in the display alike.
+# Rule A next to another patch of this mod: a no-op postfix under this mod's own Harmony id (own-postfix, not a read-only
+# probe) keeps SurroundingOnly on Hook.BeforeCombatStart (HookSkip.MethodTolerance), so this bool prefix backs off, in the
+# preflight (bdopt why, the same tolerance function since 2026-11-17) as at run time. The test tooling's own probes there
+# (CombatStartTimer's postfixes) are read-only probes since 2026-11-18 and don't count, as in a Release build without them.
+# AfterCardPlayed above carries LimitlessHookSkip's sampling prefix (Limitless loaded): order-free, TranspiledOnly at run time
+# and in the display alike.
+foreignpatch own-postfix MegaCrit.Sts2.Core.Hooks.Hook:BeforeCombatStart
 foreignpatch bool-prefix MegaCrit.Sts2.Core.Hooks.Hook:BeforeCombatStart
 foreignpatch noop-finalizer MegaCrit.Sts2.Core.Hooks.Hook:ModifyHpLost
 foreignpatch inner-postfix MegaCrit.Sts2.Core.Hooks.Hook:ModifyBlock

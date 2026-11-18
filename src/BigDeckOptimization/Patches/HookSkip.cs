@@ -871,7 +871,10 @@ public static partial class HookSkip
                     return false;
                 }
             }
-            return !info.Postfixes.Any(Ours) && !info.InnerPrefixes.Any(Ours) && !info.InnerPostfixes.Any(Ours);
+            // The test tooling's read-only probe postfixes aside (ReadOnlyProbePostfixAttribute: Debug builds only), so a test
+            // build takes the tolerance a Release build takes.
+            static bool Probe(Patch p) => PatchSafety.PatchMethodOf(p) is { } m && m.IsDefined(typeof(ReadOnlyProbePostfixAttribute), false);
+            return !info.Postfixes.Any(p => Ours(p) && !Probe(p)) && !info.InnerPrefixes.Any(Ours) && !info.InnerPostfixes.Any(Ours);
         }
         catch
         {

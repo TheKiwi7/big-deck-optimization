@@ -139,6 +139,19 @@ internal sealed class OrderFreePrefixAttribute : Attribute
 {
 }
 
+/// <summary>
+/// On a postfix of the test tooling (Debug builds only: CombatStartTimer, PerfProbe) that writes nothing another patch or the
+/// game sees: no <c>ref __result</c>, no argument by reference, only the clock and a label into its own statics, at most a
+/// continuation on the returned <c>Task</c> (taken by value) that records the same. HookSkip.OwnPatchesOnly doesn't count it:
+/// counted, a test build would take SurroundingOnly on <c>Hook.AfterRoomEntered</c> and <c>Hook.BeforeCombatStart</c> where a
+/// Release build, without these postfixes, takes TranspiledOnly, so the tests would report back-offs players never have
+/// (another mod's bool prefix or <c>__args</c> postfix there) and never run the shipped path.
+/// </summary>
+[AttributeUsage(AttributeTargets.Method)]
+internal sealed class ReadOnlyProbePostfixAttribute : Attribute
+{
+}
+
 public static partial class PatchSafety
 {
     /// <summary>The kind of a Harmony patch (the list of <see cref="HarmonyLib.Patches"/> it is in).</summary>

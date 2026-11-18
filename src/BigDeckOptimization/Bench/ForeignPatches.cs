@@ -190,7 +190,7 @@ public static class ForeignPatches
         "noop-postfix", "noop-prefix", "count-postfix", "count-prefix", "nested-postfix", "keyword-prefix", "cost-postfix",
         "probe-prefix", "probe-postfix", "state-prefix",
         "bool-prefix", "ref-prefix", "identity-transpiler", "inner-postfix", "runoriginal-postfix", "byref-postfix", "field-postfix",
-        "argsrename-prefix", "factory-postfix", "dup-prefix",
+        "argsrename-prefix", "factory-postfix", "dup-prefix", "own-postfix",
         "gated-postfix", "gated-prefix", "gated-or-postfix", "nearmiss-postfix", "renamed-gated-postfix", "gated-patched-postfix",
         "cctor-gated-postfix",
         "walk-expand-postfix", "walk-filter-repeat", "pile-prefix-narrow", "piles-postfix", "byref-arg-prefix", "byref-out-postfix",
@@ -383,7 +383,9 @@ public static class ForeignPatches
         {
             return ClassifyInner(target);
         }
-        string id = IdPrefix + shape + (gate.Length > 0 ? "-" + gate : "");
+        // own-postfix: a no-op postfix under this mod's own Harmony id (a sub-id PatchGuard.IsOurs counts), not marked as a
+        // read-only probe: HookSkip's rule A then takes SurroundingOnly on that hook (OwnPatchesOnly), its fallback control.
+        string id = shape == "own-postfix" ? ModEntry.Harmony.Id + ".bdtest." + shape : IdPrefix + shape + (gate.Length > 0 ? "-" + gate : "");
         var harmony = new Harmony(id);
         HarmonyMethod Fix(string name) => new(typeof(ForeignPatches), name) { priority = priority };
         HarmonyMethod Gated(string name) => new(typeof(Gates), name) { priority = priority };
@@ -392,6 +394,7 @@ public static class ForeignPatches
         switch (shape)
         {
             case "noop-postfix":
+            case "own-postfix":
                 harmony.Patch(target, postfix: Fix(nameof(NoOpPostfix)));
                 break;
             case "noop-prefix":

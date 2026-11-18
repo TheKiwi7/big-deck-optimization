@@ -920,7 +920,12 @@ TypeLoad exceptions, to every method it patches: it can swallow, so the back-off
 
 Tooling (no Release effect): CombatStartTimer's postfixes (Bench/CombatStartTimer.cs:46-47) make HookSkip's OwnPatchesOnly false in
 test builds (HookSkip.cs:874), so BeforeCombatStart and AfterRoomEntered take SurroundingOnly there and scans report back-offs a
-Release build doesn't have (NinjaSlayer, Sinclair, Chiikawa). Mark those postfixes as read-only probes.
+Release build doesn't have (NinjaSlayer, Sinclair, Chiikawa). Fixed the same day: `ReadOnlyProbePostfixAttribute`
+(PatchSafetyTolerance.cs) on CombatStartTimer's and PerfProbe's postfixes (they only read the clock, `__result` by value), which
+`HookSkip.OwnPatchesOnly` doesn't count, so a test build takes TranspiledOnly there as a Release build does. Its fallback control
+moved to a synthetic no-op postfix under this mod's own Harmony id (`foreignpatch own-postfix`, foreign-controls). Proven on both
+versions: NinjaSlayer and Sinclair's `Hook.BeforeCombatStart` kept (backed off before), CombatStartTimer still records the
+combat start, foreign-controls' expects all seen, foreign-shapes-2k off/on IDENTICAL (84 lines), 0 problems.
 
 Justified (keep): save round trips writing mod state into saved data (Succubus, MomoLib, YUICore, YUISpireExpansion, Koishi,
 Multiplayer Expanded), state-dependent getters (Succubus, YUISpireExpansion, Koishi), MomoLib's strip-and-restore around Serialize,
