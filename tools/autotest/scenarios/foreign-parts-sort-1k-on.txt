@@ -1,0 +1,78 @@
+# CardSortKeys next to other mods' patches gated on the card's type (A/B, mod on; with foreign-parts-sort-1k-off; game v0.113+:
+# before, the game's comparison is cheap and the part not needed). Rule TG of 2026-11-18, Card Upgrader's shape: a postfix on
+# CardModel.get_DynamicVars doing nothing unless the card is a Squeeze (foreignpatch sort-gated-postfix squeeze). (1) A reshuffle
+# without a Squeeze: answered (CardSortKeys grew). (2) A Squeeze in the discard pile, reshuffled: that sort is the game's (the gated
+# patch acts on it; CardSortKeys same, the refusal names the gate). (3) The near miss (a static write before the test,
+# sort-nearmiss-postfix squeeze): every sort the game's. The patches' counts are display lines (DynamicVars is read at the
+# display's pace too); CHECKSUM and STATE lines must match the other side line for line. On v0.111 requiregame logs SKIPPED.
+requiregame v0.113
+expect CardSortKeys: CardModel\.get_DynamicVars is also patched by bdtest\.foreign\.sort-gated-postfix-squeeze \(patches gated on the listener's type: Squeeze treated as overriding it
+expect FOREIGN classify CardModel\.get_DynamicVars: bdtest\.foreign\.sort-gated-postfix-squeeze Postfix .*TypeGated tolerated, gates Squeeze
+expect EFFECTCHECK CardSortKeys grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK CardSortKeys same since 'squeeze'
+expect COUNTERS gated:.*CardSortKeys sorts [1-9]\d*, answered [1-9]\d*, refused [1-9]\d* \(last: Squeeze is a Squeeze, whose comparison another mod's gated patch acts on\), checks \d+, mismatches 0
+expect FOREIGN classify CardModel\.get_DynamicVars: bdtest\.foreign\.sort-nearmiss-postfix-squeeze Postfix .*TypeGated backs off \(postfix not provably gated
+expect CardSortKeys: CardModel\.get_DynamicVars is also patched by bdtest\.foreign\.sort-nearmiss-postfix-squeeze \(patches gated on the listener's type not enough\): normal game for that part
+expect EFFECTCHECK CardSortKeys same since 'nearmiss'
+expect COUNTERS end:.*CardSortKeys sorts [1-9]\d*, answered [1-9]\d*, refused [1-9]\d* \(last: another mod patches CardModel\.get_DynamicVars\), checks \d+, mismatches 0
+timeout 1200
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+foreignpatch sort-gated-postfix MegaCrit.Sts2.Core.Models.CardModel:get_DynamicVars squeeze
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+state start
+effects start
+play 3
+waitfor idle 120
+checksum t1 plays
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 300
+checksum reshuffle
+state reshuffle
+effects reshuffle
+effectcheck CardSortKeys grew start
+# (2) a Squeeze in the sorted cards.
+cmd card SQUEEZE discard
+waitfor idle 60
+effects squeeze
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 300
+checksum reshuffle squeeze
+state reshuffle squeeze
+effects squeeze end
+effectcheck CardSortKeys same squeeze
+counters gated
+foreignpatch parts-report gated
+cmd bdopt why
+foreignpatch remove
+# (3) the near miss.
+foreignpatch sort-nearmiss-postfix MegaCrit.Sts2.Core.Models.CardModel:get_DynamicVars squeeze
+wait 3
+effects nearmiss
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 300
+checksum reshuffle nearmiss
+state reshuffle nearmiss
+effects nearmiss end
+effectcheck CardSortKeys same nearmiss
+foreignpatch parts-report nearmiss
+counters end
+foreignpatch remove
+cmd kill all
+waitfor nocombat 300
+wait 2
+checksum after combat
+state after combat
+quit

@@ -343,7 +343,8 @@ public static class CardSortKeys
         // hooks of the combat's listener types (ImpureCostListener) depend on who is in the combat: those of the types met so
         // far are asked again at each preflight. The keyword reads (_keywordWatched) only matter in a combat where a cost hook
         // reads keywords (Veilpiercer): not known at the menu, so they show when such a sort checks them.
-        PatchSafety.Watch(Name, Strict());
+        PatchSafety.Watch(Name, _watched, PatchTolerance.TypeGated);
+        PatchSafety.Watch(Name, Strict().Except(_watched));
         PatchSafety.Watch(Name, _costDefaults, PatchTolerance.TypeGated);
         PatchSafety.WatchAll(Name, HookFilter.CombatHookWalkParts);
         PatchSafety.WatchAll(Name, MetCostHooks);
@@ -361,7 +362,9 @@ public static class CardSortKeys
         var patched = new List<MethodBase>();
         // Only while sorts can be answered (G, re-audit of the premises): not once faulted, nor before it applied (with the mod off:
         // shown as what would run once on, as before).
-        if (PatchSafety.ShapeRules && Applied && !PatchSafety.IsFaulted(Name) && !_watched.Any(PatchSafety.HasOtherPatches))
+        // A patch there gated on the card's type (TypeGated) leaves sorts answered (those holding a gate type aside): asked as the
+        // preflight asks (the patch name as caller: not counted as a runtime check).
+        if (PatchSafety.ShapeRules && Applied && !PatchSafety.IsFaulted(Name) && !_watched.Any(m => PatchSafety.IsPatchedByOthers(m, out _, Name)))
         {
             patched.AddRange(_costChain.OfType<MethodBase>().Where(PatchSafety.HasOtherPatches));
         }
@@ -505,12 +508,21 @@ public static class CardSortKeys
         }
         try
         {
+            Type[]? watchedGates = null;
             foreach (MethodBase? method in _watched)
             {
-                // No tolerance: the comparison and its keys are computed here once per card instead of per comparison.
-                if (PatchSafety.IsPatchedByOthers(method))
+                // The comparison and its keys are computed here once per card instead of per comparison: only patches gated on
+                // the instance's type stand (TypeGated, rule TG of 2026-11-18: they do nothing unless the instance is of a gate
+                // type), and a sort holding a card of a gate type is the game's (below). On a method whose instance isn't a card
+                // (ModelId.Compare, StableShuffle, DynamicVarSet.Keys, Player.Creature, Creature.CombatState) TypeGated finds no
+                // gate: every patch there backs off, as before.
+                if (PatchSafety.IsPatchedByOthers(method, out Type[] gates))
                 {
                     return Refuse($"another mod patches {method?.DeclaringType?.Name}.{method?.Name}");
+                }
+                if (gates.Length > 0)
+                {
+                    watchedGates = watchedGates == null ? gates : watchedGates.Concat(gates).ToArray();
                 }
             }
             if (!PatchSafety.ShapeRules)
@@ -553,6 +565,10 @@ public static class CardSortKeys
                 {
                     return Refuse($"{card.GetType().Name} compares itself");
                 }
+                if (watchedGates != null && GateOf(card.GetType(), watchedGates) is { } gate)
+                {
+                    return Refuse($"{card.GetType().Name} is a {gate.Name}, whose comparison another mod's gated patch acts on");
+                }
                 // Its cost runs the cost hook only in a combat pile (GetWithModifiers: CombatState != null), that combat's listeners:
                 // its owner's combat, read from the fields (no getter, so no other mod's code on CardModel.Pile runs here, for
                 // cards whose sort may never reach the cost; re-audit of the premises, A3). A card outside a combat pile whose owner
@@ -593,6 +609,19 @@ public static class CardSortKeys
             Disable(e);
             return null;
         }
+    }
+
+    /// <summary>The first gate (TypeGated: a type, or every loaded type of a tested name) the card's runtime type is assignable to, or null.</summary>
+    private static Type? GateOf(Type type, Type[] gates)
+    {
+        foreach (Type gate in gates)
+        {
+            if (gate.IsAssignableFrom(type))
+            {
+                return gate;
+            }
+        }
+        return null;
     }
 
     /// <summary>

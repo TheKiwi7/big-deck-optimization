@@ -21,6 +21,9 @@ public static class ForeignShapesParts
     public static readonly string[] Shapes =
     {
         "redirect-prefix",
+        "sort-gated-postfix", "sort-nearmiss-postfix",
+        // Not a shape: "foreignpatch parts-report <label>" prints the display counts of these shapes (FOREIGN lines, not compared).
+        "parts-report",
         // Not a shape: "foreignpatch parts-require <counter>" fails unless that counter of these rules is above zero.
         "parts-require",
     };
@@ -52,6 +55,14 @@ public static class ForeignShapesParts
             }
             return new[] { $"FOREIGN parts {parts[1]} {value}" };
         }
+        if (shape == "parts-report")
+        {
+            return new[]
+            {
+                $"FOREIGN display {parts[1]} sort-gated-postfix squeeze calls {SortGates.SqueezeCalls}",
+                $"FOREIGN display {parts[1]} sort-nearmiss-postfix every call {SortGates.EveryCall}",
+            };
+        }
         MethodBase target = (parts[1].Contains("::", StringComparison.Ordinal) ? MethodFingerprint.Resolve(typeof(AbstractModel).Assembly, parts[1]) : AccessTools.Method(parts[1]))
             ?? throw new ArgumentException("no method " + parts[1]);
         int priority = Priority.Normal;
@@ -82,6 +93,18 @@ public static class ForeignShapesParts
                 Require(typeof(CardPile), nameof(CardPile.AddInternal));
                 harmony.Patch(target, prefix: Fix(nameof(RedirectPrefix)));
                 break;
+            case "sort-gated-postfix":
+            case "sort-nearmiss-postfix":
+                // Rule TG on CardSortKeys (Card Upgrader's shape on CardModel.get_DynamicVars): a postfix doing nothing unless the
+                // instance is a Squeeze (accepted: sorts without a Squeeze stay answered, a sort holding one is the game's), and its
+                // near miss (a static write before the type test: every call counted, so every sort is the game's). Their counts
+                // are display lines (other code reads DynamicVars at the display's pace): the A/B compares the sorts' results.
+                if (gate != "squeeze")
+                {
+                    throw new ArgumentException(shape + " gate: squeeze");
+                }
+                harmony.Patch(target, postfix: new HarmonyMethod(typeof(SortGates), shape == "sort-gated-postfix" ? nameof(SortGates.GatedPostfix) : nameof(SortGates.NearMissPostfix)) { priority = priority });
+                break;
             default:
                 throw new ArgumentException("unknown shape " + shape);
         }
@@ -89,6 +112,30 @@ public static class ForeignShapesParts
         var lines = new List<string> { $"FOREIGN installed {shape}{(gate.Length > 0 ? " " + gate : "")} on {target.DeclaringType?.Name}.{target.Name} as {id} (priority {priority})" };
         lines.AddRange(PatchSafety.Describe(target).Select(line => $"FOREIGN classify {target.DeclaringType?.Name}.{target.Name}: {line}"));
         return lines;
+    }
+
+    /// <summary>The TG shapes' class: no static field initializer (no type initializer to judge), counts only.</summary>
+    private static class SortGates
+    {
+        public static long SqueezeCalls;
+        public static long EveryCall;
+
+        public static void GatedPostfix(AbstractModel __instance)
+        {
+            if (__instance is Squeeze)
+            {
+                SqueezeCalls++;
+            }
+        }
+
+        public static void NearMissPostfix(AbstractModel __instance)
+        {
+            EveryCall++;
+            if (__instance is Squeeze)
+            {
+                SqueezeCalls++;
+            }
+        }
     }
 
     /// <summary>redirect-prefix: a Squeeze added to a discard pile goes to its owner's draw pile instead (counted), the original skipped.</summary>
