@@ -413,7 +413,7 @@ function Test-SessionLog([string]$name, [string]$pattern, [bool]$expected, [stri
 # runs or the scenario changes. Not this mod's patches: a mod-off session is launched with --bdvanilla and none of them is
 # installed (vanillacheck.ps1 proves a patched-off session, every patch installed then bdopt off, logs the same lines).
 # 'ref=vanilla1': the logs of patched-off sessions, kept before --bdvanilla, never serve as vanilla ones.
-$script:BaselineSalt = $null
+$script:CoopProfilesSalt = $null
 # The test tooling a script runs: the scenario engine and its helpers always, each optional part only when one of its commands is
 # in the script (AutoTest.cs reaches them only through those commands; a few CPU-time helpers feed timings, which no comparison
 # reads). A change elsewhere in Bench/ leaves this scenario's baseline valid. A console command counts through 'cmd' and through
@@ -593,19 +593,23 @@ function Get-BenchFileHash($file, [bool]$legacy) {
     $script:BenchCodeHashes[$id]
 }
 
-function Get-BaselineSalt([string]$gameDir) {
-    if (-not $script:BaselineSalt) {
+# -Plain: no test mod loaded (parcoop.ps1 -Plain), whatever BDTEST_MODS says.
+$script:BaselineSalts = @{}
+function Get-BaselineSalt([string]$gameDir, [switch]$Plain) {
+    $id = "$(Get-CopyKey $gameDir)|$($Plain.IsPresent)"
+    if (-not $script:BaselineSalts.ContainsKey($id)) {
         $profileSaves = Join-Path (Get-SteamAccountDir) "modded\profile3\saves"
         # Every file of the test mods' Workshop folders, not only DLLs: a mod's own data and settings change the game too (Unlimited
         # 2.0.0's sts2unlimited.settings.json: its difficulty scaling).
-        $files = @(Get-ChildItem (Join-Path $gameDir "data_sts2_windows_x86_64\sts2.dll")) + @(Get-TestModItems | ForEach-Object { Get-ChildItem $_.FullName -Recurse -File }) +
+        $files = @(Get-ChildItem (Join-Path $gameDir "data_sts2_windows_x86_64\sts2.dll")) + @(if (-not $Plain) { Get-TestModItems | ForEach-Object { Get-ChildItem $_.FullName -Recurse -File } }) +
             @(Get-ChildItem (Join-Path $UserData "bigdeck") -Filter *.run -ErrorAction SilentlyContinue) +
             @(Get-ChildItem (Join-Path $profileSaves "*") -File -Include progress.save, prefs.save -ErrorAction SilentlyContinue) +
             @(Get-ChildItem (Join-Path $UserData "mod_configs") -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne "BigDeckOptimization.cfg" }) +
             @(Get-ChildItem (Join-Path $UserData "mod_data") -Recurse -File -ErrorAction SilentlyContinue)
-        $script:BaselineSalt = "ref=vanilla1|no-steam|mods=" + (@(Get-TestModIds) -join ",") + "|" + (($files | Sort-Object FullName | ForEach-Object { "$($_.Name)=" + (Get-FileHash $_.FullName -Algorithm SHA256).Hash }) -join "")
+        $mods = if ($Plain) { "none" } else { @(Get-TestModIds) -join "," }
+        $script:BaselineSalts[$id] = "ref=vanilla1|no-steam|mods=$mods|" + (($files | Sort-Object FullName | ForEach-Object { "$($_.Name)=" + (Get-FileHash $_.FullName -Algorithm SHA256).Hash }) -join "")
     }
-    $script:BaselineSalt
+    $script:BaselineSalts[$id]
 }
 
 # The Bench part of a key: the files the script text runs (Get-BaselineBenchFiles), each with its hash.
@@ -619,6 +623,28 @@ function Get-BaselineKey([string]$gameDir, [string]$scriptPath, [switch]$Legacy)
     $bench = Get-BaselineBench $scriptText $Legacy.IsPresent
     $sha = [Security.Cryptography.SHA256]::Create()
     $bytes = [Text.Encoding]::UTF8.GetBytes($salt + "|bench=" + $bench + "|" + $scriptText)
+    ([BitConverter]::ToString($sha.ComputeHash($bytes)) -replace "-", "").Substring(0, 16)
+}
+
+# A co-op vanilla pair's key (parcoop.ps1 -OnOff's -autooff twins, both peers launched with --bdvanilla): the solo key's parts
+# (the game, the test mods unless -Plain, run files, profile 3, mod_configs, mod_data), the co-op profiles the peers play
+# (default\1 and default\1001: their saves and mod data, which Sync-Slot -Coop mirrors), CoopModeTag.cs's code (the one patch a
+# vanilla peer installs: its "+off" join entry, which the twin's 'coopmodetag off' checks), the Bench files both scripts run
+# and both scripts' text.
+function Get-CoopBaselineKey([string]$gameDir, [string]$hostScript, [string]$clientScript, [bool]$plain) {
+    if ($null -eq $script:CoopProfilesSalt) {
+        $files = foreach ($id in "1", "1001") {
+            $dir = Join-Path $UserData "default\$id"
+            if (Test-Path $dir) { Get-ChildItem $dir -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -in "progress.save", "prefs.save", "profile.save", "settings.save" -or $_.FullName -match '\\mod_data\\' } }
+        }
+        $script:CoopProfilesSalt = (@($files) | Sort-Object FullName | ForEach-Object { "$($_.FullName.Substring($UserData.Length))=" + (Get-FileHash $_.FullName -Algorithm SHA256).Hash }) -join ""
+    }
+    $hostText = [IO.File]::ReadAllText($hostScript)
+    $clientText = [IO.File]::ReadAllText($clientScript)
+    $tag = Get-Item (Join-Path $PSScriptRoot "..\..\src\BigDeckOptimization\Patches\CoopModeTag.cs")
+    $bench = Get-BaselineBench ($hostText + "`n" + $clientText) $false
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $bytes = [Text.Encoding]::UTF8.GetBytes((Get-BaselineSalt $gameDir -Plain:$plain) + "|coop-vanilla1|profiles=" + $script:CoopProfilesSalt + "|tag=" + (Get-BenchFileHash $tag $false) + "|bench=" + $bench + "|host=" + $hostText + "|client=" + $clientText)
     ([BitConverter]::ToString($sha.ComputeHash($bytes)) -replace "-", "").Substring(0, 16)
 }
 
