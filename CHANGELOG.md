@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+<!-- Not released yet: waits for its in-game checks (DESIGN, the JoinMismatchNote row: scenario joinmsg, coop-modetag.ps1, started-off.ps1, on every supported game version). -->
+
+- Co-op: when the game refuses to let you join only because of this mod (it is on for one player and off for the other, its "Co-op state check" option is set differently next to mods like RitsuLib, or the versions differ), the "mods don't match" message the joining player gets now says which in plain words, in your language, and what to change, instead of listing this mod twice as if it were two different mods. It also says what every player must have the same (the mod on or off, its version, that option next to such mods), and that its other settings may differ.
+
 ## v1.1.0
 
 - Faster alongside RitsuLib and the mods built on it: most of the game's effects (cards played, drawn or moved, energy, damage...) keep the mod's speed-up next to them instead of falling back to the normal game, and big reshuffles keep their steady stream of flying cards.

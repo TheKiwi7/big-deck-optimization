@@ -20,6 +20,8 @@ public static class ModEntry
     {
         // First, and even when the mod was turned off at the start: co-op players must all have the mod on, or all off.
         (CoopModeTag.Name, CoopModeTag.Apply),
+        // The game's mod mismatch error over that entry explained (display only; also applied with the mod off at the start).
+        (JoinMismatchNote.Name, JoinMismatchNote.Apply),
         // Next: other mods' Patch and Unpatch calls from now on are seen (caches dropped, lost detours, hidden IL hooks).
         (HarmonyWatch.Name, HarmonyWatch.Apply),
         (ListenerCache.Name, ListenerCache.Apply),
@@ -285,8 +287,8 @@ public static class ModEntry
         }
         Log.Info($"[{Id}] Initialized v{typeof(ModEntry).Assembly.GetName().Version?.ToString(3)} in {_initMs:F0} ms"
             + (Rewritten != null ? ": loaded rewritten by another mod, nothing applied but the co-op check (CoopModeTag)"
-                : VanillaWhy != null ? $": {VanillaWhy}, nothing applied but the test tooling and the co-op check (CoopModeTag)"
-                : StartedOff ? ": turned off in the settings, nothing applied but the co-op check (CoopModeTag; turn it on, then restart the game)" : ""));
+                : VanillaWhy != null ? $": {VanillaWhy}, nothing applied but the test tooling and the co-op check (CoopModeTag, JoinMismatchNote)"
+                : StartedOff ? ": turned off in the settings, nothing applied but the co-op check (CoopModeTag, JoinMismatchNote; turn it on, then restart the game)" : ""));
         LogLookups();
     }
 
@@ -356,8 +358,11 @@ public static class ModEntry
         Type patchClass = apply.Method.DeclaringType!;
         bool testTooling = patchClass.Namespace == typeof(ModEntry).Namespace + ".Bench";
         // CoopModeTag applies even then: it only tags this mod's entry in the gameplay mod list ("off"), so a player who
-        // started with the mod off can't join a co-op game whose players have it on (CoopModeTag's summary).
-        if (StartedOff && !testTooling && patchClass != typeof(CoopModeTag))
+        // started with the mod off can't join a co-op game whose players have it on (CoopModeTag's summary). JoinMismatchNote
+        // too, unless this mod's code was rewritten (nothing of it trusted then but the co-op check): display only, it explains
+        // that refusal to the player whose mod is off.
+        bool coopCheck = patchClass == typeof(CoopModeTag) || (patchClass == typeof(JoinMismatchNote) && Rewritten == null);
+        if (StartedOff && !testTooling && !coopCheck)
         {
             _notApplied.Add(name);
             Log.Info($"[{Id}] Patch {name} not applied: " + (VanillaWhy ?? "the mod was turned off when the game started"));

@@ -68,5 +68,10 @@
   "limitless_saves.title": "Copie degli incantamenti di Limitless",
   "limitless_saves.desc": "Con Limitless: mantiene la copia salvata degli incantamenti accumulati quando ricostruirla darebbe lo stesso contenuto, invece di ricostruirla dopo ogni azione o ogni volta che una carta viene copiata all'inizio di un combattimento.",
   "card_type_line.title": "Riga del tipo di carta (BaseLib)",
-  "card_type_line.desc": "Con BaseLib: mostra la riga del tipo di ogni carta senza cercare tra tutte le carte del combattimento mod che la modificano, finché nessuna mod installata lo fa (scorrimento della pila di pesca, aggiornamento della mano). Stesso testo."
+  "card_type_line.desc": "Con BaseLib: mostra la riga del tipo di ogni carta senza cercare tra tutte le carte del combattimento mod che la modificano, finché nessuna mod installata lo fa (scorrimento della pila di pesca, aggiornamento della mano). Stesso testo.",
+  "join.off_you": "Big Deck Optimization è disattivata per te ma attiva per l'host. Tutti i giocatori devono averla attiva, o tutti disattivata: attivala (nelle sue impostazioni, o con bdopt on nella console; riavvia il gioco se lo chiede), oppure chiedi all'host di disattivarla, poi unisciti di nuovo.",
+  "join.on_you": "Big Deck Optimization è attiva per te ma disattivata per l'host. Tutti i giocatori devono averla attiva, o tutti disattivata: disattivala (nelle sue impostazioni, o con bdopt off nella console), oppure chiedi all'host di attivarla, poi unisciti di nuovo.",
+  "join.exactsnap": "L'opzione «Verifica dello stato in co-op» di Big Deck Optimization non è impostata come quella dell'host (insieme a mod come RitsuLib, decide come funziona questa verifica): impostala allo stesso modo, poi unisciti di nuovo. Se lo è già, carica le stesse mod nello stesso ordine dell'host e riavvia il gioco.",
+  "join.version": "Tutti i giocatori devono avere la stessa versione di Big Deck Optimization (la tua: {yours}, quella dell'host: {theirs}).",
+  "join.must_match": "Cosa deve essere uguale per tutti i giocatori in Big Deck Optimization: la mod attiva o disattivata, la sua versione e, insieme a mod come RitsuLib, la sua opzione «Verifica dello stato in co-op». Le altre impostazioni possono essere diverse (l'inizio combattimento rapido è comunque attivo per tutti in co-op)."
 }

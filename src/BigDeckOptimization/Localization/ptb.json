@@ -68,5 +68,10 @@
   "limitless_saves.title": "Cópias de encantamentos do Limitless",
   "limitless_saves.desc": "Com o Limitless: mantém a cópia salva dos encantamentos acumulados quando reconstruí-la daria o mesmo conteúdo, em vez de reconstruí-la após cada ação ou sempre que uma carta é copiada no início de um combate.",
   "card_type_line.title": "Linha de tipo das cartas (BaseLib)",
-  "card_type_line.desc": "Com o BaseLib: mostra a linha de tipo de cada carta sem procurar, entre todas as cartas do combate, mods que a alterem, enquanto nenhum mod instalado fizer isso (rolar a pilha de compra, atualizar a mão). Mesmo texto."
+  "card_type_line.desc": "Com o BaseLib: mostra a linha de tipo de cada carta sem procurar, entre todas as cartas do combate, mods que a alterem, enquanto nenhum mod instalado fizer isso (rolar a pilha de compra, atualizar a mão). Mesmo texto.",
+  "join.off_you": "O Big Deck Optimization está desligado para você, mas ligado para o anfitrião. Todos os jogadores precisam tê-lo ligado, ou todos desligado: ligue-o (nas configurações dele, ou com bdopt on no console; reinicie o jogo se ele pedir) ou peça ao anfitrião para desligá-lo, e entre de novo.",
+  "join.on_you": "O Big Deck Optimization está ligado para você, mas desligado para o anfitrião. Todos os jogadores precisam tê-lo ligado, ou todos desligado: desligue-o (nas configurações dele, ou com bdopt off no console) ou peça ao anfitrião para ligá-lo, e entre de novo.",
+  "join.exactsnap": "A opção \"Verificação de estado no co-op\" do Big Deck Optimization não está configurada como a do anfitrião (junto com mods como RitsuLib, ela decide como essa verificação funciona): configure-a do mesmo jeito e entre de novo. Se já estiver, carregue os mesmos mods na mesma ordem que o anfitrião e reinicie o jogo.",
+  "join.version": "Todos os jogadores precisam da mesma versão do Big Deck Optimization (a sua: {yours}, a do anfitrião: {theirs}).",
+  "join.must_match": "O que todos os jogadores precisam ter igual no Big Deck Optimization: o mod ligado ou desligado, a versão dele e, junto com mods como RitsuLib, a opção \"Verificação de estado no co-op\". As outras configurações podem ser diferentes (o início de combate rápido fica ligado para todos no co-op de qualquer forma)."
 }

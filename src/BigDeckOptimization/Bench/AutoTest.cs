@@ -562,6 +562,8 @@ public static partial class AutoTest
             (RelicFlashMerge.Name + ".SceneRefusals", RelicFlashMerge.SceneRefusals), (RelicFlashMerge.Name + ".NoNode", RelicFlashMerge.MergedNoNode),
             // Only where another mod patches a small method after this mod's load (foreign-helpers-2k-on).
             ("InlineGuard.Refreshed", InlineGuard.Refreshed),
+            // Only where a join is refused over this mod's entry (coop-modetag.ps1's mixed pair; bdperf joinmsg puts it back).
+            (JoinMismatchNote.Name, JoinMismatchNote.Explained),
         };
         for (int i = 0; i < HookFilter.MirrorNames.Length; i++)
         {

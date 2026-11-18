@@ -38,7 +38,8 @@ namespace BigDeckOptimization.Patches;
 /// time if a premise violation escaped the reuse's net; with the tag they can't join each other (the game's mod mismatch
 /// error), whatever the number of re-hosts. Retagged as the off tag is, at every settings change (<see cref="Config.Settings.ApplyAll"/>).
 ///
-/// Applied even when the mod was turned off at the start (<see cref="ModEntry.StartedOff"/>: then nothing else is). It
+/// Applied even when the mod was turned off at the start (<see cref="ModEntry.StartedOff"/>: then nothing else is but
+/// <see cref="JoinMismatchNote"/>, which explains the game's refusal over this entry). It
 /// changes no game state: only this list, which the game uses for that comparison (the host's message, the client's check;
 /// v0.111+ through <c>PeerVersionInfo</c>, whose other readers only test whether any mod is listed). If the list's format
 /// changes (entry not found), it stays the game's, logged once.
@@ -226,8 +227,8 @@ public static class CoopModeTag
     /// <summary>This player's tag now: <see cref="OffSuffix"/> with the mod off, <see cref="ExactSnapSuffix"/> (see the class), or none.</summary>
     public static string Suffix => Off ? OffSuffix : ListenerCache.SnapshotWalksTag;
 
-    /// <summary>Every tag this class writes, the longest first (stripped before the current one is written).</summary>
-    private static readonly string[] Suffixes = { ExactSnapSuffix + "-c", ExactSnapSuffix + "-r", ExactSnapSuffix, OffSuffix };
+    /// <summary>Every tag this class writes, the longest first (stripped before the current one is written; JoinMismatchNote reads them).</summary>
+    internal static readonly string[] Suffixes = { ExactSnapSuffix + "-c", ExactSnapSuffix + "-r", ExactSnapSuffix, OffSuffix };
 
     /// <summary>
     /// The entry of this mod in <paramref name="list"/> as <see cref="Suffix"/> says (tagged or not): the game's own value when on

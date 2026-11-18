@@ -1,11 +1,14 @@
 # Run with the saved setting "Enabled": "False" in mod_configs/BigDeckOptimization.cfg (BaseLib installed): no patch
 # is applied ("not applied: the mod was turned off when the game started", only the test tooling), bdopt says
-# inactive, the menu greys every option with the "restart" reason, and a fight plays normally.
+# inactive, the menu greys every option with the "restart" reason, and a fight plays normally. The co-op check
+# (CoopModeTag) and the explanation of its join refusal (JoinMismatchNote) are applied all the same: bdperf joinmsg.
 expect turned off (in the settings|when the game started)
+expect JOINMSG all \d+ cases ok, game language
 timeout 300
 cmd bdopt
 menutext HOOK_FILTER
 menutext ENABLED
+cmd bdperf joinmsg
 newrun NECROBINDER
 waitfor run 120
 wait 2

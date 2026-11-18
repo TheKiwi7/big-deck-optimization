@@ -68,5 +68,10 @@
   "limitless_saves.title": "Limitless-Verzauberungskopien",
   "limitless_saves.desc": "Mit Limitless: behält die gespeicherte Kopie gestapelter Verzauberungen, wenn ein Neuaufbau denselben Inhalt ergäbe, statt sie nach jeder Aktion oder bei jedem Kopieren einer Karte zu Kampfbeginn neu aufzubauen.",
   "card_type_line.title": "BaseLib-Kartentypzeile",
-  "card_type_line.desc": "Mit BaseLib: zeigt die Typzeile jeder Karte an, ohne alle Karten im Kampf nach Mods zu durchsuchen, die sie ändern, solange kein installierter Mod das tut (Nachziehstapel scrollen, Hand aktualisieren). Gleicher Text."
+  "card_type_line.desc": "Mit BaseLib: zeigt die Typzeile jeder Karte an, ohne alle Karten im Kampf nach Mods zu durchsuchen, die sie ändern, solange kein installierter Mod das tut (Nachziehstapel scrollen, Hand aktualisieren). Gleicher Text.",
+  "join.off_you": "Big Deck Optimization ist bei dir ausgeschaltet, beim Host aber eingeschaltet. Alle Spieler müssen es eingeschaltet haben, oder alle ausgeschaltet: Schalte es ein (in seinen Einstellungen oder mit bdopt on in der Konsole; starte das Spiel neu, falls es danach fragt) oder bitte den Host, es auszuschalten, und tritt dann erneut bei.",
+  "join.on_you": "Big Deck Optimization ist bei dir eingeschaltet, beim Host aber ausgeschaltet. Alle Spieler müssen es eingeschaltet haben, oder alle ausgeschaltet: Schalte es aus (in seinen Einstellungen oder mit bdopt off in der Konsole) oder bitte den Host, es einzuschalten, und tritt dann erneut bei.",
+  "join.exactsnap": "Die Option „Koop-Zustandsprüfung“ von Big Deck Optimization ist nicht so eingestellt wie beim Host (neben Mods wie RitsuLib bestimmt sie, wie diese Prüfung arbeitet): Stelle sie gleich ein und tritt dann erneut bei. Ist sie das schon, lade dieselben Mods in derselben Reihenfolge wie der Host und starte das Spiel neu.",
+  "join.version": "Alle Spieler brauchen dieselbe Version von Big Deck Optimization (deine: {yours}, die des Hosts: {theirs}).",
+  "join.must_match": "Was bei allen Spielern für Big Deck Optimization gleich sein muss: der Mod ein- oder ausgeschaltet, seine Version und, neben Mods wie RitsuLib, seine Option „Koop-Zustandsprüfung“. Seine anderen Einstellungen dürfen abweichen (der schnelle Kampfbeginn ist im Koop ohnehin bei allen Spielern aktiv)."
 }
