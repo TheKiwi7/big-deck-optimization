@@ -2010,7 +2010,12 @@ public static partial class PatchSafety
     /// writes, whose static method it calls or whose object it creates: compiling the patch method (at its first call, which
     /// this mod can delay or remove) may run any of their beforefieldinit initializers. A class without beforefieldinit there
     /// runs its initializer at its first access, on the code path that makes it (the gated path, which runs as without this
-    /// mod): it stands. Cached per patch method.
+    /// mod): it stands. Rule I (2026-11-18): a static call or <c>newobj</c> whose callee is itself in that scanned code (its own
+    /// body read, same assembly, within the depth) doesn't count for the callee's class: CoreCLR runs a beforefieldinit
+    /// initializer before the first access to one of its static fields, not at a call or a construction (what P2 already
+    /// assumed), and the callee's own static field accesses are in the scan. A callee not scanned (another assembly, or past the
+    /// depth) still counts its class, and static field accesses always count. The patch's own class keeps its rule. Cached per
+    /// patch method.
     /// </summary>
     internal static bool InitializersFree(MethodInfo patch) => InitializerRefusal(patch) == null;
 
@@ -2027,10 +2032,17 @@ public static partial class PatchSafety
             {
                 return $"its class {own.Name} has a static initializer that could run at another time with this mod (when the runtime compiles or first calls the patch, which this mod can delay or remove) and could do something different then";
             }
-            foreach (MethodBase code in CompiledWith(patch))
+            List<MethodBase> compiled = CompiledWith(patch);
+            var scanned = new HashSet<MethodBase>(compiled);
+            foreach (MethodBase code in compiled)
             {
                 foreach (MemberInfo member in MethodFingerprint.UsedMembers(code))
                 {
+                    // Rule I: a call into code read here runs no beforefieldinit initializer by itself (its field accesses are read).
+                    if (member is MethodBase called && scanned.Contains(called))
+                    {
+                        continue;
+                    }
                     Type? reached = member switch
                     {
                         FieldInfo { IsStatic: true } field => field.DeclaringType,

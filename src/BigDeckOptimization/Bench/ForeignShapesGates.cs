@@ -622,6 +622,81 @@ public static class ForeignShapesGates
         il.Emit(OpCodes.Ret);
     });
 
+    // --- I: static calls and constructions into scanned code don't count as running an initializer ---
+
+    private static Type? _impureHelper;
+
+    /// <summary>
+    /// A class of the shapes' own (dynamic) assembly with a beforefieldinit initializer reading the clock (its static field
+    /// <c>Started</c>), a static <c>Wrap(object)</c> returning its argument (no static access, Acheron's and Kafka's
+    /// <c>CombatStateAccess.Wrap</c>), a static <c>Read()</c> reading <c>Started</c>, and a constructor touching no static.
+    /// </summary>
+    private static Type ImpureHelper()
+    {
+        lock (Shapes)
+        {
+            if (_impureHelper != null)
+            {
+                return _impureHelper;
+            }
+            Emit("impure_helper_anchor", typeof(void), Array.Empty<(Type, string)>(), il => il.Emit(OpCodes.Ret));
+            TypeBuilder type = _module!.DefineType($"BdoGates.impure_helper_{++_serial}", TypeAttributes.Public | TypeAttributes.Class | TypeAttributes.BeforeFieldInit);
+            FieldBuilder started = type.DefineField("Started", typeof(long), FieldAttributes.Public | FieldAttributes.Static);
+            ILGenerator init = type.DefineTypeInitializer().GetILGenerator();
+            init.Emit(OpCodes.Call, typeof(Environment).GetProperty(nameof(Environment.TickCount64))!.GetGetMethod()!);
+            init.Emit(OpCodes.Stsfld, started);
+            init.Emit(OpCodes.Ret);
+            ILGenerator ctor = type.DefineConstructor(MethodAttributes.Public, CallingConventions.Standard, Type.EmptyTypes).GetILGenerator();
+            ctor.Emit(OpCodes.Ldarg_0);
+            ctor.Emit(OpCodes.Call, typeof(object).GetConstructor(Type.EmptyTypes)!);
+            ctor.Emit(OpCodes.Ret);
+            ILGenerator wrap = type.DefineMethod("Wrap", MethodAttributes.Public | MethodAttributes.Static, typeof(object), new[] { typeof(object) }).GetILGenerator();
+            wrap.Emit(OpCodes.Ldarg_0);
+            wrap.Emit(OpCodes.Ret);
+            ILGenerator read = type.DefineMethod("Read", MethodAttributes.Public | MethodAttributes.Static, typeof(long), Type.EmptyTypes).GetILGenerator();
+            read.Emit(OpCodes.Ldsfld, started);
+            read.Emit(OpCodes.Ret);
+            return _impureHelper = type.CreateType()!;
+        }
+    }
+
+    /// <summary>
+    /// The Squeeze gate, then on the gated path one use of <see cref="ImpureHelper"/> (or, for <c>"foreign"</c>, a static call
+    /// into this mod's own <see cref="ForeignShapesGates"/>, another assembly whose initializer isn't pure): <c>"wrap"</c> and
+    /// <c>"construct"</c> stand (rule I), <c>"read"</c> (a static field access through the call) and <c>"foreign"</c> back off.
+    /// </summary>
+    private static MethodInfo HelperReachPostfix(string use) => Emit("helper_reach_" + use, typeof(void), InstanceOnly, il =>
+    {
+        Type helper = ImpureHelper();
+        Label end = il.DefineLabel();
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Isinst, typeof(Squeeze));
+        il.Emit(OpCodes.Brfalse_S, end);
+        switch (use)
+        {
+            case "wrap":
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Call, helper.GetMethod("Wrap")!);
+                break;
+            case "construct":
+                il.Emit(OpCodes.Newobj, helper.GetConstructor(Type.EmptyTypes)!);
+                break;
+            case "read":
+                il.Emit(OpCodes.Call, helper.GetMethod("Read")!);
+                break;
+            default:
+                il.Emit(OpCodes.Ldc_I4_0);
+                il.Emit(OpCodes.Call, typeof(ForeignShapesGates).GetMethod(nameof(Handles))!.DeclaringType!.GetMethod(nameof(ReachMarker))!);
+                break;
+        }
+        il.Emit(OpCodes.Pop);
+        il.MarkLabel(end);
+        il.Emit(OpCodes.Ret);
+    });
+
+    /// <summary>A static method of this class (another assembly than the emitted shapes', its initializer not pure): rule I's control.</summary>
+    public static object ReachMarker(int value) => value;
+
     // --- The self-test ---
 
     private readonly record struct Case(string Name, MethodInfo Patch, PatchSafety.PatchKind Kind, MethodBase Original, PatchTolerance Tolerance,
@@ -678,6 +753,11 @@ public static class ForeignShapesGates
         yield return new Case("G control: the getter's true side acts for every listener", GetterUngatedPostfix("selftest"), postfix, model, gated, false);
         yield return new Case("G control: a getter reading two fields (not trivial)", GetterGatedPostfix("selftest", typeof(GatesCounter).GetProperty(nameof(GatesCounter.ConfigBoth))!.GetGetMethod()), postfix, model, gated, false);
         yield return new Case("G control: a getter whose class initializer reads the clock", GetterImpureClass(), postfix, model, gated, false);
+        // I.
+        yield return new Case("I a static call into the patch's own assembly (no static access)", HelperReachPostfix("wrap"), postfix, model, gated, true, "Squeeze");
+        yield return new Case("I a construction of a class of the patch's own assembly", HelperReachPostfix("construct"), postfix, model, gated, true, "Squeeze");
+        yield return new Case("I control: the call reads that class's static field", HelperReachPostfix("read"), postfix, model, gated, false);
+        yield return new Case("I control: a static call into another assembly's class with an impure initializer", HelperReachPostfix("foreign"), postfix, model, gated, false);
     }
 
     /// <summary>
