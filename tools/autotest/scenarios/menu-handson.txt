@@ -1,0 +1,5 @@
+# Hands-on look at the main menu and the settings page (run.ps1 -Visible -StallSec 2400): the game stays on the main menu for
+# 30 minutes for the owner to open the mod's settings page, then quits by itself (never left idle).
+timeout 2400
+wait 1800
+quit
