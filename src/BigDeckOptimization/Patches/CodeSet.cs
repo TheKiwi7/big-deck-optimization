@@ -29,11 +29,22 @@ internal sealed class CodeSet
     public readonly string Fingerprint;
     /// <summary>The fingerprint is one of the reviewed ones (the set is the one reviewed for this game version).</summary>
     public readonly bool Reviewed;
+    /// <summary>
+    /// Rule C0 (2026-11-18, opt-in per set: CardFlightLimit's combat-end check): another assembly's override whose whole code is
+    /// one constant returned (<see cref="ConstantBody"/>: <c>nop*; ldc.*|ldnull|ldstr; ret</c>), not patched by anyone (its
+    /// HarmonyWatch hidden owners included), doesn't count as an overrider: it reads, writes and calls nothing, so a skip
+    /// leaving its call out changes nothing. Its patch state is asked again per Harmony epoch and at most every 2 s.
+    /// </summary>
+    public readonly bool ConstantOverridesHarmless;
 
     private sealed record Answer(int Epoch, long CheckedAt, bool Value);
 
-    /// <summary>An overriders answer for the loaded code (<see cref="LoadedCode.Key"/>), read and replaced whole (A6, re-audit round 2).</summary>
-    private sealed record OverridesAnswer(long Key, bool Value);
+    /// <summary>
+    /// An overriders answer for the loaded code (<see cref="LoadedCode.Key"/>), read and replaced whole (A6, re-audit round 2).
+    /// <see cref="Constant"/>: the constant overrides let stand (<see cref="ConstantOverridesHarmless"/>), whose patch state
+    /// (<see cref="ConstantPatched"/>) holds for <see cref="Epoch"/> and 2 s from <see cref="CheckedAt"/>.
+    /// </summary>
+    private sealed record OverridesAnswer(long Key, bool Value, MethodInfo[] Constant, int Epoch, long CheckedAt, bool ConstantPatched);
 
     /// <summary><see cref="Virtuals"/> but those rooted in a per-instance class (RelicModel), worked out once per class.</summary>
     private sealed record Outside(Type PerInstance, MethodInfo[] Virtuals);
@@ -42,7 +53,8 @@ internal sealed class CodeSet
     private OverridesAnswer? _overrides, _overridesOutside;
     private Outside? _outside;
 
-    private CodeSet(MethodBase[] methods, MethodBase[] checkedMethods, MethodInfo[] virtuals, string[] delegates, string fingerprint, bool reviewed)
+    private CodeSet(MethodBase[] methods, MethodBase[] checkedMethods, MethodInfo[] virtuals, string[] delegates, string fingerprint, bool reviewed,
+        bool constantOverridesHarmless)
     {
         Methods = methods;
         Checked = checkedMethods;
@@ -50,6 +62,7 @@ internal sealed class CodeSet
         Delegates = delegates;
         Fingerprint = fingerprint;
         Reviewed = reviewed;
+        ConstantOverridesHarmless = constantOverridesHarmless;
     }
 
     /// <summary>
@@ -65,8 +78,9 @@ internal sealed class CodeSet
     /// closure prints both: "virtual" and "dispatch" lines).
     /// </summary>
     /// <paramref name="stopAt"/>: methods the closure neither adds nor follows (a subtree judged as a set of its own).
+    /// <paramref name="constantOverridesHarmless"/>: <see cref="ConstantOverridesHarmless"/> (rule C0).
     public static CodeSet Compute(string name, IEnumerable<MethodBase?> roots, int limit, string[] reviewed, IEnumerable<MethodBase?>? checkedElsewhere = null,
-        bool interfaces = false, IEnumerable<MethodBase?>? stopAt = null)
+        bool interfaces = false, IEnumerable<MethodBase?>? stopAt = null, bool constantOverridesHarmless = false)
     {
         Assembly game = typeof(MegaCrit.Sts2.Core.Hooks.Hook).Assembly;
         var delegates = new List<MethodInfo>();
@@ -88,7 +102,8 @@ internal sealed class CodeSet
         }
         MethodInfo[] virtuals = virtualMethods.Distinct().ToArray();
         var elsewhere = new HashSet<MethodBase>((checkedElsewhere ?? Enumerable.Empty<MethodBase?>()).Where(m => m != null)!);
-        return new CodeSet(closure.ToArray(), closure.Where(m => !elsewhere.Contains(m)).ToArray(), virtuals, delegateNames, fingerprint, known);
+        return new CodeSet(closure.ToArray(), closure.Where(m => !elsewhere.Contains(m)).ToArray(), virtuals, delegateNames, fingerprint, known,
+            constantOverridesHarmless);
     }
 
     private static bool Fresh(Answer? answer) =>
@@ -168,26 +183,47 @@ internal sealed class CodeSet
         OverridesAnswer? known = perInstance == null ? _overrides : _overridesOutside;
         if (known != null && known.Key == key)
         {
-            return known.Value;
+            if (known.Value || known.Constant.Length == 0)
+            {
+                return known.Value;
+            }
+            // Constant overrides let stand: their patch state per Harmony epoch and at most 2 s (the scan stays per loaded code).
+            int epoch = HarmonyWatch.Epoch;
+            long now = Environment.TickCount64;
+            if (known.Epoch == epoch && now - known.CheckedAt < 2000)
+            {
+                return known.ConstantPatched;
+            }
+            bool patched = known.Constant.Any(PatchSafety.HasOtherPatches);
+            Store(perInstance, known with { Epoch = epoch, CheckedAt = now, ConstantPatched = patched });
+            return patched;
         }
         bool found;
+        var constant = ConstantOverridesHarmless ? new List<(Type Type, MethodInfo Override)>() : null;
         try
         {
-            found = Overriders(virtuals).Any();
+            found = Overriders(virtuals, constant).Any();
         }
         catch
         {
             found = true;
         }
+        MethodInfo[] constants = found || constant == null ? Array.Empty<MethodInfo>() : constant.Select(c => c.Override).Distinct().ToArray();
+        bool constantPatched = constants.Any(PatchSafety.HasOtherPatches);
+        Store(perInstance, new OverridesAnswer(key, found, constants, HarmonyWatch.Epoch, Environment.TickCount64, constantPatched));
+        return found || constantPatched;
+    }
+
+    private void Store(Type? perInstance, OverridesAnswer answer)
+    {
         if (perInstance == null)
         {
-            _overrides = new OverridesAnswer(key, found);
+            _overrides = answer;
         }
         else
         {
-            _overridesOutside = new OverridesAnswer(key, found);
+            _overridesOutside = answer;
         }
-        return found;
     }
 
     /// <summary>
@@ -234,20 +270,95 @@ internal sealed class CodeSet
     }
 
     /// <summary>The types (outside the game and this mod) overriding one of <see cref="Virtuals"/>, by name (display).</summary>
-    public string[] ForeignOverriders() => ForeignOverridersOf(Virtuals);
+    public string[] ForeignOverriders()
+    {
+        if (!ConstantOverridesHarmless)
+        {
+            return ForeignOverridersOf(Virtuals);
+        }
+        try
+        {
+            return CountedOverriders().Select(t => t.FullName ?? t.Name).Distinct().ToArray();
+        }
+        catch
+        {
+            return new[] { "?" };
+        }
+    }
 
     /// <summary>The types (outside the game and this mod) overriding one of <see cref="Virtuals"/> (display: their mods); empty when it can't tell.</summary>
     public Type[] ForeignOverriderTypes()
     {
         try
         {
-            return Overriders(Virtuals).Distinct().ToArray();
+            return (ConstantOverridesHarmless ? CountedOverriders() : Overriders(Virtuals, null)).Distinct().ToArray();
         }
         catch
         {
             return Type.EmptyTypes;
         }
     }
+
+    /// <summary>
+    /// With <see cref="ConstantOverridesHarmless"/>: the overriders <see cref="ForeignOverrides"/> counts, so bdopt why names the
+    /// same ones (those with a non-constant override, and those whose constant override someone patches). Throws as
+    /// <see cref="Overriders"/>.
+    /// </summary>
+    private List<Type> CountedOverriders()
+    {
+        var constant = new List<(Type Type, MethodInfo Override)>();
+        List<Type> types = Overriders(Virtuals, constant).ToList();
+        types.AddRange(constant.Where(c => PatchSafety.HasOtherPatches(c.Override)).Select(c => c.Type));
+        return types;
+    }
+
+#if BENCH
+    /// <summary>Test builds: how rule C0 judges this type's own code for <paramref name="virtualMethod"/>.</summary>
+    internal static string OverrideVerdictForTest(Type type, MethodInfo virtualMethod) =>
+        OverridingMethod(type, virtualMethod) is not { } m ? "no override"
+            : !ConstantBody(m) ? "counted (not a constant)"
+            : PatchSafety.HasOtherPatches(m) ? "counted (a constant, patched)" : "let stand (a constant)";
+#endif
+
+    /// <summary>Per method: <see cref="ConstantBody"/> (a loaded method's IL doesn't change).</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<RuntimeMethodHandle, bool> _constant = new();
+
+    /// <summary>
+    /// Rule C0: the method's whole code returns one constant (<c>nop*; ldc.i4*|ldc.i8|ldc.r4|ldc.r8|ldnull|ldstr; ret</c>): no
+    /// argument, field, call or store, no exception clause, not generic. A Debug build's block body (<c>stloc; br; ldloc; ret</c>)
+    /// isn't matched. False when the IL can't be read.
+    /// </summary>
+    internal static bool ConstantBody(MethodInfo method) => _constant.GetOrAdd(method.MethodHandle, _ =>
+    {
+        try
+        {
+            if (method.IsAbstract || method.ContainsGenericParameters || method.GetMethodBody() is not { } body || body.ExceptionHandlingClauses.Count > 0)
+            {
+                return false;
+            }
+            List<MethodFingerprint.Instruction> code = MethodFingerprint.Instructions(method);
+            int i = 0;
+            while (i < code.Count && code[i].Op == System.Reflection.Emit.OpCodes.Nop)
+            {
+                i++;
+            }
+            if (i + 2 != code.Count || code[i + 1].Op != System.Reflection.Emit.OpCodes.Ret)
+            {
+                return false;
+            }
+            System.Reflection.Emit.OpCode op = code[i].Op;
+            return op == System.Reflection.Emit.OpCodes.Ldnull || op == System.Reflection.Emit.OpCodes.Ldstr
+                || op == System.Reflection.Emit.OpCodes.Ldc_I4 || op == System.Reflection.Emit.OpCodes.Ldc_I4_S || op == System.Reflection.Emit.OpCodes.Ldc_I4_M1
+                || op == System.Reflection.Emit.OpCodes.Ldc_I4_0 || op == System.Reflection.Emit.OpCodes.Ldc_I4_1 || op == System.Reflection.Emit.OpCodes.Ldc_I4_2
+                || op == System.Reflection.Emit.OpCodes.Ldc_I4_3 || op == System.Reflection.Emit.OpCodes.Ldc_I4_4 || op == System.Reflection.Emit.OpCodes.Ldc_I4_5
+                || op == System.Reflection.Emit.OpCodes.Ldc_I4_6 || op == System.Reflection.Emit.OpCodes.Ldc_I4_7 || op == System.Reflection.Emit.OpCodes.Ldc_I4_8
+                || op == System.Reflection.Emit.OpCodes.Ldc_I8 || op == System.Reflection.Emit.OpCodes.Ldc_R4 || op == System.Reflection.Emit.OpCodes.Ldc_R8;
+        }
+        catch
+        {
+            return false;
+        }
+    });
 
     /// <summary>
     /// The loaded types outside the game's assembly and this mod overriding or implementing one of <paramref name="virtuals"/>
@@ -257,7 +368,7 @@ internal sealed class CodeSet
     {
         try
         {
-            return Overriders(virtuals).Select(t => t.FullName ?? t.Name).Distinct().ToArray();
+            return Overriders(virtuals, null).Select(t => t.FullName ?? t.Name).Distinct().ToArray();
         }
         catch
         {
@@ -268,8 +379,11 @@ internal sealed class CodeSet
     /// <summary>
     /// The candidate types (<see cref="LoadedCode.Types"/>) overriding or implementing one of <paramref name="virtuals"/>. Throws
     /// when the candidates aren't all known (an assembly that can't list its types): the callers answer "can't tell" then.
+    /// With <paramref name="constant"/> (rule C0): a type whose every override of them is a <see cref="ConstantBody"/> (each
+    /// declared on that type: a subclass's own override is judged as its own candidate) isn't yielded but added there with
+    /// those overrides, for the caller to ask their patch state.
     /// </summary>
-    private static IEnumerable<Type> Overriders(MethodInfo[] virtuals)
+    private static IEnumerable<Type> Overriders(MethodInfo[] virtuals, List<(Type Type, MethodInfo Override)>? constant)
     {
         LoadedCode.TypeTable table = LoadedCode.Types();
         if (!table.Complete)
@@ -280,9 +394,36 @@ internal sealed class CodeSet
         foreach (Type type in table.Types)
         {
             bool overrides;
+            List<MethodInfo>? constants = null;
             try
             {
-                overrides = !type.IsInterface && Derives(type, declaring) && virtuals.Any(v => Overrides(type, v));
+                if (constant == null)
+                {
+                    overrides = !type.IsInterface && Derives(type, declaring) && virtuals.Any(v => Overrides(type, v));
+                }
+                else
+                {
+                    overrides = false;
+                    if (!type.IsInterface && Derives(type, declaring))
+                    {
+                        foreach (MethodInfo v in virtuals)
+                        {
+                            if (OverridingMethod(type, v) is not { } own)
+                            {
+                                continue;
+                            }
+                            if (own is MethodInfo m && ConstantBody(m))
+                            {
+                                (constants ??= new List<MethodInfo>()).Add(m);
+                            }
+                            else
+                            {
+                                overrides = true;
+                                break;
+                            }
+                        }
+                    }
+                }
             }
             catch
             {
@@ -291,6 +432,13 @@ internal sealed class CodeSet
             if (overrides)
             {
                 yield return type;
+            }
+            else if (constants != null)
+            {
+                foreach (MethodInfo m in constants)
+                {
+                    constant!.Add((type, m));
+                }
             }
         }
     }
@@ -307,14 +455,17 @@ internal sealed class CodeSet
         return false;
     }
 
-    private static bool Overrides(Type type, MethodInfo virtualMethod)
+    private static bool Overrides(Type type, MethodInfo virtualMethod) => OverridingMethod(type, virtualMethod) != null;
+
+    /// <summary>The type's own code for <paramref name="virtualMethod"/> (its override, or the implementation <see cref="Overrides"/> counts), or null.</summary>
+    private static MethodInfo? OverridingMethod(Type type, MethodInfo virtualMethod)
     {
         Type declaring = virtualMethod.DeclaringType!;
         if (declaring.IsInterface)
         {
             if (!declaring.IsAssignableFrom(type) || type.IsAbstract && type.IsSealed)
             {
-                return false;
+                return null;
             }
             InterfaceMapping map = type.GetInterfaceMap(declaring);
             for (int i = 0; i < map.InterfaceMethods.Length; i++)
@@ -325,24 +476,24 @@ internal sealed class CodeSet
                 if (map.InterfaceMethods[i] == virtualMethod && map.TargetMethods[i] is { } target
                     && (target.DeclaringType == type || (target.DeclaringType is { IsInterface: true } owner && owner.Assembly != declaring.Assembly)))
                 {
-                    return true;
+                    return target;
                 }
             }
-            return false;
+            return null;
         }
         if (!type.IsSubclassOf(declaring))
         {
-            return false;
+            return null;
         }
         MethodInfo root = virtualMethod.GetBaseDefinition();
         foreach (MethodInfo m in type.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
         {
             if (m.Name == virtualMethod.Name && m.GetBaseDefinition() is { } b && b.MetadataToken == root.MetadataToken && b.Module == root.Module)
             {
-                return true;
+                return m;
             }
         }
-        return false;
+        return null;
     }
 }
 

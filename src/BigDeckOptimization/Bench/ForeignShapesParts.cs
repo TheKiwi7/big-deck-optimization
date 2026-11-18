@@ -22,6 +22,9 @@ public static class ForeignShapesParts
     {
         "redirect-prefix",
         "sort-gated-postfix", "sort-nearmiss-postfix",
+        // Not a shape: "foreignpatch c0-override constant|patch|subclass|stateful" (rule C0: classes of "another mod" emitted into a
+        // dynamic assembly, overriding PowerModel.OwnerIsSecondaryEnemy, which CardFlightLimit's combat-end check reaches).
+        "c0-override",
         // Not a shape: "foreignpatch parts-report <label>" prints the display counts of these shapes (FOREIGN lines, not compared).
         "parts-report",
         // Not a shape: "foreignpatch parts-require <counter>" fails unless that counter of these rules is above zero.
@@ -54,6 +57,10 @@ public static class ForeignShapesParts
                 throw new InvalidOperationException($"parts-require {parts[1]}: {value}");
             }
             return new[] { $"FOREIGN parts {parts[1]} {value}" };
+        }
+        if (shape == "c0-override")
+        {
+            return C0Override(parts[1], installed);
         }
         if (shape == "parts-report")
         {
@@ -112,6 +119,105 @@ public static class ForeignShapesParts
         var lines = new List<string> { $"FOREIGN installed {shape}{(gate.Length > 0 ? " " + gate : "")} on {target.DeclaringType?.Name}.{target.Name} as {id} (priority {priority})" };
         lines.AddRange(PatchSafety.Describe(target).Select(line => $"FOREIGN classify {target.DeclaringType?.Name}.{target.Name}: {line}"));
         return lines;
+    }
+
+    private static System.Reflection.Emit.ModuleBuilder? _c0Module;
+    private static int _c0Types;
+    private static Type? _c0Constant;
+
+    /// <summary>
+    /// Rule C0's synthetic overrides (abstract classes deriving from PowerModel: never instantiated, so they change no game state;
+    /// their mere presence among the loaded types is what CardFlightLimit's combat-end check judges). constant: <c>ldc.i4.1; ret</c>
+    /// (let stand); patch: a no-op postfix of another "mod" on that constant override (counted while installed, removed by
+    /// <c>foreignpatch remove</c>); subclass: a constant base and a subclass reading state (the subclass counted); stateful: an
+    /// override reading the instance (counted). Each emission logs rule C0's verdict on each type. Types can't be unloaded: what
+    /// counts stays counted for the session (a scenario runs them last).
+    /// </summary>
+    private static IReadOnlyList<string> C0Override(string what, Action<string, MethodBase> installed)
+    {
+        MethodInfo virtualGetter = AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Models.PowerModel), nameof(MegaCrit.Sts2.Core.Models.PowerModel.OwnerIsSecondaryEnemy))
+            ?? throw new MissingMethodException("PowerModel.OwnerIsSecondaryEnemy");
+        var lines = new List<string>();
+        void Verdict(Type type) => lines.Add($"FOREIGN c0 {type.Name}: {DescribeC0(type, virtualGetter)}");
+        switch (what)
+        {
+            case "constant":
+                _c0Constant = EmitPower("BdoC0Constant", typeof(MegaCrit.Sts2.Core.Models.PowerModel), constant: true);
+                Verdict(_c0Constant);
+                break;
+            case "patch":
+            {
+                Type type = _c0Constant ?? throw new InvalidOperationException("c0-override patch: emit the constant one first");
+                MethodInfo own = type.GetMethod("get_OwnerIsSecondaryEnemy", BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)!;
+                string id = ForeignPatches.IdPrefix + "c0-override-patch";
+                new Harmony(id).Patch(own, postfix: new HarmonyMethod(typeof(ForeignShapesParts), nameof(C0NoOpPostfix)));
+                installed(id, own);
+                Verdict(type);
+                break;
+            }
+            case "subclass":
+            {
+                Type constantBase = EmitPower("BdoC0ConstantBase", typeof(MegaCrit.Sts2.Core.Models.PowerModel), constant: true);
+                Type sub = EmitPower("BdoC0StatefulSub", constantBase, constant: false);
+                Verdict(constantBase);
+                Verdict(sub);
+                break;
+            }
+            case "stateful":
+                Verdict(EmitPower("BdoC0Stateful", typeof(MegaCrit.Sts2.Core.Models.PowerModel), constant: false));
+                break;
+            default:
+                throw new ArgumentException("c0-override constant|patch|subclass|stateful");
+        }
+        return lines;
+    }
+
+    private static string DescribeC0(Type type, MethodInfo virtualGetter)
+    {
+#if BENCH
+        return CodeSet.OverrideVerdictForTest(type, virtualGetter);
+#else
+        return "not judged in this build";
+#endif
+    }
+
+    private static void C0NoOpPostfix()
+    {
+    }
+
+    /// <summary>An abstract class deriving from <paramref name="baseType"/> overriding OwnerIsSecondaryEnemy: a constant true, or a read of the instance.</summary>
+    private static Type EmitPower(string name, Type baseType, bool constant)
+    {
+        if (_c0Module == null)
+        {
+            string unique = "BdoC0Shapes" + Environment.TickCount64.ToString("X");
+            _c0Module = System.Reflection.Emit.AssemblyBuilder.DefineDynamicAssembly(new AssemblyName(unique), System.Reflection.Emit.AssemblyBuilderAccess.Run)
+                .DefineDynamicModule(unique);
+        }
+        System.Reflection.Emit.TypeBuilder type = _c0Module.DefineType(name + (++_c0Types), TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Class, baseType);
+        ConstructorInfo baseCtor = baseType.GetConstructor(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, Type.EmptyTypes)
+            ?? throw new MissingMethodException(baseType.Name + "()");
+        System.Reflection.Emit.ILGenerator ctor = type.DefineConstructor(MethodAttributes.Family, CallingConventions.Standard, Type.EmptyTypes).GetILGenerator();
+        ctor.Emit(System.Reflection.Emit.OpCodes.Ldarg_0);
+        ctor.Emit(System.Reflection.Emit.OpCodes.Call, baseCtor);
+        ctor.Emit(System.Reflection.Emit.OpCodes.Ret);
+        System.Reflection.Emit.MethodBuilder getter = type.DefineMethod("get_OwnerIsSecondaryEnemy",
+            MethodAttributes.Public | MethodAttributes.Virtual | MethodAttributes.HideBySig | MethodAttributes.SpecialName, typeof(bool), Type.EmptyTypes);
+        System.Reflection.Emit.ILGenerator il = getter.GetILGenerator();
+        if (constant)
+        {
+            il.Emit(System.Reflection.Emit.OpCodes.Ldc_I4_1);
+        }
+        else
+        {
+            // A read of the instance: not a constant (never called: the class is abstract and never instantiated).
+            il.Emit(System.Reflection.Emit.OpCodes.Ldarg_0);
+            il.Emit(System.Reflection.Emit.OpCodes.Callvirt, typeof(object).GetMethod(nameof(GetHashCode))!);
+            il.Emit(System.Reflection.Emit.OpCodes.Ldc_I4_0);
+            il.Emit(System.Reflection.Emit.OpCodes.Cgt);
+        }
+        il.Emit(System.Reflection.Emit.OpCodes.Ret);
+        return type.CreateType()!;
     }
 
     /// <summary>The TG shapes' class: no static field initializer (no type initializer to judge), counts only.</summary>

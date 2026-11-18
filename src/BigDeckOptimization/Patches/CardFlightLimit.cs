@@ -460,8 +460,12 @@ public static class CardFlightLimit
                 Reflect.Method(typeof(MegaCrit.Sts2.Core.Helpers.NonInteractiveMode), "get_" + nameof(MegaCrit.Sts2.Core.Helpers.NonInteractiveMode.IsActive)),
                 Reflect.Method(manager, nameof(MegaCrit.Sts2.Core.Combat.CombatManager.DebugOnlyGetState)),
                 Reflect.Method(manager, "get_" + nameof(MegaCrit.Sts2.Core.Combat.CombatManager.Instance)),
-            }, 500, EndHeadSets, interfaces: true, stopAt: new[] { walkRoot ?? throw new MissingMethodException(nameof(MegaCrit.Sts2.Core.Hooks.Hook), "ShouldStopCombatFromEnding") });
-            _endWalk = CodeSet.Compute(Name + " (combat end walk)", new[] { walkRoot }, 500, EndWalkSets, interfaces: true);
+            }, 500, EndHeadSets, interfaces: true, stopAt: new[] { walkRoot ?? throw new MissingMethodException(nameof(MegaCrit.Sts2.Core.Hooks.Hook), "ShouldStopCombatFromEnding") },
+                constantOverridesHarmless: true);
+            // Rule C0 (2026-11-18): another mod's override in either part that only returns a constant (a mod power's
+            // OwnerIsSecondaryEnemy => true: Succubus, St2bs, erowatcher, Zone the Spire), unpatched, isn't other mods' code a skip
+            // leaves out in any way that matters: it reads, writes and calls nothing (CodeSet.ConstantOverridesHarmless).
+            _endWalk = CodeSet.Compute(Name + " (combat end walk)", new[] { walkRoot }, 500, EndWalkSets, interfaces: true, constantOverridesHarmless: true);
             // _Ready is checked with SpeedX's allowed postfix; the pile's event and the button's AddCard are still called (Flush).
             _flightSet = CodeSet.Compute(Name, Whole(typeof(NCardFlyShuffleVfx)).Concat(Whole(typeof(NCardTrailVfx))).Concat(Whole(typeof(NCardTrail))), 1500, FlightSets,
                 new System.Reflection.MethodBase?[] { _readyMethod, _invokeAddFinished, _addCard });
