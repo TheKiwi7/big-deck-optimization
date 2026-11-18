@@ -18,7 +18,13 @@ namespace BigDeckOptimization.Bench;
 /// <item><c>hf-ref-write-postfix</c> (control): a postfix writing an out or ref argument back (the same value) on a mirrored
 /// method: <c>Hook.ShouldPlay</c>'s <c>preventer</c>, the cost color helpers' <c>hookModifiedCost</c>. A by-reference write is
 /// refused: the mirror must run the original there.</item>
+/// <item><c>hf-gated-damage-postfix squeeze|relic</c> (rule R3, on <c>AbstractModel:ModifyDamageAdditive</c>): a postfix adding 1 to
+/// the default's result when the listener is a Squeeze (or a relic), nothing otherwise: gated on the instance's type, so HookFilter's
+/// damage lists keep those listeners (their calls reach the patched default) and every damage changes by the same amount on or off.</item>
 /// </list>
+/// <c>foreignpatch hookfilter gatedlists</c> (in combat): inside a refresh scope, each damage default's filtered run list against
+/// the run's listeners: every listener kept overrides the default or matches this scope's gates, and every listener matching a gate
+/// without overriding is kept (run again after a second gated postfix: the lists built with the first gates must not be reused).
 /// <c>foreignpatch hookfilter throwonce</c> (in combat, with a listener overriding <c>TryModifyEnergyCostInCombat</c>, e.g. Spiked
 /// Gauntlets): a listener throwing once inside the energy cost mirror. Its override gets a prefix emitted into a dynamic
 /// assembly (not this mod's: the exception is the listener's own) that throws at the call reaching the last listener of the
@@ -29,7 +35,7 @@ namespace BigDeckOptimization.Bench;
 /// </summary>
 public static class ForeignShapesHookFilter
 {
-    public static readonly string[] Shapes = { "hf-ref-write-postfix" };
+    public static readonly string[] Shapes = { "hf-ref-write-postfix", "hf-gated-damage-postfix" };
 
     /// <summary>Whether this file runs the <c>foreignpatch</c> line (one of its shapes, or its <c>hookfilter</c> self-tests).</summary>
     public static bool Handles(string[] parts) => parts.Length >= 2 && (Shapes.Contains(parts[0]) || parts[0] == "hookfilter");
@@ -42,7 +48,8 @@ public static class ForeignShapesHookFilter
             return parts[1] switch
             {
                 "throwonce" => ThrowOnce(),
-                _ => throw new ArgumentException("foreignpatch hookfilter throwonce"),
+                "gatedlists" => GatedLists(),
+                _ => throw new ArgumentException("foreignpatch hookfilter throwonce|gatedlists"),
             };
         }
         string shape = parts[0];
@@ -67,6 +74,18 @@ public static class ForeignShapesHookFilter
                     _ => throw new ArgumentException(shape + " goes on MegaCrit.Sts2.Core.Hooks.Hook:ShouldPlay or CardCostHelper:TryModify*CostWithHooks"),
                 }));
                 break;
+            case "hf-gated-damage-postfix":
+                if (target.DeclaringType != typeof(AbstractModel) || target.Name != nameof(AbstractModel.ModifyDamageAdditive))
+                {
+                    throw new ArgumentException(shape + " goes on MegaCrit.Sts2.Core.Models.AbstractModel:ModifyDamageAdditive");
+                }
+                harmony.Patch(target, postfix: new HarmonyMethod(typeof(DamageGates), gate switch
+                {
+                    "squeeze" => nameof(DamageGates.SqueezePostfix),
+                    "relic" => nameof(DamageGates.RelicPostfix),
+                    _ => throw new ArgumentException(shape + " gate: squeeze or relic"),
+                }) { priority = priority });
+                break;
         }
         installed(id, target);
         var lines = new List<string> { $"FOREIGN installed {shape}{(gate.Length > 0 ? " " + gate : "")} on {Name(target)} as {id} (priority {priority})" };
@@ -89,6 +108,63 @@ public static class ForeignShapesHookFilter
     {
         decimal same = hookModifiedCost;
         hookModifiedCost = same;
+    }
+
+    /// <summary>The gated damage postfixes: no static field nor initializer (a static constructor would refuse the gate).</summary>
+    private static class DamageGates
+    {
+        public static void SqueezePostfix(AbstractModel __instance, ref decimal __result)
+        {
+            if (__instance is MegaCrit.Sts2.Core.Models.Cards.Squeeze)
+            {
+                __result += 1m;
+            }
+        }
+
+        public static void RelicPostfix(AbstractModel __instance, ref decimal __result)
+        {
+            if (__instance is RelicModel)
+            {
+                __result += 1m;
+            }
+        }
+    }
+
+    private static IReadOnlyList<string> GatedLists()
+    {
+        if (CombatManager.Instance.DebugOnlyGetState() is not { } combat || MegaCrit.Sts2.Core.Runs.RunManager.Instance.DebugOnlyGetState() is not MegaCrit.Sts2.Core.Runs.RunState run)
+        {
+            throw new InvalidOperationException("hookfilter gatedlists: start a combat first");
+        }
+        var lines = new List<string>();
+        foreach ((int hook, string method) in new[] { (HookFilter.DamageAdditive, nameof(AbstractModel.ModifyDamageAdditive)),
+            (HookFilter.DamageMultiplicative, nameof(AbstractModel.ModifyDamageMultiplicative)), (HookFilter.DamageCap, nameof(AbstractModel.ModifyDamageCap)) })
+        {
+            MethodInfo baseMethod = Reflect.Method(typeof(AbstractModel), method) ?? throw new MissingMethodException(nameof(AbstractModel), method);
+            List<AbstractModel>? list = null;
+            Type[] gates = Type.EmptyTypes;
+            IReadOnlyList<AbstractModel> all = Array.Empty<AbstractModel>();
+            ListenerCache.InvokeStateChangedInScope(_ =>
+            {
+                list = HookFilter.ForRun(run, combat, hook);
+                gates = HookFilter.ScopeGates(hook);
+                all = ListenerCache.GetRunListeners(run, combat).ToList();
+            }, combat);
+            if (list == null)
+            {
+                lines.Add($"FOREIGN hookfilter gatedlists {method}: not filtered");
+                continue;
+            }
+            bool Gated(AbstractModel l) => gates.Any(g => g.IsAssignableFrom(l.GetType()));
+            var kept = new HashSet<AbstractModel>(list, ReferenceEqualityComparer.Instance);
+            int stray = list.Count(l => Override(l.GetType(), baseMethod) == null && !Gated(l));
+            int gateKept = list.Count(l => Override(l.GetType(), baseMethod) == null && Gated(l));
+            int gateMissed = all.Count(l => Override(l.GetType(), baseMethod) == null && Gated(l) && !kept.Contains(l));
+            lines.Add($"FOREIGN hookfilter gatedlists {method}: gates {(gates.Length == 0 ? "none" : string.Join("|", gates.Select(g => g.Name).OrderBy(n => n, StringComparer.Ordinal)))}, "
+                + $"{list.Count} of {all.Count} listeners kept, {gateKept} by a gate: "
+                + (stray == 0 && gateMissed == 0 ? "as the gates say" : $"DIFFERENT ({stray} kept without reason, {gateMissed} gated ones left out)"));
+        }
+        return lines;
     }
 
     // --- hookfilter throwonce ---

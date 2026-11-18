@@ -59,12 +59,20 @@ public static class HookFilter
         /// it then also backs off when that walk changed or is patched. The others walk the state's listeners directly.
         /// </summary>
         private readonly bool _combatWalk;
+        /// <summary>
+        /// The damage defaults (rule R3, 2026-11-18): other mods' patches on the default that do nothing unless the listener is
+        /// of some types (TypeGated, HookSkip's own gates) stand, and listeners of those types are kept in the list (their calls
+        /// reach the patched default, as in the game). Not the cost, keyword, ShouldPlay or hitting defaults: SnapshotCardReuse's
+        /// PureListeners takes the cost and keyword lists' listeners as overriders it knows, which a gate-kept type isn't.
+        /// </summary>
+        private readonly bool _gated;
 
-        public FilteredHook(string baseMethodName, string defaultFingerprint, MethodInfo? hookMethod, bool combatWalk, bool optional = false)
+        public FilteredHook(string baseMethodName, string defaultFingerprint, MethodInfo? hookMethod, bool combatWalk, bool optional = false, bool gated = false)
         {
             BaseMethod = Find(typeof(AbstractModel), baseMethodName);
             _hookMethod = hookMethod;
             _combatWalk = combatWalk;
+            _gated = gated;
             if (BaseMethod == null)
             {
                 if (!optional)
@@ -89,8 +97,13 @@ public static class HookFilter
         // (SnapshotCardReuse's fast reads) check the hook strictly themselves (HookMethodOf). HookSkip's checks of these same Hook
         // methods (SurroundingOnly, TranspiledOnly) let stand shapes this check refuses only because it refuses them (the mirror
         // then runs the original, transpiled): an invariant, a change here needs one there.
-        public bool IsSafe() => _defaultHolds && !PatchSafety.IsPatchedByOthers(BaseMethod) && !PatchSafety.IsPatchedByOthers(_hookMethod, PatchTolerance.BeforeReplace)
-            && (!_combatWalk || !CombatHookWalkPatched());
+        // The damage defaults: TypeGated (_gated), the gates' types kept in the list as overriders.
+        public bool IsSafe(out Type[] gates)
+        {
+            gates = Type.EmptyTypes;
+            return _defaultHolds && !(_gated ? PatchSafety.IsPatchedByOthers(BaseMethod, out gates) : PatchSafety.IsPatchedByOthers(BaseMethod))
+                && !PatchSafety.IsPatchedByOthers(_hookMethod, PatchTolerance.BeforeReplace) && (!_combatWalk || !CombatHookWalkPatched());
+        }
 
         /// <summary>The hook (or helper) method whose call this list stands for.</summary>
         public MethodInfo? HookMethod => _hookMethod;
@@ -102,7 +115,14 @@ public static class HookFilter
             {
                 return;
             }
-            PatchSafety.Watch(Name, BaseMethod);
+            if (_gated)
+            {
+                PatchSafety.Watch(Name, BaseMethod, PatchTolerance.TypeGated);
+            }
+            else
+            {
+                PatchSafety.Watch(Name, BaseMethod);
+            }
             PatchSafety.Watch(Name, _hookMethod, PatchTolerance.BeforeReplace);
             if (_combatWalk)
             {
@@ -346,12 +366,12 @@ public static class HookFilter
             new FilteredHook(nameof(AbstractModel.TryModifyEnergyCostInCombatLate), TryOutDefault, energyHook, combatWalk: true),
             new FilteredHook(nameof(AbstractModel.TryModifyKeywordsInCombat), KeywordsDefault, keywordsHook, combatWalk: false),
             new FilteredHook(nameof(AbstractModel.ShouldPlay), TrueDefault, shouldPlayHook, combatWalk: true),
-            new FilteredHook(nameof(AbstractModel.ModifyDamageAdditive), DamageAdditiveDefault, damageHook, combatWalk: false),
-            new FilteredHook(nameof(AbstractModel.ModifyDamageMultiplicative), DamageMultiplicativeDefault, damageHook, combatWalk: false),
-            new FilteredHook(nameof(AbstractModel.ModifyDamageCap), DamageCapDefault, damageHook, combatWalk: false),
+            new FilteredHook(nameof(AbstractModel.ModifyDamageAdditive), DamageAdditiveDefault, damageHook, combatWalk: false, gated: true),
+            new FilteredHook(nameof(AbstractModel.ModifyDamageMultiplicative), DamageMultiplicativeDefault, damageHook, combatWalk: false, gated: true),
+            new FilteredHook(nameof(AbstractModel.ModifyDamageCap), DamageCapDefault, damageHook, combatWalk: false, gated: true),
             new FilteredHook(nameof(AbstractModel.ShouldAllowHitting), TrueDefault, hittingHook, combatWalk: true),
             new FilteredHook(nameof(AbstractModel.TryModifyStarCost), TryOutDefault, starColor ?? hittingHook, combatWalk: false),
-            new FilteredHook("ModifyDamageMultiplicativeLate", DamageMultiplicativeDefault, damageHook, combatWalk: false, optional: true),
+            new FilteredHook("ModifyDamageMultiplicativeLate", DamageMultiplicativeDefault, damageHook, combatWalk: false, optional: true, gated: true),
         };
         Mirror(harmony, typeof(HookFilterEnergyCost), energyHook, ModifyEnergyCostFingerprint, "ModifyEnergyCostPrefix");
         Mirror(harmony, typeof(HookFilterKeywords), keywordsHook, ModifyKeywordsFingerprint, "ModifyKeywordsPrefix");
@@ -426,6 +446,7 @@ public static class HookFilter
         {
             _filtered = null;
             _filteredWith = null;
+            _filteredGates = null;
             _walked?.Clear();
         };
         ListenerCache.ScopeEnded += () =>
@@ -434,6 +455,7 @@ public static class HookFilter
             // refreshes while nothing changed); Get rebuilds them when patch safety changed. Nothing here that can throw:
             // it runs at the end of every scope, some inside the game's async code (ExtraScopes' first turn).
             _safe = null;
+            _gatesNow = null;
             _walked?.Clear();
         };
     }
@@ -516,12 +538,13 @@ public static class HookFilter
     private static List<AbstractModel>? Get(IReadOnlyList<AbstractModel> listeners, int hook)
     {
         _safe ??= CurrentSafety();
-        if (_filtered == null || (!ReferenceEquals(_filteredWith, _safe) && !_filteredWith!.SequenceEqual(_safe)))
+        if (_filtered == null || !SameSafety(_filteredWith, _filteredGates, _safe, _gatesNow))
         {
-            // Built with another patch safety (a hook another mod patched since): all built again.
+            // Built with another patch safety (a hook another mod patched since, or other gates on a damage default): all built again.
             _filtered = new ConditionalWeakTable<IReadOnlyList<AbstractModel>, List<AbstractModel>?[]>();
         }
         _filteredWith = _safe;
+        _filteredGates = _gatesNow;
         if (!_filtered.TryGetValue(listeners, out List<AbstractModel>?[]? perHook))
         {
             perHook = FilterAll(listeners);
@@ -530,19 +553,84 @@ public static class HookFilter
         return perHook[hook];
     }
 
-    /// <summary>One pass over the listeners builds the filtered list of every safe hook (null for unsafe ones).</summary>
+    /// <summary>Each hook's safety in this scope, and (as <see cref="_gatesNow"/>) the gates of the damage defaults.</summary>
     private static bool[] CurrentSafety()
     {
         bool[] safe = new bool[_hooks.Length];
+        var gates = new Type[_hooks.Length][];
         for (int i = 0; i < _hooks.Length; i++)
         {
-            safe[i] = _hooks[i].IsSafe();
+            safe[i] = _hooks[i].IsSafe(out gates[i]);
+            if (!safe[i])
+            {
+                gates[i] = Type.EmptyTypes;
+            }
         }
+        _gatesNow = gates;
         return safe;
     }
 
-    /// <summary>The patch safety the lists in <see cref="_filtered"/> were built with.</summary>
+    /// <summary>
+    /// Per hook, this scope's gate types (set with <see cref="_safe"/>; empty but for a damage default other mods patch with
+    /// type-gated patches): listeners of a type assignable to one are kept as overriders.
+    /// </summary>
+    [ThreadStatic] private static Type[][]? _gatesNow;
+
+    /// <summary>The patch safety and gates the lists in <see cref="_filtered"/> were built with.</summary>
     [ThreadStatic] private static bool[]? _filteredWith;
+    [ThreadStatic] private static Type[][]? _filteredGates;
+
+    /// <summary>The same safety and the same gates per hook (the gate arrays compared by content: PatchSafety's answer is a new array at each recheck).</summary>
+    private static bool SameSafety(bool[]? safeA, Type[][]? gatesA, bool[] safeB, Type[][]? gatesB)
+    {
+        if (safeA == null || gatesA == null || gatesB == null)
+        {
+            return false;
+        }
+        if ((!ReferenceEquals(safeA, safeB) && !safeA.SequenceEqual(safeB)) || gatesA.Length != gatesB.Length)
+        {
+            return false;
+        }
+        for (int i = 0; i < gatesA.Length; i++)
+        {
+            if (!ReferenceEquals(gatesA[i], gatesB[i]) && !gatesA[i].SequenceEqual(gatesB[i]))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>Whether this scope's gates of <paramref name="hook"/> keep listeners of <paramref name="type"/>.</summary>
+    private static bool GateKeeps(int hook, Type type)
+    {
+        Type[] gates = _gatesNow is { } all && hook < all.Length ? all[hook] : Type.EmptyTypes;
+        foreach (Type gate in gates)
+        {
+            if (gate.IsAssignableFrom(type))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>The hooks whose gates keep <paramref name="type"/> (bit i: hook i), for <see cref="FilterAll"/>.</summary>
+    private static int GateMask(Type type)
+    {
+        int mask = 0;
+        if (_gatesNow is { } all)
+        {
+            for (int i = 0; i < all.Length; i++)
+            {
+                if (all[i].Length > 0 && GateKeeps(i, type))
+                {
+                    mask |= 1 << i;
+                }
+            }
+        }
+        return mask;
+    }
 
     private static List<AbstractModel>?[] FilterAll(IReadOnlyList<AbstractModel> listeners)
     {
@@ -562,8 +650,9 @@ public static class HookFilter
             Type type = listener.GetType();
             if (type != lastType)
             {
-                // Listeners come in runs of the same type (cards, enchantments...): skip most lookups.
-                mask = OverrideMask(type);
+                // Listeners come in runs of the same type (cards, enchantments...): skip most lookups. Gate types are kept as
+                // overriders (the damage defaults' type-gated patches: their calls reach the patched default).
+                mask = OverrideMask(type) | GateMask(type);
                 lastType = type;
             }
             for (int i = 0; mask >> i != 0; i++)
@@ -668,14 +757,17 @@ public static class HookFilter
             int bit = 1 << hook;
             Type? lastType = null;
             bool lastKept = false;
-            foreach (AbstractModel listener in walk(_pileFilters![hook]))
+            // A damage default with type-gated patches: the pile filter keeps the gate types too (one filter per gate set).
+            FastListeners.PileFilter pileFilter = _gatesNow is { } gatesNow && gatesNow[hook].Length > 0
+                ? _pileFilters![hook].WithGates(gatesNow[hook]) : _pileFilters![hook];
+            foreach (AbstractModel listener in walk(pileFilter))
             {
                 // Listeners come in runs of one type (a pile's copies of a card): one lookup per run.
                 Type type = listener.GetType();
                 if (!ReferenceEquals(type, lastType))
                 {
                     lastType = type;
-                    lastKept = (OverrideMask(type) & bit) != 0;
+                    lastKept = (OverrideMask(type) & bit) != 0 || GateKeeps(hook, type);
                 }
                 if (lastKept)
                 {
@@ -718,6 +810,9 @@ public static class HookFilter
 
     public static long WalkChecks { get; private set; }
     public static long WalkMismatches { get; private set; }
+
+    /// <summary>Test builds: this scope's gate types of one hook (empty outside a scope or without gates).</summary>
+    internal static Type[] ScopeGates(int hook) => _gatesNow is { } all && hook < all.Length ? all[hook] : Type.EmptyTypes;
 #endif
 
     internal static bool CombatHookListenersEmpty =>

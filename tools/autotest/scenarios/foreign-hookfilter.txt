@@ -7,6 +7,9 @@
 # on ShouldAllowHitting, a bool prefix at priority 800 on ShouldPlay (BeforeReplace since 2026-11-18). Controls (the mirror runs
 # the original there): a bool prefix at Priority.Last registered after the mirror (keywords), a finalizer (energy cost color
 # helper), a postfix writing a ref argument back (star cost color helper), a postfix reading __runOriginal (damage).
+# R3's controls on the damage defaults (no gate read: the damage lists stay the game's): a static write before the type test, a gated
+# postfix in a class with a static initializer, a gated postfix whose own method is patched. Its accepted case:
+# foreign-hookfilter-2k-on/off.
 # A listener throwing once inside the energy cost mirror (foreignpatch hookfilter throwonce, Spiked Gauntlets' override): the same
 # exception as the game's loop after the same calls, no postfix run, HookFilter not faulted.
 timeout 900
@@ -24,7 +27,11 @@ expect FOREIGN classify CardCostHelper\.TryModifyStarCostWithHooks: bdtest\.fore
 expect HookFilter: CardCostHelper\.TryModifyStarCostWithHooks is also patched by bdtest\.foreign\.hf-ref-write-postfix \(postfixes and prefixes running before this mod's not enough\): normal game for that part
 expect FOREIGN classify Hook\.ModifyDamageInternal: bdtest\.foreign\.runoriginal-postfix Postfix .*BeforeReplace backs off \(postfix reading __runOriginal\)
 expect HookFilter: Hook\.ModifyDamageInternal is also patched by bdtest\.foreign\.runoriginal-postfix \(postfixes and prefixes running before this mod's not enough\): normal game for that part
-expect FOREIGN runtime HookFilter Hook\.ModifyDamageInternal \(BeforeReplace\) kept 0 backed off [1-9]
+expect HookFilter: AbstractModel\.ModifyDamageMultiplicative is also patched by bdtest\.foreign\.nearmiss-postfix-squeeze \(patches gated on the listener's type not enough\): normal game for that part
+expect HookFilter: AbstractModel\.ModifyDamageCap is also patched by bdtest\.foreign\.cctor-gated-postfix-squeeze \(patches gated on the listener's type not enough\): normal game for that part
+expect HookFilter: AbstractModel\.ModifyDamageAdditive is also patched by bdtest\.foreign\.gated-patched-postfix-squeeze \(patches gated on the listener's type not enough\): normal game for that part
+expect FOREIGN runtime HookFilter AbstractModel\.ModifyDamageAdditive \(TypeGated\) kept 0 backed off [1-9]
+expect FOREIGN hookfilter gatedlists ModifyDamageAdditive: not filtered
 expect FOREIGN hookfilter throwonce TryModifyEnergyCostInCombat(Late)?: thrower .*: same as the game's
 expect EFFECTCHECK HookFilter\.Hitting grew since 'start': [0-9]+ -> [1-9]
 expect EFFECTCHECK HookFilter\.ShouldPlay grew since 'start': [0-9]+ -> [1-9]
@@ -45,6 +52,9 @@ foreignpatch bool-prefix MegaCrit.Sts2.Core.Hooks.Hook:ModifyKeywordsInCombat pr
 foreignpatch noop-finalizer MegaCrit.Sts2.Core.Helpers.Models.CardCostHelper:TryModifyEnergyCostWithHooks
 foreignpatch hf-ref-write-postfix MegaCrit.Sts2.Core.Helpers.Models.CardCostHelper:TryModifyStarCostWithHooks
 foreignpatch runoriginal-postfix MegaCrit.Sts2.Core.Hooks.Hook:ModifyDamageInternal
+foreignpatch nearmiss-postfix MegaCrit.Sts2.Core.Models.AbstractModel:ModifyDamageMultiplicative squeeze
+foreignpatch cctor-gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:ModifyDamageCap squeeze
+foreignpatch gated-patched-postfix MegaCrit.Sts2.Core.Models.AbstractModel:ModifyDamageAdditive squeeze
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 1
@@ -59,6 +69,7 @@ play 3
 waitfor idle 120
 wait 3
 foreignpatch hookfilter throwonce
+foreignpatch hookfilter gatedlists
 wait 1
 foreignpatch report end
 effects end

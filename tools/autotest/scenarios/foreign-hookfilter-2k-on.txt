@@ -1,0 +1,80 @@
+# HookFilter next to other mods' patches it now lets stand (A/B, mod on; DESIGN "Re-verification of the leads (2026-11-18)",
+# rules X and R3): the same synthetic patches of "another mod" (Bench/ForeignPatches.cs, Bench/ForeignShapesHookFilter.cs) as
+# foreign-hookfilter-2k-off; CHECKSUM and STATE lines must match line for line. ~1,016 cards.
+# X: a bool prefix (returns true) at priority 800 on ShouldPlay and a no-op postfix on ShouldAllowHitting, both sorted around the
+# mirror as around the original. R3: a postfix on AbstractModel.ModifyDamageAdditive adding 1 to the default's result for each
+# Squeeze listener (gated on the instance's type: HookFilter's damage lists keep the Squeezes, whose calls reach the patched
+# default), then mid-combat a second one for each relic (other gates: the lists built with the first ones must not be reused,
+# foreignpatch hookfilter gatedlists checks each damage list against the gates of its scope). Every damage changes alike on and
+# off (the checksums see the monsters' HP).
+timeout 1800
+expect HookFilter: Hook\.ShouldPlay is also patched by bdtest\.foreign\.bool-prefix \(postfixes and prefixes running before this mod's: run around
+expect HookFilter: Hook\.ShouldAllowHitting is also patched by bdtest\.foreign\.noop-postfix \(postfixes and prefixes running before this mod's: run around
+expect HookFilter: AbstractModel\.ModifyDamageAdditive is also patched by bdtest\.foreign\.hf-gated-damage-postfix-squeeze \(patches gated on the listener's type: Squeeze treated as overriding it
+expect HookFilter: AbstractModel\.ModifyDamageAdditive is also patched by .*bdtest\.foreign\.hf-gated-damage-postfix-relic.* \(patches gated on the listener's type: .*RelicModel.* treated as overriding it
+expect FOREIGN runtime HookFilter AbstractModel\.ModifyDamageAdditive \(TypeGated\) kept [1-9]
+expect FOREIGN runtime HookFilter Hook\.ShouldPlay \(BeforeReplace\) kept [1-9]
+expect FOREIGN hookfilter gatedlists ModifyDamageAdditive: gates Squeeze, [0-9]+ of [0-9]+ listeners kept, [1-9][0-9]* by a gate: as the gates say
+expect FOREIGN hookfilter gatedlists ModifyDamageAdditive: gates RelicModel\|Squeeze, [0-9]+ of [0-9]+ listeners kept, [1-9][0-9]* by a gate: as the gates say
+expect FOREIGN hookfilter gatedlists ModifyDamageMultiplicative: gates none, [0-9]+ of [0-9]+ listeners kept, 0 by a gate: as the gates say
+expect EFFECTCHECK HookFilter\.Damage grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK HookFilter\.ShouldPlay grew since 'start': [0-9]+ -> [1-9]
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+foreignpatch bool-prefix MegaCrit.Sts2.Core.Hooks.Hook:ShouldPlay priority 800
+foreignpatch noop-postfix MegaCrit.Sts2.Core.Hooks.Hook:ShouldAllowHitting
+foreignpatch hf-gated-damage-postfix MegaCrit.Sts2.Core.Models.AbstractModel:ModifyDamageAdditive squeeze
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+effects start
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+foreignpatch hookfilter gatedlists
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+# Mid-combat, a second gated postfix on the same default (other gates).
+foreignpatch hf-gated-damage-postfix MegaCrit.Sts2.Core.Models.AbstractModel:ModifyDamageAdditive relic
+wait 3
+foreignpatch hookfilter gatedlists
+play 4
+waitfor idle 120
+checksum t3 plays
+endturn
+waitfor idle 300
+checksum t3 end
+state t3
+play 4
+waitfor idle 120
+checksum t4 plays
+endturn
+waitfor idle 300
+checksum t4 end
+state t4
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+foreignpatch report end
+effects end
+effectcheck HookFilter.Damage grew start
+effectcheck HookFilter.ShouldPlay grew start
+cmd bdperf conflicts
+counters end
+foreignpatch remove
+quit
