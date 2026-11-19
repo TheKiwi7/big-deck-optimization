@@ -1271,7 +1271,7 @@ public static class ForeignShapesGates
         yield return new Case("F1 control: no __exception parameter", Own(nameof(NoArgumentFinalizer)), finalizer, hook, PatchTolerance.TranspiledOnly, false);
         yield return new Case("F1 control: exception clauses", Own(nameof(TryFinalizer)), finalizer, hook, PatchTolerance.TranspiledOnly, false);
         yield return new Case("F1 control: a pass-through finalizer under SurroundingOnly", PassThroughRelease("selftest"), finalizer, hook, PatchTolerance.SurroundingOnly, false);
-        yield return new Case("F1 control: a pass-through finalizer under PrefixesOnly (HookFilter's mirror)", PassThroughRelease("selftest"), finalizer, hook, PatchTolerance.PrefixesOnly, false);
+        yield return new Case("F1 control: a pass-through finalizer under BeforeReplace (HookFilter's mirror)", PassThroughRelease("selftest"), finalizer, hook, PatchTolerance.BeforeReplace, false);
         // E: Debug IL gates on an AbstractModel default (the instance is the listener).
         MethodBase model = AccessTools.Method(typeof(AbstractModel), nameof(AbstractModel.AfterCardPlayed));
         const PatchSafety.PatchKind postfix = PatchSafety.PatchKind.Postfix, prefix = PatchSafety.PatchKind.Prefix;
