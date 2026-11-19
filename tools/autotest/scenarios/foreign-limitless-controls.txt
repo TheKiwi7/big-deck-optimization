@@ -3,17 +3,33 @@
 # Limitless stacked enchantments) with LimitlessCloneMemo idle (its effect the same). Mod on only (nothing differs: each control's
 # part stays the game's). FOREIGN runtime lines come from the runtime checks only.
 # Rule A: (1) a postfix gated on an enchantment type on AbstractModel.MutableClone (it also runs on the inner card's enchantment:
-# strict there), (2) a postfix gated on `is CardModel` on CardModel.UpgradeInternal (kept by TypeGated, but every inner card is a
-# CardModel: the per-card strict check backs off), (3) a count before the gate's branch on CardModel.FinalizeUpgradeInternal
-# (not a gate: TypeGated backs off).
+# strict there), (2) a postfix gated on `is CardModel` on CardModel.AfterDeserialized (kept by TypeGated, but every inner card is
+# a CardModel: the per-card strict check backs off; on AfterDeserialized, which every inner card's build runs: rule L judges
+# UpgradeInternal only for an upgraded inner card), (3) a count before the gate's branch on CardModel.FinalizeUpgradeInternal
+# (not a gate: TypeGated backs off; the enchantment group, which every stacked inner card reaches).
+# Rule L (per content, Bench/ForeignShapesLimitless.cs `foreignpatch limitless reach`): strict count postfixes (Bench/ForeignPatches.cs
+# count-postfix) on (l1) CardModel.AddKeyword: a Goopy content (its OnEnchant's closure reaches it) no longer kept, a Sharp or Clone one
+# still is, the memo keeps running; (l2) NCard.FindOnTable (SoulsPower's closure only): Goopy and Sharp contents kept, the memo keeps
+# running (SoulsPower contents are never kept next to BaseLib: its closure reaches powers' virtual methods BaseLib's abstract classes
+# override); (l3) CardModel.get_MaxUpgradeLevel: a level-1 content no longer kept, a level-0 one still is.
 # Rule B (copies of BaseLib's SavedSpireFieldPatch, Bench/ForeignShapesLimitlessTwins.cs, on SavedProperties.FromInternal):
 # (b1) GetFieldsForModel without its filter, (b2) a null result stored, (b3) its class's initializer doing more than make the
 # list, (b4) the accepted copy installed as a prefix, (b5) the accepted copy with its GetFieldsForModel patched, (b6) the accepted
 # copy holding a field (registered for the rest of the session: last). Each backs off: LimitlessCloneMemo idle.
 timeout 1500
 expect FOREIGN runtime LimitlessCloneMemo AbstractModel\.MutableClone \(None\) kept 0 backed off [1-9]
-expect FOREIGN runtime LimitlessCloneMemo CardModel\.UpgradeInternal \(TypeGated\) kept [1-9]
-expect FOREIGN runtime LimitlessCloneMemo CardModel\.UpgradeInternal \(None\) kept 0 backed off [1-9]
+expect FOREIGN runtime LimitlessCloneMemo CardModel\.AfterDeserialized \(TypeGated\) kept [1-9]
+expect FOREIGN runtime LimitlessCloneMemo CardModel\.AfterDeserialized \(None\) kept 0 backed off [1-9]
+expect FOREIGN reach base storage Goopy 0: kept True
+expect FOREIGN reach base closures done True
+expect FOREIGN reach l1 storage Goopy 0: kept False
+expect FOREIGN reach l1 storage Sharp 0: kept True
+expect FOREIGN reach l1 storage Clone 0: kept True
+expect FOREIGN reach l2 storage SoulsPower 0: kept False
+expect FOREIGN reach l2 storage Goopy 0: kept True
+expect FOREIGN reach l2 storage Sharp 0: kept True
+expect FOREIGN reach l3 storage Sharp 1: kept False
+expect FOREIGN reach l3 storage Sharp 0: kept True
 expect FOREIGN classify CardModel\.FinalizeUpgradeInternal: bdtest\.foreign\.lim-write-then-gated-postfix-squeeze Postfix .*TypeGated backs off \(postfix not provably gated
 expect FOREIGN runtime LimitlessCloneMemo CardModel\.FinalizeUpgradeInternal \(TypeGated\) kept 0 backed off [1-9]
 expect LimitlessReserialize: SavedProperties\.FromInternal is also patched by bdtest\.foreign\.lim-twin-unfiltered: normal game for that part
@@ -45,7 +61,7 @@ foreignpatch report a1
 foreignpatch limitless remove
 wait 3
 # (2) Rule A: a gate every inner card passes.
-foreignpatch lim-cardmodel-gated-postfix MegaCrit.Sts2.Core.Models.CardModel:UpgradeInternal
+foreignpatch lim-cardmodel-gated-postfix MegaCrit.Sts2.Core.Models.CardModel:AfterDeserialized
 wait 3
 effects a2
 cmd fight CULTISTS_NORMAL
@@ -71,6 +87,48 @@ wait 2
 effectcheck LimitlessCloneMemo same a3
 foreignpatch report a3
 foreignpatch limitless remove
+wait 3
+# Rule L: the per content judgment before any patch.
+foreignpatch limitless reach storage Goopy 0 base
+foreignpatch limitless reach storage SoulsPower 0 base
+# (l1) Rule L: a strict patch on AddKeyword (Goopy's closure).
+foreignpatch count-postfix MegaCrit.Sts2.Core.Models.CardModel:AddKeyword
+wait 3
+foreignpatch limitless reach storage Goopy 0 l1
+foreignpatch limitless reach storage Sharp 0 l1
+foreignpatch limitless reach storage Clone 0 l1
+effects l1
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd kill all
+waitfor nocombat 300
+wait 2
+effectcheck LimitlessCloneMemo grew l1
+foreignpatch remove
+wait 3
+# (l2) Rule L: a strict patch on FindOnTable (SoulsPower's closure).
+foreignpatch count-postfix MegaCrit.Sts2.Core.Nodes.Cards.NCard:FindOnTable
+wait 3
+foreignpatch limitless reach storage SoulsPower 0 l2
+foreignpatch limitless reach storage Goopy 0 l2
+foreignpatch limitless reach storage Sharp 0 l2
+effects l2
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd kill all
+waitfor nocombat 300
+wait 2
+effectcheck LimitlessCloneMemo grew l2
+foreignpatch remove
+wait 3
+# (l3) Rule L: a strict patch on get_MaxUpgradeLevel (the upgrade group).
+foreignpatch count-postfix MegaCrit.Sts2.Core.Models.CardModel:get_MaxUpgradeLevel
+wait 3
+foreignpatch limitless reach storage Sharp 1 l3
+foreignpatch limitless reach storage Sharp 0 l3
+foreignpatch remove
 wait 3
 # (b1) Rule B: a copy whose GetFieldsForModel has no filter.
 foreignpatch lim-twin MegaCrit.Sts2.Core.Saves.Runs.SavedProperties:FromInternal unfiltered

@@ -1,0 +1,63 @@
+# Rule L (2026-11-18): LimitlessCloneMemo and LimitlessHookSkip judge each saved inner card for what its build reaches (the spine;
+# the enchantment group; the upgrade group only above level 0; CardCmd.Enchant only for a card other than Limitless's storage
+# card). Synthetic strict patches of another mod (Bench/ForeignShapesLimitless.cs lim-inner-count-postfix: a count before any
+# branch) on CardModel.get_MaxUpgradeLevel (the upgrade group) and CardCmd.Enchant (a second enchantment), installed after a
+# first combat start filled the memo; then two more combat starts at ~945 cards (the reference deck: level-0 storage inner cards).
+# Their counts on the storage card (STATE foreign) must match the mod-on side: 0, as the game's own path never calls them for an
+# inner card either. Mod off. Compare foreign-limitless-l-2k-off and foreign-limitless-l-2k-on: CHECKSUM/STATE identical.
+timeout 1500
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bdopt off
+cmd bigdeck import ref all all
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum CULTISTS_NORMAL start
+state CULTISTS_NORMAL start
+cmd kill all
+waitfor nocombat 300
+wait 2
+foreignpatch lim-inner-count-postfix MegaCrit.Sts2.Core.Models.CardModel:get_MaxUpgradeLevel
+foreignpatch lim-inner-count-postfix MegaCrit.Sts2.Core.Commands.CardCmd::Enchant(EnchantmentModel,CardModel,Decimal)
+wait 3
+cmd fight KNIGHTS_ELITE
+waitfor idle 600
+wait 1
+checksum KNIGHTS_ELITE start
+state KNIGHTS_ELITE start
+play 5
+waitfor idle 300
+checksum KNIGHTS_ELITE plays
+state KNIGHTS_ELITE plays
+endturn
+waitfor idle 600
+checksum KNIGHTS_ELITE t1 end
+state KNIGHTS_ELITE t1 end
+cmd kill all
+waitfor nocombat 300
+wait 2
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum CULTISTS_NORMAL start
+state CULTISTS_NORMAL start
+play 5
+waitfor idle 300
+checksum CULTISTS_NORMAL plays
+state CULTISTS_NORMAL plays
+endturn
+waitfor idle 600
+checksum CULTISTS_NORMAL t1 end
+state CULTISTS_NORMAL t1 end
+cmd kill all
+waitfor nocombat 300
+wait 2
+foreignpatch report end
+foreignpatch limitless report end
+foreignpatch remove
+foreignpatch limitless remove
+quit

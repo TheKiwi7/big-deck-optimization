@@ -27,6 +27,11 @@ namespace BigDeckOptimization.Bench;
 /// alwaysstores</c> (a null result stored), <c>lim-twin impure</c> (its class's initializer counts), <c>lim-twin-prefix accepted</c>
 /// (installed as a prefix), <c>foreignpatch limitless twin patchcallee</c> (its GetFieldsForModel patched), <c>foreignpatch limitless
 /// twin register</c> (a field in its own list: for the rest of the session).</item>
+/// <item>Rule L: <c>lim-inner-count-postfix</c> on <c>CardModel:get_MaxUpgradeLevel</c> or <c>CardCmd::Enchant(EnchantmentModel,CardModel,Decimal)</c>,
+/// a postfix counting every call (FOREIGN, not compared: the game's own calls elsewhere) and the calls on Limitless's storage card
+/// (STATE, compared: 0 for level-0 inner cards on both sides). <c>foreignpatch limitless reach &lt;storage|CardClass&gt;
+/// &lt;EnchantmentClass|none&gt; &lt;level&gt; [label]</c>: whether LimitlessCloneMemo would keep that saved content now (per content, the groups
+/// it reaches); <c>foreignpatch limitless memo [label]</c>: the contents kept and the clears because the patch set changed.</item>
 /// </list>
 /// </summary>
 public static class ForeignShapesLimitless
@@ -34,7 +39,7 @@ public static class ForeignShapesLimitless
     public static readonly string[] Shapes =
     {
         "lim-result-gated-postfix", "lim-enchantment-gated-postfix", "lim-cardmodel-gated-postfix", "lim-write-then-gated-postfix",
-        "lim-twin", "lim-twin-prefix",
+        "lim-twin", "lim-twin-prefix", "lim-inner-count-postfix",
     };
 
     /// <summary>Rule B's twins (Bench/ForeignShapesLimitlessTwins.cs) by variant.</summary>
@@ -113,7 +118,9 @@ public static class ForeignShapesLimitless
                 "report" => LimitlessShapeCounts.ReportLines(parts.Length > 2 ? parts[2] : "end"),
                 "remove" => Remove(),
                 "twin" when parts.Length > 2 => TwinCommand(parts[2]),
-                _ => throw new ArgumentException("foreignpatch limitless report [label] | remove | twin status|register|patchcallee"),
+                "reach" when parts.Length > 4 => ReachCommand(parts[2], parts[3], int.Parse(parts[4]), parts.Length > 5 ? parts[5] : "now"),
+                "memo" => new[] { $"FOREIGN clonememo {(parts.Length > 2 ? parts[2] : "now")}: entries {LimitlessCloneMemo.MemoCount}, patch stamp clears {LimitlessCloneMemo.PatchStampClears}, reused {LimitlessCloneMemo.Reused}" },
+                _ => throw new ArgumentException("foreignpatch limitless report [label] | remove | twin status|register|patchcallee | reach <storage|CardClass> <EnchantmentClass|none> <level> [label] | memo [label]"),
             };
         }
         string shape = parts[0];
@@ -152,6 +159,12 @@ public static class ForeignShapesLimitless
             case "lim-twin":
                 harmony.Patch(target, postfix: new HarmonyMethod(TwinPostfix(target, gate)) { priority = priority });
                 break;
+            case "lim-inner-count-postfix":
+                // Rule L: a strict patch (a count before any branch) on a method only the upgrade group or a second enchantment reaches.
+                LimitlessShapeCounts.Ensure("lim-inner-count-postfix inner " + LimitlessShapeCounts.Name(target));
+                harmony.Patch(target, postfix: new HarmonyMethod(typeof(LimitlessGates), target.IsStatic ? nameof(LimitlessGates.InnerCountStaticPostfix)
+                    : nameof(LimitlessGates.InnerCountPostfix)) { priority = priority });
+                break;
             case "lim-twin-prefix":
                 // Control: the accepted twin's postfix installed as a prefix (rule B lets a twin stand as a postfix only).
                 Gate("accepted");
@@ -167,6 +180,32 @@ public static class ForeignShapesLimitless
         var lines = new List<string> { $"FOREIGN installed {shape}{(gate.Length > 0 ? " " + gate : "")} on {LimitlessShapeCounts.Name(target)} as {id} (priority {priority})" };
         lines.AddRange(Classification(target));
         return lines;
+    }
+
+    /// <summary>
+    /// <c>foreignpatch limitless reach</c>: a saved card of that card (<c>storage</c>: Limitless's storage card, else a game card class),
+    /// enchantment (a game enchantment class, or <c>none</c>) and upgrade level, judged as LimitlessCloneMemo judges a content now.
+    /// </summary>
+    private static IReadOnlyList<string> ReachCommand(string card, string enchantment, int level, string label)
+    {
+        System.Reflection.Assembly game = typeof(AbstractModel).Assembly;
+        Type cardType = card == "storage" ? LimitlessCloneMemo.StorageCardType ?? throw new ArgumentException("Limitless has no storage card")
+            : game.GetType("MegaCrit.Sts2.Core.Models.Cards." + card, true)!;
+        var saved = new MegaCrit.Sts2.Core.Saves.Runs.SerializableCard { Id = ModelDb.GetId(cardType), CurrentUpgradeLevel = level };
+        if (enchantment != "none")
+        {
+            saved.Enchantment = new MegaCrit.Sts2.Core.Saves.Runs.SerializableEnchantment
+            {
+                Id = ModelDb.GetId(game.GetType("MegaCrit.Sts2.Core.Models.Enchantments." + enchantment, true)!),
+                Amount = 1,
+            };
+        }
+        (bool kept, LimitlessCloneMemo.Reach reach) = LimitlessCloneMemo.KeptForTest(saved);
+        return new[]
+        {
+            $"FOREIGN reach {label} {card} {enchantment} {level}: kept {kept}, reaches {reach}, hookskip patched {LimitlessCloneMemo.ContentPatched(saved)}",
+            $"FOREIGN reach {label} closures done {LimitlessCloneMemo.ClosuresDone}: {LimitlessCloneMemo.ClosureStates()}",
+        };
     }
 
     /// <summary>A method by <c>Namespace.Type:Method</c>, or any member by its fingerprint key <c>Namespace.Type::Method(ArgTypes)</c>.</summary>
@@ -206,11 +245,20 @@ internal static class LimitlessShapeCounts
 
     internal static void Count(string key) => _counts.AddOrUpdate(key, 1, (_, n) => n + 1);
 
+    /// <summary>A count reported even while 0 (a STATE line both sides print).</summary>
+    internal static void Ensure(string key) => _counts.TryAdd(key, 0);
+
+    /// <summary>Counts reported as FOREIGN lines, never compared (the game's own calls, which may differ in timing).</summary>
+    private static readonly ConcurrentDictionary<string, long> _uncompared = new();
+
+    internal static void CountUncompared(string key) => _uncompared.AddOrUpdate(key, 1, (_, n) => n + 1);
+
     internal static string Name(MethodBase method) => $"{method.DeclaringType?.Name}.{method.Name}";
 
     internal static IReadOnlyList<string> ReportLines(string label)
     {
-        var lines = _counts.OrderBy(e => e.Key, StringComparer.Ordinal).Select(e => $"STATE foreign {label} {e.Key} {e.Value}").ToList();
+        var lines = _counts.OrderBy(e => e.Key, StringComparer.Ordinal).Select(e => $"STATE foreign {label} {e.Key} {e.Value}")
+            .Concat(_uncompared.OrderBy(e => e.Key, StringComparer.Ordinal).Select(e => $"FOREIGN count {label} {e.Key} {e.Value}")).ToList();
         return lines.Count > 0 ? lines : new[] { $"FOREIGN limitless shapes {label}: nothing counted" };
     }
 }
@@ -248,6 +296,26 @@ internal static class LimitlessGates
     /// <summary>Rule B's patched-callee control: a postfix doing nothing (on the accepted twin's GetFieldsForModel).</summary>
     public static void NoOpPostfix()
     {
+    }
+
+    /// <summary>Rule L: every call counted (uncompared), then the calls on Limitless's storage card (compared).</summary>
+    public static void InnerCountPostfix(CardModel __instance, MethodBase __originalMethod)
+    {
+        LimitlessShapeCounts.CountUncompared("lim-inner-count-postfix all " + LimitlessShapeCounts.Name(__originalMethod));
+        if (__instance != null && __instance.GetType() == LimitlessCloneMemo.StorageCardType)
+        {
+            LimitlessShapeCounts.Count("lim-inner-count-postfix inner " + LimitlessShapeCounts.Name(__originalMethod));
+        }
+    }
+
+    /// <summary><see cref="InnerCountPostfix"/> for CardCmd.Enchant(EnchantmentModel, CardModel, decimal): the card is its argument.</summary>
+    public static void InnerCountStaticPostfix(CardModel card, MethodBase __originalMethod)
+    {
+        LimitlessShapeCounts.CountUncompared("lim-inner-count-postfix all " + LimitlessShapeCounts.Name(__originalMethod));
+        if (card != null && card.GetType() == LimitlessCloneMemo.StorageCardType)
+        {
+            LimitlessShapeCounts.Count("lim-inner-count-postfix inner " + LimitlessShapeCounts.Name(__originalMethod));
+        }
     }
 
     /// <summary>Control: a call (a count) before the gate's branch.</summary>

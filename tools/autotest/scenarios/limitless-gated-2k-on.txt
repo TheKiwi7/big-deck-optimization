@@ -3,9 +3,11 @@
 # Limitless stacked enchantments). Mod on. Compare limitless-gated-2k-off and -on: CHECKSUM/STATE identical.
 # The on side: LimitlessCloneMemo and LimitlessHookSkip keep running past the gated patch (their effects grow), the runtime
 # check lets it stand (TypeGated kept), only a Squeeze saved card would lose the memo (the strict check, per card type).
+# Since rule L (2026-11-18) AddKeyword is judged only for the inner cards whose enchantment's code reaches it (Goopy,
+# RoyallyApproved, Steady...: LimitlessCloneMemo's override closures), not at each recheck of the chain: no runtime line is
+# expected for it (the reference deck's inner cards are mostly Clone enchantments).
 timeout 1500
 expect .*CardModel\.AddKeyword is also patched by bdtest\.foreign\.gated-prefix-squeeze \(patches gated on the listener's type: Squeeze treated as overriding it, gated on the instance\): kept
-expect FOREIGN runtime LimitlessCloneMemo CardModel\.AddKeyword \(TypeGated\) kept [1-9]
 newrun NECROBINDER 1234
 waitfor run 120
 wait 2
