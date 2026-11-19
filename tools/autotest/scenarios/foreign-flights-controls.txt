@@ -11,6 +11,8 @@
 # beforefieldinit initializer reads the clock, reaching another such class on its non-null path: NullSkipped judges no initializer
 # (the postfix runs at every call, a skipped one too, and the first call is never a skip): it stands, souls are still skipped,
 # and it sees real souls.
+# (6) Review of 2026-11-19 (C9): a count postfix on CardPile.get_Type: the pile's type is read from the getter's field, so with
+# another mod's patch on the getter its answer may differ: every soul flies.
 timeout 1200
 expect FOREIGN classify NCardFlyShuffleVfx\.Create: bdtest\.foreign\.create-nearmiss-postfix Postfix .*NullSkipped backs off \(postfix not provably a no-op for a null result\)
 expect CardFlightLimit: NCardFlyShuffleVfx\.Create is also patched by bdtest\.foreign\.create-nearmiss-postfix \(postfixes doing nothing for a null result not enough\): normal game for that part
@@ -26,6 +28,7 @@ expect FOREIGN classify NCardFlyShuffleVfx\.Create: bdtest\.foreign\.create-null
 expect CardFlightLimit: NCardFlyShuffleVfx\.Create is also patched by .*bdtest\.foreign\.create-null-gated-reach-postfix.* \(postfixes doing nothing for a null result: no-ops on the calls this mod skips\): kept
 expect EFFECTCHECK CardFlightLimit grew since 'reach': [0-9]+ -> [1-9]
 expect FOREIGN souls seen by create-null-gated-reach-postfix [1-9]
+expect EFFECTCHECK CardFlightLimit same since 'piletype'
 newrun NECROBINDER 1234
 waitfor run 120
 wait 2
@@ -96,5 +99,16 @@ wait 6
 effects reach end
 effectcheck CardFlightLimit grew reach
 foreignpatch report reach
+foreignpatch remove
+# (6) Review of 2026-11-19 (C9): the pile's type getter patched (read from its field, never called; patched, its answer may differ).
+foreignpatch count-postfix MegaCrit.Sts2.Core.Entities.Cards.CardPile:get_Type
+effects piletype
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+wait 6
+effects piletype end
+effectcheck CardFlightLimit same piletype
 foreignpatch remove
 quit
