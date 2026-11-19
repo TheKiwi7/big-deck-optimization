@@ -417,10 +417,12 @@ $script:CoopProfilesSalt = $null
 # The test tooling a script runs: the scenario engine and its helpers always, each optional part only when one of its commands is
 # in the script (AutoTest.cs reaches them only through those commands; a few CPU-time helpers feed timings, which no comparison
 # reads). A change elsewhere in Bench/ leaves this scenario's baseline valid. A console command counts through 'cmd' and through
-# 'autoslayfirst' (the same Command() at the auto player's first room).
+# 'autoslayfirst' (the same Command() at the auto player's first room). A new script command goes in a part file as a
+# [ScriptCommand] method (AutoTest.PartCommand), with its name added to that file's pattern here (check_scenarios.py checks
+# both): a new case in AutoTest.cs's switch changes AutoTest.cs, which every key counts, and so invalidates every baseline.
 $BaselineBenchParts = [ordered]@{
     'AutoTestRooms.cs'      = '^\s*(autoroom|automap|barrier|continuerun|runstate|restsite|selector|eventoption)\b'
-    'AutoTestMouse.cs'      = '^\s*(hover|checktips|mouseplay|mousesweep|movehovered|buttoninput|controllermap|forcefocus|tipsrebuilt)\b'
+    'AutoTestMouse.cs'      = '^\s*(hover|checktips|mouseplay|mousesweep|movehovered|buttoninput|controllermap|forcefocus|tipsrebuilt|targethover)\b'
     'AutoTestSweep.cs'      = '^\s*(sweep|sweeptimeout)\b'
     'AutoTestLeak.cs'       = '^\s*leakcheck\b'
     'AutoTestTrace.cs'      = '^\s*eventtrace\b'
