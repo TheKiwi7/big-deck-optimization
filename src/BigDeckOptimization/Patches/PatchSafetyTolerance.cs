@@ -2440,15 +2440,26 @@ public static partial class PatchSafety
         {
             return false;
         }
+        Type? outer = _initializerCode;
+        _initializerCode = type;
         try
         {
             return PureInitializerCode(type, initializer);
         }
         finally
         {
+            _initializerCode = outer;
             judging.Remove(type);
         }
     }
+
+    /// <summary>
+    /// The class whose initializer's own code <see cref="PureInitializerCode"/> is reading on this thread (the innermost one): a
+    /// <c>new C()</c> there of C itself (a self-constructing singleton, <c>static readonly C Instance = new C();</c>) runs C's
+    /// constructor inside C's initializer, which the runtime doesn't start again, so that initializer is the one being judged.
+    /// </summary>
+    [ThreadStatic]
+    private static Type? _initializerCode;
 
     /// <summary>The classes whose initializer <see cref="PureInitializer"/> is judging on this thread (R1's cycle guard).</summary>
     [ThreadStatic]
@@ -3101,7 +3112,8 @@ public static partial class PatchSafety
 
     /// <summary>
     /// R1 (2026-11-18): a parameterless constructor of a non-generic, non-abstract class of a mod, its base <c>object</c>, no
-    /// finalizer, its own initializer none or pure (it runs with it), whose code only stores values <see cref="PureInitializer"/>'s
+    /// finalizer, its own initializer none or pure (it runs with it; when that initializer is the one being read, constructing
+    /// its own class, it is the verdict being worked out: <see cref="_initializerCode"/>), whose code only stores values <see cref="PureInitializer"/>'s
     /// rules allow (constants, empty runtime collections, runtime comparers, arrays of constants) in its own instance fields
     /// (<c>ldarg.0; value; stfld</c>), and calls <c>object</c>'s constructor. Unpatched at each answer (the caller records it).
     /// SynergyMod's <c>new SynergyHandlerRegistry()</c>: empty dictionaries and sets.
@@ -3112,7 +3124,7 @@ public static partial class PatchSafety
         {
             if (constructor.DeclaringType is not { } type || type.IsGenericType || type.IsAbstract || !type.IsClass || type.BaseType != typeof(object)
                 || type.GetMethod("Finalize", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly) != null
-                || constructor.IsStatic || !_pureInitializers.GetOrAdd(type, PureInitializer))
+                || constructor.IsStatic || (type != _initializerCode && !_pureInitializers.GetOrAdd(type, PureInitializer)))
             {
                 return false;
             }

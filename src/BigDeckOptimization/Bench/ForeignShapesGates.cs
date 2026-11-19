@@ -903,6 +903,8 @@ public static class ForeignShapesGates
                 return InitGatedPostfix(kind, key, typeof(object), il => il.Emit(OpCodes.Newobj, typeof(GatesRegistry).GetConstructor(Type.EmptyTypes)!));
             case "r1-emitted":
                 return InitGatedPostfix(kind, key, typeof(object), il => il.Emit(OpCodes.Newobj, PureRegistry().GetConstructor(Type.EmptyTypes)!));
+            case "r1-self":
+                return InitGatedPostfix(kind, key, typeof(object), il => il.Emit(OpCodes.Newobj, SelfSingleton().GetConstructor(Type.EmptyTypes)!));
             case "all":
                 // The extensions together, as a mod's patch class holds them (one field kept: the last value).
                 return InitGatedPostfix(kind, key, typeof(object), il =>
@@ -983,6 +985,40 @@ public static class ForeignShapesGates
             ctor.Emit(OpCodes.Call, typeof(object).GetConstructor(Type.EmptyTypes)!);
             ctor.Emit(OpCodes.Ret);
             return _pureRegistry = type.CreateType()!;
+        }
+    }
+
+    private static Type? _selfSingleton;
+
+    /// <summary>
+    /// A self-constructing singleton (<c>static readonly S Instance = new S();</c>, beforefieldinit), its constructor storing an
+    /// empty list (R1's accept shape): its initializer constructs its own class.
+    /// </summary>
+    private static Type SelfSingleton()
+    {
+        lock (Shapes)
+        {
+            if (_selfSingleton != null)
+            {
+                return _selfSingleton;
+            }
+            Emit("self_singleton_anchor", typeof(void), Array.Empty<(Type, string)>(), il => il.Emit(OpCodes.Ret));
+            TypeBuilder type = _module!.DefineType($"BdoGates.self_singleton_{++_serial}", TypeAttributes.Public | TypeAttributes.Class | TypeAttributes.Sealed | TypeAttributes.BeforeFieldInit);
+            FieldBuilder list = type.DefineField("Items", typeof(List<int>), FieldAttributes.Public | FieldAttributes.InitOnly);
+            FieldBuilder instance = type.DefineField("Instance", type, FieldAttributes.Public | FieldAttributes.Static | FieldAttributes.InitOnly);
+            ConstructorBuilder ctorBuilder = type.DefineConstructor(MethodAttributes.Public, CallingConventions.Standard, Type.EmptyTypes);
+            ILGenerator ctor = ctorBuilder.GetILGenerator();
+            ctor.Emit(OpCodes.Ldarg_0);
+            ctor.Emit(OpCodes.Newobj, typeof(List<int>).GetConstructor(Type.EmptyTypes)!);
+            ctor.Emit(OpCodes.Stfld, list);
+            ctor.Emit(OpCodes.Ldarg_0);
+            ctor.Emit(OpCodes.Call, typeof(object).GetConstructor(Type.EmptyTypes)!);
+            ctor.Emit(OpCodes.Ret);
+            ILGenerator init = type.DefineTypeInitializer().GetILGenerator();
+            init.Emit(OpCodes.Newobj, ctorBuilder);
+            init.Emit(OpCodes.Stsfld, instance);
+            init.Emit(OpCodes.Ret);
+            return _selfSingleton = type.CreateType()!;
         }
     }
 
@@ -1368,6 +1404,7 @@ public static class ForeignShapesGates
         MethodInfo r1Emitted = InitCase("r1-emitted");
         yield return new Case("R1 new C() of the patch's own assembly", r1Emitted, postfix, model, gated, true, "Squeeze");
         yield return new Case("R2+T+DEC+R1 in one initializer", InitCase("all"), postfix, model, gated, true, "Squeeze");
+        yield return new Case("R1 new S() of a self-constructing singleton (its initializer constructs S itself)", InitCase("r1-self"), postfix, model, gated, true, "Squeeze");
         yield return new Case("R1 control: the constructor run is patched by another mod (asked at each answer)", r1Emitted, postfix, model, gated, false,
             Before: PatchRegistry, After: UnpatchRegistry);
         yield return new Case("R1 again once that patch is gone", r1Emitted, postfix, model, gated, true, "Squeeze");
