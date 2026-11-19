@@ -25,14 +25,14 @@ expect FOREIGN classify CardPile\.RemoveInternal: bdtest\.foreign\.noop-prefix P
 expect FOREIGN classify CardPile\.RemoveInternal: bdtest\.foreign\.byref-postfix Postfix .*SurroundingOnly backs off \(postfix taking card by reference\)
 expect FOREIGN runtime PileIndex CardPile\.RemoveInternal \(SurroundingOnly\) kept 0 backed off [1-9]
 expect FOREIGN classify CardPile\.RemoveInternal: bdtest\.foreign\.field-postfix Postfix .*SurroundingOnly backs off \(postfix taking the instance's field _cards
-expect HookFilter: Hook\.ShouldPlay is also patched by bdtest\.foreign\.noop-prefix \(void prefixes not enough\): normal game for that part
-expect FOREIGN classify Hook\.ShouldPlay: bdtest\.foreign\.noop-prefix Prefix .*PrefixesOnly backs off \(void prefix running after a prefix of this mod
-expect HookFilter: Hook\.ModifyKeywordsInCombat is also patched by bdtest\.foreign\.noop-postfix \(void prefixes not enough\): normal game for that part
-expect FOREIGN runtime HookFilter Hook\.ModifyKeywordsInCombat \(PrefixesOnly\) kept 0 backed off [1-9]
+expect HookFilter: Hook\.ShouldPlay is also patched by bdtest\.foreign\.noop-prefix \(postfixes and prefixes running before this mod's not enough\): normal game for that part
+expect FOREIGN classify Hook\.ShouldPlay: bdtest\.foreign\.noop-prefix Prefix .*BeforeReplace backs off \(void prefix running after a prefix of this mod
+expect HookFilter: Hook\.ModifyKeywordsInCombat is also patched by bdtest\.foreign\.noop-postfix \(postfixes and prefixes running before this mod's: run around this mod's code as without it\): kept
+expect FOREIGN runtime HookFilter Hook\.ModifyKeywordsInCombat \(BeforeReplace\) kept [1-9]
 expect FOREIGN runtime HookSkip Hook\.ModifyKeywordsInCombat \(TranspiledOnly\) kept [1-9]
 expect FOREIGN classify Hook\.ModifyEnergyCostInCombat: bdtest\.foreign\.runoriginal-postfix Postfix .*SurroundingOnly backs off \(postfix reading __runOriginal\)
 expect HookSkip: Hook\.ModifyEnergyCostInCombat is also patched by bdtest\.foreign\.runoriginal-postfix \(prefixes and postfixes around the transpiled body: run around this mod's code as without it\): kept
-expect FOREIGN classify Hook\.ShouldAllowHitting: bdtest\.foreign\.dup-prefix Prefix .*priority 800: .*PrefixesOnly backs off \(void prefix running after a prefix of this mod
+expect FOREIGN classify Hook\.ShouldAllowHitting: bdtest\.foreign\.dup-prefix Prefix .*priority 800: .*BeforeReplace backs off \(void prefix running after a prefix of this mod
 expect FOREIGN classify Hook\.AfterEnergySpent: bdtest\.foreign\.argsrename-prefix Prefix .*SurroundingOnly backs off \(patch renaming its parameters
 expect FOREIGN classify Hook\.BeforeHandDraw: bdtest\.foreign\.factory-postfix Postfix .*SurroundingOnly backs off \(factory patch method
 expect FOREIGN runtime HookSkip Hook\.BeforeHandDraw \(TranspiledOnly\) kept [1-9][0-9]* backed off 0
@@ -72,13 +72,16 @@ foreignpatch inner-postfix MegaCrit.Sts2.Core.Hooks.Hook:ModifyBlock
 foreignpatch noop-prefix MegaCrit.Sts2.Core.Entities.Cards.CardPile:RemoveInternal priority 0
 foreignpatch byref-postfix MegaCrit.Sts2.Core.Entities.Cards.CardPile:RemoveInternal
 foreignpatch field-postfix MegaCrit.Sts2.Core.Entities.Cards.CardPile:RemoveInternal
-# A void prefix Harmony runs after HookFilter's mirror (same priority, registered later): may never run, so not tolerated.
-foreignpatch noop-prefix MegaCrit.Sts2.Core.Hooks.Hook:ShouldPlay
-# A postfix on a HookFilter mirror: the mirror skips the original (no postfix there), HookSkip's walk keeps it.
+# A void prefix Harmony runs after HookFilter's mirror (Priority.Last as the mirror, registered later): may never run, so not
+# tolerated. One at the default priority sorts before the mirror (Priority.Last since 2026-11-18) and stands (foreign-hookfilter).
+foreignpatch noop-prefix MegaCrit.Sts2.Core.Hooks.Hook:ShouldPlay priority 0
+# A no-op postfix on a HookFilter mirror: kept since 2026-11-18 (it sees the mirror's answer, the original's, and none runs when
+# a listener threw: the mirror rethrows), HookSkip's walk keeps it too. Its controls: foreign-hookfilter.
 foreignpatch noop-postfix MegaCrit.Sts2.Core.Hooks.Hook:ModifyKeywordsInCombat
 # A postfix reading __runOriginal (false behind a prefix of this mod that skipped the original): nowhere.
 foreignpatch runoriginal-postfix MegaCrit.Sts2.Core.Hooks.Hook:ModifyEnergyCostInCombat
-# One void prefix registered twice, before HookFilter's mirror and after it: the later copy decides.
+# One void prefix registered twice, before HookFilter's mirror (Priority.First) and after it (Priority.Last, registered later):
+# the later copy decides.
 foreignpatch dup-prefix MegaCrit.Sts2.Core.Hooks.Hook:ShouldAllowHitting
 # A prefix renaming a parameter to __args (Harmony writes the array back), and a factory postfix (its code made by Harmony's call).
 foreignpatch argsrename-prefix MegaCrit.Sts2.Core.Hooks.Hook:AfterEnergySpent

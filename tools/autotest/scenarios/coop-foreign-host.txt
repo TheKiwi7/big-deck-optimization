@@ -3,7 +3,8 @@
 # synthetic patches' counts, 'STATE foreign'), and the game's own checksums between the peers. Every machine needs the same
 # bigdeck/ref.run.
 timeout 2400
-expect FOREIGN runtime HookFilter Hook\.ModifyKeywordsInCombat \(PrefixesOnly\) kept [1-9]
+expect FOREIGN runtime HookFilter Hook\.ModifyKeywordsInCombat \(BeforeReplace\) kept [1-9]
+expect FOREIGN runtime HookFilter Hook\.ModifyEnergyCostInCombat \(BeforeReplace\) kept [1-9]
 expect FOREIGN runtime PileIndex CardPile\.AddInternal \(BeforeReplace\) kept [1-9]
 expect FOREIGN runtime HookSkip AbstractModel\.AfterCardPlayed \(TypeGated\) kept [1-9]
 mplobby NECROBINDER 2

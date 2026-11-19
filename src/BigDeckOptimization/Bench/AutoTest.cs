@@ -1528,15 +1528,16 @@ public static partial class AutoTest
                     break;
                 case "fakeconflict":
                     // Another "mod" patching a game method (no-op postfix under another Harmony id, or with "boolprefix" a prefix
-                    // returning true at the default priority, installed after this mod's patches so sorted after a prefix of this mod: no
-                    // tolerance lets that stand, BeforeReplace included, for a method whose checks let postfixes stand): the
+                    // returning true at Priority.Last, installed after this mod's patches so sorted after every prefix of this mod,
+                    // HookFilter's mirrors at Priority.Last included: no tolerance lets that stand, BeforeReplace included, for a
+                    // method whose checks let postfixes stand): the
                     // optimization using it must back off and report it. Other shapes: foreignpatch (ForeignPatches).
                     string[] conflictArgs = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                     MethodInfo conflictTarget = ConflictTarget(conflictArgs[0]);
                     bool boolPrefix = conflictArgs.Length > 1 && conflictArgs[1] == "boolprefix";
                     if (boolPrefix)
                     {
-                        new Harmony("bdtest.fakeconflict").Patch(conflictTarget, prefix: new HarmonyMethod(typeof(AutoTest), nameof(TruePrefix)));
+                        new Harmony("bdtest.fakeconflict").Patch(conflictTarget, prefix: new HarmonyMethod(typeof(AutoTest), nameof(TruePrefix)) { priority = Priority.Last });
                     }
                     else
                     {

@@ -1,0 +1,98 @@
+# HookFilter's mirrors, ReplayStateSkip and JoinMismatchNote next to other mods' patches (DESIGN "Re-verification of the leads
+# (2026-11-18)": Priority.Last on this mod's skipping prefixes, X). Synthetic patches of "another mod" (Harmony ids
+# bdtest.foreign.*, Bench/ForeignPatches.cs, Bench/ForeignShapesHookFilter.cs); the expect lines must all be seen. FOREIGN runtime
+# lines come from the runtime checks only ("kept 0 backed off N": a back-off the runtime itself made), the kept / normal game
+# lines from either the runtime or the preflight (bdopt why).
+# Accepted: a void prefix at the default priority (sorted before the mirror, Priority.Last since 2026-11-18) and a no-op postfix
+# on ShouldAllowHitting, a bool prefix at priority 800 on ShouldPlay (BeforeReplace since 2026-11-18). Controls (the mirror runs
+# the original there): a bool prefix at Priority.Last registered after the mirror (keywords), a finalizer (energy cost color
+# helper), a postfix writing a ref argument back (star cost color helper), a postfix reading __runOriginal (damage).
+# R3's controls on the damage defaults (no gate read: the damage lists stay the game's): a static write before the type test, a gated
+# postfix in a class with a static initializer, a gated postfix whose own method is patched. Its accepted case:
+# foreign-hookfilter-2k-on/off.
+# ReplayStateSkip (rule "sorted before", BeforeSkip): a bool prefix at the default priority on RecordChecksum (sorted before its
+# prefix, Priority.Last) stands, the states above 1,000 combat cards still left out (game v0.111+ records a solo combat's
+# checksums); a postfix and a bool prefix sorted after it back off (synthetic, classified only; a real postfix there:
+# audit-conflict-display-1k-on).
+# A listener throwing once inside the energy cost mirror (foreignpatch hookfilter throwonce, Spiked Gauntlets' override): the same
+# exception as the game's loop after the same calls, no postfix run, HookFilter not faulted.
+timeout 900
+expect HookFilter: Hook\.ShouldAllowHitting is also patched by .*bdtest\.foreign\.noop-prefix.* \(postfixes and prefixes running before this mod's: run around this mod's code as without it\): kept
+expect HookFilter: Hook\.ShouldAllowHitting is also patched by .*bdtest\.foreign\.noop-postfix.* \(postfixes and prefixes running before this mod's: run around this mod's code as without it\): kept
+expect FOREIGN classify Hook\.ShouldAllowHitting: bdtest\.foreign\.noop-prefix Prefix .*priority 400: .*BeforeReplace tolerated
+expect FOREIGN runtime HookFilter Hook\.ShouldAllowHitting \(BeforeReplace\) kept [1-9]
+expect HookFilter: Hook\.ShouldPlay is also patched by bdtest\.foreign\.bool-prefix \(postfixes and prefixes running before this mod's: run around this mod's code as without it\): kept
+expect FOREIGN runtime HookFilter Hook\.ShouldPlay \(BeforeReplace\) kept [1-9]
+expect HookFilter: Hook\.ModifyKeywordsInCombat is also patched by bdtest\.foreign\.bool-prefix \(postfixes and prefixes running before this mod's not enough\): normal game for that part
+expect FOREIGN classify Hook\.ModifyKeywordsInCombat: bdtest\.foreign\.bool-prefix Prefix .*priority 0: .*BeforeReplace backs off \(bool prefix running after a prefix of this mod
+expect FOREIGN runtime HookFilter Hook\.ModifyKeywordsInCombat \(BeforeReplace\) kept 0 backed off [1-9]
+expect HookFilter: CardCostHelper\.TryModifyEnergyCostWithHooks is also patched by bdtest\.foreign\.noop-finalizer \(postfixes and prefixes running before this mod's not enough\): normal game for that part
+expect FOREIGN classify CardCostHelper\.TryModifyStarCostWithHooks: bdtest\.foreign\.hf-ref-write-postfix Postfix .*BeforeReplace backs off \(postfix taking hookModifiedCost by reference\)
+expect HookFilter: CardCostHelper\.TryModifyStarCostWithHooks is also patched by bdtest\.foreign\.hf-ref-write-postfix \(postfixes and prefixes running before this mod's not enough\): normal game for that part
+expect FOREIGN classify Hook\.ModifyDamageInternal: bdtest\.foreign\.runoriginal-postfix Postfix .*BeforeReplace backs off \(postfix reading __runOriginal\)
+expect HookFilter: Hook\.ModifyDamageInternal is also patched by bdtest\.foreign\.runoriginal-postfix \(postfixes and prefixes running before this mod's not enough\): normal game for that part
+expect HookFilter: AbstractModel\.ModifyDamageMultiplicative is also patched by bdtest\.foreign\.nearmiss-postfix-squeeze \(patches gated on the listener's type not enough\): normal game for that part
+expect HookFilter: AbstractModel\.ModifyDamageCap is also patched by bdtest\.foreign\.cctor-gated-postfix-squeeze \(patches gated on the listener's type not enough\): normal game for that part
+expect HookFilter: AbstractModel\.ModifyDamageAdditive is also patched by bdtest\.foreign\.gated-patched-postfix-squeeze \(patches gated on the listener's type not enough\): normal game for that part
+expect FOREIGN runtime HookFilter AbstractModel\.ModifyDamageAdditive \(TypeGated\) kept 0 backed off [1-9]
+expect FOREIGN hookfilter gatedlists ModifyDamageAdditive: not filtered
+expect ReplayStateSkip: CombatReplayWriter\.RecordChecksum is also patched by bdtest\.foreign\.bool-prefix \(prefixes running before this mod's: run around this mod's code as without it\): kept
+expect FOREIGN runtime ReplayStateSkip CombatReplayWriter\.RecordChecksum \(BeforeSkip\) kept [1-9]
+expect EFFECTCHECK ReplayStateSkip grew since 'start': [0-9]+ -> [1-9]
+expect FOREIGN classify CombatReplayWriter\.RecordChecksum \(synthetic\): bdtest\.foreign\.synthetic-postfix-default Postfix .*BeforeSkip backs off \(postfix \(a prefix of this mod skips the original here
+expect FOREIGN classify CombatReplayWriter\.RecordChecksum \(synthetic\): bdtest\.foreign\.synthetic-bool-prefix-default Prefix .*BeforeSkip tolerated
+expect FOREIGN classify CombatReplayWriter\.RecordChecksum \(synthetic\): bdtest\.foreign\.synthetic-bool-prefix-last Prefix .*BeforeSkip backs off \(bool prefix running after a prefix of this mod
+expect FOREIGN hookfilter throwonce TryModifyEnergyCostInCombat(Late)?: thrower .*: same as the game's
+expect EFFECTCHECK HookFilter\.Hitting grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK HookFilter\.ShouldPlay grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK HookFilter\.EnergyCost grew since 'start': [0-9]+ -> [1-9]
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd relic add SPIKED_GAUNTLETS
+enemyhp 999999
+# Accepted (rule 1: a void prefix at the default priority, registered after the mirror, sorts before it; X: a no-op postfix, a bool
+# prefix sorted before the mirror).
+foreignpatch noop-prefix MegaCrit.Sts2.Core.Hooks.Hook:ShouldAllowHitting
+foreignpatch noop-postfix MegaCrit.Sts2.Core.Hooks.Hook:ShouldAllowHitting
+foreignpatch bool-prefix MegaCrit.Sts2.Core.Hooks.Hook:ShouldPlay priority 800
+# Controls: each on its own mirrored method.
+foreignpatch bool-prefix MegaCrit.Sts2.Core.Hooks.Hook:ModifyKeywordsInCombat priority 0
+foreignpatch noop-finalizer MegaCrit.Sts2.Core.Helpers.Models.CardCostHelper:TryModifyEnergyCostWithHooks
+foreignpatch hf-ref-write-postfix MegaCrit.Sts2.Core.Helpers.Models.CardCostHelper:TryModifyStarCostWithHooks
+foreignpatch runoriginal-postfix MegaCrit.Sts2.Core.Hooks.Hook:ModifyDamageInternal
+foreignpatch nearmiss-postfix MegaCrit.Sts2.Core.Models.AbstractModel:ModifyDamageMultiplicative squeeze
+foreignpatch cctor-gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:ModifyDamageCap squeeze
+foreignpatch gated-patched-postfix MegaCrit.Sts2.Core.Models.AbstractModel:ModifyDamageAdditive squeeze
+foreignpatch bool-prefix MegaCrit.Sts2.Core.Multiplayer.Replay.CombatReplayWriter:RecordChecksum
+foreignpatch hookfilter synthetic MegaCrit.Sts2.Core.Multiplayer.Replay.CombatReplayWriter:RecordChecksum
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+effects start
+checksum start
+play 3
+waitfor idle 120
+endturn
+waitfor idle 300
+checksum t1 end
+play 3
+waitfor idle 120
+wait 3
+foreignpatch hookfilter throwonce
+foreignpatch hookfilter gatedlists
+wait 1
+foreignpatch report end
+effects end
+effectcheck HookFilter.Hitting grew start
+effectcheck HookFilter.ShouldPlay grew start
+effectcheck HookFilter.EnergyCost grew start
+effectcheck ReplayStateSkip grew start
+cmd bdopt why
+cmd bdperf conflicts
+cmd kill all
+waitfor nocombat 300
+wait 2
+foreignpatch remove
+quit

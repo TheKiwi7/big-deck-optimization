@@ -41,9 +41,11 @@ public static class ReplayStateSkip
     {
         _record = Reflect.Method(typeof(CombatReplayWriter), "RecordChecksum") ?? throw new MissingMethodException(nameof(CombatReplayWriter), "RecordChecksum");
         PatchSafety.RequireFingerprint(_record, RecordChecksumFingerprint);
-        PatchGuard.Patch(harmony, _record, prefix: new HarmonyMethod(typeof(ReplayStateSkip), nameof(Prefix)));
+        // Last of the prefixes: another mod's prefix registered later at its default priority runs before it, as before the
+        // original without this mod (only one at Priority.Last registered after this mod's sorts after it).
+        PatchGuard.Patch(harmony, _record, prefix: new HarmonyMethod(typeof(ReplayStateSkip), nameof(Prefix)) { priority = Priority.Last });
         Applied = true;
-        PatchSafety.Watch(Name, _record); // What Prefix asks about (display only).
+        PatchSafety.Watch(Name, _record, PatchTolerance.BeforeSkip); // What Prefix asks about (display only).
         PatchSafety.WholePatch(Name);
     }
 
@@ -51,8 +53,10 @@ public static class ReplayStateSkip
     {
         // Only where the game would add to the recording: disabled or out of combat it does nothing (nothing to count); not
         // recording, its own error stays.
-        // No tolerance: the entry is left out, its patches wouldn't run.
-        if (!Enabled || !__instance.IsEnabled || !__instance.IsRecordingReplay || !CombatManager.Instance.IsInProgress || PatchSafety.IsPatchedByOthers(_record))
+        // BeforeSkip: prefixes Harmony runs before this one stand (a bool one returning false skips this prefix as it skips the
+        // original; one returning true or a void one ran as before the original). Postfixes back off: after the skip they would
+        // run on a recording without the entry.
+        if (!Enabled || !__instance.IsEnabled || !__instance.IsRecordingReplay || !CombatManager.Instance.IsInProgress || PatchSafety.IsPatchedByOthers(_record, PatchTolerance.BeforeSkip))
         {
             return true;
         }
