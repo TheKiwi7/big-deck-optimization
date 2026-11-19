@@ -18,7 +18,11 @@
 # Review of 2026-11-19 (C2): a counting postfix on one closed instantiation of a generic member (Bench/ForeignShapesLimitless.cs
 # lim-generic-count-postfix: Harmony patches the instantiation, the chain and the closures name the definition, on which Harmony
 # finds nothing): (g1) CardCmd.Enchant<Sharp>, the chain's second-enchant entry: a game card with an enchantment (Clumsy, no override
-# on the way: it reaches that group) no longer kept, the storage card's one still is; (g2) <>z__ReadOnlySingleElementList<int>'s
+# on the way: it reaches that group) no longer kept, the storage card's one still is (run last, after every fight: Harmony
+# patches the code all reference-type instantiations share, compiled for Sharp, and unpatching leaves it so: Enchant<T> then
+# makes a Sharp for every T, and Limitless's set_Enchantment prefix, calling Enchant<MultiEnchantment> on a card without an
+# enchantment, recursed without end at the next reward's enchanted card: a stack overflow, the game's and Limitless's code
+# only); (g2) <>z__ReadOnlySingleElementList<int>'s
 # constructor, in Goopy's OnEnchant closure: a Goopy content no longer kept, a Sharp one still is. (g3, C6) a prefix gated on
 # Squeeze on CardModel.AddKeyword (Bench/ForeignPatches.cs gated-prefix): a closure's methods are judged strictly, gates included
 # (its code may call them on another card): Goopy no longer kept (it was, the storage card not being a Squeeze), Sharp still is.
@@ -158,14 +162,6 @@ foreignpatch limitless reach storage Sharp 1 l3
 foreignpatch limitless reach storage Sharp 0 l3
 foreignpatch remove
 wait 3
-# (g1) Review C2: one closed instantiation of a generic chain member patched.
-foreignpatch limitless reach Clumsy Sharp 0 base
-foreignpatch lim-generic-count-postfix MegaCrit.Sts2.Core.Commands.CardCmd:Enchant MegaCrit.Sts2.Core.Models.Enchantments.Sharp
-wait 3
-foreignpatch limitless reach Clumsy Sharp 0 g1
-foreignpatch limitless reach storage Sharp 0 g1
-foreignpatch limitless remove
-wait 3
 # (g2) Review C2: one closed instantiation of a generic type's constructor in Goopy's closure patched.
 foreignpatch lim-generic-count-postfix <>z__ReadOnlySingleElementList`1:.ctor System.Int32
 wait 3
@@ -298,6 +294,15 @@ waitfor nocombat 300
 wait 2
 effectcheck LimitlessCloneMemo same b6
 foreignpatch report b6
+foreignpatch limitless remove
+wait 3
+# (g1) Review C2: one closed instantiation of a generic chain member patched. Last, after every fight: patching Enchant<Sharp>
+# rewrites the code Enchant<T> shares for every reference type T, and unpatching doesn't restore it (see the header).
+foreignpatch limitless reach Clumsy Sharp 0 base
+foreignpatch lim-generic-count-postfix MegaCrit.Sts2.Core.Commands.CardCmd:Enchant MegaCrit.Sts2.Core.Models.Enchantments.Sharp
+wait 3
+foreignpatch limitless reach Clumsy Sharp 0 g1
+foreignpatch limitless reach storage Sharp 0 g1
 foreignpatch limitless remove
 wait 3
 cmd bdopt on

@@ -48,7 +48,10 @@ public static class ForeignShapesLimitless
     /// <summary>
     /// <c>foreignpatch lim-generic-count-postfix &lt;Namespace.Type:Method&gt; &lt;TypeArgument&gt;</c> (review C2): a counting postfix
     /// (uncompared) on one closed instantiation of a generic method, or of a generic type's method (<c>Type`1:.ctor</c> for its one
-    /// constructor), as Harmony patches a generic member: the chain and the closures name the definition.
+    /// constructor), as Harmony patches a generic member: the chain and the closures name the definition. A reference-type
+    /// argument patches the code every reference-type instantiation shares, compiled for that argument, and unpatching leaves it
+    /// so (CardCmd.Enchant&lt;Sharp&gt; makes a Sharp for any T from then on: Limitless's set_Enchantment prefix then recursed until the
+    /// stack overflowed at the next enchanted card): run such a control after the session's last fight.
     /// </summary>
     private static IReadOnlyList<string> GenericCountPostfix(string spec, string argument)
     {
