@@ -27,8 +27,11 @@ CATALOGUE = {
     'pace-checkpoint': 'A checksum or state taken right after a fight/obtain/play while effects still run: the two sides differ by pace. '
                        'Confirm: the scenario waits (`waitfor idle`) before that line? rerun the pair with par.ps1 -Instant or the '
                        '*-instant variant; identical there = pace.',
-    'limitless-rng': 'Limitless draws per-player RNG in an order that depends on timing. Confirm: the mismatch is an RNG/shuffle '
-                     'value, the log lists Limitless, and the same scenario without Limitless (or mod off on both sides) differs too.',
+    'limitless-rng': 'Limitless\'s per-player combat RNG on v0.107.x co-op: the end of turn runs inside whichever player\'s '
+                     'ReadyToBeginEnemyTurnAction executed last (a network race), which picks the RNG slot. Labelled only when the '
+                     'log has Limitless\'s "per-player combat rng prefix: ACTIVE" line, release=v0.107.x and two players\' ready '
+                     'actions. Confirm: the mismatch is an RNG/shuffle value after an enemy turn, the last ready player differs '
+                     'between the sides (parcoop reports PACE), and mod off on both sides differs the same way.',
     'modoff-slow': 'A mod-off side at 8,400+ cards: the game itself takes minutes per action and the scenario timeout fires. Confirm: '
                    'the log is a mod-off side, the deck is huge, the failing line is a wait/timeout, no mod line near it.',
     'expect-drift': 'A positive control\'s expected text no longer matches: the game or the mod changed the wording. Confirm: the '
@@ -125,6 +128,21 @@ def partner_problem_keys(log, cache):
     return {normalize(p) for p in cache[other_path].problems}
 
 
+READY_OWNER = re.compile(r'Executing action: ReadyToBeginEnemyTurnAction (\d+)')
+
+
+def limitless_rng_race(log):
+    """Whether the log can hold Limitless's per-player RNG race (DESIGN "Proof run 2: audit-coopdeath"; parcoop.ps1's
+    Get-LastReadyOwners): Limitless's per-player combat RNG prefix active (its own log line), v0.107.x (later versions resume the
+    turn loop in its own context), and a co-op combat (two players' ReadyToBeginEnemyTurnAction). Limitless merely loaded is no
+    evidence: a mismatch of this mod's own (a CardSortKeys shuffle) beside it must stay a lead."""
+    if not any('per-player combat rng prefix: ACTIVE' in x for x in log.lines):
+        return False
+    if not any('release=v0.107.' in x for x in log.lines):
+        return False
+    return len({m.group(1) for x in log.lines if (m := READY_OWNER.search(x))}) >= 2
+
+
 def label_problem(log, problem, number, partners):
     """(label, detail) of one problem, or (None, None)."""
     if normalize(problem) in partners:
@@ -147,7 +165,7 @@ def label_problem(log, problem, number, partners):
     if MISMATCH.search(problem):
         before = context_before(log.lines, number, 12)
         text = ' '.join(before) + ' ' + problem
-        if 'Limitless' in ' '.join(log.lines[:600]) and re.search(r'\bRng\b|\bRNG\b|random|shuffle', text):
+        if limitless_rng_race(log) and re.search(r'\bRng\b|\bRNG\b|random|shuffle', text):
             return 'limitless-rng', None
         cmd = max((i for i, x in enumerate(before) if ECHO_CMD.search(x)), default=-1)
         if cmd >= 0 and not any(WAITED.search(x) for x in before[cmd + 1:]):
