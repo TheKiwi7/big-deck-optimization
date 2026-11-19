@@ -32,6 +32,7 @@ public static class ForeignShapesGates
         "gates-debug-gated-postfix", "gates-debug-gated-prefix", "gates-bitor-gated-postfix", "gates-bool-local-postfix",
         "gates-copy-prologue-postfix", "gates-call-first-postfix",
         "gates-getter-gated-postfix", "gates-getter-ungated-postfix",
+        "gates-init-extensions-postfix", "gates-init-ambiguous-postfix",
     };
 
     /// <summary>Whether a <c>foreignpatch</c> line is one of this file's.</summary>
@@ -84,6 +85,8 @@ public static class ForeignShapesGates
             "gates-call-first-postfix" => (CallFirstPostfix(key), PatchSafety.PatchKind.Postfix),
             "gates-getter-gated-postfix" => (FlagOn(GetterGatedPostfix(key)), PatchSafety.PatchKind.Postfix),
             "gates-getter-ungated-postfix" => (FlagOn(GetterUngatedPostfix(key)), PatchSafety.PatchKind.Postfix),
+            "gates-init-extensions-postfix" => (InitCase("all", key), PatchSafety.PatchKind.Postfix),
+            "gates-init-ambiguous-postfix" => (InitCase("ambiguous", key), PatchSafety.PatchKind.Postfix),
             _ => throw new ArgumentException("unknown gates shape " + shape),
         };
     }
@@ -697,10 +700,354 @@ public static class ForeignShapesGates
     /// <summary>A static method of this class (another assembly than the emitted shapes', its initializer not pure): rule I's control.</summary>
     public static object ReachMarker(int value) => value;
 
+    // --- The initializer extensions (R2, PropertySetter, Type.GetMethod, T, DEC, R1, R1g): the patch's own class's initializer ---
+
+    private const FieldAttributes StaticField = FieldAttributes.Public | FieldAttributes.Static;
+
+    private static readonly MethodInfo TypeFromHandle = typeof(Type).GetMethod(nameof(Type.GetTypeFromHandle))!;
+
+    /// <summary><c>typeof(T)</c>.</summary>
+    private static void EmitTypeOf(ILGenerator il, Type type)
+    {
+        il.Emit(OpCodes.Ldtoken, type);
+        il.Emit(OpCodes.Call, TypeFromHandle);
+    }
+
+    private static readonly MethodInfo AccessMethod = typeof(AccessTools).GetMethod(nameof(AccessTools.Method), new[] { typeof(Type), typeof(string), typeof(Type[]), typeof(Type[]) })!;
+
+    /// <summary><c>AccessTools.Method(typeof(T), name, null, null)</c>.</summary>
+    private static void EmitMethodLookup(ILGenerator il, Type type, string name)
+    {
+        EmitTypeOf(il, type);
+        il.Emit(OpCodes.Ldstr, name);
+        il.Emit(OpCodes.Ldnull);
+        il.Emit(OpCodes.Ldnull);
+        il.Emit(OpCodes.Call, AccessMethod);
+    }
+
+    /// <summary>The C# form of <c>?? throw new MissingMethodException(type, name)</c> right after a lookup left on the stack.</summary>
+    private static void EmitOrThrow(ILGenerator il, string type, string name)
+    {
+        Label found = il.DefineLabel();
+        il.Emit(OpCodes.Dup);
+        il.Emit(OpCodes.Brtrue_S, found);
+        il.Emit(OpCodes.Pop);
+        il.Emit(OpCodes.Ldstr, type);
+        il.Emit(OpCodes.Ldstr, name);
+        il.Emit(OpCodes.Newobj, typeof(MissingMethodException).GetConstructor(new[] { typeof(string), typeof(string) })!);
+        il.Emit(OpCodes.Throw);
+        il.MarkLabel(found);
+    }
+
+    /// <summary><c>new decimal(lo, 0, 0, false, scale)</c>.</summary>
+    private static void EmitDecimal(ILGenerator il, int lo, int scale)
+    {
+        il.Emit(OpCodes.Ldc_I4, lo);
+        il.Emit(OpCodes.Ldc_I4_0);
+        il.Emit(OpCodes.Ldc_I4_0);
+        il.Emit(OpCodes.Ldc_I4_0);
+        il.Emit(OpCodes.Ldc_I4, scale);
+        il.Emit(OpCodes.Newobj, typeof(decimal).GetConstructor(new[] { typeof(int), typeof(int), typeof(int), typeof(bool), typeof(byte) })!);
+    }
+
+    /// <summary>
+    /// A gated postfix (<c>if (__instance is Squeeze) Hit(key);</c>) in a class whose beforefieldinit initializer runs
+    /// <paramref name="init"/>, which leaves one value stored in the static field it is given (<c>object Value</c>, or
+    /// <c>decimal Number</c> for <c>"dec"</c> kinds).
+    /// </summary>
+    private static MethodInfo InitGatedPostfix(string name, string key, Type valueType, Action<ILGenerator> init)
+    {
+        FieldBuilder? value = null;
+        return Emit("init_" + name, typeof(void), InstanceOnly, il =>
+        {
+            Label end = il.DefineLabel();
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Isinst, typeof(Squeeze));
+            il.Emit(OpCodes.Brfalse_S, end);
+            EmitHit(il, key);
+            il.MarkLabel(end);
+            il.Emit(OpCodes.Ret);
+        }, (il, _) =>
+        {
+            init(il);
+            il.Emit(OpCodes.Stsfld, value!);
+            il.Emit(OpCodes.Ret);
+        }, true, type => value = type.DefineField("Value", valueType, StaticField));
+    }
+
+    /// <summary>The initializer of an extension case (see the self-test's names); <paramref name="key"/> for the installable ones.</summary>
+    private static MethodInfo InitCase(string kind, string key = "selftest")
+    {
+        switch (kind)
+        {
+            case "r2-method":
+                return InitGatedPostfix(kind, key, typeof(object), il => EmitMethodLookup(il, typeof(GatesCounter), nameof(GatesCounter.Hit)));
+            case "r2-property":
+                return InitGatedPostfix(kind, key, typeof(object), il =>
+                {
+                    EmitTypeOf(il, typeof(GatesCounter));
+                    il.Emit(OpCodes.Ldstr, nameof(GatesCounter.Config));
+                    il.Emit(OpCodes.Call, typeof(AccessTools).GetMethod(nameof(AccessTools.Property), new[] { typeof(Type), typeof(string) })!);
+                });
+            case "property-setter":
+                return InitGatedPostfix(kind, key, typeof(object), il =>
+                {
+                    EmitTypeOf(il, typeof(GatesCounter));
+                    il.Emit(OpCodes.Ldstr, nameof(GatesCounter.Settable));
+                    il.Emit(OpCodes.Call, typeof(AccessTools).GetMethod(nameof(AccessTools.PropertySetter), new[] { typeof(Type), typeof(string) })!);
+                });
+            case "getmethod-types":
+                // typeof(GatesCounter).GetMethod("Hit", new[] { typeof(string) })
+                return InitGatedPostfix(kind, key, typeof(object), il =>
+                {
+                    EmitTypeOf(il, typeof(GatesCounter));
+                    il.Emit(OpCodes.Ldstr, nameof(GatesCounter.Hit));
+                    il.Emit(OpCodes.Ldc_I4_1);
+                    il.Emit(OpCodes.Newarr, typeof(Type));
+                    il.Emit(OpCodes.Dup);
+                    il.Emit(OpCodes.Ldc_I4_0);
+                    EmitTypeOf(il, typeof(string));
+                    il.Emit(OpCodes.Stelem_Ref);
+                    il.Emit(OpCodes.Callvirt, typeof(Type).GetMethod(nameof(Type.GetMethod), new[] { typeof(string), typeof(Type[]) })!);
+                });
+            case "getmethod-flags":
+                return InitGatedPostfix(kind, key, typeof(object), il =>
+                {
+                    EmitTypeOf(il, typeof(GatesCounter));
+                    il.Emit(OpCodes.Ldstr, nameof(GatesCounter.Hit));
+                    il.Emit(OpCodes.Ldc_I4, (int)(BindingFlags.Public | BindingFlags.Static));
+                    il.Emit(OpCodes.Callvirt, typeof(Type).GetMethod(nameof(Type.GetMethod), new[] { typeof(string), typeof(BindingFlags) })!);
+                });
+            case "t-found":
+                return InitGatedPostfix(kind, key, typeof(object), il =>
+                {
+                    EmitMethodLookup(il, typeof(GatesCounter), nameof(GatesCounter.Hit));
+                    EmitOrThrow(il, nameof(GatesCounter), nameof(GatesCounter.Hit));
+                });
+            case "dec":
+                return InitGatedPostfix(kind, key, typeof(decimal), il => EmitDecimal(il, 15, 1));
+            case "dec-int":
+                return InitGatedPostfix(kind, key, typeof(decimal), il =>
+                {
+                    il.Emit(OpCodes.Ldc_I4_7);
+                    il.Emit(OpCodes.Newobj, typeof(decimal).GetConstructor(new[] { typeof(int) })!);
+                });
+            case "r1":
+                return InitGatedPostfix(kind, key, typeof(object), il => il.Emit(OpCodes.Newobj, typeof(GatesRegistry).GetConstructor(Type.EmptyTypes)!));
+            case "r1-emitted":
+                return InitGatedPostfix(kind, key, typeof(object), il => il.Emit(OpCodes.Newobj, PureRegistry().GetConstructor(Type.EmptyTypes)!));
+            case "all":
+                // The extensions together, as a mod's patch class holds them (one field kept: the last value).
+                return InitGatedPostfix(kind, key, typeof(object), il =>
+                {
+                    EmitMethodLookup(il, typeof(GatesCounter), nameof(GatesCounter.Hit));
+                    EmitOrThrow(il, nameof(GatesCounter), nameof(GatesCounter.Hit));
+                    il.Emit(OpCodes.Pop);
+                    EmitDecimal(il, 25, 2);
+                    il.Emit(OpCodes.Pop);
+                    il.Emit(OpCodes.Newobj, typeof(GatesRegistry).GetConstructor(Type.EmptyTypes)!);
+                });
+            // Controls.
+            case "ambiguous":
+                return InitGatedPostfix(kind, key, typeof(object), il => EmitMethodLookup(il, typeof(Math), nameof(Math.Max)));
+            case "computed-name":
+                return InitGatedPostfix(kind, key, typeof(object), il =>
+                {
+                    EmitTypeOf(il, typeof(GatesCounter));
+                    il.Emit(OpCodes.Ldsfld, typeof(GatesCounter).GetField(nameof(GatesCounter.LookupName))!);
+                    il.Emit(OpCodes.Ldnull);
+                    il.Emit(OpCodes.Ldnull);
+                    il.Emit(OpCodes.Call, AccessMethod);
+                });
+            case "method-with-types":
+                return InitGatedPostfix(kind, key, typeof(object), il =>
+                {
+                    EmitTypeOf(il, typeof(GatesCounter));
+                    il.Emit(OpCodes.Ldstr, nameof(GatesCounter.Hit));
+                    il.Emit(OpCodes.Ldc_I4_0);
+                    il.Emit(OpCodes.Newarr, typeof(Type));
+                    il.Emit(OpCodes.Ldnull);
+                    il.Emit(OpCodes.Call, AccessMethod);
+                });
+            case "t-missing":
+                return InitGatedPostfix(kind, key, typeof(object), il =>
+                {
+                    EmitMethodLookup(il, typeof(GatesCounter), "NoSuchMethod");
+                    EmitOrThrow(il, nameof(GatesCounter), "NoSuchMethod");
+                });
+            case "dec-scale":
+                return InitGatedPostfix(kind, key, typeof(decimal), il => EmitDecimal(il, 15, 29));
+            case "r1-impure":
+                return InitGatedPostfix(kind, key, typeof(object), il => il.Emit(OpCodes.Newobj, typeof(GatesImpureRegistry).GetConstructor(Type.EmptyTypes)!));
+            case "r1-cycle":
+                return InitGatedPostfix(kind, key, typeof(object), il => il.Emit(OpCodes.Newobj, CycleClass().GetConstructor(Type.EmptyTypes)!));
+            case "field-ref-access":
+                return InitGatedPostfix(kind, key, typeof(object), il =>
+                {
+                    il.Emit(OpCodes.Ldstr, nameof(GatesRegistry.Handlers));
+                    il.Emit(OpCodes.Call, typeof(AccessTools).GetMethods().First(m => m.Name == nameof(AccessTools.FieldRefAccess) && m.IsGenericMethodDefinition
+                        && m.GetGenericArguments().Length == 2 && m.GetParameters() is { Length: 1 } p && p[0].ParameterType == typeof(string))
+                        .MakeGenericMethod(typeof(GatesRegistry), typeof(Dictionary<string, int>)));
+                });
+            default:
+                throw new ArgumentException(kind);
+        }
+    }
+
+    private static Type? _pureRegistry;
+
+    /// <summary>An emitted class (the shapes' own assembly) whose constructor only stores an empty list: R1's accept case, patchable by the reliance case.</summary>
+    private static Type PureRegistry()
+    {
+        lock (Shapes)
+        {
+            if (_pureRegistry != null)
+            {
+                return _pureRegistry;
+            }
+            Emit("pure_registry_anchor", typeof(void), Array.Empty<(Type, string)>(), il => il.Emit(OpCodes.Ret));
+            TypeBuilder type = _module!.DefineType($"BdoGates.pure_registry_{++_serial}", TypeAttributes.Public | TypeAttributes.Class | TypeAttributes.Sealed | TypeAttributes.BeforeFieldInit);
+            FieldBuilder list = type.DefineField("Items", typeof(List<int>), FieldAttributes.Public | FieldAttributes.InitOnly);
+            ILGenerator ctor = type.DefineConstructor(MethodAttributes.Public, CallingConventions.Standard, Type.EmptyTypes).GetILGenerator();
+            ctor.Emit(OpCodes.Ldarg_0);
+            ctor.Emit(OpCodes.Newobj, typeof(List<int>).GetConstructor(Type.EmptyTypes)!);
+            ctor.Emit(OpCodes.Stfld, list);
+            ctor.Emit(OpCodes.Ldarg_0);
+            ctor.Emit(OpCodes.Call, typeof(object).GetConstructor(Type.EmptyTypes)!);
+            ctor.Emit(OpCodes.Ret);
+            return _pureRegistry = type.CreateType()!;
+        }
+    }
+
+    private static Type? _cycleClass;
+
+    /// <summary>
+    /// Two emitted classes whose initializers construct each other (A's <c>static B b = new B();</c>, B's <c>static A a = new A();</c>):
+    /// R1 must refuse the cycle, not recurse. Returns A.
+    /// </summary>
+    private static Type CycleClass()
+    {
+        lock (Shapes)
+        {
+            if (_cycleClass != null)
+            {
+                return _cycleClass;
+            }
+            Emit("cycle_anchor", typeof(void), Array.Empty<(Type, string)>(), il => il.Emit(OpCodes.Ret));
+            const TypeAttributes attributes = TypeAttributes.Public | TypeAttributes.Class | TypeAttributes.Sealed | TypeAttributes.BeforeFieldInit;
+            TypeBuilder a = _module!.DefineType($"BdoGates.cycle_a_{++_serial}", attributes);
+            TypeBuilder b = _module!.DefineType($"BdoGates.cycle_b_{++_serial}", attributes);
+            ConstructorBuilder aCtor = a.DefineConstructor(MethodAttributes.Public, CallingConventions.Standard, Type.EmptyTypes);
+            ConstructorBuilder bCtor = b.DefineConstructor(MethodAttributes.Public, CallingConventions.Standard, Type.EmptyTypes);
+            foreach (ConstructorBuilder ctor in new[] { aCtor, bCtor })
+            {
+                ILGenerator il = ctor.GetILGenerator();
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Call, typeof(object).GetConstructor(Type.EmptyTypes)!);
+                il.Emit(OpCodes.Ret);
+            }
+            FieldBuilder aField = a.DefineField("Other", b, StaticField);
+            FieldBuilder bField = b.DefineField("Other", a, StaticField);
+            ILGenerator aInit = a.DefineTypeInitializer().GetILGenerator();
+            aInit.Emit(OpCodes.Newobj, bCtor);
+            aInit.Emit(OpCodes.Stsfld, aField);
+            aInit.Emit(OpCodes.Ret);
+            ILGenerator bInit = b.DefineTypeInitializer().GetILGenerator();
+            bInit.Emit(OpCodes.Newobj, aCtor);
+            bInit.Emit(OpCodes.Stsfld, bField);
+            bInit.Emit(OpCodes.Ret);
+            Type created = a.CreateType()!;
+            b.CreateType();
+            return _cycleClass = created;
+        }
+    }
+
+    /// <summary>
+    /// R1g (only with BaseLib loaded): a gated postfix whose class holds BaseLib's
+    /// <c>static SpireField&lt;AbstractModel, object&gt; F = new(_ =&gt; null)</c>, its lambda in Roslyn's nested <c>&lt;&gt;c</c> class
+    /// (<c>ldsfld &lt;&gt;9; ldftn; newobj Func</c>); with <paramref name="copyOnClone"/>, <c>.CopyOnClone()</c> called on it (refused).
+    /// Null without BaseLib.
+    /// </summary>
+    private static MethodInfo? SpireFieldPostfix(bool copyOnClone, bool notNull = false)
+    {
+        Type? open = AccessTools.TypeByName(notNull ? "BaseLib.Utils.NotNullSpireField`2" : "BaseLib.Utils.SpireField`2");
+        if (open == null || !open.IsGenericTypeDefinition)
+        {
+            return null;
+        }
+        Type field = open.MakeGenericType(typeof(AbstractModel), typeof(object));
+        Type func = typeof(Func<AbstractModel, object>);
+        ConstructorInfo spireCtor = field.GetConstructor(new[] { func }) ?? throw new InvalidOperationException("no SpireField(Func<TKey, TVal>)");
+        lock (Shapes)
+        {
+            Emit("spirefield_anchor", typeof(void), Array.Empty<(Type, string)>(), il => il.Emit(OpCodes.Ret));
+            TypeBuilder type = _module!.DefineType($"BdoGates.spirefield_{(copyOnClone ? "clone_" : "")}{++_serial}",
+                TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed | TypeAttributes.Class | TypeAttributes.BeforeFieldInit);
+            TypeBuilder closure = type.DefineNestedType("<>c", TypeAttributes.NestedPublic | TypeAttributes.Sealed | TypeAttributes.Class | TypeAttributes.BeforeFieldInit);
+            closure.SetCustomAttribute(new CustomAttributeBuilder(typeof(System.Runtime.CompilerServices.CompilerGeneratedAttribute).GetConstructor(Type.EmptyTypes)!, Array.Empty<object>()));
+            FieldBuilder singleton = closure.DefineField("<>9", closure, FieldAttributes.Public | FieldAttributes.Static | FieldAttributes.InitOnly);
+            ConstructorBuilder closureCtor = closure.DefineConstructor(MethodAttributes.Public, CallingConventions.Standard, Type.EmptyTypes);
+            ILGenerator c = closureCtor.GetILGenerator();
+            c.Emit(OpCodes.Ldarg_0);
+            c.Emit(OpCodes.Call, typeof(object).GetConstructor(Type.EmptyTypes)!);
+            c.Emit(OpCodes.Ret);
+            ILGenerator ci = closure.DefineTypeInitializer().GetILGenerator();
+            ci.Emit(OpCodes.Newobj, closureCtor);
+            ci.Emit(OpCodes.Stsfld, singleton);
+            ci.Emit(OpCodes.Ret);
+            MethodBuilder lambda = closure.DefineMethod("<.cctor>b__0_0", MethodAttributes.Assembly | MethodAttributes.HideBySig, typeof(object), new[] { typeof(AbstractModel) });
+            ILGenerator l = lambda.GetILGenerator();
+            l.Emit(OpCodes.Ldnull);
+            l.Emit(OpCodes.Ret);
+            FieldBuilder value = type.DefineField("Value", field, StaticField);
+            ILGenerator init = type.DefineTypeInitializer().GetILGenerator();
+            init.Emit(OpCodes.Ldsfld, singleton);
+            init.Emit(OpCodes.Ldftn, lambda);
+            init.Emit(OpCodes.Newobj, func.GetConstructor(new[] { typeof(object), typeof(IntPtr) })!);
+            init.Emit(OpCodes.Newobj, spireCtor);
+            if (copyOnClone)
+            {
+                init.Emit(OpCodes.Ldnull);
+                init.Emit(OpCodes.Callvirt, field.GetMethod("CopyOnClone")!);
+            }
+            init.Emit(OpCodes.Stsfld, value);
+            init.Emit(OpCodes.Ret);
+            MethodBuilder patch = type.DefineMethod("Patch", MethodAttributes.Public | MethodAttributes.Static, typeof(void), new[] { typeof(AbstractModel) });
+            patch.DefineParameter(1, ParameterAttributes.None, "__instance");
+            ILGenerator p = patch.GetILGenerator();
+            Label end = p.DefineLabel();
+            p.Emit(OpCodes.Ldarg_0);
+            p.Emit(OpCodes.Isinst, typeof(Squeeze));
+            p.Emit(OpCodes.Brfalse_S, end);
+            EmitHit(p, "selftest");
+            p.MarkLabel(end);
+            p.Emit(OpCodes.Ret);
+            Type created = type.CreateType()!;
+            closure.CreateType();
+            return created.GetMethod("Patch")!;
+        }
+    }
+
+    private static Harmony? _relianceHarmony;
+
+    /// <summary>The reliance case: another mod patches the constructor an initializer runs (asked at each answer: the verdict turns).</summary>
+    private static void PatchRegistry()
+    {
+        _relianceHarmony ??= new Harmony(ForeignPatches.IdPrefix + "gates-selftest-reliance");
+        _relianceHarmony.Patch(PureRegistry().GetConstructor(Type.EmptyTypes)!, prefix: new HarmonyMethod(typeof(ForeignShapesGates).GetMethod(nameof(RelianceNoOp))!));
+    }
+
+    private static void UnpatchRegistry() => _relianceHarmony?.UnpatchAll(_relianceHarmony.Id);
+
+    /// <summary>The reliance case's patch (does nothing; its presence is what counts).</summary>
+    public static void RelianceNoOp()
+    {
+    }
+
     // --- The self-test ---
 
     private readonly record struct Case(string Name, MethodInfo Patch, PatchSafety.PatchKind Kind, MethodBase Original, PatchTolerance Tolerance,
-        bool Stands, string? Gates = null);
+        bool Stands, string? Gates = null, Action? Before = null, Action? After = null);
 
     private static IEnumerable<Case> Cases()
     {
@@ -758,6 +1105,39 @@ public static class ForeignShapesGates
         yield return new Case("I a construction of a class of the patch's own assembly", HelperReachPostfix("construct"), postfix, model, gated, true, "Squeeze");
         yield return new Case("I control: the call reads that class's static field", HelperReachPostfix("read"), postfix, model, gated, false);
         yield return new Case("I control: a static call into another assembly's class with an impure initializer", HelperReachPostfix("foreign"), postfix, model, gated, false);
+        // The initializer extensions: the gated patch's own class's beforefieldinit initializer.
+        yield return new Case("R2 AccessTools.Method(typeof, constant, null, null), repeated and found", InitCase("r2-method"), postfix, model, gated, true, "Squeeze");
+        yield return new Case("R2 AccessTools.Property(typeof, constant)", InitCase("r2-property"), postfix, model, gated, true, "Squeeze");
+        yield return new Case("PropertySetter(typeof, constant)", InitCase("property-setter"), postfix, model, gated, true, "Squeeze");
+        yield return new Case("Type.GetMethod(constant, new[] { typeof(string) }) on a typeof", InitCase("getmethod-types"), postfix, model, gated, true, "Squeeze");
+        yield return new Case("Type.GetMethod(constant, constant flags) on a typeof", InitCase("getmethod-flags"), postfix, model, gated, true, "Squeeze");
+        yield return new Case("T ?? throw new MissingMethodException after a lookup found", InitCase("t-found"), postfix, model, gated, true, "Squeeze");
+        yield return new Case("DEC new decimal(lo, mid, hi, neg, scale 1)", InitCase("dec"), postfix, model, gated, true, "Squeeze");
+        yield return new Case("DEC new decimal(int)", InitCase("dec-int"), postfix, model, gated, true, "Squeeze");
+        yield return new Case("R1 new C() storing empty collections (C# Release IL)", InitCase("r1"), postfix, model, gated, true, "Squeeze");
+        // One patch method for the three: its verdict is cached, the reliance on the constructor asked at each answer.
+        MethodInfo r1Emitted = InitCase("r1-emitted");
+        yield return new Case("R1 new C() of the patch's own assembly", r1Emitted, postfix, model, gated, true, "Squeeze");
+        yield return new Case("R2+T+DEC+R1 in one initializer", InitCase("all"), postfix, model, gated, true, "Squeeze");
+        yield return new Case("R1 control: the constructor run is patched by another mod (asked at each answer)", r1Emitted, postfix, model, gated, false,
+            Before: PatchRegistry, After: UnpatchRegistry);
+        yield return new Case("R1 again once that patch is gone", r1Emitted, postfix, model, gated, true, "Squeeze");
+        yield return new Case("R1 control: patched before the first judgement (not cached as free)", InitCase("r1-emitted"), postfix, model, gated, false,
+            Before: PatchRegistry, After: UnpatchRegistry);
+        yield return new Case("R2 control: an ambiguous name (the lookup throws)", InitCase("ambiguous"), postfix, model, gated, false);
+        yield return new Case("R2 control: a name read from a field", InitCase("computed-name"), postfix, model, gated, false);
+        yield return new Case("R2 control: Method with a parameter type array", InitCase("method-with-types"), postfix, model, gated, false);
+        yield return new Case("T control: ?? throw after a lookup that finds nothing (the throw runs)", InitCase("t-missing"), postfix, model, gated, false);
+        yield return new Case("DEC control: a scale of 29 (the constructor throws)", InitCase("dec-scale"), postfix, model, gated, false);
+        yield return new Case("R1 control: a constructor reading the clock", InitCase("r1-impure"), postfix, model, gated, false);
+        yield return new Case("R1 control: two initializers constructing each other (refused, no recursion)", InitCase("r1-cycle"), postfix, model, gated, false);
+        yield return new Case("control: FieldRefAccess (it emits code)", InitCase("field-ref-access"), postfix, model, gated, false);
+        if (SpireFieldPostfix(false) is { } spireField)
+        {
+            yield return new Case("R1g BaseLib SpireField with a static lambda", spireField, postfix, model, gated, true, "Squeeze");
+            yield return new Case("R1g BaseLib NotNullSpireField with a static lambda", SpireFieldPostfix(false, notNull: true)!, postfix, model, gated, true, "Squeeze");
+            yield return new Case("R1g control: CopyOnClone called on it", SpireFieldPostfix(true)!, postfix, model, gated, false);
+        }
     }
 
     /// <summary>
@@ -775,7 +1155,16 @@ public static class ForeignShapesGates
             var info = new HarmonyLib.Patches(c.Kind == PatchSafety.PatchKind.Prefix ? one : none, c.Kind == PatchSafety.PatchKind.Postfix ? one : none,
                 none, c.Kind == PatchSafety.PatchKind.Finalizer ? one : none, none, none);
             var gates = new List<Type>();
-            string? why = PatchSafety.Intolerable(c.Original, info, patch, c.Kind, c.Tolerance, gates);
+            string? why;
+            c.Before?.Invoke();
+            try
+            {
+                why = PatchSafety.Intolerable(c.Original, info, patch, c.Kind, c.Tolerance, gates);
+            }
+            finally
+            {
+                c.After?.Invoke();
+            }
             string found = string.Join("|", gates.Select(g => g.Name).Distinct().OrderBy(n => n, StringComparer.Ordinal));
             bool ok = (why == null) == c.Stands && (c.Gates == null || c.Gates == found);
             string verdict = why == null ? "stands" + (found.Length > 0 ? " gated on " + found : "") : "backs off (" + why + ")";
@@ -814,4 +1203,27 @@ public static class GatesCounter
 
     /// <summary>Read by the ternary finalizer (a value the judge can't know).</summary>
     public static bool Swallow;
+
+    /// <summary>A property with a setter (AccessTools.PropertySetter's accept case).</summary>
+    public static bool Settable { get; set; }
+
+    /// <summary>A lookup name read from a field (R2's control: not a constant).</summary>
+    public static string? LookupName;
+}
+
+/// <summary>
+/// R1's accept case in C# (compiled optimized, as a mod's Release build): a constructor that only stores empty runtime
+/// collections in its own fields, SynergyMod's <c>SynergyHandlerRegistry</c> shape. No static initializer.
+/// </summary>
+public sealed class GatesRegistry
+{
+    public readonly Dictionary<string, int> Handlers = new();
+
+    public readonly HashSet<string> Seen = new(StringComparer.Ordinal);
+}
+
+/// <summary>R1's control: a constructor reading the clock (its value depends on when it runs).</summary>
+public sealed class GatesImpureRegistry
+{
+    public readonly long Started = Environment.TickCount64;
 }

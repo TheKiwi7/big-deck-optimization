@@ -1991,7 +1991,13 @@ public static partial class PatchSafety
     /// without beforefieldinit runs its initializer at its first use: the patch's own class at the patch's first call (any
     /// call), so it must have none.
     /// </summary>
-    internal static bool InitializerFree(Type type)
+    internal static bool InitializerFree(Type type) => InitializerPure(type) && PatchedInitializerReliance(type) == null;
+
+    /// <summary>
+    /// <see cref="InitializerFree"/> without the methods its verdict relies on being unpatched (that part changes with other mods'
+    /// patches: asked at each answer, <see cref="PatchedInitializerReliance"/>): what cached verdicts may hold.
+    /// </summary>
+    private static bool InitializerPure(Type type)
     {
         try
         {
@@ -2019,16 +2025,45 @@ public static partial class PatchSafety
     /// </summary>
     internal static bool InitializersFree(MethodInfo patch) => InitializerRefusal(patch) == null;
 
-    /// <summary>Why <see cref="InitializersFree"/> fails (for the log), or null when it holds.</summary>
-    internal static string? InitializerRefusal(MethodInfo patch) => _initializerRefusals.GetOrAdd(patch.MethodHandle, _ =>
+    /// <summary>
+    /// Why <see cref="InitializersFree"/> fails (for the log), or null when it holds: the cached verdict, then (each answer) the
+    /// methods the judged initializers rely on being unpatched (the initializer extensions' lookups and constructors).
+    /// </summary>
+    internal static string? InitializerRefusal(MethodInfo patch)
     {
+        if (ComputedInitializerRefusal(patch) is { } refusal)
+        {
+            return refusal;
+        }
+        if (_initializerJudged.TryGetValue(patch.MethodHandle, out Type[]? judged))
+        {
+            foreach (Type type in judged)
+            {
+                if (PatchedInitializerReliance(type) is { } patched)
+                {
+                    return $"the static initializer of {type.Name} it may run relies on {patched.DeclaringType?.Name}.{patched.Name}, which is patched";
+                }
+            }
+        }
+        return null;
+    }
+
+    /// <summary>Per patch method, the classes whose initializers its verdict judged free (their reliances are asked at each answer).</summary>
+    private static readonly ConcurrentDictionary<RuntimeMethodHandle, Type[]> _initializerJudged = new();
+
+    private static string? ComputedInitializerRefusal(MethodInfo patch) => _initializerRefusals.GetOrAdd(patch.MethodHandle, _ =>
+    {
+        var judged = new List<Type>();
         try
         {
             if (patch.DeclaringType is not { } own)
             {
                 return "its class can't be read";
             }
-            if (!InitializerFree(own))
+            judged.Add(own);
+            _initializerJudged[patch.MethodHandle] = judged.ToArray();
+            // InitializerPure here, the reliances asked at each answer (InitializerRefusal): this verdict is cached.
+            if (!InitializerPure(own))
             {
                 return $"its class {own.Name} has a static initializer that could run at another time with this mod (when the runtime compiles or first calls the patch, which this mod can delay or remove) and could do something different then";
             }
@@ -2055,12 +2090,14 @@ public static partial class PatchSafety
                         continue;
                     }
                     Type definition = reached.IsGenericType ? reached.GetGenericTypeDefinition() : reached;
-                    if (definition.TypeInitializer != null && (definition.Attributes & TypeAttributes.BeforeFieldInit) != 0 && !InitializerFree(definition))
+                    judged.Add(definition);
+                    if (definition.TypeInitializer != null && (definition.Attributes & TypeAttributes.BeforeFieldInit) != 0 && !InitializerPure(definition))
                     {
                         return $"it reaches {definition.Name}, whose static initializer (beforefieldinit) could run at another time with this mod (when the runtime compiles the patch, which this mod can delay or remove) and could do something different then";
                     }
                 }
             }
+            _initializerJudged[patch.MethodHandle] = judged.Distinct().ToArray();
             return null;
         }
         catch (Exception e)
@@ -2194,9 +2231,18 @@ public static partial class PatchSafety
     /// for two fields of one name in one class, which emitted IL alone can make), and
     /// <c>Type.GetField</c> on a <c>typeof</c>: RitsuLib's <c>OwnerField = AccessTools.Field(...)</c>), locals (<c>stloc</c>,
     /// <c>ldloc</c>; <c>ldloca</c> only feeds instructions this list allows), <c>dup</c>/<c>pop</c>/<c>box</c>, its own static
-    /// fields (<c>stsfld</c>, <c>ldsfld</c>), and <c>ret</c>. Refused: branches, any other call, <c>AccessTools.TypeByName</c>
-    /// (assembly-resolve handlers would run at another time), method and property lookups (<c>AccessTools.Method</c>,
-    /// <c>Type.GetMethod</c>, <c>GetProperty</c>: an ambiguous name throws), any call on a value that may be null, collection
+    /// fields (<c>stsfld</c>, <c>ldsfld</c>), and <c>ret</c>. The extensions of 2026-11-18, each read from a symbolic stack
+    /// (<see cref="InitStack"/>): R2, <c>AccessTools.Method(Type, string, null, null)</c>, <c>AccessTools.Property(Type, string)</c>,
+    /// <c>AccessTools.PropertySetter(Type, string)</c> and <c>Type.GetMethod</c> on a <c>typeof</c> with constant arguments and
+    /// <c>typeof</c>-filled type arrays, this mod repeating the very lookup at judge time (deterministic over loaded types: an
+    /// ambiguous name throws then too, and is refused), the lookup methods unpatched at each answer; T, <c>?? throw new
+    /// Missing*Exception(...)</c> right after a lookup so repeated and found (<see cref="DeadThrow"/>); DEC, constant
+    /// <c>Decimal</c> constructors (a scale of 28 at most); R1, <c>new C()</c> of a class whose constructor only stores pure
+    /// values in its own fields (<see cref="PureConstructor"/>); R1g, BaseLib's <c>SpireField</c>/<c>NotNullSpireField</c>
+    /// constructors (fingerprinted per BaseLib version) taking a static-lambda delegate (<c>ldsfld &lt;&gt;c::&lt;&gt;9; ldftn;
+    /// newobj Func</c>). Refused: branches (T's aside), any other call, <c>AccessTools.TypeByName</c>
+    /// (assembly-resolve handlers would run at another time), lookups with computed arguments, <c>FieldRefAccess</c> (it emits
+    /// code), <c>CopyOnClone</c>, any call on a value that may be null, collection
     /// methods with arguments (<c>Add</c> throws on a duplicate key, <c>Sort</c> runs comparers), collections of other types
     /// (their <c>Equals</c>/<c>GetHashCode</c>/<c>CompareTo</c> are another mod's code). False when the IL can't be read.
     /// </summary>
@@ -2207,7 +2253,34 @@ public static partial class PatchSafety
         {
             return true;
         }
+        // R1 judges the initializer of a class it constructs: a cycle (A's initializer constructs B, whose initializer constructs
+        // A) is refused instead of recursing (the cached false spreads to the whole cycle).
+        HashSet<Type> judging = _judgingInitializers ??= new HashSet<Type>();
+        if (!judging.Add(type))
+        {
+            return false;
+        }
+        try
+        {
+            return PureInitializerCode(type, initializer);
+        }
+        finally
+        {
+            judging.Remove(type);
+        }
+    }
+
+    /// <summary>The classes whose initializer <see cref="PureInitializer"/> is judging on this thread (R1's cycle guard).</summary>
+    [ThreadStatic]
+    private static HashSet<Type>? _judgingInitializers;
+
+    private static bool PureInitializerCode(Type type, ConstructorInfo initializer)
+    {
         List<MethodFingerprint.Instruction> code = MethodFingerprint.Instructions(initializer, strict: true);
+        Dictionary<int, int> at = IndexByOffset(code);
+        // The initializer extensions of 2026-11-18 read the values reaching a call: a symbolic stack of the straight-line code.
+        var sim = new InitStack();
+        var relies = new List<MethodBase>();
         // A3 (re-audit round 2): the array being filled (from its newarr): its element type and length, for the stores into it.
         Type? arrayElement = null;
         int arrayLength = 0;
@@ -2215,18 +2288,31 @@ public static partial class PatchSafety
         {
             MethodFingerprint.Instruction ins = code[i];
             OpCode op = ins.Op;
+            // T: `?? throw new Missing*Exception(...)` right after a lookup this mod repeated and found: the throw is dead code.
+            if (op == OpCodes.Brtrue || op == OpCodes.Brtrue_S)
+            {
+                if (DeadThrow(code, at, i, sim) is not { } after)
+                {
+                    return false;
+                }
+                sim.Apply(ins);
+                i = after - 1;
+                continue;
+            }
             if (op.Name!.StartsWith("stelem", StringComparison.Ordinal))
             {
                 if (!ArrayStore(code, i, arrayElement, arrayLength))
                 {
                     return false;
                 }
+                sim.Apply(ins);
                 continue;
             }
             if (op == OpCodes.Nop || op == OpCodes.Ret || op == OpCodes.Dup || op == OpCodes.Pop || op == OpCodes.Ldnull || op == OpCodes.Ldstr
                 || op == OpCodes.Ldtoken || op.Name.StartsWith("ldc.", StringComparison.Ordinal)
                 || op.Name.StartsWith("stloc", StringComparison.Ordinal) || op.Name.StartsWith("ldloc", StringComparison.Ordinal) || op == OpCodes.Box)
             {
+                sim.Apply(ins);
                 continue;
             }
             if (op == OpCodes.Newarr && ins.Operand is Type element && IsRuntimeType(element))
@@ -2239,6 +2325,7 @@ public static partial class PatchSafety
                 }
                 arrayElement = element;
                 arrayLength = size.Value;
+                sim.Apply(ins);
                 continue;
             }
             // B2 (re-audit round 2): Roslyn's closure class for non-capturing lambdas (<>c): `newobj <>c::.ctor(); stsfld <>9`, its
@@ -2246,24 +2333,263 @@ public static partial class PatchSafety
             if (op == OpCodes.Newobj && ins.Operand is ConstructorInfo own && own.DeclaringType == type && own.GetParameters().Length == 0
                 && TrivialConstructor(own))
             {
+                sim.Apply(ins);
                 continue;
             }
             if ((op == OpCodes.Stsfld || op == OpCodes.Ldsfld) && ins.Operand is FieldInfo field && field.DeclaringType == type)
             {
+                sim.Apply(ins);
                 continue;
             }
             if (op == OpCodes.Ldsfld && ins.Operand is FieldInfo { IsInitOnly: true } runtimeField && runtimeField.DeclaringType is { } holder
                 && holder.Assembly == typeof(object).Assembly && !holder.IsGenericType)
             {
+                sim.Apply(ins);
                 continue; // Type.EmptyTypes, string.Empty: the runtime's own, already initialized.
             }
-            if ((op == OpCodes.Call || op == OpCodes.Callvirt || op == OpCodes.Newobj) && ins.Operand is MethodBase called && PureCall(code, i, called))
+            // R1g: the singleton of Roslyn's closure class nested in this type (`ldsfld <>c::<>9`, its initializer pure), and a
+            // function pointer to one of its lambdas (ldftn: nothing runs), for a static-lambda delegate.
+            if (op == OpCodes.Ldsfld && ins.Operand is FieldInfo { IsStatic: true, Name: "<>9" } singleton && ClosureOf(type, singleton.DeclaringType))
             {
+                sim.Apply(ins);
+                continue;
+            }
+            if (op == OpCodes.Ldftn && ins.Operand is MethodInfo { IsStatic: false } lambda && ClosureOf(type, lambda.DeclaringType))
+            {
+                sim.Apply(ins);
+                continue;
+            }
+            if ((op == OpCodes.Call || op == OpCodes.Callvirt || op == OpCodes.Newobj) && ins.Operand is MethodBase called
+                && PureCall(code, i, called, sim, relies, out object? pushed))
+            {
+                sim.Apply(ins, pushed);
                 continue;
             }
             return false;
         }
+        _initializerRelies[type] = relies.Distinct().ToArray();
         return true;
+    }
+
+    /// <summary>
+    /// The methods a pure initializer's verdict relies on being unpatched (the initializer extensions' lookups and constructors:
+    /// AccessTools.Method, the constructor run): asked at each answer (<see cref="InitializerFree"/>, <see cref="InitializerRefusal"/>).
+    /// </summary>
+    private static readonly ConcurrentDictionary<Type, MethodBase[]> _initializerRelies = new();
+
+    /// <summary>A method the type's initializer verdict relies on that anyone patches now, or null.</summary>
+    private static MethodBase? PatchedInitializerReliance(Type type)
+    {
+        if (!_initializerRelies.TryGetValue(type, out MethodBase[]? relies))
+        {
+            return null;
+        }
+        foreach (MethodBase method in relies)
+        {
+            if (Harmony.GetPatchInfo(method) is { } info && AllPatches(info).Any())
+            {
+                return method;
+            }
+            // A method of a constructed generic class (R1g's SpireField constructors): another instantiation patched may share its
+            // code (reference-type arguments share one compiled body), so any patched method of the same definition counts.
+            if (method.DeclaringType is { IsGenericType: true }
+                && Harmony.GetAllPatchedMethods().Any(p => p.MetadataToken == method.MetadataToken && p.Module == method.Module))
+            {
+                return method;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>Roslyn's closure class of non-capturing lambdas (<c>&lt;&gt;c</c>) nested in <paramref name="owner"/>, its initializer pure.</summary>
+    private static bool ClosureOf(Type owner, Type? closure) =>
+        closure != null && closure.DeclaringType == owner && closure.Name == "<>c" && !closure.IsGenericTypeDefinition
+        && closure.IsDefined(typeof(CompilerGeneratedAttribute), false) && _pureInitializers.GetOrAdd(closure, PureInitializer);
+
+    /// <summary>
+    /// What the initializer extensions read of the values reaching an instruction: a symbolic stack over the straight-line code
+    /// (no branch but T's dead throw). A value is a constant (int, string), <see cref="Null"/>, a <c>Type</c> (a <c>typeof</c>), a
+    /// <see cref="TypeArray"/> (a <c>Type[]</c> filled with <c>typeof</c>s), a <see cref="Found"/> lookup result, or
+    /// <see cref="Unknown"/>. Any instruction whose stack effect it can't tell makes it <see cref="Broken"/> (every value unknown
+    /// then: the extensions refuse, the older rules don't read it).
+    /// </summary>
+    private sealed class InitStack
+    {
+        public static readonly object Unknown = new();
+        public static readonly object Null = new();
+
+        public sealed record Token(object Operand);
+
+        public sealed class TypeArray
+        {
+            public TypeArray(int length) => Types = new Type?[length];
+
+            public readonly Type?[] Types;
+        }
+
+        /// <summary>A lookup this mod repeated at judge time: what it found (null: nothing).</summary>
+        public sealed record Found(object? Member);
+
+        private readonly List<object> _values = new();
+        private readonly Dictionary<int, object> _locals = new();
+
+        public bool Broken { get; private set; }
+
+        /// <summary>The value <paramref name="depth"/> below the top (0: the top).</summary>
+        public object Peek(int depth) => Broken || _values.Count <= depth ? Unknown : _values[_values.Count - 1 - depth];
+
+        private object Pop()
+        {
+            if (_values.Count == 0)
+            {
+                Broken = true;
+                return Unknown;
+            }
+            object top = _values[^1];
+            _values.RemoveAt(_values.Count - 1);
+            return top;
+        }
+
+        /// <summary>The instruction's stack effect; <paramref name="pushed"/>: the value it leaves (else what's known of it, or unknown).</summary>
+        public void Apply(MethodFingerprint.Instruction ins, object? pushed = null)
+        {
+            if (Broken)
+            {
+                return;
+            }
+            OpCode op = ins.Op;
+            if (op == OpCodes.Dup)
+            {
+                _values.Add(Peek(0));
+                return;
+            }
+            if (StoresLocal(ins, out int stored))
+            {
+                _locals[stored] = Pop();
+                return;
+            }
+            if (LocalLoaded(ins) is { } loaded)
+            {
+                _values.Add(_locals.TryGetValue(loaded, out object? local) ? local : Unknown);
+                return;
+            }
+            if (op == OpCodes.Stelem_Ref && Peek(2) is TypeArray array && Peek(1) is int index && Peek(0) is Type stored2 && index >= 0 && index < array.Types.Length)
+            {
+                array.Types[index] = stored2;
+            }
+            int pops;
+            int pushes;
+            if (op == OpCodes.Call || op == OpCodes.Callvirt || op == OpCodes.Newobj)
+            {
+                if (ins.Operand is not MethodBase method)
+                {
+                    Broken = true;
+                    return;
+                }
+                pops = method.GetParameters().Length + (op != OpCodes.Newobj && !method.IsStatic ? 1 : 0);
+                pushes = op == OpCodes.Newobj || (method is MethodInfo info && info.ReturnType != typeof(void)) ? 1 : 0;
+            }
+            else
+            {
+                pops = op.StackBehaviourPop switch
+                {
+                    StackBehaviour.Pop0 => 0,
+                    StackBehaviour.Pop1 or StackBehaviour.Popi or StackBehaviour.Popref => 1,
+                    StackBehaviour.Pop1_pop1 or StackBehaviour.Popi_pop1 or StackBehaviour.Popi_popi or StackBehaviour.Popi_popi8
+                        or StackBehaviour.Popi_popr4 or StackBehaviour.Popi_popr8 or StackBehaviour.Popref_pop1 or StackBehaviour.Popref_popi => 2,
+                    StackBehaviour.Popi_popi_popi or StackBehaviour.Popref_popi_popi or StackBehaviour.Popref_popi_popi8 or StackBehaviour.Popref_popi_popr4
+                        or StackBehaviour.Popref_popi_popr8 or StackBehaviour.Popref_popi_popref or StackBehaviour.Popref_popi_pop1 => 3,
+                    StackBehaviour.Varpop when op == OpCodes.Ret => 0,
+                    _ => -1,
+                };
+                pushes = op.StackBehaviourPush switch
+                {
+                    StackBehaviour.Push0 => 0,
+                    StackBehaviour.Push1 or StackBehaviour.Pushi or StackBehaviour.Pushi8 or StackBehaviour.Pushr4 or StackBehaviour.Pushr8
+                        or StackBehaviour.Pushref => 1,
+                    StackBehaviour.Push1_push1 => 2,
+                    _ => -1,
+                };
+            }
+            if (pops < 0 || pushes < 0)
+            {
+                Broken = true;
+                return;
+            }
+            for (int p = 0; p < pops; p++)
+            {
+                Pop();
+            }
+            object value = pushed ?? (op == OpCodes.Ldstr && ins.Operand is string text ? text
+                : op == OpCodes.Ldnull ? Null
+                : op == OpCodes.Ldtoken && ins.Operand != null ? new Token(ins.Operand)
+                : op == OpCodes.Newarr && ins.Operand is Type element && element == typeof(Type) && _lastSize is { } size ? new TypeArray(size)
+                : IntConstant(ins) is { } constant ? constant
+                : Unknown);
+            _lastSize = IntConstant(ins);
+            for (int p = 0; p < pushes; p++)
+            {
+                _values.Add(p == pushes - 1 ? value : Unknown);
+            }
+        }
+
+        private int? _lastSize;
+    }
+
+    /// <summary>
+    /// T (2026-11-18): at a <c>brtrue</c> right after <c>dup</c> of a lookup this mod repeated and found non-null, the C# form of
+    /// <c>?? throw new Missing*Exception(...)</c>: the branch is always taken, its fall-through is dead code (<c>pop</c>, then only
+    /// <c>ldtoken</c>, <c>typeof</c>, <c>Type.FullName</c>/<c>Name</c>, <c>ldstr</c>, <c>string.Concat</c>/<c>Format</c>, the
+    /// constructor of a runtime <c>Missing*Exception</c>, and <c>throw</c> right before the target: nothing there the JIT could
+    /// run an initializer for). Returns the target's index, or null.
+    /// </summary>
+    private static int? DeadThrow(List<MethodFingerprint.Instruction> code, Dictionary<int, int> at, int branch, InitStack sim)
+    {
+        if (branch == 0 || code[branch - 1].Op != OpCodes.Dup || sim.Peek(0) is not InitStack.Found { Member: not null }
+            || code[branch].Operand is not int offset || !at.TryGetValue(offset, out int target) || target <= branch + 2)
+        {
+            return null;
+        }
+        if (code[branch + 1].Op != OpCodes.Pop || code[target - 1].Op != OpCodes.Throw)
+        {
+            return null;
+        }
+        bool exception = false;
+        for (int i = branch + 2; i < target - 1; i++)
+        {
+            MethodFingerprint.Instruction ins = code[i];
+            OpCode op = ins.Op;
+            if (op == OpCodes.Nop || op == OpCodes.Ldstr || op == OpCodes.Ldtoken)
+            {
+                continue;
+            }
+            if (op == OpCodes.Call && ins.Operand is MethodInfo { Name: "GetTypeFromHandle" } handle && handle.DeclaringType == typeof(Type))
+            {
+                continue;
+            }
+            if (op == OpCodes.Callvirt && ins.Operand is MethodInfo { Name: "get_FullName" or "get_Name" } name
+                && (name.DeclaringType == typeof(Type) || name.DeclaringType == typeof(MemberInfo)))
+            {
+                continue;
+            }
+            if (op == OpCodes.Call && ins.Operand is MethodInfo { IsStatic: true, Name: "Concat" or "Format" } text && text.DeclaringType == typeof(string))
+            {
+                continue;
+            }
+            if (op == OpCodes.Newobj && ins.Operand is ConstructorInfo ctor && ctor.DeclaringType is { } thrown && thrown.Assembly == typeof(object).Assembly
+                && thrown.Name.StartsWith("Missing", StringComparison.Ordinal) && typeof(Exception).IsAssignableFrom(thrown) && i == target - 2)
+            {
+                exception = true;
+                continue;
+            }
+            return null;
+        }
+        // Every branch into the dead block refused: no instruction there may be another branch's target.
+        if (!exception || BranchTargets(code, at).Any(t => t > branch && t < target))
+        {
+            return null;
+        }
+        return target;
     }
 
     /// <summary>
@@ -2339,18 +2665,32 @@ public static partial class PatchSafety
         }
     }
 
-    /// <summary>A call <see cref="PureInitializer"/> allows at <paramref name="at"/> (its arguments one instruction each).</summary>
-    private static bool PureCall(List<MethodFingerprint.Instruction> code, int at, MethodBase called)
+    /// <summary>
+    /// A call <see cref="PureInitializer"/> allows at <paramref name="at"/> (its arguments one instruction each, or read from
+    /// <paramref name="sim"/> for the extensions). <paramref name="pushed"/>: what it leaves when known (a <c>typeof</c>'s type, a
+    /// repeated lookup's result); <paramref name="relies"/> gets the methods the verdict needs unpatched.
+    /// </summary>
+    private static bool PureCall(List<MethodFingerprint.Instruction> code, int at, MethodBase called, InitStack sim, List<MethodBase> relies, out object? pushed)
     {
+        pushed = null;
         Type? owner = called.DeclaringType;
         if (owner == null)
         {
             return false;
         }
         ParameterInfo[] parameters = called.GetParameters();
+        if (InitializerExtension(code, at, called, owner, parameters, sim, relies, out pushed) is { } extension)
+        {
+            return extension;
+        }
         // typeof and the token lookups: a valid token from ldtoken never fails, but (A3, re-audit round 2) the one-argument
         // GetMethodFromHandle throws for a method of a generic type: only with its type's handle then.
-        if ((owner == typeof(Type) && called.Name == "GetTypeFromHandle") || (owner == typeof(RuntimeHelpers) && called.Name == "InitializeArray"))
+        if (owner == typeof(Type) && called.Name == "GetTypeFromHandle")
+        {
+            pushed = sim.Peek(0) is InitStack.Token { Operand: Type token } ? token : null;
+            return true;
+        }
+        if (owner == typeof(RuntimeHelpers) && called.Name == "InitializeArray")
         {
             return true;
         }
@@ -2374,6 +2714,19 @@ public static partial class PatchSafety
         if (owner == typeof(AccessTools) && called.Name is "Field" or "DeclaredField" && called.IsStatic
             && parameters.Length == 2 && parameters[0].ParameterType == typeof(Type) && parameters[1].ParameterType == typeof(string))
         {
+            // Repeated for T only (a field found non-null): the rule above stands without it.
+            if (sim.Peek(1) is Type fieldOwner && sim.Peek(0) is string fieldName)
+            {
+                try
+                {
+                    pushed = new InitStack.Found(called.Invoke(null, new object[] { fieldOwner, fieldName }));
+                    relies.Add(called);
+                }
+                catch
+                {
+                    pushed = null;
+                }
+            }
             return true;
         }
         if (!IsRuntimeAssembly(owner))
@@ -2421,6 +2774,228 @@ public static partial class PatchSafety
         // The runtime's own comparers and Array.Empty<T>(), static and taking nothing.
         return called.IsStatic && parameters.Length == 0 && (RuntimeComparer(called)
             || (owner == typeof(Array) && called.Name == "Empty" && called.GetGenericArguments().All(IsRuntimeType)));
+    }
+
+    /// <summary>
+    /// The initializer extensions of 2026-11-18 (R2, PropertySetter, Type.GetMethod, DEC, R1, R1g; see <see cref="PureInitializer"/>):
+    /// true or false when the call is one of them, null when it isn't (the older rules decide).
+    /// </summary>
+    private static bool? InitializerExtension(List<MethodFingerprint.Instruction> code, int at, MethodBase called, Type owner, ParameterInfo[] parameters,
+        InitStack sim, List<MethodBase> relies, out object? pushed)
+    {
+        pushed = null;
+        // R2 and PropertySetter: HarmonyLib's lookups by a typeof and a constant name, repeated here (the loaded 0Harmony's AccessTools).
+        if (owner == typeof(AccessTools) && called.IsStatic && called is MethodInfo lookup
+            && (called.Name is "Property" or "PropertySetter" && parameters.Length == 2 || called.Name == "Method" && parameters.Length == 4)
+            && parameters[0].ParameterType == typeof(Type) && parameters[1].ParameterType == typeof(string))
+        {
+            int extra = parameters.Length - 2;
+            if (sim.Peek(extra + 1) is not Type lookedIn || sim.Peek(extra) is not string name
+                || (extra == 2 && (sim.Peek(1) != InitStack.Null || sim.Peek(0) != InitStack.Null
+                    || parameters[2].ParameterType != typeof(Type[]) || parameters[3].ParameterType != typeof(Type[]))))
+            {
+                return false;
+            }
+            object?[] arguments = extra == 2 ? new object?[] { lookedIn, name, null, null } : new object?[] { lookedIn, name };
+            return Repeat(lookup, null, arguments, relies, out pushed);
+        }
+        // Type.GetMethod on a typeof, every argument known: a name, constant flags, no binder or modifiers, typeof-filled types.
+        if (!called.IsStatic && called.Name == "GetMethod" && called is MethodInfo getMethod
+            && (owner == typeof(Type) || (owner.FullName == "System.RuntimeType" && IsRuntimeAssembly(owner)) || owner == typeof(TypeInfo)))
+        {
+            if (sim.Peek(parameters.Length) is not Type receiver)
+            {
+                return false;
+            }
+            var arguments = new object?[parameters.Length];
+            for (int p = 0; p < parameters.Length; p++)
+            {
+                object value = sim.Peek(parameters.Length - 1 - p);
+                Type type = parameters[p].ParameterType;
+                arguments[p] = type == typeof(string) && value is string text ? text
+                    : type == typeof(BindingFlags) && value is int flags ? (BindingFlags)flags
+                    : (type == typeof(Binder) || type == typeof(ParameterModifier[])) && value == InitStack.Null ? null
+                    : type == typeof(Type[]) && value is InitStack.TypeArray array && array.Types.All(t => t != null) ? array.Types.ToArray()
+                    : InitStack.Unknown;
+                if (arguments[p] == InitStack.Unknown)
+                {
+                    return false;
+                }
+            }
+            return Repeat(getMethod, receiver, arguments, relies, out pushed);
+        }
+        // DEC: new decimal(int), new decimal(lo, mid, hi, negative, scale) with constants, the scale 28 at most.
+        if (called is ConstructorInfo && owner == typeof(decimal))
+        {
+            if (parameters.Length == 1 && parameters[0].ParameterType == typeof(int))
+            {
+                return sim.Peek(0) is int;
+            }
+            return parameters.Length == 5 && Enumerable.Range(0, 5).All(d => sim.Peek(d) is int) && sim.Peek(0) is int scale && scale is >= 0 and <= 28
+                && parameters[3].ParameterType == typeof(bool) && parameters[4].ParameterType == typeof(byte);
+        }
+        // R1g: a static-lambda delegate (its target the <>c singleton, the function pointer just loaded).
+        if (called is ConstructorInfo && typeof(MulticastDelegate).IsAssignableFrom(owner) && IsRuntimeAssembly(owner)
+            && parameters.Length == 2 && parameters[0].ParameterType == typeof(object) && parameters[1].ParameterType == typeof(IntPtr))
+        {
+            return at >= 2 && code[at - 1].Op == OpCodes.Ldftn && code[at - 2].Op == OpCodes.Ldsfld;
+        }
+        // R1g: BaseLib's SpireField / NotNullSpireField constructors, as fingerprinted (the delegate argument just built).
+        if (called is ConstructorInfo spireField && SpireFieldConstructor(spireField))
+        {
+            relies.Add(called);
+            return parameters.Length == 1 && at >= 1 && code[at - 1].Op == OpCodes.Newobj && code[at - 1].Operand is ConstructorInfo made
+                && typeof(MulticastDelegate).IsAssignableFrom(made.DeclaringType);
+        }
+        // R1: new C() of a class of a mod whose constructor only stores pure values in its own fields.
+        if (called is ConstructorInfo constructor && !IsRuntimeAssembly(owner))
+        {
+            if (parameters.Length != 0 || !PureConstructor(constructor))
+            {
+                return false;
+            }
+            relies.Add(called);
+            // The constructed class's initializer runs with it: what its verdict relies on, this one does too.
+            if (_initializerRelies.TryGetValue(owner, out MethodBase[]? inner))
+            {
+                relies.AddRange(inner);
+            }
+            return true;
+        }
+        return null;
+    }
+
+    /// <summary>Calls the lookup as the initializer will (deterministic over loaded types): false when it throws; its result kept for T.</summary>
+    private static bool Repeat(MethodInfo lookup, object? receiver, object?[] arguments, List<MethodBase> relies, out object? pushed)
+    {
+        pushed = null;
+        try
+        {
+            pushed = new InitStack.Found(lookup.Invoke(receiver, arguments));
+            relies.Add(lookup);
+            return true;
+        }
+        catch
+        {
+            return false; // An ambiguous name, or anything else: it would throw in the initializer too.
+        }
+    }
+
+    /// <summary>
+    /// The fingerprints of BaseLib's <c>SpireField&lt;TKey, TVal&gt;</c> and <c>NotNullSpireField&lt;TKey, TVal&gt;</c> constructors
+    /// (both overloads: a <c>Func&lt;TVal&gt;</c>, wrapped in a closure, or a <c>Func&lt;TKey, TVal&gt;</c>), per reviewed BaseLib
+    /// version (3.4.8): each only creates its <c>ConditionalWeakTable</c>, calls object's constructor and stores the delegate
+    /// (nothing runs it). Another version's code (another fingerprint) is refused until reviewed.
+    /// </summary>
+    private static readonly HashSet<string> SpireFieldConstructors = new(StringComparer.Ordinal)
+    {
+        "F940B8FED7377251", "ADCC45EC8E512CEC", // SpireField`2 (Func<TVal>), (Func<TKey, TVal>), BaseLib 3.4.8
+        "8AB5F592AEA23E6A", "E223F1A14AFA2F85", // NotNullSpireField`2, the same overloads, BaseLib 3.4.8
+    };
+
+    private static readonly ConcurrentDictionary<ConstructorInfo, bool> _spireFieldConstructors = new();
+
+    /// <summary>A constructor of BaseLib's SpireField or NotNullSpireField (by its open definition) whose code is a reviewed version's.</summary>
+    private static bool SpireFieldConstructor(ConstructorInfo constructor) => _spireFieldConstructors.GetOrAdd(constructor, static c =>
+    {
+        try
+        {
+            if (c.DeclaringType is not { IsGenericType: true } closed || closed.Assembly.GetName().Name != "BaseLib")
+            {
+                return false;
+            }
+            Type definition = closed.GetGenericTypeDefinition();
+            if (definition.FullName is not ("BaseLib.Utils.SpireField`2" or "BaseLib.Utils.NotNullSpireField`2"))
+            {
+                return false;
+            }
+            ConstructorInfo? open = definition.GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                .FirstOrDefault(d => d.MetadataToken == c.MetadataToken);
+            return open != null && SpireFieldConstructors.Contains(MethodFingerprint.Of(open)) && definition.TypeInitializer == null;
+        }
+        catch
+        {
+            return false;
+        }
+    });
+
+    /// <summary>
+    /// R1 (2026-11-18): a parameterless constructor of a non-generic, non-abstract class of a mod, its base <c>object</c>, no
+    /// finalizer, its own initializer none or pure (it runs with it), whose code only stores values <see cref="PureInitializer"/>'s
+    /// rules allow (constants, empty runtime collections, runtime comparers, arrays of constants) in its own instance fields
+    /// (<c>ldarg.0; value; stfld</c>), and calls <c>object</c>'s constructor. Unpatched at each answer (the caller records it).
+    /// SynergyMod's <c>new SynergyHandlerRegistry()</c>: empty dictionaries and sets.
+    /// </summary>
+    private static bool PureConstructor(ConstructorInfo constructor)
+    {
+        try
+        {
+            if (constructor.DeclaringType is not { } type || type.IsGenericType || type.IsAbstract || !type.IsClass || type.BaseType != typeof(object)
+                || type.GetMethod("Finalize", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly) != null
+                || constructor.IsStatic || !_pureInitializers.GetOrAdd(type, PureInitializer))
+            {
+                return false;
+            }
+            List<MethodFingerprint.Instruction> code = MethodFingerprint.Instructions(constructor, strict: true);
+            var sim = new InitStack();
+            var relies = new List<MethodBase>();
+            Type? arrayElement = null;
+            int arrayLength = 0;
+            bool baseCalled = false;
+            for (int i = 0; i < code.Count; i++)
+            {
+                MethodFingerprint.Instruction ins = code[i];
+                OpCode op = ins.Op;
+                if (op == OpCodes.Nop || op == OpCodes.Ret || op == OpCodes.Ldarg_0 || op == OpCodes.Dup || op == OpCodes.Pop || op == OpCodes.Ldnull
+                    || op == OpCodes.Ldstr || op == OpCodes.Ldtoken || op.Name!.StartsWith("ldc.", StringComparison.Ordinal) || op == OpCodes.Box)
+                {
+                    sim.Apply(ins);
+                    continue;
+                }
+                if (op.Name.StartsWith("stelem", StringComparison.Ordinal) && ArrayStore(code, i, arrayElement, arrayLength))
+                {
+                    sim.Apply(ins);
+                    continue;
+                }
+                if (op == OpCodes.Newarr && ins.Operand is Type element && IsRuntimeType(element) && i > 0 && IntConstant(code[i - 1]) is int size and >= 0 and <= 1 << 20)
+                {
+                    arrayElement = element;
+                    arrayLength = size;
+                    sim.Apply(ins);
+                    continue;
+                }
+                if (op == OpCodes.Stfld && ins.Operand is FieldInfo { IsStatic: false } field && field.DeclaringType == type)
+                {
+                    sim.Apply(ins);
+                    continue;
+                }
+                if (op == OpCodes.Ldsfld && ins.Operand is FieldInfo { IsInitOnly: true } runtimeField && runtimeField.DeclaringType is { } holder
+                    && holder.Assembly == typeof(object).Assembly && !holder.IsGenericType)
+                {
+                    sim.Apply(ins);
+                    continue;
+                }
+                if (op == OpCodes.Call && ins.Operand is ConstructorInfo baseConstructor && baseConstructor.DeclaringType == typeof(object) && i > 0 && code[i - 1].Op == OpCodes.Ldarg_0)
+                {
+                    baseCalled = true;
+                    sim.Apply(ins);
+                    continue;
+                }
+                // Values the type initializer rules allow (empty runtime collections, runtime comparers, Array.Empty), not the extensions' lookups.
+                if ((op == OpCodes.Call || op == OpCodes.Newobj) && ins.Operand is MethodBase called && IsRuntimeAssembly(called.DeclaringType!)
+                    && PureCall(code, i, called, sim, relies, out object? pushed) && relies.Count == 0)
+                {
+                    sim.Apply(ins, pushed);
+                    continue;
+                }
+                return false;
+            }
+            return baseCalled;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static bool RuntimeComparer(MethodBase getter) =>

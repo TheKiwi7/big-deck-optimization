@@ -9,6 +9,8 @@
 # a copy prologue (AfterCardDrawn): kept, those types keeping their calls. Control: a count before the gate (AfterEnergyReset).
 # G: a branch on a trivial static getter (a config flag, turned on at the install) before the gate, both sides explored
 # (AfterSideTurnStart): kept. Control: the flag's side acting for every listener (BeforeSideTurnStart, counted every call).
+# Initializer extensions: a gated postfix whose class initializer repeats a lookup (AccessTools.Method ?? throw), builds a
+# constant decimal and a pure object (AfterCardPlayedLate): kept. Control: an ambiguous lookup there (AfterDamageGiven).
 # CHECKSUM and STATE lines identical with the off side. ~945 cards.
 expect FOREIGN gates selftest: \d+ cases as expected
 expect HookSkip: Hook\.AfterCardPlayed is also patched by bdtest\.foreign\.gates-passthrough-finalizer \(prefixes and postfixes around the transpiled body: run around this mod's code as without it\): kept
@@ -33,6 +35,9 @@ expect HookSkip: AbstractModel\.BeforeSideTurnStart is also patched by bdtest\.f
 expect FOREIGN runtime HookSkip AbstractModel\.AfterSideTurnStart \(TypeGated\) kept [1-9]
 expect FOREIGN runtime HookSkip AbstractModel\.BeforeSideTurnStart \(TypeGated\) kept 0 backed off [1-9]
 expect STATE foreign end gates-getter-ungated-postfix AbstractModel\.BeforeSideTurnStart [1-9]
+expect HookSkip: AbstractModel\.AfterCardPlayedLate is also patched by bdtest\.foreign\.gates-init-extensions-postfix \(patches gated on the listener's type: Squeeze treated as overriding it
+expect HookSkip: AbstractModel\.AfterDamageGiven is also patched by bdtest\.foreign\.gates-init-ambiguous-postfix \(patches gated on the listener's type not enough\)
+expect FOREIGN runtime HookSkip AbstractModel\.AfterCardPlayedLate \(TypeGated\) kept [1-9]
 timeout 1500
 newrun NECROBINDER 1234
 waitfor run 120
@@ -50,6 +55,8 @@ foreignpatch gates-copy-prologue-postfix MegaCrit.Sts2.Core.Models.AbstractModel
 foreignpatch gates-call-first-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterEnergyReset
 foreignpatch gates-getter-gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterSideTurnStart
 foreignpatch gates-getter-ungated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:BeforeSideTurnStart
+foreignpatch gates-init-extensions-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardPlayedLate
+foreignpatch gates-init-ambiguous-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterDamageGiven
 effects start
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
