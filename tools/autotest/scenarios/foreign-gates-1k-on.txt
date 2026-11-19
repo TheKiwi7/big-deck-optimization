@@ -13,6 +13,9 @@
 # constant decimal and a pure object (AfterCardPlayedLate): kept. Control: an ambiguous lookup there (AfterDamageGiven).
 # FW: a postfix forwarding (__instance, ref __result) to a gated helper of its class (AfterPlayerTurnStartLate): kept.
 # Control: the helper counting every call (AfterEnergySpent).
+# H (BaseLib loaded): a counting postfix and a void prefix (sorted before this mod's, which runs last) on BaseLib's
+# GetMaxHandSize: kept, its walk still filtered (the filter set only for a real RunState). Control: a void prefix at
+# Priority.Last patched after this mod's on the heal modifier (it runs after the filter is set): backs off.
 # CHECKSUM and STATE lines identical with the off side. ~945 cards.
 expect FOREIGN gates selftest: \d+ cases as expected
 expect HookSkip: Hook\.AfterCardPlayed is also patched by bdtest\.foreign\.gates-passthrough-finalizer \(prefixes and postfixes around the transpiled body: run around this mod's code as without it\): kept
@@ -43,6 +46,11 @@ expect FOREIGN runtime HookSkip AbstractModel\.AfterCardPlayedLate \(TypeGated\)
 expect HookSkip: AbstractModel\.AfterPlayerTurnStartLate is also patched by bdtest\.foreign\.gates-forwarder-postfix \(patches gated on the listener's type: Squeeze treated as overriding it
 expect HookSkip: AbstractModel\.AfterEnergySpent is also patched by bdtest\.foreign\.gates-forwarder-acts-postfix \(patches gated on the listener's type not enough\)
 expect FOREIGN runtime HookSkip AbstractModel\.AfterPlayerTurnStartLate \(TypeGated\) kept [1-9]
+expect HookSkip: MaxHandSizePatch\.GetMaxHandSize is also patched by .*bdtest\.foreign\.gates-count-p.* \(postfixes and void prefixes: run around this mod's code as without it\): kept
+expect HookSkip: ModifyHealAmountPatches\.ModifyAdditive is also patched by .*bdtest\.foreign\.gates-count-prefix.* \(postfixes and void prefixes not enough\): normal game for that part
+expect FOREIGN runtime HookSkip MaxHandSizePatch\.GetMaxHandSize \(SurroundingOnly\) kept [1-9][0-9]* backed off 0
+expect STATE foreign end gates-count-postfix MaxHandSizePatch\.GetMaxHandSize [1-9]
+expect STATE foreign end gates-count-prefix MaxHandSizePatch\.GetMaxHandSize [1-9]
 timeout 1500
 newrun NECROBINDER 1234
 waitfor run 120
@@ -64,6 +72,9 @@ foreignpatch gates-init-extensions-postfix MegaCrit.Sts2.Core.Models.AbstractMod
 foreignpatch gates-init-ambiguous-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterDamageGiven
 foreignpatch gates-forwarder-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterPlayerTurnStartLate
 foreignpatch gates-forwarder-acts-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterEnergySpent
+foreignpatch gates-count-postfix BaseLib.Patches.Hooks.MaxHandSizePatch:GetMaxHandSize/2
+foreignpatch gates-count-prefix BaseLib.Patches.Hooks.MaxHandSizePatch:GetMaxHandSize/2
+foreignpatch gates-count-prefix BaseLib.Patches.Hooks.ModifyHealAmountPatches:ModifyAdditive priority 0
 effects start
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
@@ -98,6 +109,7 @@ state after combat
 foreignpatch report end
 effects end
 effectcheck HookSkip grew start
+effectcheck HookSkip.BaseLib ran
 cmd bdopt why
 counters end
 foreignpatch remove

@@ -22,6 +22,9 @@ foreignpatch gates-init-extensions-postfix MegaCrit.Sts2.Core.Models.AbstractMod
 foreignpatch gates-init-ambiguous-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterDamageGiven
 foreignpatch gates-forwarder-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterPlayerTurnStartLate
 foreignpatch gates-forwarder-acts-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterEnergySpent
+foreignpatch gates-count-postfix BaseLib.Patches.Hooks.MaxHandSizePatch:GetMaxHandSize/2
+foreignpatch gates-count-prefix BaseLib.Patches.Hooks.MaxHandSizePatch:GetMaxHandSize/2
+foreignpatch gates-count-prefix BaseLib.Patches.Hooks.ModifyHealAmountPatches:ModifyAdditive priority 0
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 1

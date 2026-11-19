@@ -33,6 +33,7 @@ public static class ForeignShapesGates
         "gates-copy-prologue-postfix", "gates-call-first-postfix",
         "gates-getter-gated-postfix", "gates-getter-ungated-postfix",
         "gates-init-extensions-postfix", "gates-init-ambiguous-postfix", "gates-forwarder-postfix", "gates-forwarder-acts-postfix",
+        "gates-count-postfix", "gates-count-prefix",
     };
 
     /// <summary>Whether a <c>foreignpatch</c> line is one of this file's.</summary>
@@ -49,7 +50,7 @@ public static class ForeignShapesGates
             return parts[1] == "selftest" ? SelfTest() : throw new ArgumentException("foreignpatch gates selftest");
         }
         string shape = parts[0];
-        MethodBase target = AccessTools.Method(parts[1]) ?? throw new ArgumentException("no method " + parts[1]);
+        MethodBase target = Target(parts[1]);
         int priority = Priority.Normal;
         int at = Array.IndexOf(parts, "priority");
         if (at >= 0 && at + 1 < parts.Length)
@@ -65,6 +66,21 @@ public static class ForeignShapesGates
         var lines = new List<string> { $"FOREIGN installed {shape} on {target.DeclaringType?.Name}.{target.Name} as {id} (priority {priority})" };
         lines.AddRange(classify(target));
         return lines;
+    }
+
+    /// <summary><c>Type:Method</c>, or <c>Type:Method/N</c> for the overload taking N parameters (BaseLib's GetMaxHandSize has two).</summary>
+    private static MethodBase Target(string spec)
+    {
+        int slash = spec.LastIndexOf('/');
+        if (slash < 0)
+        {
+            return AccessTools.Method(spec) ?? throw new ArgumentException("no method " + spec);
+        }
+        int colon = spec.IndexOf(':');
+        int count = int.Parse(spec.Substring(slash + 1));
+        Type type = AccessTools.TypeByName(spec.Substring(0, colon)) ?? throw new ArgumentException("no type " + spec);
+        string name = spec.Substring(colon + 1, slash - colon - 1);
+        return AccessTools.GetDeclaredMethods(type).Single(m => m.Name == name && m.GetParameters().Length == count);
     }
 
     /// <summary>The patch method of an installable shape and its kind.</summary>
@@ -89,6 +105,8 @@ public static class ForeignShapesGates
             "gates-init-ambiguous-postfix" => (InitCase("ambiguous", key), PatchSafety.PatchKind.Postfix),
             "gates-forwarder-postfix" => (ForwarderPostfix(key), PatchSafety.PatchKind.Postfix),
             "gates-forwarder-acts-postfix" => (ForwarderPostfix(key, acts: true), PatchSafety.PatchKind.Postfix),
+            "gates-count-postfix" => (CountPatch(key), PatchSafety.PatchKind.Postfix),
+            "gates-count-prefix" => (CountPatch(key), PatchSafety.PatchKind.Prefix),
             _ => throw new ArgumentException("unknown gates shape " + shape),
         };
     }
@@ -137,6 +155,13 @@ public static class ForeignShapesGates
         il.Emit(OpCodes.Ldstr, key);
         il.Emit(OpCodes.Call, HitMethod);
     }
+
+    /// <summary>A void patch taking nothing that counts every call (rule H: what SurroundingOnly lets stand on BaseLib's hooks).</summary>
+    private static MethodInfo CountPatch(string key) => Emit("count", typeof(void), Array.Empty<(Type, string)>(), il =>
+    {
+        EmitHit(il, key);
+        il.Emit(OpCodes.Ret);
+    });
 
     private static readonly (Type, string)[] ExceptionOnly = { (typeof(Exception), "__exception") };
 

@@ -1597,17 +1597,44 @@ public static partial class HookSkip
         /// BaseLib 3.4.7 fingerprints: GetMaxHandSize (the (Player, int) overload, which holds the loop) and DowngradeHook are the
         /// same in 3.4.8, the two heal methods changed there (equivalents in EquivalentFingerprints).
         /// </summary>
-        private static readonly (string Type, string Method, Type[]? Args, string Fingerprint, string Interface)[] Targets =
+        private static readonly (string Type, string Method, Type[]? Args, string Fingerprint, string Interface, WalkOf Walk)[] Targets =
         {
             ("BaseLib.Patches.Hooks.MaxHandSizePatch", "GetMaxHandSize", new[] { typeof(MegaCrit.Sts2.Core.Entities.Players.Player), typeof(int) },
-                "1EE490EF3F75AF02", "BaseLib.Hooks.IMaxHandSizeModifier"),
-            ("BaseLib.Patches.Hooks.ModifyHealAmountPatches", "ModifyAdditive", null, "895AD94736FEED8E", "BaseLib.Hooks.IHealAmountModifier"),
-            ("BaseLib.Patches.Hooks.ModifyHealAmountPatches", "ModifyMultiplicative", null, "98B29C743F42C15F", "BaseLib.Hooks.IHealAmountModifier"),
+                "1EE490EF3F75AF02", "BaseLib.Hooks.IMaxHandSizeModifier", WalkOf.PlayerRunState),
+            ("BaseLib.Patches.Hooks.ModifyHealAmountPatches", "ModifyAdditive", null, "895AD94736FEED8E", "BaseLib.Hooks.IHealAmountModifier", WalkOf.RunStateArgument),
+            ("BaseLib.Patches.Hooks.ModifyHealAmountPatches", "ModifyMultiplicative", null, "98B29C743F42C15F", "BaseLib.Hooks.IHealAmountModifier", WalkOf.RunStateArgument),
             // A postfix of CardModel.DowngradeInternal: one walk per downgraded card (Dampen downgrades a whole deck).
-            ("BaseLib.Hooks.IAfterCardDowngraded+DowngradeHook", "Patch", null, "D268A4B256D8F60C", "BaseLib.Hooks.IAfterCardDowngraded"),
+            ("BaseLib.Hooks.IAfterCardDowngraded+DowngradeHook", "Patch", null, "D268A4B256D8F60C", "BaseLib.Hooks.IAfterCardDowngraded", WalkOf.Unknown),
         };
 
+        /// <summary>
+        /// How the prefix knows the method's own walk is the game's <c>RunState</c> one (rule H of 2026-11-18): read from the
+        /// fingerprinted bodies (BaseLib 3.4.8), where every call with that run state calls <c>IterateHookListeners</c> on it
+        /// before any return.
+        /// </summary>
+        private enum WalkOf
+        {
+            /// <summary>Not told (DowngradeHook: its run state comes through the card's getters): no other mod's patch stands.</summary>
+            Unknown,
+
+            /// <summary>GetMaxHandSize(Player player, int): <c>player.RunState ?? NullRunState.Instance</c>, walked first.</summary>
+            PlayerRunState,
+
+            /// <summary>The heal modifiers (IRunState runState, ...): the argument, walked first.</summary>
+            RunStateArgument,
+        }
+
         private static readonly Dictionary<MethodBase, PileFilter> _filters = new();
+        private static readonly Dictionary<MethodBase, WalkOf> _walks = new();
+
+        /// <summary>
+        /// The game's <c>Player.RunState</c> getter (<c>return _runState;</c>, fingerprinted per game version): read by the prefix
+        /// only while nobody patches it, so the value is the one BaseLib's body reads, at no cost of its own.
+        /// </summary>
+        private static MethodInfo? _playerRunState;
+
+        /// <summary>Player.get_RunState: the same IL in v0.107.1, v0.111.1 and v0.113.1.</summary>
+        private const string PlayerRunStateFingerprint = "ABF676830ACF9774";
         private static Harmony? _harmony;
 
         public static void Init(Harmony harmony)
@@ -1632,7 +1659,19 @@ public static partial class HookSkip
 
         private static void PatchBaseLib()
         {
-            foreach ((string typeName, string methodName, Type[]? args, string fingerprint, string interfaceName) in Targets)
+            try
+            {
+                MethodInfo getter = Reflect.Method(typeof(MegaCrit.Sts2.Core.Entities.Players.Player), "get_RunState")
+                    ?? throw new MissingMethodException("Player.get_RunState");
+                PatchSafety.RequireFingerprint(getter, PlayerRunStateFingerprint);
+                _playerRunState = getter;
+            }
+            catch (Exception e)
+            {
+                // GetMaxHandSize's walk is then never told certain: its filter stays off (the game's walk).
+                Log.Info($"[{ModEntry.Id}] {Name}: BaseLib GetMaxHandSize's run state can't be read ({e.Message}): its walk stays the game's");
+            }
+            foreach ((string typeName, string methodName, Type[]? args, string fingerprint, string interfaceName, WalkOf walk) in Targets)
             {
                 string name = typeName + "." + methodName;
                 try
@@ -1642,11 +1681,20 @@ public static partial class HookSkip
                     PatchSafety.RequireFingerprint(method, fingerprint);
                     Type iface = Reflect.TypeByName(interfaceName) ?? throw new TypeLoadException(interfaceName);
                     _filters[method] = new PileFilter(iface.IsAssignableFrom, keepSubscribed: false);
-                    PatchGuard.Patch(_harmony!, method, prefix: new HarmonyMethod(typeof(BaseLibHooks), nameof(Prefix)),
+                    _walks[method] = walk;
+                    // Rule H: last among the prefixes, so every other mod's void prefix let stand runs before the filter is set.
+                    PatchGuard.Patch(_harmony!, method, prefix: new HarmonyMethod(typeof(BaseLibHooks), nameof(Prefix)) { priority = Priority.Last },
                         finalizer: new HarmonyMethod(typeof(BaseLibHooks), nameof(Finalizer)));
                     PatchGuard.Watch(method);
                     // What Prefix asks about before taking the filter (display only).
-                    PatchSafety.Watch(Name, method);
+                    if (walk == WalkOf.Unknown)
+                    {
+                        PatchSafety.Watch(Name, method);
+                    }
+                    else
+                    {
+                        PatchSafety.Watch(Name, method, PatchTolerance.SurroundingOnly);
+                    }
                     Log.Info($"[{ModEntry.Id}] {Name}: BaseLib {name} applied");
                 }
                 catch (Exception e)
@@ -1686,17 +1734,51 @@ public static partial class HookSkip
             }
         }
 
-        /// <summary>The next RunState.IterateHookListeners call (this method's own walk) keeps only implementers.</summary>
-        private static void Prefix(MethodBase __originalMethod)
+        /// <summary>
+        /// The next RunState.IterateHookListeners call (this method's own walk) keeps only implementers. Rule H (2026-11-18): set
+        /// only when that walk is certain, the game's <c>RunState</c> one (<see cref="RunStateWalk"/>): its call, the body's first
+        /// (BaseLib 3.4.8, fingerprinted), takes the filter, so nothing after it (another mod's postfix starting a walk of its own)
+        /// can find it pending, and on a <c>NullRunState</c> (which walks the combat, never taking it) none is set. This prefix runs
+        /// last (<c>Priority.Last</c>), after every other mod's void prefix, so none of those can take it either, and with
+        /// <c>__runOriginal</c> true (the body runs). Then other mods' patches stand as <see cref="PatchTolerance.SurroundingOnly"/>
+        /// lets them (postfixes; void prefixes sorted before this one: one sorted after it, at <c>Priority.Last</c> patched later,
+        /// still backs off): the walk yields the same listeners for the body's loop (the dropped ones aren't implementers: their
+        /// iteration does nothing), so they see what they see without this mod. DowngradeHook (its run state read through the
+        /// card's getters) keeps no tolerance.
+        /// </summary>
+        private static void Prefix(MethodBase __originalMethod, object? __0, bool __runOriginal)
         {
-            // No tolerance: a void prefix of another mod running after this one would take the pending filter for its own walk.
-            if (Enabled && FastListeners.RunMirrored && !ListenerCache.IsSuspended && !PatchSafety.IsPatchedByOthers(__originalMethod))
+            if (!__runOriginal || !Enabled || !FastListeners.RunMirrored || ListenerCache.IsSuspended)
             {
-                FastListeners.PendingRunFilter = _filters[__originalMethod];
-#if BENCH
-                BaseLibWalks++;
-#endif
+                return;
             }
+            WalkOf walk = _walks[__originalMethod];
+            if (walk == WalkOf.Unknown ? PatchSafety.IsPatchedByOthers(__originalMethod)
+                : PatchSafety.IsPatchedByOthers(__originalMethod, PatchTolerance.SurroundingOnly) || !RunStateWalk(walk, __0))
+            {
+                return;
+            }
+            FastListeners.PendingRunFilter = _filters[__originalMethod];
+#if BENCH
+            BaseLibWalks++;
+#endif
+        }
+
+        /// <summary>
+        /// Whether the method's walk is the game's <c>RunState.IterateHookListeners</c>: its run state (the player's, read through
+        /// the game's getter only while nobody patches it, or the argument) is exactly a <c>RunState</c> (a subclass could walk
+        /// otherwise; <c>NullRunState</c> walks the combat).
+        /// </summary>
+        private static bool RunStateWalk(WalkOf walk, object? first)
+        {
+            object? runState = walk switch
+            {
+                WalkOf.PlayerRunState => first is MegaCrit.Sts2.Core.Entities.Players.Player player && _playerRunState != null
+                    && !PatchSafety.IsPatchedByOthers(_playerRunState) ? player.RunState : null,
+                WalkOf.RunStateArgument => first,
+                _ => null,
+            };
+            return runState != null && runState.GetType() == typeof(RunState);
         }
 
         /// <summary>Never leaks to a later walk (e.g. when the run state wasn't the game's RunState).</summary>
