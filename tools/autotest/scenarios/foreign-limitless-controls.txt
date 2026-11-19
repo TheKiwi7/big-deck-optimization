@@ -10,8 +10,9 @@
 # Rule L (per content, Bench/ForeignShapesLimitless.cs `foreignpatch limitless reach`): strict count postfixes (Bench/ForeignPatches.cs
 # count-postfix) on (l1) CardModel.AddKeyword: a Goopy content (its OnEnchant's closure reaches it) no longer kept, a Sharp or Clone one
 # still is, the memo keeps running; (l2) NCard.FindOnTable (SoulsPower's closure only): Goopy and Sharp contents kept, the memo keeps
-# running (SoulsPower contents are never kept next to BaseLib: its closure reaches powers' virtual methods BaseLib's abstract classes
-# override); (l3) CardModel.get_MaxUpgradeLevel: a level-1 content no longer kept, a level-0 one still is.
+# running (SoulsPower contents are never kept next to BaseLib and Limitless: its closure reaches methods they patch themselves,
+# PlayerCombatState.get_AllPiles, CardPile.Get, ModelDb.GetEntry...; the worker's walk stops there, `reach ... closures` says where);
+# (l3) CardModel.get_MaxUpgradeLevel: a level-1 content no longer kept, a level-0 one still is.
 # Rule B (copies of BaseLib's SavedSpireFieldPatch, Bench/ForeignShapesLimitlessTwins.cs, on SavedProperties.FromInternal):
 # (b1) GetFieldsForModel without its filter, (b2) a null result stored, (b3) its class's initializer doing more than make the
 # list, (b4) the accepted copy installed as a prefix, (b5) the accepted copy with its GetFieldsForModel patched, (b6) the accepted

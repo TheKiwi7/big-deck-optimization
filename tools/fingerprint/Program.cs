@@ -22,6 +22,39 @@ AssemblyLoadContext.Default.Resolving += (ctx, name) =>
     return null;
 };
 Assembly asm = Assembly.LoadFrom(args[0]);
+if (args[1] == "closures")
+{
+    // closures <dll> closures <limit> [!key...] <root>...: LimitlessCloneMemo's worker offline (ClosureWalker: one callee graph
+    // for every root, each walk stopping at a "!key" method, as at a method another mod patches); FP_SEPARATE=1: one
+    // MethodFingerprint.GameClosure per root instead (the worker before the shared graph). Wall and process CPU time.
+    var blocked = new HashSet<MethodBase>(args.Skip(3).Where(a => a.StartsWith('!')).Select(a => MethodFingerprint.Resolve(asm, a[1..]) ?? throw new Exception("not found: " + a)));
+    MethodBase[] closureRoots = args.Skip(3).Where(a => !a.StartsWith('!')).Select(a => MethodFingerprint.Resolve(asm, a) ?? throw new Exception("not found: " + a)).ToArray();
+    int closureLimit = int.Parse(args[2]);
+    var process = System.Diagnostics.Process.GetCurrentProcess();
+    TimeSpan cpu0 = process.TotalProcessorTime;
+    var clock = System.Diagnostics.Stopwatch.StartNew();
+    if (Environment.GetEnvironmentVariable("FP_SEPARATE") == "1")
+    {
+        foreach (MethodBase root in closureRoots)
+        {
+            Console.WriteLine($"{MethodFingerprint.MemberName(root)}: {MethodFingerprint.GameClosure(asm, new[] { root }, closureLimit, new List<MethodInfo>(), initializers: false, dispatch: false).Count} methods");
+        }
+    }
+    else
+    {
+        var graph = new CalleeGraph(asm);
+        foreach (MethodBase root in closureRoots)
+        {
+            var walk = new ClosureWalk(graph, root, closureLimit);
+            bool done = walk.Advance(blocked.Contains);
+            Console.WriteLine($"{MethodFingerprint.MemberName(root)}: {(done ? walk.Found.Count + " methods" : "stopped at " + MethodFingerprint.MemberName(walk.Blocker) + " after " + walk.Found.Count)}");
+        }
+        Console.WriteLine($"{graph.Read} methods read");
+    }
+    process.Refresh();
+    Console.WriteLine($"{clock.ElapsedMilliseconds} ms wall, {(process.TotalProcessorTime - cpu0).TotalMilliseconds:0} ms CPU");
+    return;
+}
 if (args[1] == "callees")
 {
     // callees <dll> callees <Namespace.Type::*|key>...: each root's direct game callees (MethodFingerprint.GameCallees, as

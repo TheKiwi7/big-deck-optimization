@@ -628,31 +628,55 @@ public static class LimitlessCloneMemo
     private const int ClosureLimit = 8000;
 
     /// <summary>
-    /// The game's code one override on the way reaches (<see cref="MethodFingerprint.GameClosure"/> through a <see cref="CodeSet"/>:
-    /// calls followed through the game, the game's own overrides of the game's virtual methods it calls included), as RelicFlashMerge's
-    /// sets are: replaces the hand table of "what the enchantments' OnEnchant call" (AddKeyword, CardCmd.RemoveKeyword, FindOnTable,
-    /// UpgradeBy...), and so also holds what that table missed (TezcatarasEmber's CardEnergyCost.GetWithModifiers). A chain method in
-    /// it is judged with its allowed patches and, for a card method of <see cref="GatedChain"/>, its gates (the override acts on its
-    /// own card: <c>base.Card</c>, the inner card); every other method strictly. Virtual methods of CardModel it calls count as
-    /// called on that inner card (<see cref="CodeSet.InstanceOverrides"/> on its type); any other virtual method it calls, overridden
-    /// by a type outside the game, counts as patched. Pinned per game version (<see cref="ReviewedClosures"/>, tools/fingerprint
-    /// <c>closure</c>): a closure whose set changed is left out (its override's types are never kept or dropped, as an unknown override).
+    /// The game's code one override on the way reaches (<see cref="MethodFingerprint.GameClosure"/> on the running game's code: calls
+    /// followed through the game, the game's own overrides of the game's virtual methods it calls included, no type initializers):
+    /// replaces the hand table of "what the enchantments' OnEnchant call" (AddKeyword, CardCmd.RemoveKeyword, FindOnTable,
+    /// UpgradeBy...), and so also holds what that table missed (TezcatarasEmber's CardEnergyCost.GetWithModifiers). Only the set of
+    /// methods whose other mods' patches matter: worked out again at each launch, never pinned (a game update just gives a new set;
+    /// the override's own code stays pinned in <see cref="GameOverrides"/>, which guards the game's code as before rule L). A chain
+    /// method in it is judged with its allowed patches and, for a card method of <see cref="GatedChain"/>, its gates (the override
+    /// acts on its own card: <c>base.Card</c>, the inner card); every other method strictly. Another assembly's override of a virtual
+    /// method it calls isn't a patch and doesn't count: the content's own types' overrides on the way are <see cref="OnTheWay"/>'s
+    /// (pinned), and another type's run only on an object of that type, which an inner card's build (no owner, no combat) never holds.
     /// </summary>
     private sealed class OverrideClosure
     {
-        public OverrideClosure(CodeSet set, (System.Reflection.MethodBase Method, System.Reflection.MethodInfo[] Allowed, bool Gated)[] known)
+        public OverrideClosure(System.Reflection.MethodBase[] methods, (System.Reflection.MethodBase Method, System.Reflection.MethodInfo[] Allowed, bool Gated)[] known)
         {
-            Set = set;
+            Methods = methods;
             Known = known;
         }
 
-        public readonly CodeSet Set;
-        /// <summary>The chain methods in the closure, judged with their allowed patches and gates (left out of the set's own check).</summary>
+        /// <summary>The closure's methods but the chain's (strict).</summary>
+        public readonly System.Reflection.MethodBase[] Methods;
+        /// <summary>The chain methods in the closure, judged with their allowed patches and gates.</summary>
         public readonly (System.Reflection.MethodBase Method, System.Reflection.MethodInfo[] Allowed, bool Gated)[] Known;
+
+        private sealed record StrictAnswer(long Stamp, bool Patched);
+
+        /// <summary>Whether another mod patches one of <see cref="Methods"/>, per patch stamp (read and replaced whole: any thread).</summary>
+        private volatile StrictAnswer? _strict;
 
         public bool Patched(Type cardType)
         {
-            if (Set.AnyPatched(Here()))
+            long stamp = PatchStamp();
+            StrictAnswer? known = _strict;
+            if (known == null || known.Stamp != stamp)
+            {
+                // Only the methods Harmony lists as patched are asked (a method without any patch isn't another mod's); every one
+                // of those asked (each back-off recorded under this class's name), as the strict check of each would.
+                HashSet<(System.Reflection.Module, int)>? patchedNow = PatchedKeys();
+                bool patched = patchedNow == null;
+                foreach (System.Reflection.MethodBase method in patched ? Array.Empty<System.Reflection.MethodBase>() : Methods)
+                {
+                    if (patchedNow!.Contains((method.Module, method.MetadataToken)))
+                    {
+                        patched |= PatchSafety.IsPatchedByOthers(method);
+                    }
+                }
+                _strict = known = new StrictAnswer(stamp, patched);
+            }
+            if (known.Patched)
             {
                 return true;
             }
@@ -671,28 +695,9 @@ public static class LimitlessCloneMemo
                     return true;
                 }
             }
-            return Set.ForeignOverrides(typeof(CardModel)) || Set.InstanceOverrides(cardType, typeof(CardModel));
+            return false;
         }
     }
-
-    /// <summary>
-    /// Each pinned override's closure (<see cref="GameOverrides"/>, <see cref="KnownOverrides"/>) as reviewed, per game version
-    /// (tools/fingerprint <c>closure 8000 Type::Method()</c>, the set line; v0.107.1, v0.111.1, v0.113.1). Adroit, TezcatarasEmber and
-    /// SoulsPower reach the powers, dynamic variables and combat hooks (~1,800 to 3,700 methods): virtual methods BaseLib's own
-    /// abstract classes override, so their types are kept only where no such override is loaded. Goopy, RoyallyApproved and Steady
-    /// reach AddKeyword and the cards' canonical keywords (~170 to 200 methods).
-    /// </summary>
-    private static readonly Dictionary<string, string[]> ReviewedClosures = new()
-    {
-        ["MegaCrit.Sts2.Core.Models.Enchantments.Adroit::RecalculateValues"] = new[] { "51C08FF27721D22D", "2ABA36AAB8804297", "D57FB4B3235ECC80" },
-        ["MegaCrit.Sts2.Core.Models.Enchantments.Goopy::OnEnchant"] = new[] { "3F0D690AF02649DE", "F939B852EA8AA12D", "E2C686149E9FABC7" },
-        ["MegaCrit.Sts2.Core.Models.Enchantments.RoyallyApproved::OnEnchant"] = new[] { "FC05FE86817DDF45", "8621AE5C3386275D", "5E36901AA8E2F7FB" },
-        ["MegaCrit.Sts2.Core.Models.Enchantments.SoulsPower::OnEnchant"] = new[] { "2A5D6F96F7134884", "3C49CAA3569A90AF", "7DC2A143A81CC94C" },
-        ["MegaCrit.Sts2.Core.Models.Enchantments.Steady::OnEnchant"] = new[] { "26A9DDF68077B595", "B1C7E97966929D06", "4F272D9E1F72DDD3" },
-        ["MegaCrit.Sts2.Core.Models.Enchantments.TezcatarasEmber::OnEnchant"] = new[] { "3492E7A8203FB849", "C950C918CFCDD90E", "29D0C913EF2ED071" },
-        // Empty: no game code (every game version).
-        ["Limitless.LimitlessCode.UncappedEnchantments.EnchantmentStorageCard::OnUpgrade"] = new[] { "CEE8C76FE08EB4CC" },
-    };
 
     /// <summary>
     /// The game methods the allowed BaseLib / Limitless patches of <see cref="Chain"/> call themselves (<see cref="MethodFingerprint.GameCallees"/>,
@@ -729,27 +734,60 @@ public static class LimitlessCloneMemo
         return found.Select(e => (e.Key, e.Value)).ToArray();
     }
 
-    /// <summary>This file's path, as the patch checks' [CallerFilePath] records the back-offs under this class's name.</summary>
-    private static string Here([System.Runtime.CompilerServices.CallerFilePath] string path = "") => path;
-
-    /// <summary>Per override (<c>Type::Method</c>, as <see cref="FindOnTheWay"/> keys them): its closure, or <see cref="_noClosure"/> when it can't be bounded.</summary>
+    /// <summary>
+    /// Per override (<c>Type::Method</c>, as <see cref="FindOnTheWay"/> keys them): its closure (<see cref="OverrideClosure"/>), the
+    /// method its walk stopped at (<see cref="BlockedClosure"/>: patched by another mod), or <see cref="_noClosure"/> when it can't be
+    /// bounded. Published whole by the worker; read from any thread.
+    /// </summary>
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, object> _closures = new();
     private static readonly object _noClosure = new();
     private static int _closuresStarted, _closuresDone;
+    /// <summary>Each publication of the worker (part of <see cref="PatchStamp"/>).</summary>
+    private static long _closureGeneration;
+
+    /// <summary>A walk stopped at a method another mod patches: the override counts as patched while that patch stays.</summary>
+    private sealed record BlockedClosure(System.Reflection.MethodBase Blocker);
+
+    /// <summary>Wakes the worker to resume a walk whose blocking patch went away.</summary>
+    private static readonly System.Threading.AutoResetEvent _resume = new(false);
 
     /// <summary>
-    /// Works out, once, on a worker thread, what the allowed patches call (<see cref="_allowedCallees"/>: until then nothing is kept
-    /// or dropped) and the closures of every pinned override (~0.2 to 0.9 s each: reflection over the game's code; until one is done,
-    /// the types having that override aren't kept or dropped, as an unknown override). Never throws.
+    /// Starts, once and only for the Limitless parts (LimitlessCloneMemo's and LimitlessHookSkip's Apply, after their Limitless
+    /// checks; not when the game's clone chain changed), the worker that reads what the allowed patches call
+    /// (<see cref="_allowedCallees"/>: until then nothing is kept or dropped) and walks every pinned override's closure (until one is
+    /// published, the types having that override aren't kept or dropped, as an unknown override). Its own background thread at
+    /// below-normal priority; the main thread never waits on it (published results only; MethodFingerprint's types cache is read
+    /// outside its lock). Never throws.
     /// </summary>
     internal static void StartClosures()
     {
-        if (System.Threading.Volatile.Read(ref _closuresStarted) != 0 || System.Threading.Interlocked.Exchange(ref _closuresStarted, 1) != 0)
+        if (System.Threading.Volatile.Read(ref _closuresStarted) != 0 || !GameChainKnown() || System.Threading.Interlocked.Exchange(ref _closuresStarted, 1) != 0)
         {
             return;
         }
-        System.Threading.Tasks.Task.Run(() =>
+        try
         {
+            new System.Threading.Thread(ClosureWorker)
+            {
+                IsBackground = true,
+                Priority = System.Threading.ThreadPriority.BelowNormal,
+                Name = ModEntry.Id + " closures",
+            }.Start();
+        }
+        catch (Exception e)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: the closures' worker didn't start ({e.Message}): stacked enchantments' inner cards are rebuilt at every clone "
+                + "and never skipped, as the game does");
+        }
+    }
+
+    private static void ClosureWorker()
+    {
+        try
+        {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            double cpuStart = ThreadCpuMs();
+            Log.Info($"[{ModEntry.Id}] {Name}: closures worker started at {DateTime.Now:HH:mm:ss.fff}");
             System.Reflection.Assembly game = typeof(CardModel).Assembly;
             // First the allowed patches' callees (every group waits for them), then each override's closure.
             try
@@ -762,38 +800,139 @@ public static class LimitlessCloneMemo
                     + "inner cards are rebuilt at every clone and never skipped, as the game does");
             }
             System.Threading.Interlocked.Increment(ref _closuresDone);
+            System.Threading.Interlocked.Increment(ref _closureGeneration);
+            var chain = ChainMethods();
+            var chainMethods = new HashSet<System.Reflection.MethodBase>(chain.Select(c => c.Method));
+            var graph = new CalleeGraph(game);
+            var walks = new Dictionary<string, ClosureWalk?>();
             foreach (string key in GameOverrides.Keys.Concat(KnownOverrides.Keys))
             {
-                object closure = _noClosure;
-                try
+                int split = key.IndexOf("::", StringComparison.Ordinal);
+                Type? type = game.GetType(key[..split], false) ?? Reflect.TypeByName(key[..split]);
+                System.Reflection.MethodInfo? method = type?.GetMethods(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public
+                    | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.DeclaredOnly).SingleOrDefault(m => m.Name == key[(split + 2)..] && m.GetParameters().Length == 0);
+                walks[key] = method == null ? null : new ClosureWalk(graph, method, ClosureLimit);
+            }
+            bool first = true;
+            while (true)
+            {
+                // A walk stops at a method another mod patches (not a chain method: judged with its allowed patches and gates).
+                HashSet<(System.Reflection.Module, int)>? patchedNow = PatchedKeys();
+                bool Patched(System.Reflection.MethodBase m) =>
+                    patchedNow != null && !chainMethods.Contains(m) && patchedNow.Contains((m.Module, m.MetadataToken)) && PatchSafety.IsPatchedByOthers(m);
+                foreach (string key in walks.Keys.ToArray())
                 {
-                    int split = key.IndexOf("::", StringComparison.Ordinal);
-                    Type? type = game.GetType(key[..split], false) ?? Reflect.TypeByName(key[..split]);
-                    System.Reflection.MethodInfo? method = type?.GetMethods(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public
-                        | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.DeclaredOnly).SingleOrDefault(m => m.Name == key[(split + 2)..] && m.GetParameters().Length == 0);
-                    if (method != null)
+                    ClosureWalk? walk = walks[key];
+                    object published = _noClosure;
+                    _closures.TryGetValue(key, out object? before);
+                    if (before is OverrideClosure || (walk == null && before != null))
                     {
-                        var chain = ChainMethods();
-                        var chainMethods = new HashSet<System.Reflection.MethodBase>(chain.Select(c => c.Method));
-                        // Pinned: a set that changed logs it (CodeSet) and leaves its override's types to the game.
-                        CodeSet set = CodeSet.Compute(Name + " (" + key + ")", new System.Reflection.MethodBase?[] { method }, ClosureLimit,
-                            ReviewedClosures.GetValueOrDefault(key, Array.Empty<string>()), checkedElsewhere: chainMethods, interfaces: true);
-                        if (set.Reviewed)
+                        continue; // Complete, or not bounded: nothing left to walk.
+                    }
+                    try
+                    {
+                        if (walk != null)
                         {
-                            var inSet = new HashSet<System.Reflection.MethodBase>(set.Methods);
-                            closure = new OverrideClosure(set, chain.Where(c => inSet.Contains(c.Method)).Select(c => (c.Method, c.Allowed, c.Gated)).ToArray());
+                            if (walk.Advance(Patched))
+                            {
+                                var inSet = new HashSet<System.Reflection.MethodBase>(walk.Found);
+                                published = new OverrideClosure(walk.Found.Where(m => !chainMethods.Contains(m)).ToArray(),
+                                    chain.Where(c => inSet.Contains(c.Method)).Select(c => (c.Method, c.Allowed, c.Gated)).ToArray());
+                            }
+                            else
+                            {
+                                published = new BlockedClosure(walk.Blocker!);
+                            }
                         }
                     }
+                    catch (Exception e)
+                    {
+                        walks[key] = null;
+                        Log.Info($"[{ModEntry.Id}] {Name}: what {key} calls couldn't be bounded ({e.Message}): its types' stacked inner cards are rebuilt "
+                            + "at every clone and never skipped, as the game does");
+                    }
+                    if (before is BlockedClosure { } still && published is BlockedClosure { } now && ReferenceEquals(still.Blocker, now.Blocker))
+                    {
+                        continue; // Still stopped at the same patch: nothing changed (the stamp stays).
+                    }
+                    _closures[key] = published;
+                    System.Threading.Interlocked.Increment(ref _closureGeneration);
+                    if (first)
+                    {
+                        System.Threading.Interlocked.Increment(ref _closuresDone);
+                    }
                 }
-                catch (Exception e)
+                if (first)
                 {
-                    Log.Info($"[{ModEntry.Id}] {Name}: what {key} calls couldn't be bounded ({e.Message}): its types' stacked inner cards are rebuilt "
-                        + "at every clone and never skipped, as the game does");
+                    first = false;
+                    double cpu = ThreadCpuMs();
+                    Log.Info($"[{ModEntry.Id}] {Name}: closures worker done at {DateTime.Now:HH:mm:ss.fff}: {watch.ElapsedMilliseconds} ms wall, "
+                        + (cpu >= 0 && cpuStart >= 0 ? $"{cpu - cpuStart:0} ms CPU" : "CPU unknown") + $", {graph.Read} methods read; " + ClosureSummary());
                 }
-                _closures[key] = closure;
-                System.Threading.Interlocked.Increment(ref _closuresDone);
+                _resume.WaitOne();
             }
-        });
+        }
+        catch (Exception e)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: the closures' worker stopped ({e.Message}): stacked enchantments' inner cards are rebuilt at every clone "
+                + "for the types not judged yet, as the game does");
+        }
+    }
+
+    /// <summary>Each override's state (display, the worker's log line and the bench).</summary>
+    private static string ClosureSummary() => string.Join(", ", _closures.OrderBy(e => e.Key, StringComparer.Ordinal)
+        .Select(e => e.Key[(e.Key.LastIndexOf('.') + 1)..] + e.Value switch
+        {
+            OverrideClosure c => " " + (c.Methods.Length + c.Known.Length) + " methods",
+            BlockedClosure b => " stopped at " + MethodFingerprint.MemberName(b.Blocker) + " (patched by another mod)",
+            _ => " not bounded",
+        }));
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentThread();
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern bool GetThreadTimes(IntPtr thread, out long creation, out long exit, out long kernel, out long user);
+
+    /// <summary>This thread's CPU time (Windows), -1 elsewhere or when it can't tell (the log line only).</summary>
+    private static double ThreadCpuMs()
+    {
+        try
+        {
+            return OperatingSystem.IsWindows() && GetThreadTimes(GetCurrentThread(), out _, out _, out long kernel, out long user) ? (kernel + user) / 10000.0 : -1;
+        }
+        catch
+        {
+            return -1;
+        }
+    }
+
+    private sealed record PatchedSet(long Stamp, HashSet<(System.Reflection.Module, int)>? Keys);
+
+    private static volatile PatchedSet? _patchedSet;
+
+    /// <summary>
+    /// The methods Harmony lists as patched now, by module and token (a generic instantiation counts as its definition: more, never
+    /// fewer), per patch stamp; null when Harmony can't tell (then everything counts as patched).
+    /// </summary>
+    private static HashSet<(System.Reflection.Module, int)>? PatchedKeys()
+    {
+        long stamp = PatchStamp();
+        PatchedSet? known = _patchedSet;
+        if (known == null || known.Stamp != stamp)
+        {
+            HashSet<(System.Reflection.Module, int)>? keys;
+            try
+            {
+                keys = new HashSet<(System.Reflection.Module, int)>(Harmony.GetAllPatchedMethods().Select(m => (m.Module, m.MetadataToken)));
+            }
+            catch
+            {
+                keys = null;
+            }
+            _patchedSet = known = new PatchedSet(stamp, keys);
+        }
+        return known.Keys;
     }
 
     /// <summary>
@@ -826,11 +965,16 @@ public static class LimitlessCloneMemo
         {
             return true;
         }
-        StartClosures();
         foreach (System.Reflection.MethodInfo method in overrides)
         {
-            if (!_closures.TryGetValue(method.DeclaringType?.FullName + "::" + method.Name, out object? known) || known is not OverrideClosure closure
-                || closure.Patched(cardType))
+            _closures.TryGetValue(method.DeclaringType?.FullName + "::" + method.Name, out object? known);
+            if (known is BlockedClosure blocked && !PatchSafety.IsPatchedByOthers(blocked.Blocker))
+            {
+                // The patch it stopped at went away: the worker walks on (patched until it publishes).
+                _resume.Set();
+                return true;
+            }
+            if (known is not OverrideClosure closure || closure.Patched(cardType))
             {
                 return true;
             }
@@ -843,7 +987,7 @@ public static class LimitlessCloneMemo
     /// cleared and LimitlessHookSkip's filters judge again, so nothing kept before a patch arrives is served after it.
     /// </summary>
     internal static long PatchStamp() =>
-        (HarmonyWatch.Applied ? HarmonyWatch.Epoch : Environment.TickCount64 / 2000) * 64 + System.Threading.Volatile.Read(ref _closuresDone);
+        unchecked((HarmonyWatch.Applied ? HarmonyWatch.Epoch : Environment.TickCount64 / 2000) * 1_048_576L + System.Threading.Interlocked.Read(ref _closureGeneration));
 
     private static Type? _storageCardType;
     private static int _storageLooked;
@@ -951,10 +1095,8 @@ public static class LimitlessCloneMemo
     /// <summary>Whether the allowed patches' callees and every pinned override's closure were worked out (the bench waits for it).</summary>
     internal static bool ClosuresDone => System.Threading.Volatile.Read(ref _closuresDone) >= GameOverrides.Count + KnownOverrides.Count + 1;
 
-    /// <summary>The closures worked out and reviewed, by override (display: <c>foreignpatch limitless reach</c>).</summary>
-    internal static string ClosureStates() => string.Join(", ", _closures.OrderBy(e => e.Key, StringComparer.Ordinal)
-        .Select(e => e.Key[(e.Key.LastIndexOf('.') + 1)..] + (e.Value is OverrideClosure c ? " " + c.Set.Methods.Length : " none")))
-        + $"; allowed callees {(_allowedCallees is { } callees ? callees.Length.ToString() : "unknown")}";
+    /// <summary>The closures' states, by override (display: <c>foreignpatch limitless reach</c>).</summary>
+    internal static string ClosureStates() => ClosureSummary() + $"; allowed callees {(_allowedCallees is { } callees ? callees.Length.ToString() : "unknown")}";
 
     /// <summary>Contents kept now, and memo clears because the patch set changed (rule L's stamp) while it held some.</summary>
     internal static int MemoCount => _memo.Count;
