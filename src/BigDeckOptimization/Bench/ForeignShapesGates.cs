@@ -33,7 +33,7 @@ public static class ForeignShapesGates
         "gates-copy-prologue-postfix", "gates-call-first-postfix",
         "gates-getter-gated-postfix", "gates-getter-ungated-postfix",
         "gates-init-extensions-postfix", "gates-init-ambiguous-postfix", "gates-forwarder-postfix", "gates-forwarder-acts-postfix",
-        "gates-count-postfix", "gates-count-prefix",
+        "gates-count-postfix", "gates-count-prefix", "gates-button-gated-prefix",
     };
 
     /// <summary>Whether a <c>foreignpatch</c> line is one of this file's.</summary>
@@ -107,6 +107,7 @@ public static class ForeignShapesGates
             "gates-forwarder-acts-postfix" => (ForwarderPostfix(key, acts: true), PatchSafety.PatchKind.Postfix),
             "gates-count-postfix" => (CountPatch(key), PatchSafety.PatchKind.Postfix),
             "gates-count-prefix" => (CountPatch(key), PatchSafety.PatchKind.Prefix),
+            "gates-button-gated-prefix" => (ButtonGatedPrefix(key), PatchSafety.PatchKind.Prefix),
             _ => throw new ArgumentException("unknown gates shape " + shape),
         };
     }
@@ -1162,6 +1163,60 @@ public static class ForeignShapesGates
         }
     }
 
+    // --- TG on IdleButtonInput: patches on NButton._Input gated on the button's type ---
+
+    private static readonly (Type, string)[] ButtonInput = { (typeof(MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton), "__instance"), (typeof(Godot.InputEvent), "inputEvent") };
+
+    /// <summary>NButton._Input, the original of the TG cases.</summary>
+    private static MethodBase ButtonInputMethod() => AccessTools.DeclaredMethod(typeof(MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton), "_Input", new[] { typeof(Godot.InputEvent) })!;
+
+    /// <summary>
+    /// Into The Spireverse's shape (Debug IL): <c>if (!(__instance is NCharacterSelectButton)) return true; [work]; return true;</c>,
+    /// through locals. <paramref name="work"/>: <c>"count"</c> (stands, gated on NCharacterSelectButton), <c>"impure"</c> (the
+    /// gated path reads a class whose beforefieldinit initializer reads the clock, as its MegaInput.up: backs off), or
+    /// <c>"every"</c> (a count before the test: backs off).
+    /// </summary>
+    private static MethodInfo ButtonGatedPrefix(string key, string work = "count") => Emit("button_gated_prefix_" + work, typeof(bool), ButtonInput, il =>
+    {
+        Type gate = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CharacterSelect.NCharacterSelectButton);
+        il.DeclareLocal(gate);
+        il.DeclareLocal(typeof(bool));
+        il.DeclareLocal(typeof(bool));
+        Label gated = il.DefineLabel(), exit = il.DefineLabel();
+        il.Emit(OpCodes.Nop);
+        if (work == "every")
+        {
+            EmitHit(il, key + " every call");
+        }
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Isinst, gate);
+        il.Emit(OpCodes.Stloc_0);
+        il.Emit(OpCodes.Ldloc_0);
+        il.Emit(OpCodes.Ldnull);
+        il.Emit(OpCodes.Cgt_Un);
+        il.Emit(OpCodes.Ldc_I4_0);
+        il.Emit(OpCodes.Ceq);
+        il.Emit(OpCodes.Stloc_1);
+        il.Emit(OpCodes.Ldloc_1);
+        il.Emit(OpCodes.Brfalse_S, gated);
+        il.Emit(OpCodes.Ldc_I4_1);
+        il.Emit(OpCodes.Stloc_2);
+        il.Emit(OpCodes.Br_S, exit);
+        il.MarkLabel(gated);
+        if (work == "impure")
+        {
+            il.Emit(OpCodes.Call, ImpureHelper().GetMethod("Read")!);
+            il.Emit(OpCodes.Pop);
+        }
+        EmitHit(il, key);
+        il.Emit(OpCodes.Ldc_I4_1);
+        il.Emit(OpCodes.Stloc_2);
+        il.Emit(OpCodes.Br_S, exit);
+        il.MarkLabel(exit);
+        il.Emit(OpCodes.Ldloc_2);
+        il.Emit(OpCodes.Ret);
+    });
+
     private static Harmony? _calleeHarmony;
 
     private static MethodInfo? _patchedCalleeForwarder;
@@ -1294,6 +1349,15 @@ public static class ForeignShapesGates
         yield return new Case("FW control: three calls deep", ChainPostfix(3), postfix, model, gated, false);
         yield return new Case("FW control: a helper whose class has a static constructor (run at its first call)", ForwarderToOtherClass(true), postfix, model, gated, false);
         yield return new Case("FW control: a helper of another assembly", ForwarderToOtherAssembly(), postfix, model, gated, false);
+        // TG on IdleButtonInput: NButton._Input, the button as the listener (IdleButtonInput registers it at its Apply; again here
+        // for the offline run, the same registration).
+        MethodBase buttonInput = ButtonInputMethod();
+        PatchSafety.SetListenerParameter(buttonInput, "__instance");
+        yield return new Case("TG IdleButtonInput: Into The Spireverse's Debug bool prefix gated on NCharacterSelectButton", ButtonGatedPrefix("selftest"), prefix, buttonInput, gated, true,
+            "NCharacterSelectButton");
+        yield return new Case("TG IdleButtonInput control: the gated path reads a class with an impure beforefieldinit initializer (its MegaInput.up)",
+            ButtonGatedPrefix("selftest", "impure"), prefix, buttonInput, gated, false);
+        yield return new Case("TG IdleButtonInput control: a count before the test", ButtonGatedPrefix("selftest", "every"), prefix, buttonInput, gated, false);
         if (SpireFieldPostfix(false) is { } spireField)
         {
             yield return new Case("R1g BaseLib SpireField with a static lambda", spireField, postfix, model, gated, true, "Squeeze");

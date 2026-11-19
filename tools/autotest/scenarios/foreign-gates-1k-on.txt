@@ -16,6 +16,8 @@
 # H (BaseLib loaded): a counting postfix and a void prefix (sorted before this mod's, which runs last) on BaseLib's
 # GetMaxHandSize: kept, its walk still filtered (the filter set only for a real RunState). Control: a void prefix at
 # Priority.Last patched after this mod's on the heal modifier (it runs after the filter is set): backs off.
+# TG on IdleButtonInput: a Debug bool prefix on NButton._Input gated on NCharacterSelectButton (Into The Spireverse's shape,
+# its gated path reading nothing impure): kept, idle buttons still muted (that type would keep its input).
 # CHECKSUM and STATE lines identical with the off side. ~945 cards.
 expect FOREIGN gates selftest: \d+ cases as expected
 expect HookSkip: Hook\.AfterCardPlayed is also patched by bdtest\.foreign\.gates-passthrough-finalizer \(prefixes and postfixes around the transpiled body: run around this mod's code as without it\): kept
@@ -51,6 +53,7 @@ expect HookSkip: ModifyHealAmountPatches\.ModifyAdditive is also patched by .*bd
 expect FOREIGN runtime HookSkip MaxHandSizePatch\.GetMaxHandSize \(SurroundingOnly\) kept [1-9][0-9]* backed off 0
 expect STATE foreign end gates-count-postfix MaxHandSizePatch\.GetMaxHandSize [1-9]
 expect STATE foreign end gates-count-prefix MaxHandSizePatch\.GetMaxHandSize [1-9]
+expect IdleButtonInput: NButton\._Input is also patched by bdtest\.foreign\.gates-button-gated-prefix \(patches gated on the listener's type: NCharacterSelectButton treated as overriding it
 timeout 1500
 newrun NECROBINDER 1234
 waitfor run 120
@@ -75,6 +78,7 @@ foreignpatch gates-forwarder-acts-postfix MegaCrit.Sts2.Core.Models.AbstractMode
 foreignpatch gates-count-postfix BaseLib.Patches.Hooks.MaxHandSizePatch:GetMaxHandSize/2
 foreignpatch gates-count-prefix BaseLib.Patches.Hooks.MaxHandSizePatch:GetMaxHandSize/2
 foreignpatch gates-count-prefix BaseLib.Patches.Hooks.ModifyHealAmountPatches:ModifyAdditive priority 0
+foreignpatch gates-button-gated-prefix MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton:_Input
 effects start
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
@@ -110,6 +114,7 @@ foreignpatch report end
 effects end
 effectcheck HookSkip grew start
 effectcheck HookSkip.BaseLib ran
+effectcheck IdleButtonInput grew start
 cmd bdopt why
 counters end
 foreignpatch remove

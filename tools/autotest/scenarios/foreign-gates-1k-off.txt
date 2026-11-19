@@ -25,6 +25,7 @@ foreignpatch gates-forwarder-acts-postfix MegaCrit.Sts2.Core.Models.AbstractMode
 foreignpatch gates-count-postfix BaseLib.Patches.Hooks.MaxHandSizePatch:GetMaxHandSize/2
 foreignpatch gates-count-prefix BaseLib.Patches.Hooks.MaxHandSizePatch:GetMaxHandSize/2
 foreignpatch gates-count-prefix BaseLib.Patches.Hooks.ModifyHealAmountPatches:ModifyAdditive priority 0
+foreignpatch gates-button-gated-prefix MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton:_Input
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 1
