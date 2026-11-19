@@ -320,7 +320,9 @@ public static partial class PatchSafety
     /// nothing without them. "Before those rules" is the fourth pass's state (a501424), not v1.0.3's: that pass deepened
     /// LimitlessCloneMemo's clone chain (CardModel.AddKeyword, RemoveKeyword, get_MaxUpgradeLevel among others), so with the
     /// switch off a strict patch there (CardAscension's AddKeyword prefix) turns LimitlessCloneMemo and LimitlessHookSkip off
-    /// for every card, as before the rules; only the type gates keep them for other cards.
+    /// for every card, as before the rules. With the rules on, rule L (2026-11-19) reaches AddKeyword and RemoveKeyword only
+    /// inside enchantment closures, where gated methods are judged strictly: such a patch keeps out only the contents whose
+    /// closure reaches it.
     /// </summary>
     internal static readonly bool ShapeRules = true;
 
