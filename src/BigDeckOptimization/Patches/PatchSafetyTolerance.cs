@@ -881,7 +881,8 @@ public static partial class PatchSafety
 
     /// <summary>
     /// <paramref name="prefixes"/>: the prefixes (or with <paramref name="kind"/> Postfix the postfixes; Harmony sorts both the same
-    /// way: priority, then before/after, then registration). This mod's order-free prefixes and read-only probe postfixes don't count.
+    /// way: priority, then before/after, then registration; the postfixes then run void ones first, passthrough ones after). This
+    /// mod's order-free prefixes and read-only probe postfixes don't count.
     /// </summary>
     private static Precedence ComputePrecedence(MethodBase original, Patch[] prefixes, string key, PatchKind kind)
     {
@@ -918,6 +919,12 @@ public static partial class PatchSafety
             prefixes[i].PatchMethod = methods[i];
         }
         List<MethodInfo> sorted = PatchProcessor.GetSortedPatchMethods(original, prefixes);
+        if (kind == PatchKind.Postfix)
+        {
+            // Harmony runs the void postfixes first, then the passthrough (non-void) ones, each group in the sorted order
+            // (MethodCreator: AddPostfixes(passthroughPatches: false), then true): the order they run in.
+            sorted = sorted.Where(m => m.ReturnType == typeof(void)).Concat(sorted.Where(m => m.ReturnType != typeof(void))).ToList();
+        }
         int firstOurs = int.MaxValue;
         foreach (RuntimeMethodHandle handle in ours)
         {

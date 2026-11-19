@@ -4,14 +4,17 @@
 # every embedded language translated. Then with the whole mod off (bdopt off: this patch doesn't follow the master switch, the
 # player whose mod is off needs it most), with another mod's postfix on GetErrorString sorted before this mod's (Priority.Last:
 # it sees the game's text, kept, explained as without it; PostfixesBefore since 2026-11-18), then one sorted after it
-# (priority 0 registered later: a back-off, the game's text alone), that postfix removed again (explained again), and in
-# French. No run, no network.
+# (priority 0 registered later: a back-off, the game's text alone), a passthrough postfix at the default priority (sorted
+# before this mod's but run after it: Harmony runs the void postfixes first, a back-off), those postfixes removed again
+# (explained again), and in French. No run, no network.
 timeout 180
 expect JOINMSG all \d+ cases ok, game language
 expect JoinMismatchNote: NetErrorInfo\.GetErrorString is also patched by bdtest\.foreign\.noop-postfix \(postfixes running before this mod's: run around this mod's code as without it\): kept
 expect JoinMismatchNote: NetErrorInfo\.GetErrorString is also patched by bdtest\.foreign\.noop-postfix \(postfixes running before this mod's not enough\): normal game for that part
 expect FOREIGN classify NetErrorInfo\.GetErrorString: bdtest\.foreign\.noop-postfix Postfix .*priority 0: .*PostfixesBefore backs off \(postfix running after a postfix of this mod
 expect JOINMSG all \d+ cases ok \(backoff
+expect FOREIGN classify NetErrorInfo\.GetErrorString: bdtest\.foreign\.passthrough-postfix Postfix .*PostfixesBefore backs off \(postfix running after a postfix of this mod
+expect JoinMismatchNote: NetErrorInfo\.GetErrorString is also patched by bdtest\.foreign\.passthrough-postfix \(postfixes running before this mod's not enough\): normal game for that part
 expect JOINMSG all \d+ cases ok, game language fra
 cmd bdperf joinmsg
 cmd bdopt off
@@ -27,6 +30,11 @@ foreignpatch noop-postfix MegaCrit.Sts2.Core.Entities.Multiplayer.NetErrorInfo:G
 wait 3
 cmd bdperf joinmsg backoff
 cmd bdopt why
+foreignpatch remove
+wait 3
+foreignpatch passthrough-postfix MegaCrit.Sts2.Core.Entities.Multiplayer.NetErrorInfo:GetErrorString
+wait 3
+cmd bdperf joinmsg backoff
 foreignpatch remove
 wait 3
 cmd bdperf joinmsg
