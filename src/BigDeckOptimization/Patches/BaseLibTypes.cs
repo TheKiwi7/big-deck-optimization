@@ -600,7 +600,11 @@ internal static class BaseLibTypes
     /// <summary>Per postfix method: the static part of the verdict (its code, its class), or null when it isn't a twin.</summary>
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<RuntimeMethodHandle, Twin?> _twinShapes = new();
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _twinsLogged = new();
-    private static (MethodInfo[] Base, MethodInfo[] Twins, MethodInfo[] Both)? _withFrom, _withFill;
+    /// <summary>One <see cref="WithTwins"/> answer: a class, so the three arrays are read together (one reference read).</summary>
+    private sealed record WithTwinsAnswer(MethodInfo[] Base, MethodInfo[] Twins, MethodInfo[] Both);
+
+    /// <summary>The last answers (any thread: the closure worker and the main thread; a reference is written and read atomically).</summary>
+    private static volatile WithTwinsAnswer? _withFrom, _withFill;
 
     /// <summary>
     /// The twins found now: other mods' postfixes on <c>SavedProperties.FromInternal</c> / <c>FillInternal</c> whose code is BaseLib's
@@ -808,19 +812,19 @@ internal static class BaseLibTypes
         {
             return allowed;
         }
-        var known = fromInternal ? _withFrom : _withFill;
-        if (known is { } k && ReferenceEquals(k.Base, allowed) && ReferenceEquals(k.Twins, twins))
+        WithTwinsAnswer? known = fromInternal ? _withFrom : _withFill;
+        if (known != null && ReferenceEquals(known.Base, allowed) && ReferenceEquals(known.Twins, twins))
         {
-            return k.Both;
+            return known.Both;
         }
         MethodInfo[] both = allowed.Concat(twins).ToArray();
         if (fromInternal)
         {
-            _withFrom = (allowed, twins, both);
+            _withFrom = new WithTwinsAnswer(allowed, twins, both);
         }
         else
         {
-            _withFill = (allowed, twins, both);
+            _withFill = new WithTwinsAnswer(allowed, twins, both);
         }
         return both;
     }
