@@ -178,10 +178,12 @@ public static partial class PatchSafety
     /// <summary>
     /// Rule null-fill (2026-11-18, CardFusion's <c>FusedCard_CombatState_Patch</c>): whether every patch on the getter
     /// <paramref name="method"/> is another mod's postfix that does nothing when the getter's result isn't null (it may only
-    /// replace a null result: <see cref="NullFillShape"/>), its own method unpatched, no hidden IL hook on the getter, nothing of
-    /// this mod there. A caller mirroring the getter's non-null answers from fields (CardSortKeys' OwnerCombat) then reads the
-    /// real getter for what a null-filling postfix may give instead. Asked again per Harmony epoch and at most every 2 s. Never
-    /// throws (false when it can't tell).
+    /// replace a null result: <see cref="NullFillShape"/>) and whose every path, the fill's included, only reads and sets its
+    /// result (rule RO's analysis, <see cref="ReadOnlyShape"/>: the methods it calls unpatched too), its own method unpatched, no
+    /// hidden IL hook on the getter, nothing of this mod there. A caller mirroring the getter's non-null answers from fields
+    /// (CardSortKeys' OwnerCombat) then reads the real getter for what a null-filling postfix may give instead, for cards the game
+    /// may never read it for: the fill must do nothing else (a lazy registration, a random draw would run a different number of
+    /// times than in the game). Asked again per Harmony epoch and at most every 2 s. Never throws (false when it can't tell).
     /// </summary>
     internal static bool NullFillOnly(MethodBase? method) => NullFillAnswer(method).Only;
 
@@ -208,7 +210,8 @@ public static partial class PatchSafety
             {
                 Patch[] all = AllPatches(info).ToArray();
                 only = all.Length > 0 && all.All(p => !PatchGuard.IsOurs(p.owner) && info.Postfixes.Contains(p) && PatchMethodOf(p) is { } postfix
-                    && NullFillShape(postfix) && !(Harmony.GetPatchInfo(postfix) is { } own && AllPatches(own).Any()));
+                    && NullFillShape(postfix) && !(Harmony.GetPatchInfo(postfix) is { } own && AllPatches(own).Any())
+                    && ReadOnlyShape(postfix, method) is { } relied && relied.All(r => !HasOtherPatches(r)));
                 if (only)
                 {
                     mods = ModNames(all);

@@ -23,7 +23,7 @@ public static class ForeignShapesParts
         "redirect-prefix",
         "sort-gated-postfix", "sort-nearmiss-postfix",
         "ng-guard", "ng-true-guard", "ng-call-guard",
-        "nullfill-postfix", "nullfill-nearmiss-postfix",
+        "nullfill-postfix", "nullfill-impure-postfix", "nullfill-nearmiss-postfix",
         "latch-postfix", "latch-reset-postfix", "latch-open-postfix", "latch-or-postfix",
         "pilegate-postfix", "pilegate-beq-postfix", "pilegate-nearmiss-postfix",
         "ro-postfix", "ro-chain-postfix", "ro-call-postfix",
@@ -95,7 +95,7 @@ public static class ForeignShapesParts
             {
                 $"FOREIGN display {parts[1]} sort-gated-postfix squeeze calls {SortGates.SqueezeCalls}",
                 $"FOREIGN display {parts[1]} sort-nearmiss-postfix every call {SortGates.EveryCall}",
-                $"FOREIGN display {parts[1]} nullfill-postfix null results {NullFillNulls}, nearmiss every call {NullFillEvery}",
+                $"FOREIGN display {parts[1]} nullfill-impure-postfix null results {NullFillNulls}, nearmiss every call {NullFillEvery}",
                 $"FOREIGN display {parts[1]} latch runs {LatchRuns}",
                 $"FOREIGN display {parts[1]} pilegate runs {PileGateRuns}, nearmiss every call {PileGateEvery}",
                 $"FOREIGN display {parts[1]} ro-call-postfix calls {ReadOnlyCalls}",
@@ -158,15 +158,19 @@ public static class ForeignShapesParts
                 harmony.Patch(target, prefix: new HarmonyMethod(EmitGuard(shape)) { priority = priority });
                 break;
             case "nullfill-postfix":
+            case "nullfill-impure-postfix":
             case "nullfill-nearmiss-postfix":
                 // Rule null-fill (CardFusion's FusedCard_CombatState_Patch on CardModel.CombatState): a postfix doing nothing for a
-                // non-null result (here it only counts the null ones: no game state changes), Release-build IL emitted; its near
-                // miss counts every call before the test (a sort is the game's then).
+                // non-null result, its fill only setting the result (nullfill-postfix: null again, no game state changes), Release-build
+                // IL emitted. Controls: the fill calling a method (nullfill-impure-postfix: it counts the null results; this mod reads
+                // the getter for cards the game may not, so a sort is the game's then), and the near miss counting every call before
+                // the test. Each logs rule null-fill's verdict.
                 if (target.DeclaringType != typeof(CardModel) || target.Name != "get_CombatState")
                 {
                     throw new ArgumentException(shape + " goes on MegaCrit.Sts2.Core.Models.CardModel:get_CombatState");
                 }
-                harmony.Patch(target, postfix: new HarmonyMethod(EmitNullFill(shape == "nullfill-nearmiss-postfix")) { priority = priority });
+                harmony.Patch(target, postfix: new HarmonyMethod(EmitNullFill(shape)) { priority = priority });
+                verdict = $"FOREIGN nullfill {shape}: fill only {PatchSafety.NullFillOnly(target)}";
                 break;
             case "latch-postfix":
             case "latch-reset-postfix":
@@ -454,11 +458,13 @@ public static class ForeignShapesParts
     public static void CountNullFillEvery() => NullFillEvery++;
 
     /// <summary>
-    /// The null-fill postfix as a Release build gives it: <c>ldarg.1; ldind.ref; brtrue.s L; call CountNullFill; L: ret</c>
-    /// (parameters __instance and __result), or the near miss with a call before the test.
+    /// The null-fill postfix as a Release build gives it (parameters __instance and __result): nullfill-postfix <c>ldarg.1; ldind.ref;
+    /// brtrue.s L; ldarg.1; ldnull; stind.ref; L: ret</c>; nullfill-impure-postfix <c>ldarg.1; ldind.ref; brtrue.s L; call
+    /// CountNullFill; L: ret</c>; the near miss the impure one with a call before the test.
     /// </summary>
-    private static MethodInfo EmitNullFill(bool nearMiss)
+    private static MethodInfo EmitNullFill(string shape)
     {
+        bool nearMiss = shape == "nullfill-nearmiss-postfix";
         if (_c0Module == null)
         {
             string unique = "BdoC0Shapes" + Environment.TickCount64.ToString("X");
@@ -480,7 +486,16 @@ public static class ForeignShapesParts
         il.Emit(System.Reflection.Emit.OpCodes.Ldarg_1);
         il.Emit(System.Reflection.Emit.OpCodes.Ldind_Ref);
         il.Emit(System.Reflection.Emit.OpCodes.Brtrue_S, done);
-        il.Emit(System.Reflection.Emit.OpCodes.Call, typeof(ForeignShapesParts).GetMethod(nameof(CountNullFill))!);
+        if (shape == "nullfill-postfix")
+        {
+            il.Emit(System.Reflection.Emit.OpCodes.Ldarg_1);
+            il.Emit(System.Reflection.Emit.OpCodes.Ldnull);
+            il.Emit(System.Reflection.Emit.OpCodes.Stind_Ref);
+        }
+        else
+        {
+            il.Emit(System.Reflection.Emit.OpCodes.Call, typeof(ForeignShapesParts).GetMethod(nameof(CountNullFill))!);
+        }
         il.MarkLabel(done);
         il.Emit(System.Reflection.Emit.OpCodes.Ret);
         return type.CreateType()!.GetMethod("Postfix", BindingFlags.Public | BindingFlags.Static)!;

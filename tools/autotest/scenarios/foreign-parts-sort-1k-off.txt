@@ -56,6 +56,15 @@ waitfor idle 300
 checksum reshuffle nullfill
 state reshuffle nullfill
 foreignpatch remove
+foreignpatch nullfill-impure-postfix MegaCrit.Sts2.Core.Models.CardModel:get_CombatState
+wait 3
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 300
+checksum reshuffle nullfill impure
+state reshuffle nullfill impure
+foreignpatch remove
 foreignpatch nullfill-nearmiss-postfix MegaCrit.Sts2.Core.Models.CardModel:get_CombatState
 wait 3
 pilemove draw discard 2

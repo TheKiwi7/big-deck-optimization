@@ -207,8 +207,9 @@ public static class CardSortKeys
     private static MethodBase? _cardCombat;
 
     /// <summary>
-    /// Rule null-fill (2026-11-18, CardFusion): every other mod's patch on <c>CardModel.CombatState</c> only replaces a null result
-    /// (<see cref="PatchSafety.NullFillOnly"/>). <see cref="OwnerCombat"/> mirrors the getter's non-null answers from the fields;
+    /// Rule null-fill (2026-11-18, CardFusion): every other mod's patch on <c>CardModel.CombatState</c> only replaces a null result,
+    /// and only reads and sets that result (<see cref="PatchSafety.NullFillOnly"/>: the game may read the getter for fewer cards than
+    /// this reads it for, so the fill must do nothing else). <see cref="OwnerCombat"/> mirrors the getter's non-null answers from the fields;
     /// what such a postfix may give where the game's getter gives null isn't there, so each card's real getter is read too and its
     /// combat judged with the others (a superset again: more refusals, never fewer). The getter then runs once per card in a sort
     /// instead of once per cost read: the sort-cost premise's scope (it is read by the cost chain).
