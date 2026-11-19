@@ -15,6 +15,11 @@
 # running (SoulsPower contents are never kept next to BaseLib and Limitless: its closure reaches methods they patch themselves,
 # PlayerCombatState.get_AllPiles, CardPile.Get, ModelDb.GetEntry...; the worker's walk stops there, `reach ... closures` says where);
 # (l3) CardModel.get_MaxUpgradeLevel: a level-1 content no longer kept, a level-0 one still is.
+# Review of 2026-11-19 (C2): a counting postfix on one closed instantiation of a generic member (Bench/ForeignShapesLimitless.cs
+# lim-generic-count-postfix: Harmony patches the instantiation, the chain and the closures name the definition, on which Harmony
+# finds nothing): (g1) CardCmd.Enchant<Sharp>, the chain's second-enchant entry: a game card with an enchantment (Clumsy, no override
+# on the way: it reaches that group) no longer kept, the storage card's one still is; (g2) <>z__ReadOnlySingleElementList<int>'s
+# constructor, in Goopy's OnEnchant closure: a Goopy content no longer kept, a Sharp one still is.
 # Rule B (copies of BaseLib's SavedSpireFieldPatch, Bench/ForeignShapesLimitlessTwins.cs, on SavedProperties.FromInternal):
 # (b1) GetFieldsForModel without its filter, (b2) a null result stored, (b3) its class's initializer doing more than make the
 # list, (b4) the accepted copy installed as a prefix, (b5) the accepted copy with its GetFieldsForModel patched, (b6) the accepted
@@ -33,6 +38,11 @@ expect FOREIGN reach l2 storage Goopy 0: kept True
 expect FOREIGN reach l2 storage Sharp 0: kept True
 expect FOREIGN reach l3 storage Sharp 1: kept False
 expect FOREIGN reach l3 storage Sharp 0: kept True
+expect FOREIGN reach base Clumsy Sharp 0: kept True, reaches Spine, Enchant, SecondEnchant
+expect FOREIGN reach g1 Clumsy Sharp 0: kept False
+expect FOREIGN reach g1 storage Sharp 0: kept True
+expect FOREIGN reach g2 storage Goopy 0: kept False
+expect FOREIGN reach g2 storage Sharp 0: kept True
 expect FOREIGN classify CardModel\.FinalizeUpgradeInternal: bdtest\.foreign\.lim-write-then-gated-postfix-squeeze Postfix .*TypeGated backs off \(postfix not provably gated
 expect FOREIGN runtime LimitlessCloneMemo CardModel\.FinalizeUpgradeInternal \(TypeGated\) kept [1-9][0-9]* backed off 0
 expect FOREIGN runtime LimitlessCloneMemo CardModel\.FinalizeUpgradeInternal \(TypeGated\) kept [0-9]+ backed off [1-9]
@@ -133,6 +143,21 @@ wait 3
 foreignpatch limitless reach storage Sharp 1 l3
 foreignpatch limitless reach storage Sharp 0 l3
 foreignpatch remove
+wait 3
+# (g1) Review C2: one closed instantiation of a generic chain member patched.
+foreignpatch limitless reach Clumsy Sharp 0 base
+foreignpatch lim-generic-count-postfix MegaCrit.Sts2.Core.Commands.CardCmd:Enchant MegaCrit.Sts2.Core.Models.Enchantments.Sharp
+wait 3
+foreignpatch limitless reach Clumsy Sharp 0 g1
+foreignpatch limitless reach storage Sharp 0 g1
+foreignpatch limitless remove
+wait 3
+# (g2) Review C2: one closed instantiation of a generic type's constructor in Goopy's closure patched.
+foreignpatch lim-generic-count-postfix <>z__ReadOnlySingleElementList`1:.ctor System.Int32
+wait 3
+foreignpatch limitless reach storage Goopy 0 g2
+foreignpatch limitless reach storage Sharp 0 g2
+foreignpatch limitless remove
 wait 3
 # (b1) Rule B: a copy whose GetFieldsForModel has no filter.
 foreignpatch lim-twin MegaCrit.Sts2.Core.Saves.Runs.SavedProperties:FromInternal unfiltered

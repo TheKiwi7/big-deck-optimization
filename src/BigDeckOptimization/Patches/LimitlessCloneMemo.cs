@@ -418,7 +418,7 @@ public static class LimitlessCloneMemo
         foreach ((System.Reflection.MethodBase method, Reach reach) in _allowedCallees ?? Array.Empty<(System.Reflection.MethodBase, Reach)>())
         {
             // No tolerance: skipped with the allowed patch that calls it.
-            if ((patched & reach) != reach && PatchSafety.IsPatchedByOthers(method))
+            if ((patched & reach) != reach && (PatchSafety.IsPatchedByOthers(method) || InstancePatched(method, m => PatchSafety.IsPatchedByOthers(m))))
             {
                 patched |= reach;
             }
@@ -441,8 +441,9 @@ public static class LimitlessCloneMemo
                     gated.Add((method, allowed, gates, reach));
                 }
             }
-            // No tolerance: the clone chain is skipped for a kept content.
-            else if (PatchSafety.IsPatchedByOthers(method, AllowedNow(method, allowed)))
+            // No tolerance: the clone chain is skipped for a kept content (CardCmd.Enchant<T>: each patched instantiation too).
+            else if (PatchSafety.IsPatchedByOthers(method, AllowedNow(method, allowed))
+                || InstancePatched(method, m => PatchSafety.IsPatchedByOthers(m, AllowedNow(method, allowed))))
             {
                 patched |= reach;
             }
@@ -672,15 +673,19 @@ public static class LimitlessCloneMemo
             StrictAnswer? known = _strict;
             if (known == null || known.Stamp != stamp || now - known.CheckedAt >= RecheckMs)
             {
-                // Only the methods Harmony lists as patched are asked (a method without any patch isn't another mod's); every one
-                // of those asked (each back-off recorded under this class's name), as the strict check of each would.
-                HashSet<(System.Reflection.Module, int)>? patchedNow = PatchedKeys();
+                // Only the methods Harmony lists as patched are asked (a method without any patch isn't another mod's), on the
+                // MethodBase Harmony holds (a generic member here is its definition, Harmony's patch is on a closed instantiation);
+                // every one of those asked (each back-off recorded under this class's name), as the strict check of each would.
+                Dictionary<(System.Reflection.Module, int), System.Reflection.MethodBase[]>? patchedNow = PatchedMethods();
                 bool patched = patchedNow == null;
                 foreach (System.Reflection.MethodBase method in patched ? Array.Empty<System.Reflection.MethodBase>() : Methods)
                 {
-                    if (patchedNow!.Contains((method.Module, method.MetadataToken)))
+                    if (patchedNow!.TryGetValue((method.Module, method.MetadataToken), out System.Reflection.MethodBase[]? instances))
                     {
-                        patched |= PatchSafety.IsPatchedByOthers(method);
+                        foreach (System.Reflection.MethodBase instance in instances)
+                        {
+                            patched |= PatchSafety.IsPatchedByOthers(instance);
+                        }
                     }
                 }
                 _strict = known = new StrictAnswer(stamp, now, patched);
@@ -699,7 +704,8 @@ public static class LimitlessCloneMemo
                         return true;
                     }
                 }
-                else if (PatchSafety.IsPatchedByOthers(method, AllowedNow(method, allowed)))
+                else if (PatchSafety.IsPatchedByOthers(method, AllowedNow(method, allowed))
+                    || InstancePatched(method, m => PatchSafety.IsPatchedByOthers(m, AllowedNow(method, allowed))))
                 {
                     return true;
                 }
@@ -826,9 +832,10 @@ public static class LimitlessCloneMemo
             while (true)
             {
                 // A walk stops at a method another mod patches (not a chain method: judged with its allowed patches and gates).
-                HashSet<(System.Reflection.Module, int)>? patchedNow = PatchedKeys();
+                Dictionary<(System.Reflection.Module, int), System.Reflection.MethodBase[]>? patchedNow = PatchedMethods();
                 bool Patched(System.Reflection.MethodBase m) =>
-                    patchedNow != null && !chainMethods.Contains(m) && patchedNow.Contains((m.Module, m.MetadataToken)) && PatchSafety.IsPatchedByOthers(m);
+                    patchedNow != null && !chainMethods.Contains(m) && patchedNow.TryGetValue((m.Module, m.MetadataToken), out System.Reflection.MethodBase[]? instances)
+                    && instances.Any(instance => PatchSafety.IsPatchedByOthers(instance));
                 foreach (string key in walks.Keys.ToArray())
                 {
                     ClosureWalk? walk = walks[key];
@@ -916,39 +923,70 @@ public static class LimitlessCloneMemo
         }
     }
 
-    private sealed record PatchedSet(long Stamp, long CheckedAt, HashSet<(System.Reflection.Module, int)>? Keys);
+    private sealed record PatchedSet(long Stamp, long CheckedAt, Dictionary<(System.Reflection.Module, int), System.Reflection.MethodBase[]>? Methods);
 
     private static volatile PatchedSet? _patchedSet;
 
     /// <summary>
-    /// How long an answer made for one patch stamp stands (<see cref="PatchedKeys"/>, <see cref="OverrideClosure"/>'s strict answer):
+    /// How long an answer made for one patch stamp stands (<see cref="PatchedMethods"/>, <see cref="OverrideClosure"/>'s strict answer):
     /// as PatchSafety's own answers, which these are built from. A stamp alone would keep for good an answer PatchSafety gave from a
     /// cache filled just before a patch landed (a check on another thread reading Harmony before the patch, storing after it).
     /// </summary>
     private const long RecheckMs = 2000;
 
     /// <summary>
-    /// The methods Harmony lists as patched now, by module and token (a generic instantiation counts as its definition: more, never
-    /// fewer), per patch stamp and for <see cref="RecheckMs"/> at most; null when Harmony can't tell (then everything counts as patched).
+    /// The methods Harmony lists as patched now, by module and token, each key with the MethodBase objects Harmony holds for it: a
+    /// generic member's closed instantiations share their definition's key (the closures and the chain name definitions, while Harmony
+    /// patches, and GetPatchInfo answers for, a closed instantiation's own MethodBase). Per patch stamp and for <see cref="RecheckMs"/>
+    /// at most; null when Harmony can't tell (then everything counts as patched). Read and replaced whole: any thread.
     /// </summary>
-    private static HashSet<(System.Reflection.Module, int)>? PatchedKeys()
+    private static Dictionary<(System.Reflection.Module, int), System.Reflection.MethodBase[]>? PatchedMethods()
     {
         long stamp = PatchStamp(), now = Environment.TickCount64;
         PatchedSet? known = _patchedSet;
         if (known == null || known.Stamp != stamp || now - known.CheckedAt >= RecheckMs)
         {
-            HashSet<(System.Reflection.Module, int)>? keys;
+            Dictionary<(System.Reflection.Module, int), System.Reflection.MethodBase[]>? methods;
             try
             {
-                keys = new HashSet<(System.Reflection.Module, int)>(Harmony.GetAllPatchedMethods().Select(m => (m.Module, m.MetadataToken)));
+                methods = Harmony.GetAllPatchedMethods().GroupBy(m => (m.Module, m.MetadataToken)).ToDictionary(g => g.Key, g => g.ToArray());
             }
             catch
             {
-                keys = null;
+                methods = null;
             }
-            _patchedSet = known = new PatchedSet(stamp, now, keys);
+            _patchedSet = known = new PatchedSet(stamp, now, methods);
         }
-        return known.Keys;
+        return known.Methods;
+    }
+
+    /// <summary>
+    /// For a member of a generic definition (CardCmd.Enchant&lt;T&gt;, ModelDb.Card&lt;T&gt;, a generic type's method), as the chain and
+    /// the closures name them: whether one of the instantiations Harmony patches answers yes to <paramref name="patched"/> (review C2:
+    /// asked on the definition, Harmony sees none of them). False for any other member, which the caller asks about itself; true when
+    /// Harmony can't tell.
+    /// </summary>
+    private static bool InstancePatched(System.Reflection.MethodBase method, Func<System.Reflection.MethodBase, bool> patched)
+    {
+        if (!method.IsGenericMethodDefinition && method.DeclaringType is not { IsGenericTypeDefinition: true })
+        {
+            return false;
+        }
+        if (PatchedMethods() is not { } patchedNow)
+        {
+            return true;
+        }
+        if (patchedNow.TryGetValue((method.Module, method.MetadataToken), out System.Reflection.MethodBase[]? instances))
+        {
+            foreach (System.Reflection.MethodBase instance in instances)
+            {
+                if (!instance.Equals(method) && patched(instance))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /// <summary>
@@ -984,7 +1022,7 @@ public static class LimitlessCloneMemo
         foreach (System.Reflection.MethodInfo method in overrides)
         {
             _closures.TryGetValue(method.DeclaringType?.FullName + "::" + method.Name, out object? known);
-            if (known is BlockedClosure blocked && !PatchSafety.IsPatchedByOthers(blocked.Blocker))
+            if (known is BlockedClosure blocked && !PatchSafety.IsPatchedByOthers(blocked.Blocker) && !InstancePatched(blocked.Blocker, m => PatchSafety.IsPatchedByOthers(m)))
             {
                 // The patch it stopped at went away: the worker walks on (patched until it publishes).
                 _resume.Set();
