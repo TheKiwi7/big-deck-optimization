@@ -332,17 +332,20 @@ public static class LimitlessCloneMemo
     {
         public readonly Reach Patched;
         public readonly long CheckedAt;
+        /// <summary>The patch stamp it was made at (<see cref="PatchStamp"/>): a Harmony change makes it stale at once.</summary>
+        public readonly long Stamp;
         public readonly (System.Reflection.MethodBase Method, System.Reflection.MethodInfo[] Allowed, Type[] Gates, Reach Reach)[] Gated;
 
-        public ChainAnswer(Reach patched, long checkedAt, (System.Reflection.MethodBase, System.Reflection.MethodInfo[], Type[], Reach)[] gated)
+        public ChainAnswer(Reach patched, long checkedAt, long stamp, (System.Reflection.MethodBase, System.Reflection.MethodInfo[], Type[], Reach)[] gated)
         {
             Patched = patched;
             CheckedAt = checkedAt;
+            Stamp = stamp;
             Gated = gated;
         }
     }
 
-    private static volatile ChainAnswer _chainAnswer = new(Reach.None, long.MinValue / 2, Array.Empty<(System.Reflection.MethodBase, System.Reflection.MethodInfo[], Type[], Reach)>());
+    private static volatile ChainAnswer _chainAnswer = new(Reach.None, long.MinValue / 2, -1, Array.Empty<(System.Reflection.MethodBase, System.Reflection.MethodInfo[], Type[], Reach)>());
 
     /// <summary>
     /// The card methods one level down (<see cref="GatedChain"/>): every inner card a clone builds is the card these run on
@@ -365,7 +368,8 @@ public static class LimitlessCloneMemo
 
     /// <summary>
     /// Whether the spine (what every inner card's build runs) holds another mod's patch no rule lets stand: then nothing is kept
-    /// or dropped. The groups are judged per content (<see cref="ChainPatchedFor"/>). Answered from a result rechecked each second.
+    /// or dropped. The groups are judged per content (<see cref="ChainPatchedFor"/>). Answered from a result rechecked each second
+    /// and at each patch stamp.
     /// </summary>
     internal static bool ChainPatched() => (CurrentChainAnswer().Patched & Reach.Spine) != 0;
 
@@ -400,9 +404,11 @@ public static class LimitlessCloneMemo
 
     private static ChainAnswer CurrentChainAnswer()
     {
-        long now = Environment.TickCount64;
+        // Kept a second at most, and only while the patch set holds (a patch landing within that second is seen at once: the memo
+        // is cleared on the same stamp, so an answer made before it must not refill it).
+        long now = Environment.TickCount64, stamp = PatchStamp();
         ChainAnswer answer = _chainAnswer;
-        if (now - answer.CheckedAt < 1000)
+        if (answer.Stamp == stamp && now - answer.CheckedAt < 1000)
         {
             return answer;
         }
@@ -441,7 +447,7 @@ public static class LimitlessCloneMemo
                 patched |= reach;
             }
         }
-        answer = new ChainAnswer(patched, now, gated.ToArray());
+        answer = new ChainAnswer(patched, now, stamp, gated.ToArray());
         _chainAnswer = answer;
         return answer;
     }
