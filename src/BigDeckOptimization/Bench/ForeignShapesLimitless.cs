@@ -157,8 +157,9 @@ public static class ForeignShapesLimitless
                 "remove" => Remove(),
                 "twin" when parts.Length > 2 => TwinCommand(parts[2]),
                 "reach" when parts.Length > 4 => ReachCommand(parts[2], parts[3], int.Parse(parts[4]), parts.Length > 5 ? parts[5] : "now"),
+                "anyknown" => new[] { $"FOREIGN anyknown {(parts.Length > 2 ? parts[2] : "now")}: {LimitlessHookSkip.AnyKnownForTest()}" },
                 "memo" => new[] { $"FOREIGN clonememo {(parts.Length > 2 ? parts[2] : "now")}: entries {LimitlessCloneMemo.MemoCount}, patch stamp clears {LimitlessCloneMemo.PatchStampClears}, reused {LimitlessCloneMemo.Reused}" },
-                _ => throw new ArgumentException("foreignpatch limitless report [label] | remove | twin status|register|patchcallee | reach <storage|CardClass> <EnchantmentClass|none> <level> [label] | memo [label]"),
+                _ => throw new ArgumentException("foreignpatch limitless report [label] | remove | twin status|register|patchcallee | reach <storage|CardClass> <EnchantmentClass|none> <level> [label] | memo [label] | anyknown [label]"),
             };
         }
         string shape = parts[0];

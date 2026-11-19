@@ -377,9 +377,10 @@ public static class LimitlessHookSkip
     /// <summary>Whether a recorded inner enchantment type answers yes (or has unknown code on the way).</summary>
     internal static bool AnyKnown(Func<Type, bool> overrides)
     {
-        // Rule L: a patched group an inner card may reach (its enchantment, its upgrades) is judged per instance (AnyInner):
-        // the type as a whole then counts as reacting.
-        if (_storageCard == null || LimitlessCloneMemo.ChainPatchedFor(_storageCard, LimitlessCloneMemo.Reach.Spine | LimitlessCloneMemo.Reach.Enchant | LimitlessCloneMemo.Reach.Upgrade))
+        // Rule L: a patched group an inner card may reach (its enchantment, its upgrades, a second enchantment's CardCmd.Enchant for
+        // an inner card that isn't the storage card: every group ContentPatched may judge, review C8) is judged per instance
+        // (AnyInner): the type as a whole then counts as reacting.
+        if (_storageCard == null || AnyGroupPatched())
         {
             return true;
         }
@@ -395,6 +396,15 @@ public static class LimitlessHookSkip
         }
         return false;
     }
+
+    private static bool AnyGroupPatched() => LimitlessCloneMemo.ChainPatchedFor(_storageCard!, LimitlessCloneMemo.Reach.Spine | LimitlessCloneMemo.Reach.Enchant
+        | LimitlessCloneMemo.Reach.Upgrade | LimitlessCloneMemo.Reach.SecondEnchant);
+
+#if BENCH
+    /// <summary>The type-level answer and its chain part (bench: <c>foreignpatch limitless anyknown</c>).</summary>
+    internal static string AnyKnownForTest() =>
+        $"{AnyKnown(_ => false)} (chain groups patched {_storageCard == null || AnyGroupPatched()}, types recorded {_knownRead.Count})";
+#endif
 
     /// <summary>Whether one of this MultiEnchantment's inner enchantment types answers yes.</summary>
     internal static bool AnyInner(AbstractModel multi, Func<Type, bool> overrides)
