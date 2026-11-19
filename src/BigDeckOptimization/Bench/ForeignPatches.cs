@@ -366,6 +366,7 @@ public static class ForeignPatches
         {
             return InstallIl(parts);
         }
+        if (ForeignShapesParts.Shapes.Contains(parts[0]) && parts.Length >= 2) return ForeignShapesParts.Install(parts, (id, t) => { lock (_installed) { _installed.Add((id, t)); } }, Count);
         if (!Shapes.Contains(parts[0]) || parts.Length < 2)
         {
             throw new ArgumentException($"unknown foreignpatch shape '{parts[0]}' (or no target): {string.Join(", ", Shapes)}");

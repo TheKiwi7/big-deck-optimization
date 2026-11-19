@@ -177,7 +177,7 @@ public static class RelicFlashMerge
     /// <summary>The methods of a visual set the strict checks (and the menu's back-off rows) ask about now.</summary>
     private static System.Reflection.MethodBase[] Watched(CodeSet set, System.Reflection.MethodBase[] strict,
         Dictionary<System.Reflection.MethodBase, LazyGuard.Guard> guards) =>
-        PatchSafety.ShapeRules ? (guards.Count == 0 ? strict : strict.Where(m => !Unreachable(m, guards)).ToArray()) : set.Methods;
+        PatchSafety.ShapeRules ? strict.Where(m => !Unreachable(m, guards)).ToArray() : set.Methods;
 
     /// <summary>
     /// A visual set's method that stays strict under the display premise (a patch there is never taken as display): the game's
@@ -230,7 +230,14 @@ public static class RelicFlashMerge
     /// before the instance exists). Its patches can't see a merged flash's skip: not a back-off.
     /// </summary>
     private static bool Unreachable(System.Reflection.MethodBase method, Dictionary<System.Reflection.MethodBase, LazyGuard.Guard> guards) =>
-        PatchSafety.ShapeRules && guards.TryGetValue(method, out LazyGuard.Guard? guard) && LazyGuard.Shut(guard);
+        PatchSafety.ShapeRules && ((guards.TryGetValue(method, out LazyGuard.Guard? guard) && LazyGuard.Shut(guard)) || Latched(method));
+
+    /// <summary>
+    /// Rule latch (2026-11-18): a strict member whose every other mod's patch is a latch shut now (<see cref="LazyGuard.LatchedShut"/>:
+    /// All Timeline Unlock's one-time postfix on <c>SaveManager.Progress</c>, its flag set once it ran): none of their code can run
+    /// there any more, merged flash or not, so it isn't a strict member's back-off. Read at each use.
+    /// </summary>
+    private static bool Latched(System.Reflection.MethodBase method) => PatchSafety.ShapeRules && LazyGuard.LatchedShut(method);
 
     private static ComputedSets? _sets;
     private static bool _setsFailed;
@@ -474,8 +481,8 @@ public static class RelicFlashMerge
             bool patched = false;
             foreach (System.Reflection.MethodBase method in strict)
             {
-                // Behind a lazily built instance that exists: the flash can't reach it (its patches see nothing skipped).
-                if (guards.Count > 0 && Unreachable(method, guards))
+                // Behind a lazily built instance that exists, or only latched patches shut there: the flash can't reach their code.
+                if (Unreachable(method, guards))
                 {
                     continue;
                 }
@@ -548,6 +555,7 @@ public static class RelicFlashMerge
     {
         var patched = new List<System.Reflection.MethodBase>();
         var behindBuilt = new List<System.Reflection.MethodBase>();
+        var latched = new List<System.Reflection.MethodBase>();
         var overriders = new List<string>();
         // Only while flashes can be merged (G, re-audit of the premises): not once faulted (with the mod off: what would run once on).
         if (PatchSafety.ShapeRules && Applied && !PatchSafety.IsFaulted(Name) && Sets() is { } sets)
@@ -570,6 +578,10 @@ public static class RelicFlashMerge
                     {
                         patched.Add(method);
                     }
+                    else if (Latched(method))
+                    {
+                        latched.Add(method);
+                    }
                     else if (Unreachable(method, guards))
                     {
                         behindBuilt.Add(method);
@@ -587,6 +599,7 @@ public static class RelicFlashMerge
             }
         }
         NoteBehindBuilt(behindBuilt);
+        NoteLatched(latched);
         if (patched.Count == 0 && overriders.Count == 0)
         {
             PatchSafety.ClearKept(Name, "flash_display");
@@ -608,6 +621,19 @@ public static class RelicFlashMerge
             + "doesn't run for the flashes merged where it would have: taken as display only, with no effect on the game's state (a stated "
             + "premise: what a merged flash leaves out is the relic bar's and the creature's flash effects; most of those methods only run on "
             + "a flash's first use or an error path; a mod changing game state there could desync co-op; its sound is still played)", mods.ToArray());
+    }
+
+    /// <summary>The kept note of rule latch: strict members whose other mods' patches are latches shut now.</summary>
+    private static void NoteLatched(List<System.Reflection.MethodBase> methods)
+    {
+        if (methods.Count == 0)
+        {
+            PatchSafety.ClearKept(Name, "flash_latch");
+            return;
+        }
+        PatchSafety.Kept(Name, "flash_latch", "other mods' code that has already run once and can't run again (a flag of its own it only "
+            + $"ever sets, now set: {string.Join(", ", methods.Select(m => $"{m.DeclaringType?.Name}.{m.Name}").Distinct())}): nothing of it is left out "
+            + "by a merged relic flash", PatchSafety.OtherModsPatching(methods));
     }
 
     /// <summary>

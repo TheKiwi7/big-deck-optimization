@@ -266,6 +266,8 @@ public static class ListenerCache
         // With other mods' postfixes on the walks let stand, the lists come from FastListeners' unpatched mirrors: with that
         // option off (or its mirrors not applied) no scope caches then. Display only.
         PatchSafety.WatchNote(Name, NoteWalkMirrors);
+        // Rule NG: other mods' null guards on the walks' Contains, let stand by the scope check (FastListeners.WalkCodePatchedByOthers).
+        PatchSafety.WatchNote(Name, () => FastListeners.NoteNullGuard(Name));
         // Kept lists aren't reused across display scopes while card modifiers may change (CardModifiersMayChange).
         PatchSafety.WatchNote(ReuseFault, () => BaseLibTypes.NoteIfDefined(ReuseFault, "card_modifiers", CardModifierType,
             "listener lists are rebuilt in each refresh instead of reused: other mods define BaseLib card modifiers", whole: true));

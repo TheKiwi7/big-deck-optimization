@@ -7,10 +7,10 @@
 timeout 2400
 expect HookSkip: Hook\.AfterCardDrawn is also patched by .*bdtest\.foreign\.noop-postfix.*: kept
 expect HookSkip: Hook\.AfterCardPlayed is also patched by bdtest\.foreign\.count-postfix \(prefixes and postfixes around the transpiled body: run around
-expect PileIndex: CardPile\.AddInternal is also patched by .*bdtest\.foreign\.probe-prefix.* \(postfixes and void prefixes: run around
+expect PileIndex: CardPile\.AddInternal is also patched by .*bdtest\.foreign\.probe-prefix.* \(postfixes and prefixes running before this mod's: run around
 expect PileIndex: CardPile\.RemoveInternal is also patched by bdtest\.foreign\.noop-prefix \(postfixes and void prefixes
-expect FastListeners: CardPile\.AddInternal is also patched by .*bdtest\.foreign\.probe-prefix.* \(postfixes
-expect CardDbScan: CardPile\.AddInternal is also patched by .*bdtest\.foreign\.probe-prefix.* \(postfixes
+expect FastListeners: CardPile\.AddInternal is also patched by .*bdtest\.foreign\.probe-prefix.* \(postfixes and prefixes running before this mod's
+expect CardDbScan: CardPile\.AddInternal is also patched by .*bdtest\.foreign\.probe-prefix.* \(postfixes and prefixes running before this mod's
 expect HookFilter: Hook\.ShouldPlay is also patched by bdtest\.foreign\.noop-prefix \(void prefixes: run around
 expect HookFilter: Hook\.ModifyKeywordsInCombat is also patched by bdtest\.foreign\.keyword-prefix-squeeze \(void prefixes: run around
 expect HookFilter: CardCostHelper\.TryModifyEnergyCostWithHooks is also patched by bdtest\.foreign\.noop-prefix \(void prefixes: run around
@@ -44,10 +44,10 @@ expect FOREIGN runtime HookSkip AbstractModel\.AfterSideTurnEnd \(TypeGated\) ke
 expect FOREIGN runtime HookFilter Hook\.ModifyKeywordsInCombat \(PrefixesOnly\) kept [1-9]
 expect FOREIGN runtime HookFilter Hook\.ShouldPlay \(PrefixesOnly\) kept [1-9]
 expect FOREIGN runtime HookFilter Hook\.ModifyEnergyCostInCombat \(PrefixesOnly\) kept 0 backed off [1-9]
-expect FOREIGN runtime PileIndex CardPile\.AddInternal \(SurroundingOnly\) kept [1-9]
-expect FOREIGN runtime FastListeners CardPile\.AddInternal \(SurroundingOnly\) kept [1-9]
+expect FOREIGN runtime PileIndex CardPile\.AddInternal \(BeforeReplace\) kept [1-9]
+expect FOREIGN runtime FastListeners CardPile\.AddInternal \(BeforeReplace\) kept [1-9]
 expect FOREIGN runtime FastListeners CardPile\.RemoveInternal \(SurroundingOnly\) kept [1-9]
-expect FOREIGN runtime CardDbScan CardPile\.AddInternal \(SurroundingOnly\) kept [1-9]
+expect FOREIGN runtime CardDbScan CardPile\.AddInternal \(BeforeReplace\) kept [1-9]
 expect FOREIGN gated walks Hook\.AfterCardPlayed [1-9]
 expect FOREIGN gated walks Hook\.AfterCardDrawn [1-9]
 expect FOREIGN gated walks Hook\.BeforeCardPlayed [1-9]

@@ -4,7 +4,7 @@
 # bigdeck/ref.run.
 timeout 2400
 expect FOREIGN runtime HookFilter Hook\.ModifyKeywordsInCombat \(PrefixesOnly\) kept [1-9]
-expect FOREIGN runtime PileIndex CardPile\.AddInternal \(SurroundingOnly\) kept [1-9]
+expect FOREIGN runtime PileIndex CardPile\.AddInternal \(BeforeReplace\) kept [1-9]
 expect FOREIGN runtime HookSkip AbstractModel\.AfterCardPlayed \(TypeGated\) kept [1-9]
 mplobby NECROBINDER 2
 waitfor run 240

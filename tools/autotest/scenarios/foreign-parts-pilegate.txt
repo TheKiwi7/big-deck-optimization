@@ -1,0 +1,87 @@
+# CardFlightLimit's merged pile event next to other mods' postfixes on CardPile.InvokeCardAddFinished (mod on, one side; rule P of
+# 2026-11-18, Downfall's Hermit HandChangedPatches: a postfix acting only when the pile's Type is the hand's). The skipped souls of a
+# reshuffle go to the draw pile, whose button gets one event for several cards (MergedFlushes); a postfix gated on another pile type
+# does nothing for it, once or once per card. Synthetic postfixes of "another mod" (Bench/ForeignShapesParts.cs, Release-build IL
+# emitted, counting their runs only: no game state changes). (1) Two hand gates (bne.un and beq forms): kept, events still merged,
+# a kept note names them. (2) A draw gate (acts on the merged pile): one event per card, the back-off recorded. (3) A near miss (a
+# call before the test): the same. (4) A hand gate with CardPile.get_Type patched by another "mod": the same.
+timeout 1800
+expect FOREIGN pilegate pilegate-postfix: gated on Hand
+expect FOREIGN pilegate pilegate-beq-postfix: gated on Hand
+expect FOREIGN pilegate pilegate-postfix: gated on Draw
+expect FOREIGN pilegate pilegate-nearmiss-postfix: not gated
+expect FOREIGN kept CardFlightLimit: other mods' code on a pile's card-added event \(CardPile\.InvokeCardAddFinished\) that only acts on another kind of pile
+expect EFFECTCHECK CardFlightLimit grew since 'pg1': [0-9]+ -> [1-9]
+expect FOREIGN parts mergedflushes grew since 'pg1'
+expect CardFlightLimit: CardPile\.InvokeCardAddFinished is also patched by bdtest\.foreign\.pilegate-postfix-draw: normal game for that part
+expect FOREIGN parts mergedflushes same since 'pg2'
+expect CardFlightLimit: CardPile\.InvokeCardAddFinished is also patched by bdtest\.foreign\.pilegate-nearmiss-postfix-hand: normal game for that part
+expect FOREIGN parts mergedflushes same since 'pg3'
+expect CardFlightLimit: CardPile\.InvokeCardAddFinished is also patched by bdtest\.foreign\.pilegate-postfix-hand: normal game for that part
+expect FOREIGN parts mergedflushes same since 'pg4'
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 999999
+speed fast
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+# (1) Hand gates: accepted.
+foreignpatch pilegate-postfix MegaCrit.Sts2.Core.Entities.Cards.CardPile:InvokeCardAddFinished hand
+foreignpatch pilegate-beq-postfix MegaCrit.Sts2.Core.Entities.Cards.CardPile:InvokeCardAddFinished hand
+wait 3
+effects pg1
+foreignpatch parts-mark pg1 mergedflushes
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+wait 6
+effects pg1 end
+effectcheck CardFlightLimit grew pg1
+foreignpatch parts-grew pg1 mergedflushes
+cmd bdopt why
+foreignpatch report pg1
+foreignpatch parts-report pg1
+foreignpatch remove
+# (2) A draw gate: the control.
+foreignpatch pilegate-postfix MegaCrit.Sts2.Core.Entities.Cards.CardPile:InvokeCardAddFinished draw
+wait 3
+foreignpatch parts-mark pg2 mergedflushes
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+wait 6
+foreignpatch parts-same pg2 mergedflushes
+foreignpatch remove
+# (3) A near miss.
+foreignpatch pilegate-nearmiss-postfix MegaCrit.Sts2.Core.Entities.Cards.CardPile:InvokeCardAddFinished hand
+wait 3
+foreignpatch parts-mark pg3 mergedflushes
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+wait 6
+foreignpatch parts-same pg3 mergedflushes
+foreignpatch remove
+# (4) A hand gate, CardPile.get_Type patched by another mod.
+foreignpatch pilegate-postfix MegaCrit.Sts2.Core.Entities.Cards.CardPile:InvokeCardAddFinished hand
+foreignpatch noop-postfix MegaCrit.Sts2.Core.Entities.Cards.CardPile:get_Type
+wait 3
+foreignpatch parts-mark pg4 mergedflushes
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+wait 6
+foreignpatch parts-same pg4 mergedflushes
+cmd bdopt why
+foreignpatch remove
+quit

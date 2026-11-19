@@ -1,0 +1,71 @@
+# CardSortKeys next to other mods' patches gated on the card's type (A/B, mod off; with foreign-parts-sort-1k-on, see there): the
+# same synthetic patches, the game's own code everywhere else. CHECKSUM and STATE lines must match the other side line for line.
+requiregame v0.113
+timeout 1200
+cmd bdopt off
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+foreignpatch sort-gated-postfix MegaCrit.Sts2.Core.Models.CardModel:get_DynamicVars squeeze
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+state start
+play 3
+waitfor idle 120
+checksum t1 plays
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 300
+checksum reshuffle
+state reshuffle
+cmd card SQUEEZE discard
+waitfor idle 60
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 300
+checksum reshuffle squeeze
+state reshuffle squeeze
+foreignpatch parts-report gated
+foreignpatch remove
+foreignpatch sort-nearmiss-postfix MegaCrit.Sts2.Core.Models.CardModel:get_DynamicVars squeeze
+wait 3
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 300
+checksum reshuffle nearmiss
+state reshuffle nearmiss
+foreignpatch parts-report nearmiss
+foreignpatch remove
+foreignpatch nullfill-postfix MegaCrit.Sts2.Core.Models.CardModel:get_CombatState
+wait 3
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 300
+checksum reshuffle nullfill
+state reshuffle nullfill
+foreignpatch remove
+foreignpatch nullfill-nearmiss-postfix MegaCrit.Sts2.Core.Models.CardModel:get_CombatState
+wait 3
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 300
+checksum reshuffle nullfill nearmiss
+state reshuffle nullfill nearmiss
+foreignpatch parts-report nullfill
+foreignpatch remove
+cmd kill all
+waitfor nocombat 300
+wait 2
+checksum after combat
+state after combat
+cmd bdopt on
+quit

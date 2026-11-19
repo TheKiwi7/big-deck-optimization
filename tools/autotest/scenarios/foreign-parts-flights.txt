@@ -1,0 +1,77 @@
+# CardFlightLimit next to other mods' classes and patches in the combat-end check a soul's swoosh makes (mod on, one side; the
+# generic rules of 2026-11-18). Rule C0: another mod's override there that only returns a constant (Succubus, St2bs, erowatcher,
+# Zone the Spire: a power's OwnerIsSecondaryEnemy => true), unpatched, is let stand: souls are still skipped. Synthetic classes of
+# "another mod" (Bench/ForeignShapesParts.cs, foreignpatch c0-override: abstract PowerModel subclasses in a dynamic assembly, never
+# instantiated, so no game state changes). (1) A constant override: souls skipped (CardFlightLimit grew). (2) The same override
+# patched by another "mod": every soul flies; unpatched again: skipped again. (3) A constant base with a subclass reading state:
+# the subclass counts, every soul flies (types stay loaded: last). (4) A state-reading override alone: judged counted.
+timeout 1500
+expect FOREIGN c0 BdoC0Constant\d+: let stand \(a constant\)
+expect EFFECTCHECK CardFlightLimit grew since 'c0const': [0-9]+ -> [1-9]
+expect FOREIGN c0 BdoC0Constant\d+: counted \(a constant, patched\)
+expect EFFECTCHECK CardFlightLimit same since 'c0patched'
+expect EFFECTCHECK CardFlightLimit grew since 'c0unpatched': [0-9]+ -> [1-9]
+expect FOREIGN c0 BdoC0ConstantBase\d+: let stand \(a constant\)
+expect FOREIGN c0 BdoC0StatefulSub\d+: counted \(not a constant\)
+expect EFFECTCHECK CardFlightLimit same since 'c0sub'
+expect FOREIGN c0 BdoC0Stateful\d+: counted \(not a constant\)
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 999999
+speed fast
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+# (1) A constant override.
+foreignpatch c0-override constant
+wait 3
+effects c0const
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+wait 6
+effects c0const end
+effectcheck CardFlightLimit grew c0const
+# (2) The constant override patched by another mod, then unpatched.
+foreignpatch c0-override patch
+wait 3
+effects c0patched
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+wait 6
+effects c0patched end
+effectcheck CardFlightLimit same c0patched
+foreignpatch remove
+wait 3
+effects c0unpatched
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+wait 6
+effects c0unpatched end
+effectcheck CardFlightLimit grew c0unpatched
+# (3) A constant base, a subclass reading state.
+foreignpatch c0-override subclass
+wait 3
+effects c0sub
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+wait 6
+effects c0sub end
+effectcheck CardFlightLimit same c0sub
+cmd bdopt why
+foreignpatch report c0sub
+# (4) A state-reading override alone (judged only: every soul flies already).
+foreignpatch c0-override stateful
+quit

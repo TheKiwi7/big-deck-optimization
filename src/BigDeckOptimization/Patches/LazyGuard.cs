@@ -121,6 +121,176 @@ internal static class LazyGuard
         }
     }
 
+    /// <summary>The latch fields of a method's other mods' patches, for the Harmony epoch and 2 s they were worked out at (null: not all latched).</summary>
+    private sealed record Latches(int Epoch, long CheckedAt, FieldInfo[]? Fields);
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<MethodBase, Latches> _latches = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<RuntimeMethodHandle, FieldInfo?> _latchShapes = new();
+
+#if BENCH
+    /// <summary>Strict members found latched shut (the effects check: rule latch ran).</summary>
+    public static long LatchedChecks;
+#endif
+
+    /// <summary>
+    /// Rule latch (2026-11-18, All Timeline Unlock's <c>GetProgressPatch</c>): whether every other mod's patch on
+    /// <paramref name="method"/> is a latch that is shut now, so none of their code can run there: a void prefix or postfix whose
+    /// code starts (nops aside) <c>ldsfld F; brtrue L</c> with only nops, unconditional branches and <c>ret</c> from L, F a private
+    /// static bool field of the patch's own class, every store to F in that class and its nested classes <c>ldc.i4.1; stsfld F</c>
+    /// and none taking its address (<c>ldsflda</c>): once true, F stays true and the patch returns at its first test. F is read
+    /// at each use; the patch list (and each patch method unpatched, no hidden IL hook) per Harmony epoch and at most every 2 s.
+    /// Keyed on the first test only (what follows it never runs). False when no other mod patches the method, or it can't tell.
+    /// </summary>
+    internal static bool LatchedShut(MethodBase method)
+    {
+        try
+        {
+            if (!PatchSafety.HasOtherPatches(method))
+            {
+                return false;
+            }
+            int epoch = HarmonyWatch.Epoch;
+            long now = Environment.TickCount64;
+            if (!_latches.TryGetValue(method, out Latches? known) || known.Epoch != epoch || now - known.CheckedAt >= 2000)
+            {
+                known = new Latches(epoch, now, LatchFields(method));
+                _latches[method] = known;
+            }
+            if (known.Fields is not { Length: > 0 } fields)
+            {
+                return false;
+            }
+            foreach (FieldInfo field in fields)
+            {
+                if (field.GetValue(null) is not true)
+                {
+                    return false;
+                }
+            }
+#if BENCH
+            LatchedChecks++;
+#endif
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static FieldInfo[]? LatchFields(MethodBase method)
+    {
+        if (HarmonyWatch.HiddenOwners(method).Length > 0 || HarmonyLib.Harmony.GetPatchInfo(method) is not { } info)
+        {
+            return null;
+        }
+        var fields = new List<FieldInfo>();
+        foreach (HarmonyLib.Patch patch in PatchSafety.AllPatches(info))
+        {
+            if (PatchGuard.IsOurs(patch.owner) || !(info.Prefixes.Contains(patch) || info.Postfixes.Contains(patch)) || PatchSafety.PatchMethodOf(patch) is not { } patchMethod
+                || PatchSafety.IsFactory(patchMethod) || (HarmonyLib.Harmony.GetPatchInfo(patchMethod) is { } own && PatchSafety.AllPatches(own).Any())
+                || _latchShapes.GetOrAdd(patchMethod.MethodHandle, _ => LatchShape(patchMethod)) is not { } field)
+            {
+                return null;
+            }
+            fields.Add(field);
+        }
+        return fields.Count > 0 ? fields.ToArray() : null;
+    }
+
+    /// <summary>The latch field of a patch method of the latch's shape (see <see cref="LatchedShut"/>), or null.</summary>
+    private static FieldInfo? LatchShape(MethodInfo patch)
+    {
+        try
+        {
+            if (!patch.IsStatic || patch.ReturnType != typeof(void) || patch.ContainsGenericParameters || patch.DeclaringType is not { } owner)
+            {
+                return null;
+            }
+            List<MethodFingerprint.Instruction> code = MethodFingerprint.Instructions(patch, strict: true);
+            var at = new Dictionary<int, int>();
+            for (int i = 0; i < code.Count; i++)
+            {
+                at[code[i].Offset] = i;
+            }
+            int index = 0;
+            while (index < code.Count && code[index].Op == OpCodes.Nop)
+            {
+                index++;
+            }
+            if (index + 1 >= code.Count || code[index].Op != OpCodes.Ldsfld || code[index].Operand is not FieldInfo field
+                || (code[index + 1].Op != OpCodes.Brtrue && code[index + 1].Op != OpCodes.Brtrue_S) || code[index + 1].Operand is not int target
+                || !at.TryGetValue(target, out int next))
+            {
+                return null;
+            }
+            if (!field.IsStatic || !field.IsPrivate || field.FieldType != typeof(bool) || field.DeclaringType != owner)
+            {
+                return null;
+            }
+            // From the branch target: only nops and unconditional branches before a ret.
+            var visited = new HashSet<int>();
+            while (true)
+            {
+                if (next < 0 || next >= code.Count || !visited.Add(next))
+                {
+                    return null;
+                }
+                OpCode op = code[next].Op;
+                if (op == OpCodes.Ret)
+                {
+                    break;
+                }
+                if (op == OpCodes.Nop)
+                {
+                    next++;
+                }
+                else if (op == OpCodes.Br || op == OpCodes.Br_S)
+                {
+                    next = code[next].Operand is int jump && at.TryGetValue(jump, out int to) ? to : -1;
+                }
+                else
+                {
+                    return null;
+                }
+            }
+            // Every store to the field in its class and the classes nested in it: ldc.i4.1 right before; no address taken.
+            const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
+            var types = new List<Type> { owner };
+            for (int i = 0; i < types.Count; i++)
+            {
+                types.AddRange(types[i].GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic));
+            }
+            foreach (Type type in types)
+            {
+                foreach (MethodBase member in type.GetMethods(all).Cast<MethodBase>().Concat(type.GetConstructors(all)))
+                {
+                    if (member.GetMethodBody() == null)
+                    {
+                        continue;
+                    }
+                    List<MethodFingerprint.Instruction> body = MethodFingerprint.Instructions(member, strict: true);
+                    for (int i = 0; i < body.Count; i++)
+                    {
+                        if (!Equals(body[i].Operand, field))
+                        {
+                            continue;
+                        }
+                        if (body[i].Op == OpCodes.Ldsflda || (body[i].Op == OpCodes.Stsfld && (i == 0 || body[i - 1].Op != OpCodes.Ldc_I4_1)))
+                        {
+                            return null;
+                        }
+                    }
+                }
+            }
+            return field;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     /// <summary>The lazy getter's field and builder, or null for any other shape.</summary>
     private static (FieldInfo Field, MethodBase Builder)? Shape(MethodBase getter, Assembly game)
     {
