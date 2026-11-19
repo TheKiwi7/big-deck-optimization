@@ -225,22 +225,26 @@ public static partial class PatchSafety
         CheckTolerant(method, allowedPatches, PatchTolerance.TypeGated, caller, out gates);
 
     /// <summary>
-    /// A cached tolerant answer. <see cref="LoggedFor"/>: the runtime call sites it was logged for (a few share one answer:
-    /// PileIndex, FastListeners and CardDbScan on CardPile.AddInternal; the preflight's patch names share it too but take no
-    /// slot), compared by reference on the cached path.
+    /// A cached tolerant answer, for the Harmony epoch and 2 s it was worked out at (it also relies on methods other than the
+    /// checked one being unpatched: the patch methods, their path callees, the initializers' lookups and constructors, which
+    /// <see cref="Invalidate"/> doesn't drop it for). <see cref="LoggedFor"/>: the runtime call sites it was logged for (a few
+    /// share one answer: PileIndex, FastListeners and CardDbScan on CardPile.AddInternal; the preflight's patch names share it too
+    /// but take no slot), compared by reference on the cached path.
     /// </summary>
     private sealed class TolerantAnswer
     {
         public readonly bool Patched;
+        public readonly int Epoch;
         public readonly long CheckedAt;
         public readonly string[] Mods;
         public readonly string[] ToleratedMods;
         public readonly Type[] Gates;
         public readonly string?[] LoggedFor = new string?[4];
 
-        public TolerantAnswer(bool patched, long checkedAt, string[] mods, string[] toleratedMods, Type[] gates)
+        public TolerantAnswer(bool patched, int epoch, long checkedAt, string[] mods, string[] toleratedMods, Type[] gates)
         {
             Patched = patched;
+            Epoch = epoch;
             CheckedAt = checkedAt;
             Mods = mods;
             ToleratedMods = toleratedMods;
@@ -342,7 +346,8 @@ public static partial class PatchSafety
             return false;
         }
         long key = AllowedKey(allowedPatches);
-        if (_tolerant.TryGetValue((method, key, tolerance), out TolerantAnswer? cached) && now - cached.CheckedAt < RecheckAfterMs)
+        int epoch = HarmonyWatch.Epoch;
+        if (_tolerant.TryGetValue((method, key, tolerance), out TolerantAnswer? cached) && cached.Epoch == epoch && now - cached.CheckedAt < RecheckAfterMs)
         {
             if (cached.Patched || _anyConflict)
             {
@@ -409,7 +414,7 @@ public static partial class PatchSafety
         string[] toleratedMods = ModNames(tolerated);
         Type[] gateTypes = mods.Length > 0 ? Type.EmptyTypes : gateList.Distinct().ToArray();
         RecordOnce(caller, method, mods, tolerance);
-        var answer = new TolerantAnswer(mods.Length > 0, now, mods, toleratedMods, gateTypes);
+        var answer = new TolerantAnswer(mods.Length > 0, epoch, now, mods, toleratedMods, gateTypes);
         _tolerant[(method, key, tolerance)] = answer;
         if (mods.Length == 0 && toleratedMods.Length > 0)
         {
@@ -2172,7 +2177,7 @@ public static partial class PatchSafety
     /// <see cref="InitializerFree"/> without the methods its verdict relies on being unpatched (that part changes with other mods'
     /// patches: asked at each answer, <see cref="PatchedInitializerReliance"/>): what cached verdicts may hold.
     /// </summary>
-    private static bool InitializerPure(Type type)
+    internal static bool InitializerPure(Type type)
     {
         try
         {
@@ -2553,7 +2558,7 @@ public static partial class PatchSafety
     private static readonly ConcurrentDictionary<Type, MethodBase[]> _initializerRelies = new();
 
     /// <summary>A method the type's initializer verdict relies on that anyone patches now, or null.</summary>
-    private static MethodBase? PatchedInitializerReliance(Type type)
+    internal static MethodBase? PatchedInitializerReliance(Type type)
     {
         if (!_initializerRelies.TryGetValue(type, out MethodBase[]? relies))
         {

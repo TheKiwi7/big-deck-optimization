@@ -559,12 +559,13 @@ internal static class BaseLibTypes
 
     private sealed class Twin
     {
-        public Twin(MethodInfo postfix, bool fromInternal, Func<System.Collections.IList?> fields, MethodBase[] code)
+        public Twin(MethodInfo postfix, bool fromInternal, Func<System.Collections.IList?> fields, MethodBase[] code, Type[] initialized)
         {
             Postfix = postfix;
             FromInternal = fromInternal;
             Fields = fields;
             Code = code;
+            Initialized = initialized;
         }
 
         public readonly MethodInfo Postfix;
@@ -573,6 +574,8 @@ internal static class BaseLibTypes
         public readonly Func<System.Collections.IList?> Fields;
         /// <summary>The postfix, its GetFieldsForModel, the lambda and every method they call: none may be patched.</summary>
         public readonly MethodBase[] Code;
+        /// <summary>The classes whose initializers were judged pure: what each relies on must be unpatched (asked per epoch).</summary>
+        public readonly Type[] Initialized;
     }
 
     private sealed class TwinSet
@@ -644,7 +647,8 @@ internal static class BaseLibTypes
                                 .Any(p => PatchSafety.PatchMethodOf(p) is { } other && other.MethodHandle == method.MethodHandle)
                             || twin.Code.Any(code => HarmonyLib.Harmony.GetPatchInfo(code) is { } patched
                                 && (patched.Prefixes.Count + patched.Postfixes.Count + patched.Transpilers.Count + patched.Finalizers.Count
-                                    + patched.InnerPrefixes.Count + patched.InnerPostfixes.Count) > 0))
+                                    + patched.InnerPrefixes.Count + patched.InnerPostfixes.Count) > 0)
+                            || twin.Initialized.Any(type => PatchSafety.PatchedInitializerReliance(type) != null))
                         {
                             continue;
                         }
@@ -673,7 +677,7 @@ internal static class BaseLibTypes
     /// <c>GetFieldsForModel(object)</c> with BaseLib's code (its lambda included) and a static readonly <c>RegisteredFields</c>
     /// list (the one that code reads: the descriptions name it); every class of its own assembly that code uses has no initializer,
     /// or a pure beforefieldinit one (<see cref="PatchSafety.InitializerFree"/>: run at another time with this mod, it must not
-    /// matter); the game's <c>SavedProperties</c> constructor it may call has the known (empty) code. Faulted: null.
+    /// matter; the pure part judged here, what it relies on asked at each recheck: <see cref="Twin.Initialized"/>); the game's <c>SavedProperties</c> constructor it may call has the known (empty) code. Faulted: null.
     /// </summary>
     private static Twin? JudgeTwin(MethodInfo postfix, bool fromInternal)
     {
@@ -714,12 +718,18 @@ internal static class BaseLibTypes
             }
             Assembly own = owner.Assembly;
             var code = new System.Collections.Generic.List<MethodBase> { postfix, fieldsFor };
+            var initialized = new System.Collections.Generic.List<Type> { owner };
             foreach (MemberInfo member in used)
             {
                 Type? type = member as Type ?? member.DeclaringType;
-                if (type != null && type.Assembly == own && !PatchSafety.InitializerFree(type.IsGenericType ? type.GetGenericTypeDefinition() : type))
+                if (type != null && type.Assembly == own)
                 {
-                    return null;
+                    Type definition = type.IsGenericType ? type.GetGenericTypeDefinition() : type;
+                    if (!PatchSafety.InitializerPure(definition))
+                    {
+                        return null;
+                    }
+                    initialized.Add(definition);
                 }
                 if (member is MethodBase method)
                 {
@@ -732,7 +742,7 @@ internal static class BaseLibTypes
                     code.Add(method);
                 }
             }
-            if (!PatchSafety.InitializerFree(owner))
+            if (!PatchSafety.InitializerPure(owner))
             {
                 return null;
             }
@@ -747,7 +757,7 @@ internal static class BaseLibTypes
             }
             Func<System.Collections.IList?> fields = System.Linq.Expressions.Expression.Lambda<Func<System.Collections.IList?>>(
                 System.Linq.Expressions.Expression.Convert(System.Linq.Expressions.Expression.Field(null, list), typeof(System.Collections.IList))).Compile();
-            return new Twin(postfix, fromInternal, fields, code.Distinct().ToArray());
+            return new Twin(postfix, fromInternal, fields, code.Distinct().ToArray(), initialized.Distinct().ToArray());
         }
         catch
         {

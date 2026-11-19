@@ -28,7 +28,8 @@ public static partial class PatchSafety
     /// <c>ldarg model; brfalse|brtrue</c>, then on the non-null path only <c>ldc.i4.1; ret</c> (the original runs, unchanged) and on
     /// the null path only <c>ldarg __result; ldc.i4.0; stind.i1; ldc.i4.0; ret</c> (the original skipped, false returned). Its own
     /// method unpatched, no hidden IL hook on the original (HarmonyWatch), its class's initializer none or harmless whenever it runs
-    /// (<see cref="InitializerFree"/>: a mirror never calls the guard). Asked again per Harmony epoch and at most every 2 s; never
+    /// (<see cref="InitializerFree"/>: a mirror never calls the guard; the pure part cached with the shape, what it relies on asked
+    /// with the rest). Asked again per Harmony epoch and at most every 2 s; never
     /// throws (a question it can't answer is null). For an unfiltered mirror of the method only: such a mirror answers K for a
     /// null model while this answers K, and runs the original's logic for any other (what the guard lets through).
     /// </summary>
@@ -91,7 +92,7 @@ public static partial class PatchSafety
             {
                 return null;
             }
-            if (Harmony.GetPatchInfo(guard) is { } own && AllPatches(own).Any())
+            if ((Harmony.GetPatchInfo(guard) is { } own && AllPatches(own).Any()) || (guard.DeclaringType is { } declaring && PatchedInitializerReliance(declaring) != null))
             {
                 return null;
             }
@@ -111,7 +112,7 @@ public static partial class PatchSafety
         try
         {
             if (!guard.IsStatic || guard.ContainsGenericParameters || guard.ReturnType != typeof(bool) || IsFactory(guard) || RenamesParameters(guard)
-                || guard.DeclaringType is not { } declaring || (declaring.TypeInitializer != null && !InitializerFree(declaring)))
+                || guard.DeclaringType is not { } declaring || (declaring.TypeInitializer != null && !InitializerPure(declaring)))
             {
                 return null;
             }
