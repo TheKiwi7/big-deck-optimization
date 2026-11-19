@@ -232,3 +232,60 @@ namespace BigDeckOptimization.Bench.Twins.ImpureInitializer
         }
     }
 }
+
+namespace BigDeckOptimization.Bench.Twins.AliasedHolder
+{
+    using BigDeckOptimization.Bench.Twins;
+
+    /// <summary>The aliased control's list: another class of the same name, in another namespace (it describes alike).</summary>
+    internal static class SavedSpireFieldPatch
+    {
+        internal static readonly List<ISavedSpireField> RegisteredFields = new List<ISavedSpireField>();
+    }
+}
+
+namespace BigDeckOptimization.Bench.Twins.Aliased
+{
+    using BigDeckOptimization.Bench.Twins;
+    using Holder = BigDeckOptimization.Bench.Twins.AliasedHolder.SavedSpireFieldPatch;
+
+    /// <summary>
+    /// Control: BaseLib's code as the descriptions read it, but GetFieldsForModel reads the list of another class of the same name
+    /// (AliasedHolder's): its own <c>RegisteredFields</c>, the one rule B reads to tell it holds no field, isn't the one used.
+    /// </summary>
+    internal static class SavedSpireFieldPatch
+    {
+        internal static readonly List<ISavedSpireField> RegisteredFields = new List<ISavedSpireField>();
+
+        private static IEnumerable<ISavedSpireField> GetFieldsForModel(object model)
+        {
+            return Holder.RegisteredFields.Where((ISavedSpireField f) => f.TargetType.IsInstanceOfType(model));
+        }
+
+        private static void PostfixFromInternal(ref SavedProperties? __result, object model)
+        {
+            SavedProperties savedProperties = __result ?? new SavedProperties();
+            bool flag = false;
+            IEnumerator<ISavedSpireField> fields = GetFieldsForModel(model).GetEnumerator();
+            try
+            {
+                while (fields.MoveNext())
+                {
+                    fields.Current.Export(model, savedProperties);
+                    flag = true;
+                }
+            }
+            finally
+            {
+                if (fields != null)
+                {
+                    fields.Dispose();
+                }
+            }
+            if (__result == null && flag)
+            {
+                __result = savedProperties;
+            }
+        }
+    }
+}

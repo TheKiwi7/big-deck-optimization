@@ -679,7 +679,7 @@ internal static class BaseLibTypes
     /// A twin, or null: a static void non-generic postfix of a non-generic class outside BaseLib, no HarmonyArgument, whose code
     /// (<see cref="OwnNormalizedIl"/>, signature included) is BaseLib's for that original; its class declares a static
     /// <c>GetFieldsForModel(object)</c> with BaseLib's code (its lambda included) and a static readonly <c>RegisteredFields</c>
-    /// list (the one that code reads: the descriptions name it); every class of its own assembly that code uses has no initializer,
+    /// list (the one that code reads: the descriptions name it, and every member they name under the class's name is its own); every class of its own assembly that code uses has no initializer,
     /// or a pure beforefieldinit one (<see cref="PatchSafety.InitializerFree"/>: run at another time with this mod, it must not
     /// matter; the pure part judged here, what it relies on asked at each recheck: <see cref="Twin.Initialized"/>); the game's <c>SavedProperties</c> constructor it may call has the known (empty) code. Faulted: null.
     /// </summary>
@@ -721,6 +721,20 @@ internal static class BaseLibTypes
                 return null;
             }
             Assembly own = owner.Assembly;
+            // The descriptions name the own assembly's types without their namespace: a member of another class of the owner's name
+            // (another namespace) describes as the owner's would. Every one used must be the owner's (or of a class nested in it): the
+            // GetFieldsForModel judged above and the RegisteredFields list read below are then the ones the code uses.
+            string ownerName = OwnNormalizedIl.TypeName(owner, own);
+            foreach (MemberInfo member in used)
+            {
+                for (Type? type = member as Type ?? member.DeclaringType; type != null; type = type.IsNested ? type.DeclaringType : null)
+                {
+                    if (type != owner && type.Assembly == own && OwnNormalizedIl.TypeName(type, own) == ownerName)
+                    {
+                        return null;
+                    }
+                }
+            }
             var code = new System.Collections.Generic.List<MethodBase> { postfix, fieldsFor };
             var initialized = new System.Collections.Generic.List<Type> { owner };
             foreach (MemberInfo member in used)

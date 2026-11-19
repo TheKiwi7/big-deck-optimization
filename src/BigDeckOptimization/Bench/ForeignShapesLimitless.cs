@@ -24,7 +24,8 @@ namespace BigDeckOptimization.Bench;
 /// <item>Rule B, accepted: <c>lim-twin accepted</c> on <c>SavedProperties:FromInternal</c> / <c>:FillInternal</c>, a copy of
 /// BaseLib's SavedSpireFieldPatch postfixes with BaseLib's IL (Acheron's shape), holding no field.</item>
 /// <item>Rule B, controls (must back off): <c>lim-twin unfiltered</c> (GetFieldsForModel without its filter), <c>lim-twin
-/// alwaysstores</c> (a null result stored), <c>lim-twin impure</c> (its class's initializer counts), <c>lim-twin-prefix accepted</c>
+/// alwaysstores</c> (a null result stored), <c>lim-twin impure</c> (its class's initializer counts), <c>lim-twin aliased</c> (its
+/// GetFieldsForModel reads another class's list of the same name), <c>lim-twin-prefix accepted</c>
 /// (installed as a prefix), <c>foreignpatch limitless twin patchcallee</c> (its GetFieldsForModel patched), <c>foreignpatch limitless
 /// twin register</c> (a field in its own list: for the rest of the session).</item>
 /// <item>Rule L: <c>lim-inner-count-postfix</c> on <c>CardModel:get_MaxUpgradeLevel</c> or <c>CardCmd::Enchant(EnchantmentModel,CardModel,Decimal)</c>,
@@ -49,7 +50,8 @@ public static class ForeignShapesLimitless
         "unfiltered" => typeof(Twins.Unfiltered.SavedSpireFieldPatch),
         "alwaysstores" => typeof(Twins.AlwaysStores.SavedSpireFieldPatch),
         "impure" => typeof(Twins.ImpureInitializer.SavedSpireFieldPatch),
-        _ => throw new ArgumentException("twin variant: accepted, unfiltered, alwaysstores or impure"),
+        "aliased" => typeof(Twins.Aliased.SavedSpireFieldPatch),
+        _ => throw new ArgumentException("twin variant: accepted, unfiltered, alwaysstores, impure or aliased"),
     };
 
     /// <summary>The twin's postfix for SavedProperties.FromInternal or FillInternal.</summary>
@@ -95,11 +97,14 @@ public static class ForeignShapesLimitless
                 throw new ArgumentException("foreignpatch limitless twin status|register|patchcallee");
         }
         (MethodInfo[] from, MethodInfo[] fill, bool holds) = BaseLibTypes.TwinsForTest();
-        string Il(string method, string expected) => OwnNormalizedIl.Of(accepted.GetMethod(method, BindingFlags.Static | BindingFlags.NonPublic)!) == expected ? "BaseLib's" : "other";
+        string Il(string method, string expected, Type? of = null) =>
+            OwnNormalizedIl.Of((of ?? accepted).GetMethod(method, BindingFlags.Static | BindingFlags.NonPublic)!) == expected ? "BaseLib's" : "other";
         return new[]
         {
             $"FOREIGN twin {what}: twins on FromInternal {from.Length} ({string.Join(", ", from.Select(m => m.DeclaringType?.FullName))}), on FillInternal {fill.Length}, one holds a field {holds}",
             $"FOREIGN twin accepted IL: FromInternal {Il("PostfixFromInternal", "9DD9F273573E3F25")}, FillInternal {Il("PostfixFillInternal", "1441D774E03D0220")}, GetFieldsForModel {Il("GetFieldsForModel", "5D37A68AE0E65B5D")}",
+            // The aliased control describes as BaseLib's (another class's list under the same name): only the owner check refuses it.
+            $"FOREIGN twin aliased IL: FromInternal {Il("PostfixFromInternal", "9DD9F273573E3F25", typeof(Twins.Aliased.SavedSpireFieldPatch))}, GetFieldsForModel {Il("GetFieldsForModel", "5D37A68AE0E65B5D", typeof(Twins.Aliased.SavedSpireFieldPatch))}",
         };
     }
 
