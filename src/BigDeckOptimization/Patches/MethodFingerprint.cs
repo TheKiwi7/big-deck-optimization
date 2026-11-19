@@ -809,6 +809,51 @@ public static class MethodFingerprint
     }
 
     /// <summary>
+    /// The game methods another mod's method calls itself or through its own assembly's helpers (<see cref="GameCallees"/> on
+    /// the method and on every method of its assembly it reaches), one level into the game: LimitlessCloneMemo's allowed patches
+    /// (Limitless's get_MaxUpgradeLevel postfix reads the card through its GetConstructedCardMax helper). No type initializers,
+    /// as on the game's side (BaseLib's CardModifier subscribes a combat hook in its own, run once). Delegates are listed, not
+    /// followed, as GameCallees does. More than
+    /// <paramref name="limit"/> own methods throws (the caller then can't bound the set).
+    /// </summary>
+    public static List<MethodBase> GameCalleesThroughOwn(Assembly game, MethodBase method, int limit)
+    {
+        Assembly own = method.Module.Assembly;
+        var found = new List<MethodBase>();
+        var seenGame = new HashSet<MethodBase>();
+        var seen = new HashSet<MethodBase> { method };
+        var queue = new Queue<MethodBase>();
+        queue.Enqueue(method);
+        while (queue.Count > 0)
+        {
+            MethodBase code = queue.Dequeue();
+            foreach (MethodBase callee in GameCallees(game, code, new List<MethodInfo>(), initializers: false, dispatch: false))
+            {
+                if (seenGame.Add(callee))
+                {
+                    found.Add(callee);
+                }
+            }
+            if (own == game)
+            {
+                continue;
+            }
+            foreach (MethodBase helper in GameCallees(own, code, new List<MethodInfo>(), initializers: false, dispatch: false))
+            {
+                if (seen.Add(helper))
+                {
+                    if (seen.Count > limit)
+                    {
+                        throw new InvalidOperationException($"more than {limit} methods of {own.GetName().Name} reached from {MemberName(method)}");
+                    }
+                    queue.Enqueue(helper);
+                }
+            }
+        }
+        return found;
+    }
+
+    /// <summary>
     /// The transitive closure of <see cref="GameCallees"/> from <paramref name="roots"/> (the roots included, whatever their
     /// assembly: a mod's override reached by a virtual call is followed into the game's code it calls), at most
     /// <paramref name="limit"/> methods (more throws: a caller then backs off rather than check a set it can't bound).

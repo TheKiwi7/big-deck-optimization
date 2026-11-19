@@ -713,38 +713,93 @@ public static class LimitlessCloneMemo
     }
 
     /// <summary>
-    /// The game methods the allowed BaseLib / Limitless patches of <see cref="Chain"/> call themselves (<see cref="MethodFingerprint.GameCallees"/>,
-    /// one level: the patches are pinned, what they call is judged by its patches, as the chain's own callees are), with the group of the
-    /// method they patch (an entry only reached inside a closure: the spine). Not the chain's own methods (judged with their entries) nor
-    /// the game's logger (a log line saves nothing). A transpiler's own code runs once at patch time: the helpers it inserts aren't followed
-    /// (BaseLib's UpgradeVars calls DynamicVar.UpgradeValueBy, an entry of its own). Null until worked out (<see cref="StartClosures"/>):
-    /// every group then counts as patched.
+    /// The game methods the allowed BaseLib / Limitless patches of <see cref="Chain"/> call, themselves or through their own assembly's
+    /// helpers (<see cref="MethodFingerprint.GameCalleesThroughOwn"/>, review of 2026-11-19, C3: Limitless's get_MaxUpgradeLevel postfix
+    /// reads the card in GetConstructedCardMax; one level into the game: the patches are pinned, what they call is judged by its
+    /// patches, as the chain's own callees are), with the group of the method they patch (an entry only reached inside a closure: the
+    /// spine). Not the chain's own methods (judged with their entries), nor the methods LimitlessReserialize judges (its answer is
+    /// required by this patch and LimitlessHookSkip: CardModel.ToSerializable, which Limitless's set_Enchantment prefix reaches when it
+    /// stacks a second enchantment, with BaseLib's postfix there), nor the game's logger (a log line saves nothing). A transpiler's own
+    /// code runs once at patch time: the helpers it inserts aren't followed (BaseLib's UpgradeVars calls DynamicVar.UpgradeValueBy, an
+    /// entry of its own). Null until worked out (<see cref="StartClosures"/>): every group then counts as patched.
     /// </summary>
     private static volatile (System.Reflection.MethodBase Method, Reach Reach)[]? _allowedCallees;
 
-    private static (System.Reflection.MethodBase Method, Reach Reach)[] AllowedCallees()
+    /// <summary>Methods of their own assembly the allowed patches may reach at most (more: nothing is kept or dropped).</summary>
+    private const int OwnHelperLimit = 500;
+
+    /// <param name="byChainMethod">Per chain method, what its allowed patches call (the chain's methods among them): a closure reaching
+    /// that method reaches these too (C3), whatever the content's groups.</param>
+    private static (System.Reflection.MethodBase Method, Reach Reach)[] AllowedCallees(out Dictionary<System.Reflection.MethodBase, System.Reflection.MethodBase[]> byChainMethod)
     {
         System.Reflection.Assembly game = typeof(CardModel).Assembly;
         var chain = ChainMethods();
         var chainMethods = new HashSet<System.Reflection.MethodBase>(chain.Select(c => MethodFingerprint.Definition(c.Method)));
+        var judgedElsewhere = new HashSet<(System.Reflection.Module, int)>(LimitlessReserialize.JudgedMethods().Select(m => (m.Module, m.MetadataToken)));
         var found = new Dictionary<System.Reflection.MethodBase, Reach>();
-        foreach ((_, System.Reflection.MethodInfo[] allowed, _, Reach reach) in chain)
+        byChainMethod = new Dictionary<System.Reflection.MethodBase, System.Reflection.MethodBase[]>();
+        var calleesOfPatch = new Dictionary<System.Reflection.MethodInfo, System.Reflection.MethodBase[]>();
+        foreach ((System.Reflection.MethodBase method, System.Reflection.MethodInfo[] allowed, _, Reach reach) in chain)
         {
+            var mine = new HashSet<System.Reflection.MethodBase>();
             foreach (System.Reflection.MethodInfo patch in allowed)
             {
-                foreach (System.Reflection.MethodBase callee in MethodFingerprint.GameCallees(game, patch, new List<System.Reflection.MethodInfo>(), initializers: false, dispatch: false))
+                if (!calleesOfPatch.TryGetValue(patch, out System.Reflection.MethodBase[]? callees))
                 {
-                    System.Reflection.MethodBase definition = MethodFingerprint.Definition(callee);
-                    if (definition.Module.Assembly != game || chainMethods.Contains(definition)
-                        || definition.DeclaringType?.Namespace == typeof(MegaCrit.Sts2.Core.Logging.Logger).Namespace)
-                    {
-                        continue;
-                    }
-                    found[definition] = found.GetValueOrDefault(definition) | (reach == Reach.None ? Reach.Spine : reach);
+                    calleesOfPatch[patch] = callees = MethodFingerprint.GameCalleesThroughOwn(game, patch, OwnHelperLimit)
+                        .Select(MethodFingerprint.Definition)
+                        .Where(d => d.Module.Assembly == game && !judgedElsewhere.Contains((d.Module, d.MetadataToken))
+                            && d.DeclaringType?.Namespace != typeof(MegaCrit.Sts2.Core.Logging.Logger).Namespace)
+                        .Distinct().ToArray();
                 }
+                foreach (System.Reflection.MethodBase definition in callees)
+                {
+                    mine.Add(definition);
+                    if (!chainMethods.Contains(definition))
+                    {
+                        found[definition] = found.GetValueOrDefault(definition) | (reach == Reach.None ? Reach.Spine : reach);
+                    }
+                }
+            }
+            if (mine.Count > 0)
+            {
+                byChainMethod[method] = mine.ToArray();
             }
         }
         return found.Select(e => (e.Key, e.Value)).ToArray();
+    }
+
+    /// <summary>
+    /// What a closure reaching these chain methods also runs (C3): their allowed patches' callees (<paramref name="byChainMethod"/>), and
+    /// those of the chain methods they call in turn. The chain methods found join <paramref name="known"/>; the others are returned.
+    /// </summary>
+    private static List<System.Reflection.MethodBase> AllowedCalleesIn(HashSet<System.Reflection.MethodBase> known, HashSet<System.Reflection.MethodBase> chainMethods,
+        Dictionary<System.Reflection.MethodBase, System.Reflection.MethodBase[]> byChainMethod)
+    {
+        var others = new List<System.Reflection.MethodBase>();
+        var queue = new Queue<System.Reflection.MethodBase>(known);
+        while (queue.Count > 0)
+        {
+            if (!byChainMethod.TryGetValue(queue.Dequeue(), out System.Reflection.MethodBase[]? callees))
+            {
+                continue;
+            }
+            foreach (System.Reflection.MethodBase callee in callees)
+            {
+                if (chainMethods.Contains(callee))
+                {
+                    if (known.Add(callee))
+                    {
+                        queue.Enqueue(callee);
+                    }
+                }
+                else
+                {
+                    others.Add(callee);
+                }
+            }
+        }
+        return others;
     }
 
     /// <summary>
@@ -803,9 +858,10 @@ public static class LimitlessCloneMemo
             Log.Info($"[{ModEntry.Id}] {Name}: closures worker started at {DateTime.Now:HH:mm:ss.fff}");
             System.Reflection.Assembly game = typeof(CardModel).Assembly;
             // First the allowed patches' callees (every group waits for them), then each override's closure.
+            var calleesOf = new Dictionary<System.Reflection.MethodBase, System.Reflection.MethodBase[]>();
             try
             {
-                _allowedCallees = AllowedCallees();
+                _allowedCallees = AllowedCallees(out calleesOf);
             }
             catch (Exception e)
             {
@@ -851,9 +907,12 @@ public static class LimitlessCloneMemo
                         {
                             if (walk.Advance(Patched))
                             {
-                                var inSet = new HashSet<System.Reflection.MethodBase>(walk.Found);
-                                published = new OverrideClosure(walk.Found.Where(m => !chainMethods.Contains(m)).ToArray(),
-                                    chain.Where(c => inSet.Contains(c.Method)).Select(c => (c.Method, c.Allowed)).ToArray());
+                                // The chain methods reached, with what their allowed patches call (C3: those patches run with the
+                                // closure's code, whatever groups the content reaches).
+                                var known = new HashSet<System.Reflection.MethodBase>(walk.Found.Where(chainMethods.Contains));
+                                List<System.Reflection.MethodBase> viaAllowed = AllowedCalleesIn(known, chainMethods, calleesOf);
+                                published = new OverrideClosure(walk.Found.Where(m => !chainMethods.Contains(m)).Concat(viaAllowed).Distinct().ToArray(),
+                                    chain.Where(c => known.Contains(c.Method)).Select(c => (c.Method, c.Allowed)).ToArray());
                             }
                             else
                             {
