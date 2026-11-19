@@ -161,6 +161,16 @@ public static class CardFlightLimit
     private static AccessTools.FieldRef<CardPile, Action?>? _cardAddFinished;
 
     /// <summary>
+    /// <c>CardPile.get_Type</c> as reviewed (v0.107.1 to v0.113.1: <c>ldarg.0; ldfld &lt;Type&gt;k__BackingField; ret</c>, the field
+    /// written by the constructor only) for rule P, or null (its code changed: other mods' patches on the pile's event stay strict).
+    /// </summary>
+    private static System.Reflection.MethodInfo? _pileType;
+    private const string PileTypeFingerprint = "4B90F15B09BFA902";
+
+    /// <summary>The gated postfixes <see cref="PileGatesAllowed"/> last gave (the same array while its content is the same).</summary>
+    private static System.Reflection.MethodInfo[] _pileGates = Array.Empty<System.Reflection.MethodInfo>();
+
+    /// <summary>
     /// Other mods' patches on the soul's _Ready a skipped soul may leave out with the shape rules off: SpeedX's, which only
     /// speeds that soul up (fingerprinted). Any other patch there keeps every soul then. With them on, every patch on the
     /// soul's own display code stands (<see cref="_ownDisplay"/>), this one included.
@@ -196,6 +206,19 @@ public static class CardFlightLimit
         _invokeAddFinished = Reflect.Method(typeof(CardPile), nameof(CardPile.InvokeCardAddFinished))
             ?? throw new MissingMethodException(nameof(CardPile), nameof(CardPile.InvokeCardAddFinished));
         _cardAddFinished = Reflect.FieldRefAccess<CardPile, Action?>("CardAddFinished");
+        try
+        {
+            // Rule P: a postfix gated on the pile's type is judged by that type, which only the constructor writes.
+            System.Reflection.MethodInfo pileType = Reflect.PropertyGetter(typeof(CardPile), nameof(CardPile.Type))
+                ?? throw new MissingMethodException(nameof(CardPile), "get_Type");
+            PatchSafety.RequireFingerprint(pileType, PileTypeFingerprint);
+            PatchSafety.RequireFieldWriters(typeof(CardPile), "<Type>k__BackingField", ".ctor");
+            _pileType = pileType;
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"[{ModEntry.Id}] {Name}: other mods' patches on a pile's card-added event stay strict ({e.Message})");
+        }
         try
         {
             // Small (10 methods, ~10 ms): at Apply, so the merged counts are judged from the first reshuffle.
@@ -261,7 +284,7 @@ public static class CardFlightLimit
         // the shape rules off (the whole flight set then, once built), SpeedX's allowed patch then looked up at the preflight.
         PatchSafety.Watch(Name, _create, PatchTolerance.NullSkipped);
         PatchSafety.Watch(Name, _addCard);
-        PatchSafety.Watch(Name, _invokeAddFinished);
+        PatchSafety.Watch(Name, _invokeAddFinished, PileGatesAllowed);
         PatchSafety.Watch(Name, _addCardSet?.Checked);
         var whole = new List<System.Reflection.MethodBase?> { _create };
         if (!PatchSafety.ShapeRules)
@@ -284,6 +307,7 @@ public static class CardFlightLimit
         // Other mods' patches on the soul's own display code (and null-gated postfixes on Create) left out for the souls skipped:
         // shown as kept (bdopt why, the menu's hover), not as a back-off.
         PatchSafety.WatchNote(Name, NoteOwnDisplay);
+        PatchSafety.WatchNote(Name, NotePileGates);
     }
 
     private static bool CreatePrefix(CardPile targetPile, ref NCardFlyShuffleVfx? __result)
@@ -674,6 +698,12 @@ public static class CardFlightLimit
                 if (!PatchSafety.IsFaulted(Name) && OnlyPileButtons(pile))
                 {
                     _extra = count - 1;
+#if BENCH
+                    if (count > 1)
+                    {
+                        MergedFlushes++;
+                    }
+#endif
                     pile.InvokeCardAddFinished();
                 }
                 else
@@ -710,8 +740,10 @@ public static class CardFlightLimit
     private static bool OnlyPileButtons(CardPile pile)
     {
         // No tolerance: one event stands for several cards, a patch would run fewer times; on the event's own method too (a
-        // patch there would see one call for several cards, whoever listens: Hermit's HandChangedPatches postfix is there).
-        if (PatchSafety.IsPatchedByOthers(_addCard) || PatchSafety.IsPatchedByOthers(_invokeAddFinished)
+        // patch there would see one call for several cards, whoever listens), but for postfixes doing nothing on this pile's
+        // type (rule P: Hermit's HandChangedPatches, acting on the hand only). Souls only target the draw and discard piles.
+        if (pile.Type is not (PileType.Draw or PileType.Discard)
+            || PatchSafety.IsPatchedByOthers(_addCard) || PatchSafety.IsPatchedByOthers(_invokeAddFinished, PileGatesAllowed())
             // What AddCard calls runs once for the merged cards too (audit of 2026-11-17, C): strict as AddCard itself.
             || _addCardSet is not { Reviewed: true } addCardSet || addCardSet.AnyPatched(Caller))
         {
@@ -730,6 +762,52 @@ public static class CardFlightLimit
             }
         }
         return true;
+    }
+
+#if BENCH
+    /// <summary>Flushes that sent one pile event for several skipped souls (test builds: rule P's proof that merging still runs).</summary>
+    public static long MergedFlushes { get; private set; }
+#endif
+
+    /// <summary>
+    /// Rule P (2026-11-18): other mods' postfixes on <c>CardPile.InvokeCardAddFinished</c> that do nothing unless the pile's
+    /// <c>Type</c> is some K other than Draw and Discard (<see cref="PatchSafety.ValueGatedPostfixes"/>: Downfall's Hermit, its
+    /// hand-only <c>HandChangedPatches</c>). A merged event only goes to a draw or discard pile, whose type its constructor set and
+    /// nothing changes: such a postfix does nothing for it, once or once per card. Any other patch there keeps one event per
+    /// card. Empty with the shape rules off, before Apply, or while <c>get_Type</c> isn't the reviewed code. Never throws.
+    /// </summary>
+    private static System.Reflection.MethodInfo[] PileGatesAllowed()
+    {
+        try
+        {
+            if (!PatchSafety.ShapeRules || _pileType == null || PatchSafety.ValueGatedPostfixes(_invokeAddFinished, _pileType) is not { Length: > 0 } gates)
+            {
+                return _pileGates = Array.Empty<System.Reflection.MethodInfo>();
+            }
+            System.Reflection.MethodInfo[] allowed = gates.Where(g => g.Value != (int)PileType.Draw && g.Value != (int)PileType.Discard).Select(g => g.Patch).ToArray();
+            if (!allowed.SequenceEqual(_pileGates))
+            {
+                _pileGates = allowed;
+            }
+            return _pileGates;
+        }
+        catch
+        {
+            return Array.Empty<System.Reflection.MethodInfo>();
+        }
+    }
+
+    /// <summary>The kept note of rule P: other mods' postfixes on the pile event let stand (bdopt why, the menu's hover).</summary>
+    private static void NotePileGates()
+    {
+        System.Reflection.MethodInfo[] gates = Applied && !PatchSafety.IsFaulted(Name) ? PileGatesAllowed() : Array.Empty<System.Reflection.MethodInfo>();
+        if (gates.Length == 0)
+        {
+            PatchSafety.ClearKept(Name, "pile_gate");
+            return;
+        }
+        PatchSafety.Kept(Name, "pile_gate", "other mods' code on a pile's card-added event (CardPile.InvokeCardAddFinished) that only acts on another kind "
+            + "of pile (the hand, ...): the draw and discard piles' buttons still get one event for several cards", PatchSafety.ModNamesOf(gates.Select(g => g.DeclaringType?.Assembly)));
     }
 
     /// <summary>Vanilla adds one to the count (capped by the pile's size); a flush for several cards adds the others first.</summary>

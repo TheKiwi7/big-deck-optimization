@@ -25,6 +25,7 @@ public static class ForeignShapesParts
         "ng-guard", "ng-true-guard", "ng-call-guard",
         "nullfill-postfix", "nullfill-nearmiss-postfix",
         "latch-postfix", "latch-reset-postfix", "latch-open-postfix",
+        "pilegate-postfix", "pilegate-beq-postfix", "pilegate-nearmiss-postfix",
         // Not a shape: "foreignpatch c0-override constant|patch|subclass|stateful" (rule C0: classes of "another mod" emitted into a
         // dynamic assembly, overriding PowerModel.OwnerIsSecondaryEnemy, which CardFlightLimit's combat-end check reaches).
         "c0-override",
@@ -32,6 +33,9 @@ public static class ForeignShapesParts
         "parts-report",
         // Not a shape: "foreignpatch parts-require <counter>" fails unless that counter of these rules is above zero.
         "parts-require",
+        // Not shapes: "foreignpatch parts-mark <label> <counter>" saves a counter of these rules, "parts-grew <label> <counter>"
+        // and "parts-same <label> <counter>" fail unless it grew (stayed the same) since.
+        "parts-mark", "parts-grew", "parts-same",
     };
 
     /// <summary>The counters <c>foreignpatch parts-require</c> knows (test builds).</summary>
@@ -40,6 +44,7 @@ public static class ForeignShapesParts
 #if BENCH
         "skippedaddbumps" => FastListeners.SkippedAddBumps,
         "latched" => LazyGuard.LatchedChecks,
+        "mergedflushes" => CardFlightLimit.MergedFlushes,
 #endif
         _ => throw new ArgumentException("parts-require: unknown counter " + name),
     };
@@ -62,6 +67,23 @@ public static class ForeignShapesParts
             }
             return new[] { $"FOREIGN parts {parts[1]} {value}" };
         }
+        if (shape is "parts-mark" or "parts-grew" or "parts-same")
+        {
+            string label = parts[1];
+            long now = Counter(parts[2]);
+            if (shape == "parts-mark")
+            {
+                _marks[(label, parts[2])] = now;
+                return new[] { $"FOREIGN parts {parts[2]} at '{label}': {now}" };
+            }
+            long then = _marks.TryGetValue((label, parts[2]), out long saved) ? saved : throw new InvalidOperationException($"{shape} {label} {parts[2]}: no parts-mark");
+            bool grew = now > then;
+            if (grew != (shape == "parts-grew"))
+            {
+                throw new InvalidOperationException($"{shape} {label} {parts[2]}: {then} -> {now}");
+            }
+            return new[] { $"FOREIGN parts {parts[2]} {(grew ? "grew" : "same")} since '{label}': {then} -> {now}" };
+        }
         if (shape == "c0-override")
         {
             return C0Override(parts[1], installed);
@@ -74,6 +96,7 @@ public static class ForeignShapesParts
                 $"FOREIGN display {parts[1]} sort-nearmiss-postfix every call {SortGates.EveryCall}",
                 $"FOREIGN display {parts[1]} nullfill-postfix null results {NullFillNulls}, nearmiss every call {NullFillEvery}",
                 $"FOREIGN display {parts[1]} latch runs {LatchRuns}",
+                $"FOREIGN display {parts[1]} pilegate runs {PileGateRuns}, nearmiss every call {PileGateEvery}",
             };
         }
         MethodBase target = (parts[1].Contains("::", StringComparison.Ordinal) ? MethodFingerprint.Resolve(typeof(AbstractModel).Assembly, parts[1]) : AccessTools.Method(parts[1]))
@@ -159,6 +182,25 @@ public static class ForeignShapesParts
                 }
                 break;
             }
+            case "pilegate-postfix":
+            case "pilegate-beq-postfix":
+            case "pilegate-nearmiss-postfix":
+            {
+                // Rule P (Downfall's Hermit HandChangedPatches on CardPile.InvokeCardAddFinished): a postfix acting only when the
+                // pile's Type is the gate's (hand: accepted, the merged pile event only goes to draw and discard piles; draw: the
+                // control, it acts on a merged pile). pilegate-beq-postfix: the same test compiled the other way round (beq to
+                // the body, ret next); the near miss counts every call before the test. Release-build IL emitted; they count
+                // their runs only (display).
+                Require(typeof(CardPile), nameof(CardPile.InvokeCardAddFinished));
+                PileType type = gate switch
+                {
+                    "hand" => PileType.Hand,
+                    "draw" => PileType.Draw,
+                    _ => throw new ArgumentException(shape + " gate: hand or draw"),
+                };
+                harmony.Patch(target, postfix: new HarmonyMethod(EmitPileGate(shape, type)) { priority = priority });
+                break;
+            }
             default:
                 throw new ArgumentException("unknown shape " + shape);
         }
@@ -169,6 +211,62 @@ public static class ForeignShapesParts
     }
 
     private static int _guards;
+
+    private static readonly Dictionary<(string Label, string Counter), long> _marks = new();
+
+    public static long PileGateRuns, PileGateEvery;
+
+    public static void CountPileGate() => PileGateRuns++;
+
+    public static void CountPileGateEvery() => PileGateEvery++;
+
+    /// <summary>
+    /// The pile-type gate as a Release build gives it: <c>ldarg.0; callvirt CardPile::get_Type; ldc.i4 K; bne.un.s L; call
+    /// CountPileGate; L: ret</c> (parameter __instance); the beq form <c>...; ldc.i4 K; beq.s B; ret; B: call CountPileGate; ret</c>;
+    /// the near miss with a call first.
+    /// </summary>
+    private static MethodInfo EmitPileGate(string shape, PileType gate)
+    {
+        if (_c0Module == null)
+        {
+            string unique = "BdoC0Shapes" + Environment.TickCount64.ToString("X");
+            _c0Module = System.Reflection.Emit.AssemblyBuilder.DefineDynamicAssembly(new AssemblyName(unique), System.Reflection.Emit.AssemblyBuilderAccess.Run)
+                .DefineDynamicModule(unique);
+        }
+        System.Reflection.Emit.TypeBuilder type = _c0Module.DefineType("BdoPileGate" + (++_guards),
+            TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed | TypeAttributes.Class | TypeAttributes.BeforeFieldInit);
+        System.Reflection.Emit.MethodBuilder method = type.DefineMethod("Postfix", MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.HideBySig,
+            typeof(void), new[] { typeof(CardPile) });
+        method.DefineParameter(1, ParameterAttributes.None, "__instance");
+        System.Reflection.Emit.ILGenerator il = method.GetILGenerator();
+        MethodInfo getType = AccessTools.PropertyGetter(typeof(CardPile), nameof(CardPile.Type))!;
+        MethodInfo count = typeof(ForeignShapesParts).GetMethod(nameof(CountPileGate))!;
+        if (shape == "pilegate-nearmiss-postfix")
+        {
+            il.Emit(System.Reflection.Emit.OpCodes.Call, typeof(ForeignShapesParts).GetMethod(nameof(CountPileGateEvery))!);
+        }
+        il.Emit(System.Reflection.Emit.OpCodes.Ldarg_0);
+        il.Emit(System.Reflection.Emit.OpCodes.Callvirt, getType);
+        // The short constant forms, as the compiler gives them (Hermit's ldc.i4.2).
+        il.Emit(gate == PileType.Hand ? System.Reflection.Emit.OpCodes.Ldc_I4_2 : System.Reflection.Emit.OpCodes.Ldc_I4_1);
+        System.Reflection.Emit.Label label = il.DefineLabel();
+        if (shape == "pilegate-beq-postfix")
+        {
+            il.Emit(System.Reflection.Emit.OpCodes.Beq_S, label);
+            il.Emit(System.Reflection.Emit.OpCodes.Ret);
+            il.MarkLabel(label);
+            il.Emit(System.Reflection.Emit.OpCodes.Call, count);
+            il.Emit(System.Reflection.Emit.OpCodes.Ret);
+        }
+        else
+        {
+            il.Emit(System.Reflection.Emit.OpCodes.Bne_Un_S, label);
+            il.Emit(System.Reflection.Emit.OpCodes.Call, count);
+            il.MarkLabel(label);
+            il.Emit(System.Reflection.Emit.OpCodes.Ret);
+        }
+        return type.CreateType()!.GetMethod("Postfix", BindingFlags.Public | BindingFlags.Static)!;
+    }
 
     public static long NullFillNulls, NullFillEvery, LatchRuns;
 

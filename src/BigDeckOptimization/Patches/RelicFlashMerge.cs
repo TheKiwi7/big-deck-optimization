@@ -623,10 +623,6 @@ public static class RelicFlashMerge
             + "a flash's first use or an error path; a mod changing game state there could desync co-op; its sound is still played)", mods.ToArray());
     }
 
-    /// <summary>
-    /// The kept note of strict members other mods patch that a flash can't reach (<see cref="Unreachable"/>): named with their
-    /// mods (bdopt why, the menu's hover), not a back-off. Cleared when there is none.
-    /// </summary>
     /// <summary>The kept note of rule latch: strict members whose other mods' patches are latches shut now.</summary>
     private static void NoteLatched(List<System.Reflection.MethodBase> methods)
     {
@@ -640,6 +636,10 @@ public static class RelicFlashMerge
             + "by a merged relic flash", PatchSafety.OtherModsPatching(methods));
     }
 
+    /// <summary>
+    /// The kept note of strict members other mods patch that a flash can't reach (<see cref="Unreachable"/>): named with their
+    /// mods (bdopt why, the menu's hover), not a back-off. Cleared when there is none.
+    /// </summary>
     private static void NoteBehindBuilt(List<System.Reflection.MethodBase> methods)
     {
         if (methods.Count == 0)
