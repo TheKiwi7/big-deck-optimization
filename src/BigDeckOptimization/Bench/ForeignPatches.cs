@@ -187,7 +187,7 @@ public static class ForeignPatches
 
     private static readonly string[] Shapes =
     {
-        "noop-postfix", "noop-prefix", "count-postfix", "count-prefix", "nested-postfix", "keyword-prefix", "cost-postfix",
+        "noop-postfix", "passthrough-postfix", "noop-prefix", "count-postfix", "count-prefix", "nested-postfix", "keyword-prefix", "cost-postfix",
         "probe-prefix", "probe-postfix", "state-prefix",
         "bool-prefix", "ref-prefix", "identity-transpiler", "inner-postfix", "runoriginal-postfix", "byref-postfix", "field-postfix",
         "argsrename-prefix", "factory-postfix", "dup-prefix", "own-postfix",
@@ -400,6 +400,11 @@ public static class ForeignPatches
             case "noop-postfix":
             case "own-postfix":
                 harmony.Patch(target, postfix: Fix(nameof(NoOpPostfix)));
+                break;
+            case "passthrough-postfix":
+                // A passthrough postfix (string Postfix(string __result) => __result) on a method returning a string: Harmony
+                // runs it after every void postfix, whatever their priorities (JoinMismatchNote's PostfixesBefore control).
+                harmony.Patch(target, postfix: Fix(nameof(PassthroughStringPostfix)));
                 break;
             case "noop-prefix":
                 harmony.Patch(target, prefix: Fix(nameof(NoOpPrefix)));
@@ -1255,6 +1260,8 @@ public static class ForeignPatches
     private static void NoOpPostfix()
     {
     }
+
+    private static string PassthroughStringPostfix(string __result) => __result;
 
     private static void NoOpPrefix()
     {

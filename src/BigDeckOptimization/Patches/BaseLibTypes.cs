@@ -559,12 +559,13 @@ internal static class BaseLibTypes
 
     private sealed class Twin
     {
-        public Twin(MethodInfo postfix, bool fromInternal, Func<System.Collections.IList?> fields, MethodBase[] code)
+        public Twin(MethodInfo postfix, bool fromInternal, Func<System.Collections.IList?> fields, MethodBase[] code, Type[] initialized)
         {
             Postfix = postfix;
             FromInternal = fromInternal;
             Fields = fields;
             Code = code;
+            Initialized = initialized;
         }
 
         public readonly MethodInfo Postfix;
@@ -573,6 +574,8 @@ internal static class BaseLibTypes
         public readonly Func<System.Collections.IList?> Fields;
         /// <summary>The postfix, its GetFieldsForModel, the lambda and every method they call: none may be patched.</summary>
         public readonly MethodBase[] Code;
+        /// <summary>The classes whose initializers were judged pure: what each relies on must be unpatched (asked per epoch).</summary>
+        public readonly Type[] Initialized;
     }
 
     private sealed class TwinSet
@@ -597,7 +600,11 @@ internal static class BaseLibTypes
     /// <summary>Per postfix method: the static part of the verdict (its code, its class), or null when it isn't a twin.</summary>
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<RuntimeMethodHandle, Twin?> _twinShapes = new();
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _twinsLogged = new();
-    private static (MethodInfo[] Base, MethodInfo[] Twins, MethodInfo[] Both)? _withFrom, _withFill;
+    /// <summary>One <see cref="WithTwins"/> answer: a class, so the three arrays are read together (one reference read).</summary>
+    private sealed record WithTwinsAnswer(MethodInfo[] Base, MethodInfo[] Twins, MethodInfo[] Both);
+
+    /// <summary>The last answers (any thread: the closure worker and the main thread; a reference is written and read atomically).</summary>
+    private static volatile WithTwinsAnswer? _withFrom, _withFill;
 
     /// <summary>
     /// The twins found now: other mods' postfixes on <c>SavedProperties.FromInternal</c> / <c>FillInternal</c> whose code is BaseLib's
@@ -644,7 +651,8 @@ internal static class BaseLibTypes
                                 .Any(p => PatchSafety.PatchMethodOf(p) is { } other && other.MethodHandle == method.MethodHandle)
                             || twin.Code.Any(code => HarmonyLib.Harmony.GetPatchInfo(code) is { } patched
                                 && (patched.Prefixes.Count + patched.Postfixes.Count + patched.Transpilers.Count + patched.Finalizers.Count
-                                    + patched.InnerPrefixes.Count + patched.InnerPostfixes.Count) > 0))
+                                    + patched.InnerPrefixes.Count + patched.InnerPostfixes.Count) > 0)
+                            || twin.Initialized.Any(type => PatchSafety.PatchedInitializerReliance(type) != null))
                         {
                             continue;
                         }
@@ -671,9 +679,9 @@ internal static class BaseLibTypes
     /// A twin, or null: a static void non-generic postfix of a non-generic class outside BaseLib, no HarmonyArgument, whose code
     /// (<see cref="OwnNormalizedIl"/>, signature included) is BaseLib's for that original; its class declares a static
     /// <c>GetFieldsForModel(object)</c> with BaseLib's code (its lambda included) and a static readonly <c>RegisteredFields</c>
-    /// list (the one that code reads: the descriptions name it); every class of its own assembly that code uses has no initializer,
+    /// list (the one that code reads: the descriptions name it, and every member they name under the class's name is its own); every class of its own assembly that code uses has no initializer,
     /// or a pure beforefieldinit one (<see cref="PatchSafety.InitializerFree"/>: run at another time with this mod, it must not
-    /// matter); the game's <c>SavedProperties</c> constructor it may call has the known (empty) code. Faulted: null.
+    /// matter; the pure part judged here, what it relies on asked at each recheck: <see cref="Twin.Initialized"/>); the game's <c>SavedProperties</c> constructor it may call has the known (empty) code. Faulted: null.
     /// </summary>
     private static Twin? JudgeTwin(MethodInfo postfix, bool fromInternal)
     {
@@ -713,13 +721,33 @@ internal static class BaseLibTypes
                 return null;
             }
             Assembly own = owner.Assembly;
+            // The descriptions name the own assembly's types without their namespace: a member of another class of the owner's name
+            // (another namespace) describes as the owner's would. Every one used must be the owner's (or of a class nested in it): the
+            // GetFieldsForModel judged above and the RegisteredFields list read below are then the ones the code uses.
+            string ownerName = OwnNormalizedIl.TypeName(owner, own);
+            foreach (MemberInfo member in used)
+            {
+                for (Type? type = member as Type ?? member.DeclaringType; type != null; type = type.IsNested ? type.DeclaringType : null)
+                {
+                    if (type != owner && type.Assembly == own && OwnNormalizedIl.TypeName(type, own) == ownerName)
+                    {
+                        return null;
+                    }
+                }
+            }
             var code = new System.Collections.Generic.List<MethodBase> { postfix, fieldsFor };
+            var initialized = new System.Collections.Generic.List<Type> { owner };
             foreach (MemberInfo member in used)
             {
                 Type? type = member as Type ?? member.DeclaringType;
-                if (type != null && type.Assembly == own && !PatchSafety.InitializerFree(type.IsGenericType ? type.GetGenericTypeDefinition() : type))
+                if (type != null && type.Assembly == own)
                 {
-                    return null;
+                    Type definition = type.IsGenericType ? type.GetGenericTypeDefinition() : type;
+                    if (!PatchSafety.InitializerPure(definition))
+                    {
+                        return null;
+                    }
+                    initialized.Add(definition);
                 }
                 if (member is MethodBase method)
                 {
@@ -732,7 +760,7 @@ internal static class BaseLibTypes
                     code.Add(method);
                 }
             }
-            if (!PatchSafety.InitializerFree(owner))
+            if (!PatchSafety.InitializerPure(owner))
             {
                 return null;
             }
@@ -747,7 +775,7 @@ internal static class BaseLibTypes
             }
             Func<System.Collections.IList?> fields = System.Linq.Expressions.Expression.Lambda<Func<System.Collections.IList?>>(
                 System.Linq.Expressions.Expression.Convert(System.Linq.Expressions.Expression.Field(null, list), typeof(System.Collections.IList))).Compile();
-            return new Twin(postfix, fromInternal, fields, code.Distinct().ToArray());
+            return new Twin(postfix, fromInternal, fields, code.Distinct().ToArray(), initialized.Distinct().ToArray());
         }
         catch
         {
@@ -798,19 +826,19 @@ internal static class BaseLibTypes
         {
             return allowed;
         }
-        var known = fromInternal ? _withFrom : _withFill;
-        if (known is { } k && ReferenceEquals(k.Base, allowed) && ReferenceEquals(k.Twins, twins))
+        WithTwinsAnswer? known = fromInternal ? _withFrom : _withFill;
+        if (known != null && ReferenceEquals(known.Base, allowed) && ReferenceEquals(known.Twins, twins))
         {
-            return k.Both;
+            return known.Both;
         }
         MethodInfo[] both = allowed.Concat(twins).ToArray();
         if (fromInternal)
         {
-            _withFrom = (allowed, twins, both);
+            _withFrom = new WithTwinsAnswer(allowed, twins, both);
         }
         else
         {
-            _withFill = (allowed, twins, both);
+            _withFill = new WithTwinsAnswer(allowed, twins, both);
         }
         return both;
     }

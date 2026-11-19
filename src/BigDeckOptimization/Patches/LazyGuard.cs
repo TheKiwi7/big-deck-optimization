@@ -137,7 +137,7 @@ internal static class LazyGuard
     /// <paramref name="method"/> is a latch that is shut now, so none of their code can run there: a void prefix or postfix whose
     /// code starts (nops aside) <c>ldsfld F; brtrue L</c> with only nops, unconditional branches and <c>ret</c> from L, F a private
     /// static bool field of the patch's own class, every store to F in that class and its nested classes <c>ldc.i4.1; stsfld F</c>
-    /// and none taking its address (<c>ldsflda</c>): once true, F stays true and the patch returns at its first test. F is read
+    /// (the <c>stsfld</c> no branch target) and none taking its address (<c>ldsflda</c>): once true, F stays true and the patch returns at its first test. F is read
     /// at each use; the patch list (and each patch method unpatched, no hidden IL hook) per Harmony epoch and at most every 2 s.
     /// Keyed on the first test only (what follows it never runs). False when no other mod patches the method, or it can't tell.
     /// </summary>
@@ -198,6 +198,11 @@ internal static class LazyGuard
         return fields.Count > 0 ? fields.ToArray() : null;
     }
 
+#if BENCH
+    /// <summary>Test tooling: the latch field of a patch method of the latch's shape, or null (not cached).</summary>
+    internal static FieldInfo? LatchShapeForTest(MethodInfo patch) => LatchShape(patch);
+#endif
+
     /// <summary>The latch field of a patch method of the latch's shape (see <see cref="LatchedShut"/>), or null.</summary>
     private static FieldInfo? LatchShape(MethodInfo patch)
     {
@@ -254,7 +259,8 @@ internal static class LazyGuard
                     return null;
                 }
             }
-            // Every store to the field in its class and the classes nested in it: ldc.i4.1 right before; no address taken.
+            // Every store to the field in its class and the classes nested in it: ldc.i4.1 right before, the store no branch target
+            // (`F = a || b` compiles to `brtrue L1; ldarg b; br L2; L1: ldc.i4.1; L2: stsfld F`: the br path stores b); no address taken.
             const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
             var types = new List<Type> { owner };
             for (int i = 0; i < types.Count; i++)
@@ -270,13 +276,15 @@ internal static class LazyGuard
                         continue;
                     }
                     List<MethodFingerprint.Instruction> body = MethodFingerprint.Instructions(member, strict: true);
+                    HashSet<int>? targets = null;
                     for (int i = 0; i < body.Count; i++)
                     {
                         if (!Equals(body[i].Operand, field))
                         {
                             continue;
                         }
-                        if (body[i].Op == OpCodes.Ldsflda || (body[i].Op == OpCodes.Stsfld && (i == 0 || body[i - 1].Op != OpCodes.Ldc_I4_1)))
+                        if (body[i].Op == OpCodes.Ldsflda || (body[i].Op == OpCodes.Stsfld && (i == 0 || body[i - 1].Op != OpCodes.Ldc_I4_1
+                            || (targets ??= PatchSafety.BranchTargets(body, PatchSafety.IndexByOffset(body))).Contains(i))))
                         {
                             return null;
                         }
