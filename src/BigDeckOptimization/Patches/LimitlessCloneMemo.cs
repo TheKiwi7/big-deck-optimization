@@ -199,8 +199,9 @@ public static class LimitlessCloneMemo
         (typeof(MegaCrit.Sts2.Core.Entities.Cards.CardEnergyCost), "Clone", Reach.Spine, Array.Empty<(string, string)>()),
         (typeof(MegaCrit.Sts2.Core.Entities.Cards.CardEnergyCost), "FinalizeUpgrade", Reach.Enchant | Reach.Upgrade, Array.Empty<(string, string)>()),
         // Rule L: what the game's overrides on the way call is their closure (OverrideClosure), not listed here. These entries
-        // (Reach.None) only give the closures their allowed patches and gates: the card's keywords (TypeGated, GatedChain), the
-        // card's node lookup (BaseLib's custom piles transpiler). The upgrade cap set_CurrentUpgradeLevel reads and the dynamic
+        // (Reach.None) only give the closures their allowed patches (the card's node lookup: BaseLib's custom piles transpiler) and
+        // the preflight its display (the card's keywords: judged strictly, as every method inside a closure since the review of
+        // 2026-11-19, C6: the closure's code may call them on another card). The upgrade cap set_CurrentUpgradeLevel reads and the dynamic
         // variable and energy cost upgrades BaseLib's UpgradeVars and the cards' OnUpgrade call: the upgrade group.
         (typeof(CardModel), "AddKeyword", Reach.None, Array.Empty<(string, string)>()),
         (typeof(CardModel), "RemoveKeyword", Reach.None, Array.Empty<(string, string)>()),
@@ -348,21 +349,24 @@ public static class LimitlessCloneMemo
     private static volatile ChainAnswer _chainAnswer = new(Reach.None, long.MinValue / 2, -1, Array.Empty<(System.Reflection.MethodBase, System.Reflection.MethodInfo[], Type[], Reach)>());
 
     /// <summary>
-    /// The card methods one level down (<see cref="GatedChain"/>): every inner card a clone builds is the card these run on
-    /// (the enchantments' OnEnchant call <c>base.Card</c>'s, the upgrade cap is the card's own), so a patch there that provably
-    /// does nothing unless the card is of some types (<see cref="PatchTolerance.TypeGated"/>, e.g. CardAscension's
-    /// <c>AddKeyword</c> prefix gated on its own card) changes nothing for a card of another type: only a card of a gate type
-    /// loses the memo (and the drops, <see cref="LimitlessHookSkip"/>: its inner cards are Limitless's storage card).
+    /// The chain's card methods run on the inner card itself: the upgrade cap (get_MaxUpgradeLevel, the card's own), so a patch
+    /// there that provably does nothing unless the card is of some types (<see cref="PatchTolerance.TypeGated"/>) changes nothing
+    /// for a card of another type: only a card of a gate type loses the memo (and the drops, <see cref="LimitlessHookSkip"/>: its
+    /// inner cards are Limitless's storage card).
     /// Rule A (2026-11-18): the CardModel-declared methods of the chain itself too (FromSerializable's ToMutable, AfterDeserialized,
     /// EnchantInternal, set_Enchantment, UpgradeInternal, FinalizeUpgradeInternal): each runs on that same inner card (ToMutable on
     /// its canonical card, of the same type). On ToMutable a postfix gated on <c>__result</c> counts as one on the instance (the
     /// pinned code returns <c>MemberwiseClone</c>'s copy: the same runtime type; <see cref="PatchSafety.SetResultIsInstance"/>).
     /// Not the AbstractModel-declared ones (MutableClone, ClonePreservingMutability, DeepCloneFields, AfterCloned): they also run
     /// on the inner card's enchantment, whose type a gate on card types isn't asked about (strict there).
+    /// The gates hold for the chain's own entries only (<see cref="ChainPatchedFor"/>): inside an override's closure the same methods
+    /// are judged strictly (review of 2026-11-19, C6), the closure's code may call them on another card (a card it makes or finds);
+    /// so AddKeyword and RemoveKeyword, reached only there, are no longer listed (until then CardAscension's AddKeyword prefix gated on
+    /// its own card let Goopy, RoyallyApproved, Steady and TezcatarasEmber contents be kept).
     /// </summary>
     private static readonly HashSet<string> GatedChain = new(StringComparer.Ordinal)
     {
-        "AddKeyword", "RemoveKeyword", "get_MaxUpgradeLevel",
+        "get_MaxUpgradeLevel",
         nameof(CardModel.ToMutable), "AfterDeserialized", "EnchantInternal", "set_Enchantment", "UpgradeInternal", "FinalizeUpgradeInternal",
     };
 
@@ -641,14 +645,15 @@ public static class LimitlessCloneMemo
     /// UpgradeBy...), and so also holds what that table missed (TezcatarasEmber's CardEnergyCost.GetWithModifiers). Only the set of
     /// methods whose other mods' patches matter: worked out again at each launch, never pinned (a game update just gives a new set;
     /// the override's own code stays pinned in <see cref="GameOverrides"/>, which guards the game's code as before rule L). A chain
-    /// method in it is judged with its allowed patches and, for a card method of <see cref="GatedChain"/>, its gates (the override
-    /// acts on its own card: <c>base.Card</c>, the inner card); every other method strictly. Another assembly's override of a virtual
+    /// method in it is judged with its allowed patches, never its gates (review of 2026-11-19, C6: the closure's code may call a card
+    /// method on another card than the inner one, a card it makes or finds, whose type no gate is asked about); every other method
+    /// strictly. Another assembly's override of a virtual
     /// method it calls isn't a patch and doesn't count: the content's own types' overrides on the way are <see cref="OnTheWay"/>'s
     /// (pinned), and another type's run only on an object of that type, which an inner card's build (no owner, no combat) never holds.
     /// </summary>
     private sealed class OverrideClosure
     {
-        public OverrideClosure(System.Reflection.MethodBase[] methods, (System.Reflection.MethodBase Method, System.Reflection.MethodInfo[] Allowed, bool Gated)[] known)
+        public OverrideClosure(System.Reflection.MethodBase[] methods, (System.Reflection.MethodBase Method, System.Reflection.MethodInfo[] Allowed)[] known)
         {
             Methods = methods;
             Known = known;
@@ -656,8 +661,8 @@ public static class LimitlessCloneMemo
 
         /// <summary>The closure's methods but the chain's (strict).</summary>
         public readonly System.Reflection.MethodBase[] Methods;
-        /// <summary>The chain methods in the closure, judged with their allowed patches and gates.</summary>
-        public readonly (System.Reflection.MethodBase Method, System.Reflection.MethodInfo[] Allowed, bool Gated)[] Known;
+        /// <summary>The chain methods in the closure, judged with their allowed patches (no gate).</summary>
+        public readonly (System.Reflection.MethodBase Method, System.Reflection.MethodInfo[] Allowed)[] Known;
 
         private sealed record StrictAnswer(long Stamp, long CheckedAt, bool Patched);
 
@@ -667,7 +672,7 @@ public static class LimitlessCloneMemo
         /// </summary>
         private volatile StrictAnswer? _strict;
 
-        public bool Patched(Type cardType)
+        public bool Patched()
         {
             long stamp = PatchStamp(), now = Environment.TickCount64;
             StrictAnswer? known = _strict;
@@ -694,17 +699,10 @@ public static class LimitlessCloneMemo
             {
                 return true;
             }
-            foreach ((System.Reflection.MethodBase method, System.Reflection.MethodInfo[] allowed, bool gated) in Known)
+            foreach ((System.Reflection.MethodBase method, System.Reflection.MethodInfo[] allowed) in Known)
             {
-                if (gated)
-                {
-                    if (PatchSafety.IsPatchedByOthers(method, allowed, out Type[] gates)
-                        || (gates.Any(gate => gate.IsAssignableFrom(cardType)) && PatchSafety.IsPatchedByOthers(method, allowed)))
-                    {
-                        return true;
-                    }
-                }
-                else if (PatchSafety.IsPatchedByOthers(method, AllowedNow(method, allowed))
+                // No tolerance (no gate either, C6): called with the closure's code, on whatever card that code holds.
+                if (PatchSafety.IsPatchedByOthers(method, AllowedNow(method, allowed))
                     || InstancePatched(method, m => PatchSafety.IsPatchedByOthers(m, AllowedNow(method, allowed))))
                 {
                     return true;
@@ -853,7 +851,7 @@ public static class LimitlessCloneMemo
                             {
                                 var inSet = new HashSet<System.Reflection.MethodBase>(walk.Found);
                                 published = new OverrideClosure(walk.Found.Where(m => !chainMethods.Contains(m)).ToArray(),
-                                    chain.Where(c => inSet.Contains(c.Method)).Select(c => (c.Method, c.Allowed, c.Gated)).ToArray());
+                                    chain.Where(c => inSet.Contains(c.Method)).Select(c => (c.Method, c.Allowed)).ToArray());
                             }
                             else
                             {
@@ -991,29 +989,29 @@ public static class LimitlessCloneMemo
 
     /// <summary>
     /// Whether one of these overrides on the way (<see cref="OnTheWay"/>) is patched, or what it calls (<see cref="OverrideClosure"/>,
-    /// judged for an inner card of <paramref name="cardType"/>), or its closure isn't known (yet).
+    /// strictly whatever the inner card's type: review C6), or its closure isn't known (yet).
     /// </summary>
-    internal static bool OverridesPatched(System.Reflection.MethodInfo[] overrides, Type cardType)
+    internal static bool OverridesPatched(System.Reflection.MethodInfo[] overrides)
     {
         if (overrides.Length == 0)
         {
             return false;
         }
-        // Asked per inner card by the filters: the answer for this set of overrides (OnTheWay's array, fixed per type) and card
-        // type is kept while the patch stamp holds, for at most a second (as the chain's answer).
+        // Asked per inner card by the filters: the answer for this set of overrides (OnTheWay's array, fixed per type) is kept
+        // while the patch stamp holds, for at most a second (as the chain's answer).
         long stamp = PatchStamp(), second = Environment.TickCount64 / 1000;
-        if (_overridesPatched.TryGetValue((overrides, cardType), out var known) && known.Stamp == stamp && known.Second == second)
+        if (_overridesPatched.TryGetValue(overrides, out var known) && known.Stamp == stamp && known.Second == second)
         {
             return known.Patched;
         }
-        bool patched = OverridesPatchedNow(overrides, cardType);
-        _overridesPatched[(overrides, cardType)] = (stamp, second, patched);
+        bool patched = OverridesPatchedNow(overrides);
+        _overridesPatched[overrides] = (stamp, second, patched);
         return patched;
     }
 
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(object Overrides, Type Card), (long Stamp, long Second, bool Patched)> _overridesPatched = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<object, (long Stamp, long Second, bool Patched)> _overridesPatched = new();
 
-    private static bool OverridesPatchedNow(System.Reflection.MethodInfo[] overrides, Type cardType)
+    private static bool OverridesPatchedNow(System.Reflection.MethodInfo[] overrides)
     {
         if (AnyPatched(overrides))
         {
@@ -1028,7 +1026,7 @@ public static class LimitlessCloneMemo
                 _resume.Set();
                 return true;
             }
-            if (known is not OverrideClosure closure || closure.Patched(cardType))
+            if (known is not OverrideClosure closure || closure.Patched())
             {
                 return true;
             }
@@ -1086,7 +1084,8 @@ public static class LimitlessCloneMemo
     /// <summary>
     /// LimitlessHookSkip's per inner card question (rule L): whether building this saved inner card may reach another mod's code
     /// no rule lets stand: the chain groups it reaches, its card type's and its enchantment type's overrides on the way with what
-    /// they call (judged for its card type). <see cref="KnownTypes"/> asks the same for the memo, with main-thread caches.
+    /// they call (the chain's gates for its card type; the closures strictly). <see cref="KnownTypes"/> asks the same for the memo,
+    /// with main-thread caches.
     /// </summary>
     internal static bool ContentPatched(SerializableCard saved)
     {
@@ -1095,7 +1094,7 @@ public static class LimitlessCloneMemo
             return true;
         }
         Type cardType = _cardTypeById.GetOrAdd(cardId, static id => MegaCrit.Sts2.Core.Saves.SaveUtil.CardOrDeprecated(id).GetType());
-        if (ChainPatchedFor(cardType, ReachOf(saved, cardType)) || OnTheWay(cardType) is not { } overrides || OverridesPatched(overrides, cardType))
+        if (ChainPatchedFor(cardType, ReachOf(saved, cardType)) || OnTheWay(cardType) is not { } overrides || OverridesPatched(overrides))
         {
             return true;
         }
@@ -1108,7 +1107,7 @@ public static class LimitlessCloneMemo
             return true;
         }
         Type enchantmentType = _enchantmentTypeById.GetOrAdd(enchantmentId, static id => MegaCrit.Sts2.Core.Saves.SaveUtil.EnchantmentOrDeprecated(id).GetType());
-        return OnTheWay(enchantmentType) is not { } enchantment || OverridesPatched(enchantment, cardType);
+        return OnTheWay(enchantmentType) is not { } enchantment || OverridesPatched(enchantment);
     }
 
     private static readonly Dictionary<ModelId, System.Reflection.MethodInfo[]?> _cardTypes = new(), _enchantmentTypes = new();
@@ -1125,7 +1124,7 @@ public static class LimitlessCloneMemo
             return false;
         }
         Type cardType = _cardTypeOf[cardId];
-        if (OverridesPatched(card, cardType) || ChainPatchedFor(cardType, ReachOf(saved, cardType)))
+        if (OverridesPatched(card) || ChainPatchedFor(cardType, ReachOf(saved, cardType)))
         {
             return false;
         }
@@ -1135,7 +1134,7 @@ public static class LimitlessCloneMemo
         }
         return saved.Enchantment.Id is { } enchantmentId
             && OnTheWayOf(_enchantmentTypes, enchantmentId, static id => MegaCrit.Sts2.Core.Saves.SaveUtil.EnchantmentOrDeprecated(id).GetType()) is { } enchantment
-            && !OverridesPatched(enchantment, cardType);
+            && !OverridesPatched(enchantment);
     }
 
 #if BENCH
