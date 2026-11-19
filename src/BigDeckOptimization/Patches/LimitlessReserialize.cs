@@ -463,6 +463,13 @@ public static class LimitlessReserialize
     private static bool _patchedByOthers;
 
     /// <summary>
+    /// The methods <see cref="PatchedByOthers"/> judges (with BaseLib's known postfixes there): LimitlessCloneMemo and LimitlessHookSkip
+    /// require that answer, so what calls them (an allowed patch's helper, LimitlessCloneMemo.AllowedCallees) is judged here.
+    /// </summary>
+    internal static MethodBase[] JudgedMethods() =>
+        new MethodBase?[] { _original, _setter, _savedPropertiesFrom, _fromInternal, _cardToSerializable, _enchantmentToSerializable }.OfType<MethodBase>().ToArray();
+
+    /// <summary>
     /// Another mod's patch on the methods this reproduces or a kept list skips (SetSerializableCards, the stored list's
     /// setter; BaseLib's known postfixes aside). Runs millions of times per
     /// combat: rechecked every 2 s, as <see cref="PatchSafety.IsPatchedByOthers(MethodBase?)"/> caches it.

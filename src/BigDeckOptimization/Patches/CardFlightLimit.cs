@@ -167,6 +167,22 @@ public static class CardFlightLimit
     private static System.Reflection.MethodInfo? _pileType;
     private const string PileTypeFingerprint = "4B90F15B09BFA902";
 
+    /// <summary>
+    /// The getter's field, read in its place (review of 2026-11-19, C9: the soul's prefix and each flush asked the pile's type
+    /// through the getter, which another mod may patch: its patch then ran more often than in the game), and the getter it stands
+    /// for; null when the getter's code isn't the pinned one.
+    /// </summary>
+    private static AccessTools.FieldRef<CardPile, PileType>? _pileTypeField;
+    private static System.Reflection.MethodInfo? _pileTypeGetter;
+
+    /// <summary>
+    /// The pile's type as its pinned getter gives it, without running the getter; null when it isn't pinned or another mod patches it
+    /// (its answer may then differ from the field): the pile is then none of the souls' piles, the game's code for it.
+    /// </summary>
+    private static PileType? PileTypeOf(CardPile pile) =>
+        // No tolerance: the getter isn't called here, whatever its patches would do.
+        _pileTypeField != null && !PatchSafety.IsPatchedByOthers(_pileTypeGetter) ? _pileTypeField(pile) : null;
+
     /// <summary>The gated postfixes <see cref="PileGatesAllowed"/> last gave (the same array while its content is the same).</summary>
     private static System.Reflection.MethodInfo[] _pileGates = Array.Empty<System.Reflection.MethodInfo>();
 
@@ -206,14 +222,17 @@ public static class CardFlightLimit
         _invokeAddFinished = Reflect.Method(typeof(CardPile), nameof(CardPile.InvokeCardAddFinished))
             ?? throw new MissingMethodException(nameof(CardPile), nameof(CardPile.InvokeCardAddFinished));
         _cardAddFinished = Reflect.FieldRefAccess<CardPile, Action?>("CardAddFinished");
+        // The pile's type is read from the getter's field (C9): only while the getter is the pinned one.
+        System.Reflection.MethodInfo typeGetter = Reflect.PropertyGetter(typeof(CardPile), nameof(CardPile.Type))
+            ?? throw new MissingMethodException(nameof(CardPile), "get_Type");
+        PatchSafety.RequireFingerprint(typeGetter, PileTypeFingerprint);
+        _pileTypeField = Reflect.FieldRefAccess<CardPile, PileType>("<Type>k__BackingField");
+        _pileTypeGetter = typeGetter;
         try
         {
             // Rule P: a postfix gated on the pile's type is judged by that type, which only the constructor writes.
-            System.Reflection.MethodInfo pileType = Reflect.PropertyGetter(typeof(CardPile), nameof(CardPile.Type))
-                ?? throw new MissingMethodException(nameof(CardPile), "get_Type");
-            PatchSafety.RequireFingerprint(pileType, PileTypeFingerprint);
             PatchSafety.RequireFieldWriters(typeof(CardPile), "<Type>k__BackingField", ".ctor");
-            _pileType = pileType;
+            _pileType = typeGetter;
         }
         catch (Exception e)
         {
@@ -324,7 +343,7 @@ public static class CardFlightLimit
                 QueueFlush(lost: true);
             }
             // A null pile (v0.107.1 reads card.Pile when the tween fires): the game's code, whatever it does with it.
-            if (!Enabled || targetPile == null || targetPile.Type is not (PileType.Draw or PileType.Discard) || FlightSet() is not { Reviewed: true }
+            if (!Enabled || targetPile == null || PileTypeOf(targetPile) is not (PileType.Draw or PileType.Discard) || FlightSet() is not { Reviewed: true }
                 // A skipped soul skips the method (and the calls it would make): only postfixes doing nothing for the null this
                 // prefix leaves stand (NullSkipped, the game's own test-mode answer); what they do with a real soul is the soul's
                 // display (_ownDisplay's premise).
@@ -782,7 +801,7 @@ public static class CardFlightLimit
         // No tolerance: one event stands for several cards, a patch would run fewer times; on the event's own method too (a
         // patch there would see one call for several cards, whoever listens), but for postfixes doing nothing on this pile's
         // type (rule P: Hermit's HandChangedPatches, acting on the hand only). Souls only target the draw and discard piles.
-        if (pile.Type is not (PileType.Draw or PileType.Discard)
+        if (PileTypeOf(pile) is not (PileType.Draw or PileType.Discard)
             || PatchSafety.IsPatchedByOthers(_addCard) || PatchSafety.IsPatchedByOthers(_invokeAddFinished, PileGatesAllowed())
             // What AddCard calls runs once for the merged cards too (audit of 2026-11-17, C): strict as AddCard itself.
             || _addCardSet is not { Reviewed: true } addCardSet || addCardSet.AnyPatched(Caller))

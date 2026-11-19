@@ -33,6 +33,8 @@ namespace BigDeckOptimization.Bench;
 /// (STATE, compared: 0 for level-0 inner cards on both sides). <c>foreignpatch limitless reach &lt;storage|CardClass&gt;
 /// &lt;EnchantmentClass|none&gt; &lt;level&gt; [label]</c>: whether LimitlessCloneMemo would keep that saved content now (per content, the groups
 /// it reaches); <c>foreignpatch limitless memo [label]</c>: the contents kept and the clears because the patch set changed.</item>
+/// <item>Review C2: <c>lim-generic-count-postfix &lt;Namespace.Type:Method&gt; &lt;TypeArgument&gt;</c>, a counting postfix on one
+/// closed instantiation of a generic member (<see cref="GenericCountPostfix"/>).</item>
 /// </list>
 /// </summary>
 public static class ForeignShapesLimitless
@@ -40,8 +42,44 @@ public static class ForeignShapesLimitless
     public static readonly string[] Shapes =
     {
         "lim-result-gated-postfix", "lim-enchantment-gated-postfix", "lim-cardmodel-gated-postfix", "lim-write-then-gated-postfix",
-        "lim-twin", "lim-twin-prefix", "lim-inner-count-postfix",
+        "lim-twin", "lim-twin-prefix", "lim-inner-count-postfix", "lim-generic-count-postfix",
     };
+
+    /// <summary>
+    /// <c>foreignpatch lim-generic-count-postfix &lt;Namespace.Type:Method&gt; &lt;TypeArgument&gt;</c> (review C2): a counting postfix
+    /// (uncompared) on one closed instantiation of a generic method, or of a generic type's method (<c>Type`1:.ctor</c> for its one
+    /// constructor), as Harmony patches a generic member: the chain and the closures name the definition.
+    /// </summary>
+    private static IReadOnlyList<string> GenericCountPostfix(string spec, string argument)
+    {
+        System.Reflection.Assembly game = typeof(AbstractModel).Assembly;
+        int colon = spec.LastIndexOf(':');
+        if (colon <= 0)
+        {
+            throw new ArgumentException("lim-generic-count-postfix <Namespace.Type:Method> <TypeArgument>");
+        }
+        string typeName = spec[..colon], name = spec[(colon + 1)..];
+        Type type = game.GetType(typeName) ?? AccessTools.TypeByName(typeName) ?? throw new ArgumentException("no type " + typeName);
+        Type arg = game.GetType(argument) ?? Type.GetType(argument) ?? AccessTools.TypeByName(argument) ?? throw new ArgumentException("no type " + argument);
+        const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
+        MethodBase target;
+        if (type.IsGenericTypeDefinition)
+        {
+            Type closed = type.MakeGenericType(arg);
+            target = name == ".ctor" ? closed.GetConstructors(all).Single() : closed.GetMethods(all).Single(m => m.Name == name);
+        }
+        else
+        {
+            target = type.GetMethods(all).Single(m => m.Name == name && m.IsGenericMethodDefinition).MakeGenericMethod(arg);
+        }
+        string id = ForeignPatches.IdPrefix + "lim-generic-count-postfix";
+        new Harmony(id).Patch(target, postfix: new HarmonyMethod(typeof(LimitlessGates), nameof(LimitlessGates.GenericCountPostfix)));
+        lock (_installed)
+        {
+            _installed.Add((id, target));
+        }
+        return new[] { $"FOREIGN installed lim-generic-count-postfix on {target.DeclaringType}.{target.Name}<{arg.Name}> as {id}" };
+    }
 
     /// <summary>Rule B's twins (Bench/ForeignShapesLimitlessTwins.cs) by variant.</summary>
     private static Type TwinClass(string variant) => variant switch
@@ -124,11 +162,16 @@ public static class ForeignShapesLimitless
                 "remove" => Remove(),
                 "twin" when parts.Length > 2 => TwinCommand(parts[2]),
                 "reach" when parts.Length > 4 => ReachCommand(parts[2], parts[3], int.Parse(parts[4]), parts.Length > 5 ? parts[5] : "now"),
+                "anyknown" => new[] { $"FOREIGN anyknown {(parts.Length > 2 ? parts[2] : "now")}: {LimitlessHookSkip.AnyKnownForTest()}" },
                 "memo" => new[] { $"FOREIGN clonememo {(parts.Length > 2 ? parts[2] : "now")}: entries {LimitlessCloneMemo.MemoCount}, patch stamp clears {LimitlessCloneMemo.PatchStampClears}, reused {LimitlessCloneMemo.Reused}" },
-                _ => throw new ArgumentException("foreignpatch limitless report [label] | remove | twin status|register|patchcallee | reach <storage|CardClass> <EnchantmentClass|none> <level> [label] | memo [label]"),
+                _ => throw new ArgumentException("foreignpatch limitless report [label] | remove | twin status|register|patchcallee | reach <storage|CardClass> <EnchantmentClass|none> <level> [label] | memo [label] | anyknown [label]"),
             };
         }
         string shape = parts[0];
+        if (shape == "lim-generic-count-postfix")
+        {
+            return parts.Length > 2 ? GenericCountPostfix(parts[1], parts[2]) : throw new ArgumentException("lim-generic-count-postfix <Namespace.Type:Method> <TypeArgument>");
+        }
         MethodBase target = Target(parts[1]);
         int priority = Priority.Normal;
         int at = Array.IndexOf(parts, "priority");
@@ -206,9 +249,13 @@ public static class ForeignShapesLimitless
             };
         }
         (bool kept, LimitlessCloneMemo.Reach reach) = LimitlessCloneMemo.KeptForTest(saved);
+        // Review C7: HookSkip's judgment runs no other mod's code (the count-postfix calls made during it).
+        long calls = ForeignPatches.CountPostfixCalls();
+        bool patched = LimitlessCloneMemo.ContentPatched(saved);
+        calls = ForeignPatches.CountPostfixCalls() - calls;
         return new[]
         {
-            $"FOREIGN reach {label} {card} {enchantment} {level}: kept {kept}, reaches {reach}, hookskip patched {LimitlessCloneMemo.ContentPatched(saved)}",
+            $"FOREIGN reach {label} {card} {enchantment} {level}: kept {kept}, reaches {reach}, hookskip patched {patched}, foreign calls {calls}",
             $"FOREIGN reach {label} closures done {LimitlessCloneMemo.ClosuresDone}: {LimitlessCloneMemo.ClosureStates()}",
         };
     }
@@ -322,6 +369,10 @@ internal static class LimitlessGates
             LimitlessShapeCounts.Count("lim-inner-count-postfix inner " + LimitlessShapeCounts.Name(__originalMethod));
         }
     }
+
+    /// <summary>Review C2: every call of the patched closed instantiation counted (uncompared).</summary>
+    public static void GenericCountPostfix(MethodBase __originalMethod) =>
+        LimitlessShapeCounts.CountUncompared("lim-generic-count-postfix " + LimitlessShapeCounts.Name(__originalMethod));
 
     /// <summary>Control: a call (a count) before the gate's branch.</summary>
     public static void WriteThenGatedPostfix(AbstractModel __instance, MethodBase __originalMethod)

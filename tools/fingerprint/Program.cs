@@ -59,7 +59,7 @@ if (args[1] == "callees")
 {
     // callees <dll> callees <Namespace.Type::*|key>...: each root's direct game callees (MethodFingerprint.GameCallees, as
     // LimitlessCloneMemo's allowed patches are judged: no type initializers, the game's implementations of a game virtual).
-    // FP_GAME=<sts2.dll>: the game assembly when the roots are another mod's methods.
+    // FP_GAME=<sts2.dll>: the game assembly when the roots are another mod's methods; FP_OWN=1: through their own helpers too.
     Assembly gameAsm = Environment.GetEnvironmentVariable("FP_GAME") is { Length: > 0 } calleeGame ? Assembly.LoadFrom(calleeGame) : asm;
     const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
     foreach (string key in args.Skip(2))
@@ -71,7 +71,9 @@ if (args[1] == "callees")
         {
             Console.WriteLine($"{MethodFingerprint.MemberName(root)} {MethodFingerprint.Of(root)}");
             var calleeDelegates = new List<MethodInfo>();
-            foreach (MethodBase callee in MethodFingerprint.GameCallees(gameAsm, root, calleeDelegates, initializers: false, dispatch: false)
+            // FP_OWN=1: also through the root's own assembly's helpers (MethodFingerprint.GameCalleesThroughOwn, as the worker reads them).
+            foreach (MethodBase callee in (Environment.GetEnvironmentVariable("FP_OWN") == "1" ? MethodFingerprint.GameCalleesThroughOwn(gameAsm, root, 500)
+                    : MethodFingerprint.GameCallees(gameAsm, root, calleeDelegates, initializers: false, dispatch: false))
                 .Where(c => c.Module.Assembly == gameAsm).Select(MethodFingerprint.Definition).Distinct().OrderBy(c => MethodFingerprint.MemberName(c), StringComparer.Ordinal))
             {
                 Console.WriteLine($"  {MethodFingerprint.MemberName(callee)}{(callee is MethodInfo { IsVirtual: true, IsFinal: false } ? " virtual" : "")}");
