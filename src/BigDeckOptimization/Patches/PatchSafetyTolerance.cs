@@ -1871,6 +1871,40 @@ public static partial class PatchSafety
                     outcome.Callees.Add(getter);
                     stack.Add(new PathValue(PathKind.Forkable));
                 }
+                else if (op == OpCodes.Call && ins.Operand is MethodInfo callee && depth < MaxInlineDepth && Inlinable(callee, outcome.Assembly))
+                {
+                    // Rule FW: the callee's own path, followed with the values passed (each of its paths must return; their values
+                    // continue this path: one value when they all agree, else unknown).
+                    int count = callee.GetParameters().Length;
+                    if (stack.Count < count)
+                    {
+                        return "a call with too few values";
+                    }
+                    var passed = new PathValue[count];
+                    for (int p = count - 1; p >= 0; p--)
+                    {
+                        passed[p] = Pop();
+                    }
+                    var results = new List<PathValue?>();
+                    if (EvaluatePath(callee, passed, PathExit.Any, nameTests, depth + 1, outcome, results) is { } inner)
+                    {
+                        return $"in {callee.Name}, which it calls: {inner}";
+                    }
+                    outcome.Callees.Add(callee);
+                    if (callee.ReturnType != typeof(void))
+                    {
+                        if (results.Count == 0 || results.Any(r => r == null))
+                        {
+                            return "a call returning no value it can follow";
+                        }
+                        PathValue first = results[0]!.Value;
+                        stack.Add(results.All(r => r!.Value == first) ? first : new PathValue(PathKind.Unknown));
+                    }
+                    else if (results.Any(r => r != null))
+                    {
+                        return "an exit leaving another stack";
+                    }
+                }
                 else
                 {
                     return $"{op.Name} on the path (it may do something)";
@@ -1879,6 +1913,32 @@ public static partial class PatchSafety
             }
         }
         return null;
+    }
+
+    /// <summary>Rule FW's bound: a patch's path follows calls this deep (the patch, its forwarded method, one more).</summary>
+    private const int MaxInlineDepth = 2;
+
+    /// <summary>
+    /// Rule FW (2026-11-18): a call <see cref="EvaluatePath"/> follows into: a static, non-generic method with a body, of the
+    /// patch's own assembly (the code read is the code run while nobody patches it: asked at each answer through the path's
+    /// callees, <see cref="PatchedPathCallee"/>), in a non-generic class whose initializer can't run at that call (none, or
+    /// <c>beforefieldinit</c>: CoreCLR runs it before a static field access, not at a call; the accesses compiled with the patch
+    /// are judged by <see cref="InitializersFree"/>, which reads this method too). BetterCharacterRelics' postfixes forwarding
+    /// <c>(__instance, ..., ref __result)</c> to a gated helper.
+    /// </summary>
+    private static bool Inlinable(MethodInfo callee, Assembly assembly)
+    {
+        try
+        {
+            return callee.IsStatic && !callee.IsGenericMethod && !callee.ContainsGenericParameters && callee.Module.Assembly == assembly
+                && callee.DeclaringType is { IsGenericType: false } owner
+                && (owner.TypeInitializer == null || (owner.Attributes & TypeAttributes.BeforeFieldInit) != 0)
+                && callee.GetMethodBody() != null;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>The argument an <c>ldarg</c> (by value) loads, else null.</summary>

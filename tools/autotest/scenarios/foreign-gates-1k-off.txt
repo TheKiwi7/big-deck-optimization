@@ -20,6 +20,8 @@ foreignpatch gates-getter-gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:
 foreignpatch gates-getter-ungated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:BeforeSideTurnStart
 foreignpatch gates-init-extensions-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardPlayedLate
 foreignpatch gates-init-ambiguous-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterDamageGiven
+foreignpatch gates-forwarder-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterPlayerTurnStartLate
+foreignpatch gates-forwarder-acts-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterEnergySpent
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 1

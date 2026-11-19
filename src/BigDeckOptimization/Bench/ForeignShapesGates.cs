@@ -32,7 +32,7 @@ public static class ForeignShapesGates
         "gates-debug-gated-postfix", "gates-debug-gated-prefix", "gates-bitor-gated-postfix", "gates-bool-local-postfix",
         "gates-copy-prologue-postfix", "gates-call-first-postfix",
         "gates-getter-gated-postfix", "gates-getter-ungated-postfix",
-        "gates-init-extensions-postfix", "gates-init-ambiguous-postfix",
+        "gates-init-extensions-postfix", "gates-init-ambiguous-postfix", "gates-forwarder-postfix", "gates-forwarder-acts-postfix",
     };
 
     /// <summary>Whether a <c>foreignpatch</c> line is one of this file's.</summary>
@@ -87,6 +87,8 @@ public static class ForeignShapesGates
             "gates-getter-ungated-postfix" => (FlagOn(GetterUngatedPostfix(key)), PatchSafety.PatchKind.Postfix),
             "gates-init-extensions-postfix" => (InitCase("all", key), PatchSafety.PatchKind.Postfix),
             "gates-init-ambiguous-postfix" => (InitCase("ambiguous", key), PatchSafety.PatchKind.Postfix),
+            "gates-forwarder-postfix" => (ForwarderPostfix(key), PatchSafety.PatchKind.Postfix),
+            "gates-forwarder-acts-postfix" => (ForwarderPostfix(key, acts: true), PatchSafety.PatchKind.Postfix),
             _ => throw new ArgumentException("unknown gates shape " + shape),
         };
     }
@@ -1028,6 +1030,129 @@ public static class ForeignShapesGates
         }
     }
 
+    // --- FW: forwarders judged by the forwarded method's path ---
+
+    private static readonly (Type, string)[] InstanceAndResult = { (typeof(AbstractModel), "__instance"), (typeof(System.Threading.Tasks.Task).MakeByRefType(), "__result") };
+
+    /// <summary>The gated helper's body: <c>if (inst is Squeeze) { Hit(key); [__result = Task.CompletedTask;] }</c>; <paramref name="acts"/>: a count for every listener first.</summary>
+    private static void EmitGatedHelper(ILGenerator il, string key, bool writesResult, bool acts)
+    {
+        Label end = il.DefineLabel();
+        if (acts)
+        {
+            EmitHit(il, key + " every call");
+        }
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Isinst, typeof(Squeeze));
+        il.Emit(OpCodes.Brfalse_S, end);
+        EmitHit(il, key);
+        if (writesResult)
+        {
+            // A store through ref __result (the gated path's effect: Harmony keeps what the postfix wrote).
+            il.Emit(OpCodes.Ldarg_1);
+            il.Emit(OpCodes.Ldarg_1);
+            il.Emit(OpCodes.Ldind_Ref);
+            il.Emit(OpCodes.Stind_Ref);
+        }
+        il.MarkLabel(end);
+        il.Emit(OpCodes.Ret);
+    }
+
+    /// <summary>
+    /// BetterCharacterRelics' shape: <c>Postfix(AbstractModel __instance, ref Task __result) =&gt; Helper(__instance, ref __result);</c>,
+    /// the helper in the same class gated on Squeeze (<paramref name="acts"/>: it counts every call first, a control).
+    /// </summary>
+    private static MethodInfo ForwarderPostfix(string key, bool acts = false) => Emit("forwarder_postfix", typeof(void), InstanceAndResult, il => { }, null, true, null, (type, il) =>
+    {
+        MethodBuilder helper = type.DefineMethod("Helper", MethodAttributes.Assembly | MethodAttributes.Static, typeof(void), InstanceAndResult.Select(p => p.Item1).ToArray());
+        EmitGatedHelper(helper.GetILGenerator(), key, writesResult: true, acts);
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Call, helper);
+        il.Emit(OpCodes.Ret);
+    });
+
+    /// <summary><c>if (IsMine(__instance)) Hit(key);</c>, <c>IsMine</c> returning <c>inst is Squeeze</c> (Release IL): the returned value followed.</summary>
+    private static MethodInfo ReturningHelperPostfix(string key) => Emit("returning_helper_postfix", typeof(void), InstanceOnly, il => { }, null, true, null, (type, il) =>
+    {
+        MethodBuilder isMine = type.DefineMethod("IsMine", MethodAttributes.Assembly | MethodAttributes.Static, typeof(bool), new[] { typeof(AbstractModel) });
+        ILGenerator m = isMine.GetILGenerator();
+        EmitIs(m, typeof(Squeeze));
+        m.Emit(OpCodes.Ret);
+        Label end = il.DefineLabel();
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Call, isMine);
+        il.Emit(OpCodes.Brfalse_S, end);
+        EmitHit(il, key);
+        il.MarkLabel(end);
+        il.Emit(OpCodes.Ret);
+    });
+
+    /// <summary>A chain of <paramref name="levels"/> calls (Patch -&gt; Forward... -&gt; the gated helper): 2 stand, 3 are past the depth.</summary>
+    private static MethodInfo ChainPostfix(int levels) => Emit("chain_postfix_" + levels, typeof(void), InstanceOnly, il => { }, null, true, null, (type, il) =>
+    {
+        MethodBuilder target = type.DefineMethod("Gated", MethodAttributes.Assembly | MethodAttributes.Static, typeof(void), new[] { typeof(AbstractModel) });
+        EmitGatedHelper(target.GetILGenerator(), "selftest", writesResult: false, acts: false);
+        for (int level = 1; level < levels; level++)
+        {
+            MethodBuilder forward = type.DefineMethod("Forward" + level, MethodAttributes.Assembly | MethodAttributes.Static, typeof(void), new[] { typeof(AbstractModel) });
+            ILGenerator f = forward.GetILGenerator();
+            f.Emit(OpCodes.Ldarg_0);
+            f.Emit(OpCodes.Call, target);
+            f.Emit(OpCodes.Ret);
+            target = forward;
+        }
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Call, target);
+        il.Emit(OpCodes.Ret);
+    });
+
+    /// <summary>A forwarder to a gated helper of another class: its class beforefieldinit, or (a control) with a static constructor run at its first call.</summary>
+    private static MethodInfo ForwarderToOtherClass(bool preciseInitializer)
+    {
+        MethodInfo helper = Emit("forwarded_helper", typeof(void), InstanceOnly, il => EmitGatedHelper(il, "selftest", writesResult: false, acts: false),
+            preciseInitializer ? (il, _) => il.Emit(OpCodes.Ret) : null, beforeFieldInit: !preciseInitializer);
+        return Emit("forwarder_other_class", typeof(void), InstanceOnly, il =>
+        {
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Call, helper);
+            il.Emit(OpCodes.Ret);
+        });
+    }
+
+    /// <summary>The control: a forwarder to a gated helper of another assembly (this mod's own <see cref="GatedHelper"/>): not followed.</summary>
+    private static MethodInfo ForwarderToOtherAssembly() => Emit("forwarder_other_assembly", typeof(void), InstanceOnly, il =>
+    {
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Call, typeof(ForeignShapesGates).GetMethod(nameof(GatedHelper))!);
+        il.Emit(OpCodes.Ret);
+    });
+
+    /// <summary>A gated helper in this assembly (FW's other-assembly control).</summary>
+    public static void GatedHelper(AbstractModel instance)
+    {
+        if (instance is Squeeze)
+        {
+            Hit("gates gated-helper");
+        }
+    }
+
+    private static Harmony? _calleeHarmony;
+
+    private static MethodInfo? _patchedCalleeForwarder;
+
+    /// <summary>The forwarder whose helper the callee case patches (one method: its verdict cached, the callee asked at each answer).</summary>
+    private static MethodInfo PatchedCalleeForwarder() => _patchedCalleeForwarder ??= ForwarderPostfix("selftest");
+
+    private static void PatchCallee()
+    {
+        _calleeHarmony ??= new Harmony(ForeignPatches.IdPrefix + "gates-selftest-callee");
+        MethodInfo helper = PatchedCalleeForwarder().DeclaringType!.GetMethod("Helper", BindingFlags.Static | BindingFlags.NonPublic)!;
+        _calleeHarmony.Patch(helper, prefix: new HarmonyMethod(typeof(ForeignShapesGates).GetMethod(nameof(RelianceNoOp))!));
+    }
+
+    private static void UnpatchCallee() => _calleeHarmony?.UnpatchAll(_calleeHarmony.Id);
+
     private static Harmony? _relianceHarmony;
 
     /// <summary>The reliance case: another mod patches the constructor an initializer runs (asked at each answer: the verdict turns).</summary>
@@ -1132,6 +1257,18 @@ public static class ForeignShapesGates
         yield return new Case("R1 control: a constructor reading the clock", InitCase("r1-impure"), postfix, model, gated, false);
         yield return new Case("R1 control: two initializers constructing each other (refused, no recursion)", InitCase("r1-cycle"), postfix, model, gated, false);
         yield return new Case("control: FieldRefAccess (it emits code)", InitCase("field-ref-access"), postfix, model, gated, false);
+        // FW: forwarders.
+        yield return new Case("FW a forwarder (__instance, ref __result) to a gated helper of its class", ForwarderPostfix("selftest"), postfix, model, gated, true, "Squeeze");
+        yield return new Case("FW a helper's returned test (if (IsMine(__instance)))", ReturningHelperPostfix("selftest"), postfix, model, gated, true, "Squeeze");
+        yield return new Case("FW two calls deep", ChainPostfix(2), postfix, model, gated, true, "Squeeze");
+        yield return new Case("FW a helper of another class (beforefieldinit)", ForwarderToOtherClass(false), postfix, model, gated, true, "Squeeze");
+        yield return new Case("FW a forwarder whose helper isn't patched yet", PatchedCalleeForwarder(), postfix, model, gated, true, "Squeeze");
+        yield return new Case("FW control: that helper patched by another mod (asked at each answer)", PatchedCalleeForwarder(), postfix, model, gated, false,
+            Before: PatchCallee, After: UnpatchCallee);
+        yield return new Case("FW control: the helper counts every call", ForwarderPostfix("selftest", acts: true), postfix, model, gated, false);
+        yield return new Case("FW control: three calls deep", ChainPostfix(3), postfix, model, gated, false);
+        yield return new Case("FW control: a helper whose class has a static constructor (run at its first call)", ForwarderToOtherClass(true), postfix, model, gated, false);
+        yield return new Case("FW control: a helper of another assembly", ForwarderToOtherAssembly(), postfix, model, gated, false);
         if (SpireFieldPostfix(false) is { } spireField)
         {
             yield return new Case("R1g BaseLib SpireField with a static lambda", spireField, postfix, model, gated, true, "Squeeze");
