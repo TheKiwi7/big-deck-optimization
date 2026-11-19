@@ -98,8 +98,10 @@ public enum PatchTolerance
     /// postfixes of every shape stand (bool,
     /// <c>ref __result</c>, arguments written by reference, <c>__args</c>, <c>__runOriginal</c>, factories, renamed parameters).
     /// A prefix decides whether and with which arguments the body runs, as without this mod; a postfix sees the same
-    /// <c>__result</c>, out values and <c>__runOriginal</c>, the dropped iterations being no-ops. Finalizers, transpilers (the
-    /// caller's IL judge aside) and inner patches back off. The caller checks that this mod's own patches there are only those
+    /// <c>__result</c>, out values and <c>__runOriginal</c>, the dropped iterations being no-ops. Finalizers that provably pass
+    /// the exception on unchanged stand too (F1, 2026-11-18: void, or every <c>ret</c> returning <c>__exception</c> as it came,
+    /// <see cref="PatchSafety"/>'s PassThroughRefusal); other finalizers, transpilers (the caller's IL judge aside) and inner
+    /// patches back off. The caller checks that this mod's own patches there are only those
     /// (HookSkip.OwnPatchesOnly), else it asks <see cref="SurroundingOnly"/>.
     /// </summary>
     TranspiledOnly,
@@ -514,6 +516,17 @@ public static partial class PatchSafety
             {
                 return "no tolerance at this call site";
             }
+            // F1 (2026-11-18): under TranspiledOnly a finalizer that provably hands the exception on unchanged stands (PassThroughRefusal).
+            if (kind == PatchKind.Finalizer && tolerance == PatchTolerance.TranspiledOnly)
+            {
+                if (_shapes.GetOrAdd((method.MethodHandle, kind, tolerance), static (_, m) => PassThroughRefusal(m), method) is { } notPassing)
+                {
+                    return notPassing;
+                }
+                // The code that runs is its replacement when anyone patches it, not the IL read: asked at each recheck.
+                return Harmony.GetPatchInfo(method) is { } patchedFinalizer && AllPatches(patchedFinalizer).Any()
+                    ? "finalizer whose own method is patched (judged from its IL to pass the exception on unchanged)" : null;
+            }
             if (kind is not (PatchKind.Prefix or PatchKind.Postfix))
             {
                 return kind switch
@@ -548,7 +561,8 @@ public static partial class PatchSafety
                 // ShapeRefusal let only a null-gated postfix through. The code that runs is its replacement when anyone patches
                 // it, not the IL read: asked at each recheck.
                 return Harmony.GetPatchInfo(method) is { } patchedNull && AllPatches(patchedNull).Any()
-                    ? $"{KindText(kind, method)} whose own method is patched (judged a no-op for a null result from its IL)" : null;
+                    ? $"{KindText(kind, method)} whose own method is patched (judged a no-op for a null result from its IL)"
+                    : PatchedPathCallee(method) is { } calleeNull ? $"{KindText(kind, method)} calling {calleeNull.DeclaringType?.Name}.{calleeNull.Name}, which is patched" : null;
             }
             // A postfix let stand because its IL only reads through a by-reference argument (OnlyReadThrough): the code that runs
             // is its replacement when anyone patches it, not the IL read. Asked at each recheck, as TypeGated's gates are.
@@ -1058,6 +1072,196 @@ public static partial class PatchSafety
         return lines;
     }
 
+    // --- Pass-through finalizers (F1, TranspiledOnly) ---
+
+    /// <summary>
+    /// F1 (2026-11-18): why another mod's finalizer on a TranspiledOnly method may change what the call throws, or null when it
+    /// provably hands Harmony the exception it got. A void finalizer can't change it (Harmony rethrows the one it caught); one
+    /// returning <c>Exception</c> stands only when every <c>ret</c> returns the <c>__exception</c> argument as it came: the
+    /// <c>ret</c> is no branch target (a merged one, <c>return c ? null : __exception</c>, may carry another value) and follows
+    /// <c>ldarg __exception</c>, or <c>ldloc n</c> of a local whose every store is <c>ldarg __exception; stloc n</c> (that store no
+    /// branch target either) and which every path stores before that load (an unwritten local is null: a swallow). Nothing
+    /// takes an address (<c>ldloca</c>, <c>ldarga</c>) or writes the argument (<c>starg</c>); no exception clauses. Its other
+    /// parameters are free, as a postfix's are under TranspiledOnly (the body around which it runs keeps its effects, so it sees
+    /// what it sees without this mod). Then an exception of this mod's own code (its guard finalizer runs first) or of the game
+    /// passes on as without that mod. Refused: a factory, renamed parameters (<c>HarmonyArgument</c>), <c>__exception</c> by
+    /// reference, any other return type. Whether the finalizer's own method is patched is asked at each recheck
+    /// (<see cref="Intolerable"/>). On an async hook it only sees the stub's synchronous exceptions (the state machine puts the
+    /// others in the task), as without this mod. Throws when the IL can't be read (Intolerable refuses then).
+    /// </summary>
+    private static string? PassThroughRefusal(MethodInfo finalizer)
+    {
+        if (IsFactory(finalizer))
+        {
+            return "factory patch method (Harmony runs the method it returns)";
+        }
+        if (RenamesParameters(finalizer))
+        {
+            return "patch renaming its parameters (HarmonyArgument)";
+        }
+        if (!finalizer.IsStatic || finalizer.ContainsGenericParameters)
+        {
+            return "finalizer not a plain static method";
+        }
+        ParameterInfo[] parameters = finalizer.GetParameters();
+        int exception = Array.FindIndex(parameters, p => p.Name == "__exception");
+        if (exception >= 0 && (parameters[exception].ParameterType.IsByRef || parameters[exception].IsOut))
+        {
+            return "finalizer taking __exception by reference";
+        }
+        if (finalizer.ReturnType == typeof(void))
+        {
+            return null; // Harmony rethrows the exception it caught, whatever the finalizer did.
+        }
+        if (finalizer.ReturnType != typeof(Exception))
+        {
+            return $"finalizer returning {finalizer.ReturnType.Name}";
+        }
+        const string swallow = "finalizer that may return another exception or none (may change or swallow the method's exception)";
+        if (exception < 0)
+        {
+            return swallow;
+        }
+        if (finalizer.GetMethodBody() is not { } body || body.ExceptionHandlingClauses.Count > 0)
+        {
+            return swallow;
+        }
+        List<MethodFingerprint.Instruction> code = MethodFingerprint.Instructions(finalizer);
+        Dictionary<int, int> at = IndexByOffset(code);
+        HashSet<int> targets = BranchTargets(code, at);
+        var returned = new List<(int Local, int Load)>();
+        for (int i = 0; i < code.Count; i++)
+        {
+            OpCode op = code[i].Op;
+            if (op == OpCodes.Ldloca || op == OpCodes.Ldloca_S || op == OpCodes.Ldarga || op == OpCodes.Ldarga_S
+                || ((op == OpCodes.Starg || op == OpCodes.Starg_S) && code[i].Operand is int n && n == exception))
+            {
+                return swallow;
+            }
+            if (op != OpCodes.Ret)
+            {
+                continue;
+            }
+            if (i == 0 || targets.Contains(i))
+            {
+                return swallow;
+            }
+            if (LoadsArgument(code[i - 1], exception))
+            {
+                continue;
+            }
+            if (LocalLoaded(code[i - 1]) is not { } local)
+            {
+                return swallow;
+            }
+            returned.Add((local, i - 1));
+        }
+        foreach ((int local, int load) in returned)
+        {
+            for (int j = 0; j < code.Count; j++)
+            {
+                if (StoresLocal(code[j], out int stored) && stored == local
+                    && (j == 0 || targets.Contains(j) || !LoadsArgument(code[j - 1], exception)))
+                {
+                    return swallow;
+                }
+            }
+            if (Reaches(code, at, load, j => StoresLocal(code[j], out int s) && s == local))
+            {
+                return swallow; // A path reads the local before storing it: null there.
+            }
+        }
+        return null;
+    }
+
+    /// <summary>The index of each instruction by its offset.</summary>
+    private static Dictionary<int, int> IndexByOffset(List<MethodFingerprint.Instruction> code)
+    {
+        var at = new Dictionary<int, int>(code.Count);
+        for (int i = 0; i < code.Count; i++)
+        {
+            at[code[i].Offset] = i;
+        }
+        return at;
+    }
+
+    /// <summary>Every instruction index a branch, a <c>leave</c> or a <c>switch</c> may jump to. Throws on a target that is no instruction.</summary>
+    private static HashSet<int> BranchTargets(List<MethodFingerprint.Instruction> code, Dictionary<int, int> at)
+    {
+        var targets = new HashSet<int>();
+        for (int i = 0; i < code.Count; i++)
+        {
+            FlowControl flow = code[i].Op.FlowControl;
+            if (flow is not (FlowControl.Branch or FlowControl.Cond_Branch))
+            {
+                continue;
+            }
+            foreach (int offset in code[i].Operand switch { int one => new[] { one }, int[] many => many, _ => throw new InvalidOperationException("branch without target") })
+            {
+                targets.Add(at[offset]);
+            }
+        }
+        return targets;
+    }
+
+    /// <summary>
+    /// The instructions control may go to after instruction <paramref name="i"/> (none after <c>ret</c>, <c>throw</c>,
+    /// <c>rethrow</c>, <c>endfinally</c>, <c>jmp</c>). Exception handlers aren't followed (callers refuse methods with them).
+    /// </summary>
+    private static IEnumerable<int> Successors(List<MethodFingerprint.Instruction> code, Dictionary<int, int> at, int i)
+    {
+        OpCode op = code[i].Op;
+        switch (op.FlowControl)
+        {
+            case FlowControl.Return or FlowControl.Throw:
+                yield break;
+            case FlowControl.Branch:
+                yield return at[(int)code[i].Operand!];
+                yield break;
+            case FlowControl.Cond_Branch:
+                foreach (int offset in code[i].Operand switch { int one => new[] { one }, int[] many => many, _ => throw new InvalidOperationException("branch without target") })
+                {
+                    yield return at[offset];
+                }
+                break;
+        }
+        if (op == OpCodes.Jmp)
+        {
+            yield break;
+        }
+        yield return i + 1;
+    }
+
+    /// <summary>Whether some path from the first instruction reaches <paramref name="target"/> without going through an instruction <paramref name="blocks"/> holds for.</summary>
+    private static bool Reaches(List<MethodFingerprint.Instruction> code, Dictionary<int, int> at, int target, Func<int, bool> blocks)
+    {
+        var seen = new HashSet<int>();
+        var stack = new Stack<int>();
+        stack.Push(0);
+        while (stack.Count > 0)
+        {
+            int i = stack.Pop();
+            if (i < 0 || i >= code.Count || !seen.Add(i) || blocks(i))
+            {
+                continue;
+            }
+            if (i == target)
+            {
+                return true;
+            }
+            foreach (int next in Successors(code, at, i))
+            {
+                stack.Push(next);
+            }
+        }
+        return false;
+    }
+
+    /// <summary>The local an <c>ldloc</c> (by value) loads, else null.</summary>
+    private static int? LocalLoaded(MethodFingerprint.Instruction ins) =>
+        ins.Op == OpCodes.Ldloc_0 ? 0 : ins.Op == OpCodes.Ldloc_1 ? 1 : ins.Op == OpCodes.Ldloc_2 ? 2 : ins.Op == OpCodes.Ldloc_3 ? 3
+        : (ins.Op == OpCodes.Ldloc_S || ins.Op == OpCodes.Ldloc) && ins.Operand is int n ? n : null;
+
     // --- Type-gated patches (TypeGated) ---
 
     /// <summary>
@@ -1172,14 +1376,14 @@ public static partial class PatchSafety
 
     /// <summary>
     /// The types a prefix or postfix of another mod is gated on: it provably does nothing (returns at once, a bool prefix
-    /// returning true) unless <c>__instance</c> is an instance of one of them. Null when the code isn't exactly that shape:
-    /// from its first instruction (nops aside), only tests <c>ldarg __instance; isinst T; [stloc n; ldloc n;] brfalse/brtrue</c>
-    /// along the path a non-matching instance takes (isinst gives null there: brfalse taken, brtrue not), unconditional
-    /// branches, and then the no-op exit: <c>ret</c> (void), or <c>ldc.i4.1; ret</c> (bool prefix). Nothing else on that path:
-    /// no call, no field or static write, no other argument read. A postfix returning a value (passthrough) never matches, nor
-    /// a method whose class has a static constructor run at its first use (a <c>beforefieldinit</c> one doing only lookups and constant stores stands, see
-    /// <see cref="AnalyseGates"/>). <c>__instance</c> is found by its declared name: <see cref="Intolerable"/> refuses a patch
-    /// renaming its parameters (<c>HarmonyArgument</c>) before asking, and a patch whose own method is patched.
+    /// returning true, a passthrough postfix returning its <c>__result</c>) unless <c>__instance</c> is an instance of one of
+    /// them. Null unless the path a listener of none of them takes is evaluated to a no-op exit (<see cref="EvaluatePath"/>,
+    /// rule E of 2026-11-18: constants, null, the listener and unknown values through the stack and locals, any IL form, Debug
+    /// builds' included), nor a method whose class has a static constructor run at its first use (a <c>beforefieldinit</c> one
+    /// doing only lookups and constant stores stands, see <see cref="InitializersFree"/>). <c>__instance</c> is found by its
+    /// declared name: <see cref="Intolerable"/> refuses a patch renaming its parameters (<c>HarmonyArgument</c>) before asking,
+    /// and a patch whose own method is patched; the methods its no-op path calls (rule G's static getters, rule FW's forwarded
+    /// method) are asked here at each answer.
     /// </summary>
     public static Type[]? TypeGates(MethodInfo patch, PatchKind kind) => TypeGates(patch, kind, null);
 
@@ -1224,8 +1428,32 @@ public static partial class PatchSafety
         {
             shape = _gateNames.TryGetValue(gateKey, out (bool Full, string Name)[]? names) ? WithNamedTypes(shape, names) : null;
         }
-        // The initializers after the shape (a refusal then says which of the two failed: GateRefusal).
-        return shape != null && InitializersFree(patch) ? shape : null;
+        // The initializers after the shape (a refusal then says which of the two failed: GateRefusal), then the methods the no-op
+        // path calls, unpatched at each answer (their replacement isn't the IL read).
+        return shape != null && InitializersFree(patch) && PatchedPathCallee(patch) == null ? shape : null;
+    }
+
+    /// <summary>
+    /// Per analysed patch method, the methods its no-op path calls (rule G's static getters, rule FW's forwarded method): the
+    /// verdict holds while none of them is patched by anyone.
+    /// </summary>
+    private static readonly ConcurrentDictionary<RuntimeMethodHandle, MethodBase[]> _pathCallees = new();
+
+    /// <summary>A method the patch's no-op path calls that anyone patches now, or null.</summary>
+    private static MethodBase? PatchedPathCallee(MethodInfo patch)
+    {
+        if (!_pathCallees.TryGetValue(patch.MethodHandle, out MethodBase[]? callees))
+        {
+            return null;
+        }
+        foreach (MethodBase callee in callees)
+        {
+            if (Harmony.GetPatchInfo(callee) is { } info && AllPatches(info).Any())
+            {
+                return callee;
+            }
+        }
+        return null;
     }
 
     /// <summary>Stands for the name gates of one analysed patch in <see cref="_gates"/> (never a listener's type).</summary>
@@ -1337,17 +1565,18 @@ public static partial class PatchSafety
     /// The reflection-reads premise's name test (owner-approved 2026-11-17, DESIGN "Owner-approved premises"; Skin Changer's
     /// <c>__instance.GetType().Name != "MultiplayerScalingModel"</c>): at <paramref name="index"/>,
     /// <c>ldarg &lt;the instance&gt;; callvirt object.GetType(); callvirt get_Name()|get_FullName() (MemberInfo or Type);
-    /// ldstr S; call string.op_Equality|op_Inequality(string, string); [stloc n; ldloc n;] brtrue|brfalse L</c>. On a non-null
-    /// instance none of these can throw or do anything but read. <paramref name="next"/>: where a listener whose runtime type
-    /// isn't named S goes (the branch target or the next instruction).
+    /// ldstr S; call string.op_Equality|op_Inequality(string, string)</c>, read as one instruction (rule E: what follows, a branch
+    /// or a store, is evaluated as any other value's). On a non-null instance none of these can throw or do anything but read.
+    /// <paramref name="value"/>: what it gives for a listener whose runtime type isn't named S (op_Inequality true, op_Equality
+    /// false).
     /// </summary>
-    private static bool NameTest(List<MethodFingerprint.Instruction> code, int index, int[] bound, Dictionary<int, int> at,
-        out bool full, out string name, out int next)
+    private static bool NameCompare(List<MethodFingerprint.Instruction> code, int index, int[] bound,
+        out bool full, out string name, out bool value)
     {
         full = false;
         name = "";
-        next = -1;
-        if (index + 5 >= code.Count || !bound.Any(b => LoadsArgument(code[index], b)))
+        value = false;
+        if (index + 4 >= code.Count || !bound.Any(b => LoadsArgument(code[index], b)))
         {
             return false;
         }
@@ -1376,25 +1605,8 @@ public static partial class PatchSafety
         {
             return false;
         }
-        int branch = index + 5;
-        if (StoresLocal(code[branch], out int local) && branch + 1 < code.Count && LoadsLocal(code[branch + 1], local))
-        {
-            branch += 2;
-        }
-        if (branch >= code.Count)
-        {
-            return false;
-        }
-        MethodFingerprint.Instruction test = code[branch];
-        bool onTrue = test.Op == OpCodes.Brtrue || test.Op == OpCodes.Brtrue_S;
-        bool onFalse = test.Op == OpCodes.Brfalse || test.Op == OpCodes.Brfalse_S;
-        if ((!onTrue && !onFalse) || test.Operand is not int to || !at.TryGetValue(to, out int taken))
-        {
-            return false;
-        }
         // A listener not named S: op_Inequality true, op_Equality false.
-        bool value = compare.Name == "op_Inequality";
-        next = value == onTrue ? taken : branch + 1;
+        value = compare.Name == "op_Inequality";
         full = getName.Name == "get_FullName";
         name = literal;
         return true;
@@ -1414,6 +1626,10 @@ public static partial class PatchSafety
         if (shaped && InitializerRefusal(patch) is { } why)
         {
             return $"{KindText(kind, patch)} gated, but {why}";
+        }
+        if (shaped && PatchedPathCallee(patch) is { } callee)
+        {
+            return $"{KindText(kind, patch)} gated, but {callee.DeclaringType?.Name}.{callee.Name}, which it calls on every call, is patched (its code isn't the one read)";
         }
         return $"{KindText(kind, patch)} not provably gated on the listener's type" + listener;
     }
@@ -1436,21 +1652,22 @@ public static partial class PatchSafety
     {
         try
         {
-            if (!patch.IsStatic || patch.ContainsGenericParameters)
+            if (!patch.IsStatic || patch.ContainsGenericParameters || patch.DeclaringType == null)
             {
                 return null;
             }
-            // The IL shape only: the type initializers the patch may run are judged after (TypeGates: InitializersFree).
-            if (patch.DeclaringType == null)
-            {
-                return null;
-            }
+            // The IL path only: the type initializers the patch may run are judged after (TypeGates: InitializersFree).
             bool boolPrefix = kind == PatchKind.Prefix && patch.ReturnType == typeof(bool);
-            if (patch.ReturnType != typeof(void) && !boolPrefix)
+            ParameterInfo[] parameters = patch.GetParameters();
+            // A passthrough postfix (Harmony hands its first parameter the result and keeps what it returns): its no-op exit gives
+            // that parameter back as it came. Only one named __result (rule E's trap: Harmony passes the result to the first
+            // parameter whatever its name, but another name would be read as an argument elsewhere: refused).
+            bool passthrough = kind == PatchKind.Postfix && patch.ReturnType != typeof(void) && parameters.Length > 0
+                && parameters[0].Name == "__result" && parameters[0].ParameterType == patch.ReturnType;
+            if (patch.ReturnType != typeof(void) && !boolPrefix && !passthrough)
             {
                 return null;
             }
-            ParameterInfo[] parameters = patch.GetParameters();
             // The patch parameters Harmony binds to the listener's argument: its name, or "__N" for the original's N-th argument.
             int[] bound = Enumerable.Range(0, parameters.Length)
                 .Where(i => parameters[i].Name == listener || (position >= 0 && parameters[i].Name == "__" + position)).ToArray();
@@ -1458,80 +1675,450 @@ public static partial class PatchSafety
             {
                 return null;
             }
-            List<MethodFingerprint.Instruction> code = MethodFingerprint.Instructions(patch);
-            var at = new Dictionary<int, int>();
-            for (int i = 0; i < code.Count; i++)
+            var arguments = new PathValue[parameters.Length];
+            foreach (int i in bound)
             {
-                at[code[i].Offset] = i;
+                arguments[i] = new PathValue(PathKind.Listener);
             }
-            var gates = new List<Type>();
-            var names = new List<(bool Full, string Name)>();
-            var visited = new HashSet<int>();
-            int index = 0;
-            while (index >= 0 && index < code.Count && visited.Add(index))
+            if (passthrough)
             {
-                MethodFingerprint.Instruction ins = code[index];
-                if (ins.Op == OpCodes.Nop)
-                {
-                    index++;
-                    continue;
-                }
-                if (ins.Op == OpCodes.Br || ins.Op == OpCodes.Br_S)
-                {
-                    index = ins.Operand is int target && at.TryGetValue(target, out int next) ? next : -1;
-                    continue;
-                }
-                if (ins.Op == OpCodes.Ret)
-                {
-                    // Void exit: nothing on the stack. A bool prefix must push true first (handled below).
-                    return boolPrefix ? null : Gated(gates, names, patch, kind, listener, position);
-                }
-                if (boolPrefix && ins.Op == OpCodes.Ldc_I4_1 && index + 1 < code.Count && code[index + 1].Op == OpCodes.Ret)
-                {
-                    return Gated(gates, names, patch, kind, listener, position);
-                }
-                // The reflection-reads premise (shape rules on): a name test on the instance's runtime type (NameTest).
-                if (PatchSafety.ShapeRules && position < 0 && NameTest(code, index, bound, at, out bool full, out string name, out int afterName))
-                {
-                    names.Add((full, name));
-                    if (!gates.Contains(typeof(NameGateMarker)))
-                    {
-                        gates.Add(typeof(NameGateMarker));
-                    }
-                    index = afterName;
-                    continue;
-                }
-                // A test: ldarg <the listener's parameter>; isinst T; [stloc n; ldloc n;] brfalse/brtrue L.
-                if (!bound.Any(b => LoadsArgument(ins, b)) || index + 2 >= code.Count || code[index + 1].Op != OpCodes.Isinst
-                    || code[index + 1].Operand is not Type gate || gate.IsValueType || gate.ContainsGenericParameters)
-                {
-                    return null;
-                }
-                int branch = index + 2;
-                if (StoresLocal(code[branch], out int local) && branch + 1 < code.Count && LoadsLocal(code[branch + 1], local))
-                {
-                    branch += 2;
-                }
-                if (branch >= code.Count)
-                {
-                    return null;
-                }
-                MethodFingerprint.Instruction test = code[branch];
-                bool onFalse = test.Op == OpCodes.Brfalse || test.Op == OpCodes.Brfalse_S;
-                bool onTrue = test.Op == OpCodes.Brtrue || test.Op == OpCodes.Brtrue_S;
-                if (!onFalse && !onTrue || test.Operand is not int to || !at.TryGetValue(to, out int taken))
-                {
-                    return null;
-                }
-                gates.Add(gate);
-                // Not an instance of the gate: null, so brfalse is taken and brtrue falls through.
-                index = onFalse ? taken : branch + 1;
+                arguments[0] = new PathValue(PathKind.Result);
             }
-            return null;
+            var outcome = new PathOutcome(patch.Module.Assembly);
+            // The reflection-reads premise's name tests only on the instance (shape rules on).
+            if (EvaluatePath(patch, arguments, boolPrefix ? PathExit.True : passthrough ? PathExit.Result : PathExit.Void,
+                ShapeRules && position < 0, 0, outcome, null) != null || (outcome.Gates.Count == 0 && outcome.Names.Count == 0))
+            {
+                return null;
+            }
+            _pathCallees[patch.MethodHandle] = outcome.Callees.Distinct().ToArray();
+            if (outcome.Names.Count > 0)
+            {
+                outcome.Gates.Add(typeof(NameGateMarker));
+            }
+            return Gated(outcome.Gates.Distinct().ToList(), outcome.Names, patch, kind, listener, position);
         }
         catch
         {
             return null;
+        }
+    }
+
+    // --- Rule E (2026-11-18): the path a listener of none of the gate types takes, evaluated ---
+
+    /// <summary>What a value on the evaluated path is known to be.</summary>
+    private enum PathKind : byte
+    {
+        /// <summary>Nothing known (another argument, an address, a comparison of unknown values): never branched on.</summary>
+        Unknown,
+
+        /// <summary>An integer constant (<see cref="PathValue.Number"/>).</summary>
+        Int,
+
+        /// <summary>An integer known to be nonzero (an <c>or</c> with a nonzero constant), its exact value unknown.</summary>
+        NonZero,
+
+        /// <summary>The null reference (<c>ldnull</c>, <c>isinst</c> on the listener).</summary>
+        Null,
+
+        /// <summary>The listener: a non-null reference of none of the gate types (the calls this mod skips have one).</summary>
+        Listener,
+
+        /// <summary>The value a no-op exit must give back as it came (a passthrough postfix's <c>__result</c>).</summary>
+        Result,
+
+        /// <summary>The address of a null reference (NullSkipped's <c>ref __result</c>): <c>ldind.ref</c> through it gives null.</summary>
+        NullAddress,
+
+        /// <summary>
+        /// Rule G: a value read from a static field by a trivial getter (a mod's config flag, set at run time), or computed from
+        /// such values and constants: unknown, but a branch on it explores both sides (each must reach a no-op exit).
+        /// </summary>
+        Forkable,
+    }
+
+    private readonly record struct PathValue(PathKind Kind, int Number = 0);
+
+    /// <summary>How the evaluated method's no-op path must end.</summary>
+    private enum PathExit : byte
+    {
+        /// <summary><c>ret</c> with nothing on the stack (a void prefix or postfix).</summary>
+        Void,
+
+        /// <summary><c>ret</c> of the constant 1 (a bool prefix letting the original run).</summary>
+        True,
+
+        /// <summary><c>ret</c> of <see cref="PathKind.Result"/> (a passthrough postfix).</summary>
+        Result,
+
+        /// <summary>Any <c>ret</c> (an inlined callee: its value goes back to the caller's path).</summary>
+        Any,
+    }
+
+    /// <summary>What the evaluation found over every path it followed.</summary>
+    private sealed class PathOutcome
+    {
+        public PathOutcome(Assembly assembly) => Assembly = assembly;
+
+        /// <summary>The patch's assembly (an inlined callee must be of it).</summary>
+        public readonly Assembly Assembly;
+
+        public readonly List<Type> Gates = new();
+        public readonly List<(bool Full, string Name)> Names = new();
+
+        /// <summary>The methods the paths call (inlined callees): unpatched at each answer (<see cref="PatchedPathCallee"/>).</summary>
+        public readonly List<MethodBase> Callees = new();
+
+        public int Paths = 1;
+        public int Steps;
+    }
+
+    private const int MaxPathSteps = 4096;
+
+    /// <summary>Rule G's bound on the paths explored (each branch on a forkable value adds one).</summary>
+    private const int MaxPaths = 16;
+
+    /// <summary>
+    /// Rule E (2026-11-18, replacing the fixed shape of the type gates): follows the path the calls this mod skips take through
+    /// <paramref name="method"/>, every value tracked as a constant, null, the listener (non-null, of none of the types tested so
+    /// far: an <c>isinst</c> on it gives null and records its type as a gate) or unknown, through the stack and the locals
+    /// (Debug builds route every test and return through locals: the strict shapes refused them all). Allowed: <c>nop</c>,
+    /// <c>ldarg</c> (by value), <c>isinst</c> (a value type or open generic type on the listener refused), <c>stloc</c>/<c>ldloc</c>
+    /// (a local not stored yet on this path is unknown, never its zero), <c>ldnull</c>, <c>ldc.i4</c>, <c>ceq</c>, <c>cgt</c>,
+    /// <c>cgt.un</c>, <c>clt</c>, <c>clt.un</c>, <c>or</c>/<c>and</c> (with an absorbing constant: an <c>or</c> with a nonzero
+    /// constant is nonzero, not 1), <c>dup</c>, <c>pop</c>, <c>br</c>, <c>brtrue</c>/<c>brfalse</c>, <c>beq</c>/<c>bne.un</c> on a
+    /// known value, the reflection-reads premise's name test on the instance as one instruction (<see cref="NameCompare"/>), and
+    /// the exit <paramref name="exit"/> asks for. Rule G: a call to a trivial static getter (<see cref="TrivialStaticGetter"/>)
+    /// gives a forkable value, and a branch on it explores both sides (at most <see cref="MaxPaths"/> paths, each its own copy of
+    /// the stack and locals, each ending at an accepted exit). Rule FW: a call to an <see cref="Inlinable"/> static method of the
+    /// patch's assembly is followed inline (depth 2), with the values passed. Anything else refuses: any other call, field access,
+    /// store outside the locals, address taken, a branch on an unknown value, a loop. Returns why the path isn't a no-op, or null. <paramref name="arguments"/>: what
+    /// each argument is on entry. Throws on IL it can't decode (the caller refuses).
+    /// </summary>
+    private static string? EvaluatePath(MethodBase method, PathValue[] arguments, PathExit exit, bool nameTests, int depth, PathOutcome outcome,
+        List<PathValue?>? returned)
+    {
+        List<MethodFingerprint.Instruction> code = MethodFingerprint.Instructions(method);
+        Dictionary<int, int> at = IndexByOffset(code);
+        int[] listeners = Enumerable.Range(0, arguments.Length).Where(i => arguments[i].Kind == PathKind.Listener).ToArray();
+        var work = new Stack<(int Index, List<PathValue> Stack, Dictionary<int, PathValue> Locals, HashSet<int> Visited)>();
+        work.Push((0, new List<PathValue>(), new Dictionary<int, PathValue>(), new HashSet<int>()));
+        while (work.Count > 0)
+        {
+            (int i, List<PathValue> stack, Dictionary<int, PathValue> locals, HashSet<int> visited) = work.Pop();
+            while (true)
+            {
+                if (++outcome.Steps > MaxPathSteps)
+                {
+                    return "too long a path";
+                }
+                if (i < 0 || i >= code.Count)
+                {
+                    return "a path running off the code";
+                }
+                if (!visited.Add(i))
+                {
+                    return "a loop on the path";
+                }
+                MethodFingerprint.Instruction ins = code[i];
+                OpCode op = ins.Op;
+                int next = i + 1;
+                PathValue Pop()
+                {
+                    PathValue top = stack[^1];
+                    stack.RemoveAt(stack.Count - 1);
+                    return top;
+                }
+                if (op == OpCodes.Nop)
+                {
+                }
+                else if (nameTests && NameCompare(code, i, listeners, out bool full, out string name, out bool value))
+                {
+                    outcome.Names.Add((full, name));
+                    stack.Add(new PathValue(PathKind.Int, value ? 1 : 0));
+                    next = i + 5;
+                }
+                else if (ArgumentLoaded(ins) is { } argument)
+                {
+                    stack.Add(argument < arguments.Length ? arguments[argument] : new PathValue(PathKind.Unknown));
+                }
+                else if (op == OpCodes.Isinst)
+                {
+                    PathValue tested = Pop();
+                    if (tested.Kind == PathKind.Listener)
+                    {
+                        if (ins.Operand is not Type gate || gate.IsValueType || gate.ContainsGenericParameters)
+                        {
+                            return "a type test on the listener against a value type or an open generic type";
+                        }
+                        outcome.Gates.Add(gate);
+                        stack.Add(new PathValue(PathKind.Null));
+                    }
+                    else
+                    {
+                        stack.Add(tested.Kind == PathKind.Null ? tested : new PathValue(PathKind.Unknown));
+                    }
+                }
+                else if (StoresLocal(ins, out int stored))
+                {
+                    locals[stored] = Pop();
+                }
+                else if (LocalLoaded(ins) is { } loaded)
+                {
+                    stack.Add(locals.TryGetValue(loaded, out PathValue local) ? local : new PathValue(PathKind.Unknown));
+                }
+                else if (op == OpCodes.Ldnull)
+                {
+                    stack.Add(new PathValue(PathKind.Null));
+                }
+                else if (op == OpCodes.Ldind_Ref && stack.Count > 0 && stack[^1].Kind == PathKind.NullAddress)
+                {
+                    Pop();
+                    stack.Add(new PathValue(PathKind.Null));
+                }
+                else if (IntConstant(ins) is { } constant)
+                {
+                    stack.Add(new PathValue(PathKind.Int, constant));
+                }
+                else if (op == OpCodes.Ceq || op == OpCodes.Cgt || op == OpCodes.Cgt_Un || op == OpCodes.Clt || op == OpCodes.Clt_Un)
+                {
+                    PathValue right = Pop(), left = Pop();
+                    stack.Add(PathCompare(op, left, right));
+                }
+                else if (op == OpCodes.Or || op == OpCodes.And)
+                {
+                    PathValue right = Pop(), left = Pop();
+                    stack.Add(PathLogic(op == OpCodes.Or, left, right));
+                }
+                else if (op == OpCodes.Dup)
+                {
+                    stack.Add(stack[^1]);
+                }
+                else if (op == OpCodes.Pop)
+                {
+                    Pop();
+                }
+                else if (op == OpCodes.Br || op == OpCodes.Br_S)
+                {
+                    next = at[(int)ins.Operand!];
+                }
+                else if (op == OpCodes.Brtrue || op == OpCodes.Brtrue_S || op == OpCodes.Brfalse || op == OpCodes.Brfalse_S
+                    || op == OpCodes.Beq || op == OpCodes.Beq_S || op == OpCodes.Bne_Un || op == OpCodes.Bne_Un_S)
+                {
+                    bool equality = op == OpCodes.Beq || op == OpCodes.Beq_S || op == OpCodes.Bne_Un || op == OpCodes.Bne_Un_S;
+                    PathValue condition = equality ? PathCompare(OpCodes.Ceq, Pop(), Pop()) : Pop();
+                    bool onTrue = op == OpCodes.Brtrue || op == OpCodes.Brtrue_S || op == OpCodes.Beq || op == OpCodes.Beq_S;
+                    bool? truth = PathTruth(condition);
+                    if (truth == null && condition.Kind == PathKind.Forkable)
+                    {
+                        // Rule G: both sides, the taken one later with copies of this path's state.
+                        if (++outcome.Paths > MaxPaths)
+                        {
+                            return "too many paths";
+                        }
+                        work.Push((at[(int)ins.Operand!], new List<PathValue>(stack), new Dictionary<int, PathValue>(locals), new HashSet<int>(visited)));
+                    }
+                    else if (truth == null)
+                    {
+                        return "a branch on a value it can't tell";
+                    }
+                    else
+                    {
+                        next = truth == onTrue ? at[(int)ins.Operand!] : i + 1;
+                    }
+                }
+                else if (op == OpCodes.Ret)
+                {
+                    PathValue? exitValue = stack.Count == 1 ? stack[0] : null;
+                    if (stack.Count > 1 || (exit != PathExit.Any && (exit == PathExit.Void) != (stack.Count == 0)))
+                    {
+                        return "an exit leaving another stack";
+                    }
+                    if (exit == PathExit.True && exitValue is not { Kind: PathKind.Int, Number: 1 })
+                    {
+                        return "a bool prefix returning anything but true on that path (it may skip the original)";
+                    }
+                    if (exit == PathExit.Result && exitValue is not { Kind: PathKind.Result })
+                    {
+                        return "a postfix returning anything but its __result on that path";
+                    }
+                    returned?.Add(exitValue);
+                    break;
+                }
+                else if (op == OpCodes.Call && ins.Operand is MethodInfo getter && TrivialStaticGetter(getter))
+                {
+                    // Rule G: the flag's value isn't known (a config read at run time): forkable.
+                    outcome.Callees.Add(getter);
+                    stack.Add(new PathValue(PathKind.Forkable));
+                }
+                else if (op == OpCodes.Call && ins.Operand is MethodInfo callee && depth < MaxInlineDepth && Inlinable(callee, outcome.Assembly))
+                {
+                    // Rule FW: the callee's own path, followed with the values passed (each of its paths must return; their values
+                    // continue this path: one value when they all agree, else unknown).
+                    int count = callee.GetParameters().Length;
+                    if (stack.Count < count)
+                    {
+                        return "a call with too few values";
+                    }
+                    var passed = new PathValue[count];
+                    for (int p = count - 1; p >= 0; p--)
+                    {
+                        passed[p] = Pop();
+                    }
+                    var results = new List<PathValue?>();
+                    if (EvaluatePath(callee, passed, PathExit.Any, nameTests, depth + 1, outcome, results) is { } inner)
+                    {
+                        return $"in {callee.Name}, which it calls: {inner}";
+                    }
+                    outcome.Callees.Add(callee);
+                    if (callee.ReturnType != typeof(void))
+                    {
+                        if (results.Count == 0 || results.Any(r => r == null))
+                        {
+                            return "a call returning no value it can follow";
+                        }
+                        PathValue first = results[0]!.Value;
+                        stack.Add(results.All(r => r!.Value == first) ? first : new PathValue(PathKind.Unknown));
+                    }
+                    else if (results.Any(r => r != null))
+                    {
+                        return "an exit leaving another stack";
+                    }
+                }
+                else
+                {
+                    return $"{op.Name} on the path (it may do something)";
+                }
+                i = next;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>Rule FW's bound: a patch's path follows calls this deep (the patch, its forwarded method, one more).</summary>
+    private const int MaxInlineDepth = 2;
+
+    /// <summary>
+    /// Rule FW (2026-11-18): a call <see cref="EvaluatePath"/> follows into: a static, non-generic method with a body, of the
+    /// patch's own assembly (the code read is the code run while nobody patches it: asked at each answer through the path's
+    /// callees, <see cref="PatchedPathCallee"/>), in a non-generic class whose initializer can't run at that call (none, or
+    /// <c>beforefieldinit</c>: CoreCLR runs it before a static field access, not at a call; the accesses compiled with the patch
+    /// are judged by <see cref="InitializersFree"/>, which reads this method too). BetterCharacterRelics' postfixes forwarding
+    /// <c>(__instance, ..., ref __result)</c> to a gated helper.
+    /// </summary>
+    private static bool Inlinable(MethodInfo callee, Assembly assembly)
+    {
+        try
+        {
+            return callee.IsStatic && !callee.IsGenericMethod && !callee.ContainsGenericParameters && callee.Module.Assembly == assembly
+                && callee.DeclaringType is { IsGenericType: false } owner
+                && (owner.TypeInitializer == null || (owner.Attributes & TypeAttributes.BeforeFieldInit) != 0)
+                && callee.GetMethodBody() != null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>The argument an <c>ldarg</c> (by value) loads, else null.</summary>
+    private static int? ArgumentLoaded(MethodFingerprint.Instruction ins) =>
+        ins.Op == OpCodes.Ldarg_0 ? 0 : ins.Op == OpCodes.Ldarg_1 ? 1 : ins.Op == OpCodes.Ldarg_2 ? 2 : ins.Op == OpCodes.Ldarg_3 ? 3
+        : (ins.Op == OpCodes.Ldarg_S || ins.Op == OpCodes.Ldarg) && ins.Operand is int n ? n : null;
+
+    /// <summary>Whether a branch on the value is taken as on true: null when it can't be told.</summary>
+    private static bool? PathTruth(PathValue value) => value.Kind switch
+    {
+        PathKind.Int => value.Number != 0,
+        PathKind.NonZero or PathKind.Listener => true,
+        PathKind.Null => false,
+        _ => null,
+    };
+
+    private static bool KnownNonZero(PathValue value) => value.Kind == PathKind.NonZero || (value.Kind == PathKind.Int && value.Number != 0);
+
+    private static bool KnownZero(PathValue value) => value.Kind == PathKind.Null || (value.Kind == PathKind.Int && value.Number == 0);
+
+    /// <summary><c>ceq</c>, <c>cgt</c>, <c>cgt.un</c>, <c>clt</c>, <c>clt.un</c> on two path values (unknown when either is).</summary>
+    private static PathValue PathCompare(OpCode op, PathValue left, PathValue right)
+    {
+        var unknown = new PathValue(PathKind.Unknown);
+        static PathValue Bool(bool b) => new(PathKind.Int, b ? 1 : 0);
+        if (left.Kind is PathKind.Unknown or PathKind.Result or PathKind.NullAddress || right.Kind is PathKind.Unknown or PathKind.Result or PathKind.NullAddress)
+        {
+            return unknown;
+        }
+        if (left.Kind == PathKind.Forkable || right.Kind == PathKind.Forkable)
+        {
+            return new PathValue(PathKind.Forkable);
+        }
+        bool leftWide = left.Kind is PathKind.Listener or PathKind.NonZero, rightWide = right.Kind is PathKind.Listener or PathKind.NonZero;
+        if (leftWide || rightWide)
+        {
+            // A non-null reference or a nonzero integer against null or zero: only the equality and the unsigned order are known.
+            if ((leftWide && rightWide) || !(KnownZero(left) || KnownZero(right)))
+            {
+                return unknown;
+            }
+            return op == OpCodes.Ceq ? Bool(false) : op == OpCodes.Cgt_Un ? Bool(leftWide) : op == OpCodes.Clt_Un ? Bool(rightWide) : unknown;
+        }
+        int x = left.Kind == PathKind.Null ? 0 : left.Number, y = right.Kind == PathKind.Null ? 0 : right.Number;
+        return Bool(op == OpCodes.Ceq ? x == y : op == OpCodes.Cgt ? x > y : op == OpCodes.Cgt_Un ? (uint)x > (uint)y
+            : op == OpCodes.Clt ? x < y : (uint)x < (uint)y);
+    }
+
+    /// <summary><c>or</c> / <c>and</c> on two path values: computed on constants, absorbing constants kept (an <c>or</c> with a nonzero one is nonzero).</summary>
+    private static PathValue PathLogic(bool or, PathValue left, PathValue right)
+    {
+        if (left.Kind == PathKind.Int && right.Kind == PathKind.Int)
+        {
+            return new PathValue(PathKind.Int, or ? left.Number | right.Number : left.Number & right.Number);
+        }
+        if (or && (KnownNonZero(left) || KnownNonZero(right)))
+        {
+            return new PathValue(PathKind.NonZero);
+        }
+        if (!or && ((left.Kind == PathKind.Int && left.Number == 0) || (right.Kind == PathKind.Int && right.Number == 0)))
+        {
+            return new PathValue(PathKind.Int, 0);
+        }
+        // Rule G: integers computed from a forkable value stay forkable (a branch on them explores both sides).
+        static bool Integer(PathValue v) => v.Kind is PathKind.Int or PathKind.NonZero or PathKind.Forkable;
+        return (left.Kind == PathKind.Forkable || right.Kind == PathKind.Forkable) && Integer(left) && Integer(right)
+            ? new PathValue(PathKind.Forkable) : new PathValue(PathKind.Unknown);
+    }
+
+    /// <summary>
+    /// Rule G (2026-11-18): a static getter that only reads a static field, <c>ldsfld F; ret</c> (or Roslyn's Debug form through a
+    /// local), no parameter, neither it nor its field generic, its class's and the field's class's initializers free
+    /// (<see cref="InitializerFree"/>: calling it runs nothing else, now or later). Its value is unknown (a mod's config flag, set
+    /// at run time: its initializer's constant isn't its value), so a branch on it explores both sides. Whether it is patched is
+    /// asked at each answer (<see cref="PatchedPathCallee"/>).
+    /// </summary>
+    private static bool TrivialStaticGetter(MethodInfo getter)
+    {
+        try
+        {
+            if (!getter.IsStatic || getter.IsGenericMethod || getter.ContainsGenericParameters || getter.ReturnType == typeof(void)
+                || getter.GetParameters().Length != 0 || getter.DeclaringType is not { IsGenericType: false } owner || getter.GetMethodBody() == null)
+            {
+                return false;
+            }
+            List<MethodFingerprint.Instruction> code = MethodFingerprint.Instructions(getter, strict: true).Where(c => c.Op != OpCodes.Nop).ToList();
+            if (code.Count == 0 || code[0].Op != OpCodes.Ldsfld || code[0].Operand is not FieldInfo { IsStatic: true } field
+                || field.DeclaringType is not { IsGenericType: false } holder)
+            {
+                return false;
+            }
+            bool plain = code.Count == 2 && code[1].Op == OpCodes.Ret;
+            // Debug: ldsfld F; stloc.k; br L; L: ldloc.k; ret.
+            bool debug = code.Count == 5 && StoresLocal(code[1], out int local) && (code[2].Op == OpCodes.Br || code[2].Op == OpCodes.Br_S)
+                && code[2].Operand is int target && target == code[3].Offset && LocalLoaded(code[3]) == local && code[4].Op == OpCodes.Ret;
+            return (plain || debug) && InitializerFree(owner) && InitializerFree(holder);
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -1544,7 +2131,13 @@ public static partial class PatchSafety
     /// without beforefieldinit runs its initializer at its first use: the patch's own class at the patch's first call (any
     /// call), so it must have none.
     /// </summary>
-    internal static bool InitializerFree(Type type)
+    internal static bool InitializerFree(Type type) => InitializerPure(type) && PatchedInitializerReliance(type) == null;
+
+    /// <summary>
+    /// <see cref="InitializerFree"/> without the methods its verdict relies on being unpatched (that part changes with other mods'
+    /// patches: asked at each answer, <see cref="PatchedInitializerReliance"/>): what cached verdicts may hold.
+    /// </summary>
+    private static bool InitializerPure(Type type)
     {
         try
         {
@@ -1563,27 +2156,68 @@ public static partial class PatchSafety
     /// writes, whose static method it calls or whose object it creates: compiling the patch method (at its first call, which
     /// this mod can delay or remove) may run any of their beforefieldinit initializers. A class without beforefieldinit there
     /// runs its initializer at its first access, on the code path that makes it (the gated path, which runs as without this
-    /// mod): it stands. Cached per patch method.
+    /// mod): it stands. Rule I (2026-11-18): a static call or <c>newobj</c> whose callee is itself in that scanned code (its own
+    /// body read, same assembly, within the depth) doesn't count for the callee's class: CoreCLR runs a beforefieldinit
+    /// initializer before the first access to one of its static fields, not at a call or a construction (what P2 already
+    /// assumed), and the callee's own static field accesses are in the scan. A callee not scanned (another assembly, or past the
+    /// depth) still counts its class, and static field accesses always count. The patch's own class keeps its rule. Cached per
+    /// patch method.
     /// </summary>
     internal static bool InitializersFree(MethodInfo patch) => InitializerRefusal(patch) == null;
 
-    /// <summary>Why <see cref="InitializersFree"/> fails (for the log), or null when it holds.</summary>
-    internal static string? InitializerRefusal(MethodInfo patch) => _initializerRefusals.GetOrAdd(patch.MethodHandle, _ =>
+    /// <summary>
+    /// Why <see cref="InitializersFree"/> fails (for the log), or null when it holds: the cached verdict, then (each answer) the
+    /// methods the judged initializers rely on being unpatched (the initializer extensions' lookups and constructors).
+    /// </summary>
+    internal static string? InitializerRefusal(MethodInfo patch)
     {
+        if (ComputedInitializerRefusal(patch) is { } refusal)
+        {
+            return refusal;
+        }
+        if (_initializerJudged.TryGetValue(patch.MethodHandle, out Type[]? judged))
+        {
+            foreach (Type type in judged)
+            {
+                if (PatchedInitializerReliance(type) is { } patched)
+                {
+                    return $"the static initializer of {type.Name} it may run relies on {patched.DeclaringType?.Name}.{patched.Name}, which is patched";
+                }
+            }
+        }
+        return null;
+    }
+
+    /// <summary>Per patch method, the classes whose initializers its verdict judged free (their reliances are asked at each answer).</summary>
+    private static readonly ConcurrentDictionary<RuntimeMethodHandle, Type[]> _initializerJudged = new();
+
+    private static string? ComputedInitializerRefusal(MethodInfo patch) => _initializerRefusals.GetOrAdd(patch.MethodHandle, _ =>
+    {
+        var judged = new List<Type>();
         try
         {
             if (patch.DeclaringType is not { } own)
             {
                 return "its class can't be read";
             }
-            if (!InitializerFree(own))
+            judged.Add(own);
+            _initializerJudged[patch.MethodHandle] = judged.ToArray();
+            // InitializerPure here, the reliances asked at each answer (InitializerRefusal): this verdict is cached.
+            if (!InitializerPure(own))
             {
                 return $"its class {own.Name} has a static initializer that could run at another time with this mod (when the runtime compiles or first calls the patch, which this mod can delay or remove) and could do something different then";
             }
-            foreach (MethodBase code in CompiledWith(patch))
+            List<MethodBase> compiled = CompiledWith(patch);
+            var scanned = new HashSet<MethodBase>(compiled);
+            foreach (MethodBase code in compiled)
             {
                 foreach (MemberInfo member in MethodFingerprint.UsedMembers(code))
                 {
+                    // Rule I: a call into code read here runs no beforefieldinit initializer by itself (its field accesses are read).
+                    if (member is MethodBase called && scanned.Contains(called))
+                    {
+                        continue;
+                    }
                     Type? reached = member switch
                     {
                         FieldInfo { IsStatic: true } field => field.DeclaringType,
@@ -1596,12 +2230,14 @@ public static partial class PatchSafety
                         continue;
                     }
                     Type definition = reached.IsGenericType ? reached.GetGenericTypeDefinition() : reached;
-                    if (definition.TypeInitializer != null && (definition.Attributes & TypeAttributes.BeforeFieldInit) != 0 && !InitializerFree(definition))
+                    judged.Add(definition);
+                    if (definition.TypeInitializer != null && (definition.Attributes & TypeAttributes.BeforeFieldInit) != 0 && !InitializerPure(definition))
                     {
                         return $"it reaches {definition.Name}, whose static initializer (beforefieldinit) could run at another time with this mod (when the runtime compiles the patch, which this mod can delay or remove) and could do something different then";
                     }
                 }
             }
+            _initializerJudged[patch.MethodHandle] = judged.Distinct().ToArray();
             return null;
         }
         catch (Exception e)
@@ -1735,9 +2371,18 @@ public static partial class PatchSafety
     /// for two fields of one name in one class, which emitted IL alone can make), and
     /// <c>Type.GetField</c> on a <c>typeof</c>: RitsuLib's <c>OwnerField = AccessTools.Field(...)</c>), locals (<c>stloc</c>,
     /// <c>ldloc</c>; <c>ldloca</c> only feeds instructions this list allows), <c>dup</c>/<c>pop</c>/<c>box</c>, its own static
-    /// fields (<c>stsfld</c>, <c>ldsfld</c>), and <c>ret</c>. Refused: branches, any other call, <c>AccessTools.TypeByName</c>
-    /// (assembly-resolve handlers would run at another time), method and property lookups (<c>AccessTools.Method</c>,
-    /// <c>Type.GetMethod</c>, <c>GetProperty</c>: an ambiguous name throws), any call on a value that may be null, collection
+    /// fields (<c>stsfld</c>, <c>ldsfld</c>), and <c>ret</c>. The extensions of 2026-11-18, each read from a symbolic stack
+    /// (<see cref="InitStack"/>): R2, <c>AccessTools.Method(Type, string, null, null)</c>, <c>AccessTools.Property(Type, string)</c>,
+    /// <c>AccessTools.PropertySetter(Type, string)</c> and <c>Type.GetMethod</c> on a <c>typeof</c> with constant arguments and
+    /// <c>typeof</c>-filled type arrays, this mod repeating the very lookup at judge time (deterministic over loaded types: an
+    /// ambiguous name throws then too, and is refused), the lookup methods unpatched at each answer; T, <c>?? throw new
+    /// Missing*Exception(...)</c> right after a lookup so repeated and found (<see cref="DeadThrow"/>); DEC, constant
+    /// <c>Decimal</c> constructors (a scale of 28 at most); R1, <c>new C()</c> of a class whose constructor only stores pure
+    /// values in its own fields (<see cref="PureConstructor"/>); R1g, BaseLib's <c>SpireField</c>/<c>NotNullSpireField</c>
+    /// constructors (fingerprinted per BaseLib version) taking a static-lambda delegate (<c>ldsfld &lt;&gt;c::&lt;&gt;9; ldftn;
+    /// newobj Func</c>). Refused: branches (T's aside), any other call, <c>AccessTools.TypeByName</c>
+    /// (assembly-resolve handlers would run at another time), lookups with computed arguments, <c>FieldRefAccess</c> (it emits
+    /// code), <c>CopyOnClone</c>, any call on a value that may be null, collection
     /// methods with arguments (<c>Add</c> throws on a duplicate key, <c>Sort</c> runs comparers), collections of other types
     /// (their <c>Equals</c>/<c>GetHashCode</c>/<c>CompareTo</c> are another mod's code). False when the IL can't be read.
     /// </summary>
@@ -1748,7 +2393,34 @@ public static partial class PatchSafety
         {
             return true;
         }
+        // R1 judges the initializer of a class it constructs: a cycle (A's initializer constructs B, whose initializer constructs
+        // A) is refused instead of recursing (the cached false spreads to the whole cycle).
+        HashSet<Type> judging = _judgingInitializers ??= new HashSet<Type>();
+        if (!judging.Add(type))
+        {
+            return false;
+        }
+        try
+        {
+            return PureInitializerCode(type, initializer);
+        }
+        finally
+        {
+            judging.Remove(type);
+        }
+    }
+
+    /// <summary>The classes whose initializer <see cref="PureInitializer"/> is judging on this thread (R1's cycle guard).</summary>
+    [ThreadStatic]
+    private static HashSet<Type>? _judgingInitializers;
+
+    private static bool PureInitializerCode(Type type, ConstructorInfo initializer)
+    {
         List<MethodFingerprint.Instruction> code = MethodFingerprint.Instructions(initializer, strict: true);
+        Dictionary<int, int> at = IndexByOffset(code);
+        // The initializer extensions of 2026-11-18 read the values reaching a call: a symbolic stack of the straight-line code.
+        var sim = new InitStack();
+        var relies = new List<MethodBase>();
         // A3 (re-audit round 2): the array being filled (from its newarr): its element type and length, for the stores into it.
         Type? arrayElement = null;
         int arrayLength = 0;
@@ -1756,18 +2428,31 @@ public static partial class PatchSafety
         {
             MethodFingerprint.Instruction ins = code[i];
             OpCode op = ins.Op;
+            // T: `?? throw new Missing*Exception(...)` right after a lookup this mod repeated and found: the throw is dead code.
+            if (op == OpCodes.Brtrue || op == OpCodes.Brtrue_S)
+            {
+                if (DeadThrow(code, at, i, sim) is not { } after)
+                {
+                    return false;
+                }
+                sim.Apply(ins);
+                i = after - 1;
+                continue;
+            }
             if (op.Name!.StartsWith("stelem", StringComparison.Ordinal))
             {
                 if (!ArrayStore(code, i, arrayElement, arrayLength))
                 {
                     return false;
                 }
+                sim.Apply(ins);
                 continue;
             }
             if (op == OpCodes.Nop || op == OpCodes.Ret || op == OpCodes.Dup || op == OpCodes.Pop || op == OpCodes.Ldnull || op == OpCodes.Ldstr
                 || op == OpCodes.Ldtoken || op.Name.StartsWith("ldc.", StringComparison.Ordinal)
                 || op.Name.StartsWith("stloc", StringComparison.Ordinal) || op.Name.StartsWith("ldloc", StringComparison.Ordinal) || op == OpCodes.Box)
             {
+                sim.Apply(ins);
                 continue;
             }
             if (op == OpCodes.Newarr && ins.Operand is Type element && IsRuntimeType(element))
@@ -1780,6 +2465,7 @@ public static partial class PatchSafety
                 }
                 arrayElement = element;
                 arrayLength = size.Value;
+                sim.Apply(ins);
                 continue;
             }
             // B2 (re-audit round 2): Roslyn's closure class for non-capturing lambdas (<>c): `newobj <>c::.ctor(); stsfld <>9`, its
@@ -1787,24 +2473,263 @@ public static partial class PatchSafety
             if (op == OpCodes.Newobj && ins.Operand is ConstructorInfo own && own.DeclaringType == type && own.GetParameters().Length == 0
                 && TrivialConstructor(own))
             {
+                sim.Apply(ins);
                 continue;
             }
             if ((op == OpCodes.Stsfld || op == OpCodes.Ldsfld) && ins.Operand is FieldInfo field && field.DeclaringType == type)
             {
+                sim.Apply(ins);
                 continue;
             }
             if (op == OpCodes.Ldsfld && ins.Operand is FieldInfo { IsInitOnly: true } runtimeField && runtimeField.DeclaringType is { } holder
                 && holder.Assembly == typeof(object).Assembly && !holder.IsGenericType)
             {
+                sim.Apply(ins);
                 continue; // Type.EmptyTypes, string.Empty: the runtime's own, already initialized.
             }
-            if ((op == OpCodes.Call || op == OpCodes.Callvirt || op == OpCodes.Newobj) && ins.Operand is MethodBase called && PureCall(code, i, called))
+            // R1g: the singleton of Roslyn's closure class nested in this type (`ldsfld <>c::<>9`, its initializer pure), and a
+            // function pointer to one of its lambdas (ldftn: nothing runs), for a static-lambda delegate.
+            if (op == OpCodes.Ldsfld && ins.Operand is FieldInfo { IsStatic: true, Name: "<>9" } singleton && ClosureOf(type, singleton.DeclaringType))
             {
+                sim.Apply(ins);
+                continue;
+            }
+            if (op == OpCodes.Ldftn && ins.Operand is MethodInfo { IsStatic: false } lambda && ClosureOf(type, lambda.DeclaringType))
+            {
+                sim.Apply(ins);
+                continue;
+            }
+            if ((op == OpCodes.Call || op == OpCodes.Callvirt || op == OpCodes.Newobj) && ins.Operand is MethodBase called
+                && PureCall(code, i, called, sim, relies, out object? pushed))
+            {
+                sim.Apply(ins, pushed);
                 continue;
             }
             return false;
         }
+        _initializerRelies[type] = relies.Distinct().ToArray();
         return true;
+    }
+
+    /// <summary>
+    /// The methods a pure initializer's verdict relies on being unpatched (the initializer extensions' lookups and constructors:
+    /// AccessTools.Method, the constructor run): asked at each answer (<see cref="InitializerFree"/>, <see cref="InitializerRefusal"/>).
+    /// </summary>
+    private static readonly ConcurrentDictionary<Type, MethodBase[]> _initializerRelies = new();
+
+    /// <summary>A method the type's initializer verdict relies on that anyone patches now, or null.</summary>
+    private static MethodBase? PatchedInitializerReliance(Type type)
+    {
+        if (!_initializerRelies.TryGetValue(type, out MethodBase[]? relies))
+        {
+            return null;
+        }
+        foreach (MethodBase method in relies)
+        {
+            if (Harmony.GetPatchInfo(method) is { } info && AllPatches(info).Any())
+            {
+                return method;
+            }
+            // A method of a constructed generic class (R1g's SpireField constructors): another instantiation patched may share its
+            // code (reference-type arguments share one compiled body), so any patched method of the same definition counts.
+            if (method.DeclaringType is { IsGenericType: true }
+                && Harmony.GetAllPatchedMethods().Any(p => p.MetadataToken == method.MetadataToken && p.Module == method.Module))
+            {
+                return method;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>Roslyn's closure class of non-capturing lambdas (<c>&lt;&gt;c</c>) nested in <paramref name="owner"/>, its initializer pure.</summary>
+    private static bool ClosureOf(Type owner, Type? closure) =>
+        closure != null && closure.DeclaringType == owner && closure.Name == "<>c" && !closure.IsGenericTypeDefinition
+        && closure.IsDefined(typeof(CompilerGeneratedAttribute), false) && _pureInitializers.GetOrAdd(closure, PureInitializer);
+
+    /// <summary>
+    /// What the initializer extensions read of the values reaching an instruction: a symbolic stack over the straight-line code
+    /// (no branch but T's dead throw). A value is a constant (int, string), <see cref="Null"/>, a <c>Type</c> (a <c>typeof</c>), a
+    /// <see cref="TypeArray"/> (a <c>Type[]</c> filled with <c>typeof</c>s), a <see cref="Found"/> lookup result, or
+    /// <see cref="Unknown"/>. Any instruction whose stack effect it can't tell makes it <see cref="Broken"/> (every value unknown
+    /// then: the extensions refuse, the older rules don't read it).
+    /// </summary>
+    private sealed class InitStack
+    {
+        public static readonly object Unknown = new();
+        public static readonly object Null = new();
+
+        public sealed record Token(object Operand);
+
+        public sealed class TypeArray
+        {
+            public TypeArray(int length) => Types = new Type?[length];
+
+            public readonly Type?[] Types;
+        }
+
+        /// <summary>A lookup this mod repeated at judge time: what it found (null: nothing).</summary>
+        public sealed record Found(object? Member);
+
+        private readonly List<object> _values = new();
+        private readonly Dictionary<int, object> _locals = new();
+
+        public bool Broken { get; private set; }
+
+        /// <summary>The value <paramref name="depth"/> below the top (0: the top).</summary>
+        public object Peek(int depth) => Broken || _values.Count <= depth ? Unknown : _values[_values.Count - 1 - depth];
+
+        private object Pop()
+        {
+            if (_values.Count == 0)
+            {
+                Broken = true;
+                return Unknown;
+            }
+            object top = _values[^1];
+            _values.RemoveAt(_values.Count - 1);
+            return top;
+        }
+
+        /// <summary>The instruction's stack effect; <paramref name="pushed"/>: the value it leaves (else what's known of it, or unknown).</summary>
+        public void Apply(MethodFingerprint.Instruction ins, object? pushed = null)
+        {
+            if (Broken)
+            {
+                return;
+            }
+            OpCode op = ins.Op;
+            if (op == OpCodes.Dup)
+            {
+                _values.Add(Peek(0));
+                return;
+            }
+            if (StoresLocal(ins, out int stored))
+            {
+                _locals[stored] = Pop();
+                return;
+            }
+            if (LocalLoaded(ins) is { } loaded)
+            {
+                _values.Add(_locals.TryGetValue(loaded, out object? local) ? local : Unknown);
+                return;
+            }
+            if (op == OpCodes.Stelem_Ref && Peek(2) is TypeArray array && Peek(1) is int index && Peek(0) is Type stored2 && index >= 0 && index < array.Types.Length)
+            {
+                array.Types[index] = stored2;
+            }
+            int pops;
+            int pushes;
+            if (op == OpCodes.Call || op == OpCodes.Callvirt || op == OpCodes.Newobj)
+            {
+                if (ins.Operand is not MethodBase method)
+                {
+                    Broken = true;
+                    return;
+                }
+                pops = method.GetParameters().Length + (op != OpCodes.Newobj && !method.IsStatic ? 1 : 0);
+                pushes = op == OpCodes.Newobj || (method is MethodInfo info && info.ReturnType != typeof(void)) ? 1 : 0;
+            }
+            else
+            {
+                pops = op.StackBehaviourPop switch
+                {
+                    StackBehaviour.Pop0 => 0,
+                    StackBehaviour.Pop1 or StackBehaviour.Popi or StackBehaviour.Popref => 1,
+                    StackBehaviour.Pop1_pop1 or StackBehaviour.Popi_pop1 or StackBehaviour.Popi_popi or StackBehaviour.Popi_popi8
+                        or StackBehaviour.Popi_popr4 or StackBehaviour.Popi_popr8 or StackBehaviour.Popref_pop1 or StackBehaviour.Popref_popi => 2,
+                    StackBehaviour.Popi_popi_popi or StackBehaviour.Popref_popi_popi or StackBehaviour.Popref_popi_popi8 or StackBehaviour.Popref_popi_popr4
+                        or StackBehaviour.Popref_popi_popr8 or StackBehaviour.Popref_popi_popref or StackBehaviour.Popref_popi_pop1 => 3,
+                    StackBehaviour.Varpop when op == OpCodes.Ret => 0,
+                    _ => -1,
+                };
+                pushes = op.StackBehaviourPush switch
+                {
+                    StackBehaviour.Push0 => 0,
+                    StackBehaviour.Push1 or StackBehaviour.Pushi or StackBehaviour.Pushi8 or StackBehaviour.Pushr4 or StackBehaviour.Pushr8
+                        or StackBehaviour.Pushref => 1,
+                    StackBehaviour.Push1_push1 => 2,
+                    _ => -1,
+                };
+            }
+            if (pops < 0 || pushes < 0)
+            {
+                Broken = true;
+                return;
+            }
+            for (int p = 0; p < pops; p++)
+            {
+                Pop();
+            }
+            object value = pushed ?? (op == OpCodes.Ldstr && ins.Operand is string text ? text
+                : op == OpCodes.Ldnull ? Null
+                : op == OpCodes.Ldtoken && ins.Operand != null ? new Token(ins.Operand)
+                : op == OpCodes.Newarr && ins.Operand is Type element && element == typeof(Type) && _lastSize is { } size ? new TypeArray(size)
+                : IntConstant(ins) is { } constant ? constant
+                : Unknown);
+            _lastSize = IntConstant(ins);
+            for (int p = 0; p < pushes; p++)
+            {
+                _values.Add(p == pushes - 1 ? value : Unknown);
+            }
+        }
+
+        private int? _lastSize;
+    }
+
+    /// <summary>
+    /// T (2026-11-18): at a <c>brtrue</c> right after <c>dup</c> of a lookup this mod repeated and found non-null, the C# form of
+    /// <c>?? throw new Missing*Exception(...)</c>: the branch is always taken, its fall-through is dead code (<c>pop</c>, then only
+    /// <c>ldtoken</c>, <c>typeof</c>, <c>Type.FullName</c>/<c>Name</c>, <c>ldstr</c>, <c>string.Concat</c>/<c>Format</c>, the
+    /// constructor of a runtime <c>Missing*Exception</c>, and <c>throw</c> right before the target: nothing there the JIT could
+    /// run an initializer for). Returns the target's index, or null.
+    /// </summary>
+    private static int? DeadThrow(List<MethodFingerprint.Instruction> code, Dictionary<int, int> at, int branch, InitStack sim)
+    {
+        if (branch == 0 || code[branch - 1].Op != OpCodes.Dup || sim.Peek(0) is not InitStack.Found { Member: not null }
+            || code[branch].Operand is not int offset || !at.TryGetValue(offset, out int target) || target <= branch + 2)
+        {
+            return null;
+        }
+        if (code[branch + 1].Op != OpCodes.Pop || code[target - 1].Op != OpCodes.Throw)
+        {
+            return null;
+        }
+        bool exception = false;
+        for (int i = branch + 2; i < target - 1; i++)
+        {
+            MethodFingerprint.Instruction ins = code[i];
+            OpCode op = ins.Op;
+            if (op == OpCodes.Nop || op == OpCodes.Ldstr || op == OpCodes.Ldtoken)
+            {
+                continue;
+            }
+            if (op == OpCodes.Call && ins.Operand is MethodInfo { Name: "GetTypeFromHandle" } handle && handle.DeclaringType == typeof(Type))
+            {
+                continue;
+            }
+            if (op == OpCodes.Callvirt && ins.Operand is MethodInfo { Name: "get_FullName" or "get_Name" } name
+                && (name.DeclaringType == typeof(Type) || name.DeclaringType == typeof(MemberInfo)))
+            {
+                continue;
+            }
+            if (op == OpCodes.Call && ins.Operand is MethodInfo { IsStatic: true, Name: "Concat" or "Format" } text && text.DeclaringType == typeof(string))
+            {
+                continue;
+            }
+            if (op == OpCodes.Newobj && ins.Operand is ConstructorInfo ctor && ctor.DeclaringType is { } thrown && thrown.Assembly == typeof(object).Assembly
+                && thrown.Name.StartsWith("Missing", StringComparison.Ordinal) && typeof(Exception).IsAssignableFrom(thrown) && i == target - 2)
+            {
+                exception = true;
+                continue;
+            }
+            return null;
+        }
+        // Every branch into the dead block refused: no instruction there may be another branch's target.
+        if (!exception || BranchTargets(code, at).Any(t => t > branch && t < target))
+        {
+            return null;
+        }
+        return target;
     }
 
     /// <summary>
@@ -1880,18 +2805,32 @@ public static partial class PatchSafety
         }
     }
 
-    /// <summary>A call <see cref="PureInitializer"/> allows at <paramref name="at"/> (its arguments one instruction each).</summary>
-    private static bool PureCall(List<MethodFingerprint.Instruction> code, int at, MethodBase called)
+    /// <summary>
+    /// A call <see cref="PureInitializer"/> allows at <paramref name="at"/> (its arguments one instruction each, or read from
+    /// <paramref name="sim"/> for the extensions). <paramref name="pushed"/>: what it leaves when known (a <c>typeof</c>'s type, a
+    /// repeated lookup's result); <paramref name="relies"/> gets the methods the verdict needs unpatched.
+    /// </summary>
+    private static bool PureCall(List<MethodFingerprint.Instruction> code, int at, MethodBase called, InitStack sim, List<MethodBase> relies, out object? pushed)
     {
+        pushed = null;
         Type? owner = called.DeclaringType;
         if (owner == null)
         {
             return false;
         }
         ParameterInfo[] parameters = called.GetParameters();
+        if (InitializerExtension(code, at, called, owner, parameters, sim, relies, out pushed) is { } extension)
+        {
+            return extension;
+        }
         // typeof and the token lookups: a valid token from ldtoken never fails, but (A3, re-audit round 2) the one-argument
         // GetMethodFromHandle throws for a method of a generic type: only with its type's handle then.
-        if ((owner == typeof(Type) && called.Name == "GetTypeFromHandle") || (owner == typeof(RuntimeHelpers) && called.Name == "InitializeArray"))
+        if (owner == typeof(Type) && called.Name == "GetTypeFromHandle")
+        {
+            pushed = sim.Peek(0) is InitStack.Token { Operand: Type token } ? token : null;
+            return true;
+        }
+        if (owner == typeof(RuntimeHelpers) && called.Name == "InitializeArray")
         {
             return true;
         }
@@ -1915,6 +2854,19 @@ public static partial class PatchSafety
         if (owner == typeof(AccessTools) && called.Name is "Field" or "DeclaredField" && called.IsStatic
             && parameters.Length == 2 && parameters[0].ParameterType == typeof(Type) && parameters[1].ParameterType == typeof(string))
         {
+            // Repeated for T only (a field found non-null): the rule above stands without it.
+            if (sim.Peek(1) is Type fieldOwner && sim.Peek(0) is string fieldName)
+            {
+                try
+                {
+                    pushed = new InitStack.Found(called.Invoke(null, new object[] { fieldOwner, fieldName }));
+                    relies.Add(called);
+                }
+                catch
+                {
+                    pushed = null;
+                }
+            }
             return true;
         }
         if (!IsRuntimeAssembly(owner))
@@ -1964,6 +2916,228 @@ public static partial class PatchSafety
             || (owner == typeof(Array) && called.Name == "Empty" && called.GetGenericArguments().All(IsRuntimeType)));
     }
 
+    /// <summary>
+    /// The initializer extensions of 2026-11-18 (R2, PropertySetter, Type.GetMethod, DEC, R1, R1g; see <see cref="PureInitializer"/>):
+    /// true or false when the call is one of them, null when it isn't (the older rules decide).
+    /// </summary>
+    private static bool? InitializerExtension(List<MethodFingerprint.Instruction> code, int at, MethodBase called, Type owner, ParameterInfo[] parameters,
+        InitStack sim, List<MethodBase> relies, out object? pushed)
+    {
+        pushed = null;
+        // R2 and PropertySetter: HarmonyLib's lookups by a typeof and a constant name, repeated here (the loaded 0Harmony's AccessTools).
+        if (owner == typeof(AccessTools) && called.IsStatic && called is MethodInfo lookup
+            && (called.Name is "Property" or "PropertySetter" && parameters.Length == 2 || called.Name == "Method" && parameters.Length == 4)
+            && parameters[0].ParameterType == typeof(Type) && parameters[1].ParameterType == typeof(string))
+        {
+            int extra = parameters.Length - 2;
+            if (sim.Peek(extra + 1) is not Type lookedIn || sim.Peek(extra) is not string name
+                || (extra == 2 && (sim.Peek(1) != InitStack.Null || sim.Peek(0) != InitStack.Null
+                    || parameters[2].ParameterType != typeof(Type[]) || parameters[3].ParameterType != typeof(Type[]))))
+            {
+                return false;
+            }
+            object?[] arguments = extra == 2 ? new object?[] { lookedIn, name, null, null } : new object?[] { lookedIn, name };
+            return Repeat(lookup, null, arguments, relies, out pushed);
+        }
+        // Type.GetMethod on a typeof, every argument known: a name, constant flags, no binder or modifiers, typeof-filled types.
+        if (!called.IsStatic && called.Name == "GetMethod" && called is MethodInfo getMethod
+            && (owner == typeof(Type) || (owner.FullName == "System.RuntimeType" && IsRuntimeAssembly(owner)) || owner == typeof(TypeInfo)))
+        {
+            if (sim.Peek(parameters.Length) is not Type receiver)
+            {
+                return false;
+            }
+            var arguments = new object?[parameters.Length];
+            for (int p = 0; p < parameters.Length; p++)
+            {
+                object value = sim.Peek(parameters.Length - 1 - p);
+                Type type = parameters[p].ParameterType;
+                arguments[p] = type == typeof(string) && value is string text ? text
+                    : type == typeof(BindingFlags) && value is int flags ? (BindingFlags)flags
+                    : (type == typeof(Binder) || type == typeof(ParameterModifier[])) && value == InitStack.Null ? null
+                    : type == typeof(Type[]) && value is InitStack.TypeArray array && array.Types.All(t => t != null) ? array.Types.ToArray()
+                    : InitStack.Unknown;
+                if (arguments[p] == InitStack.Unknown)
+                {
+                    return false;
+                }
+            }
+            return Repeat(getMethod, receiver, arguments, relies, out pushed);
+        }
+        // DEC: new decimal(int), new decimal(lo, mid, hi, negative, scale) with constants, the scale 28 at most.
+        if (called is ConstructorInfo && owner == typeof(decimal))
+        {
+            if (parameters.Length == 1 && parameters[0].ParameterType == typeof(int))
+            {
+                return sim.Peek(0) is int;
+            }
+            return parameters.Length == 5 && Enumerable.Range(0, 5).All(d => sim.Peek(d) is int) && sim.Peek(0) is int scale && scale is >= 0 and <= 28
+                && parameters[3].ParameterType == typeof(bool) && parameters[4].ParameterType == typeof(byte);
+        }
+        // R1g: a static-lambda delegate (its target the <>c singleton, the function pointer just loaded).
+        if (called is ConstructorInfo && typeof(MulticastDelegate).IsAssignableFrom(owner) && IsRuntimeAssembly(owner)
+            && parameters.Length == 2 && parameters[0].ParameterType == typeof(object) && parameters[1].ParameterType == typeof(IntPtr))
+        {
+            return at >= 2 && code[at - 1].Op == OpCodes.Ldftn && code[at - 2].Op == OpCodes.Ldsfld;
+        }
+        // R1g: BaseLib's SpireField / NotNullSpireField constructors, as fingerprinted (the delegate argument just built).
+        if (called is ConstructorInfo spireField && SpireFieldConstructor(spireField))
+        {
+            relies.Add(called);
+            return parameters.Length == 1 && at >= 1 && code[at - 1].Op == OpCodes.Newobj && code[at - 1].Operand is ConstructorInfo made
+                && typeof(MulticastDelegate).IsAssignableFrom(made.DeclaringType);
+        }
+        // R1: new C() of a class of a mod whose constructor only stores pure values in its own fields.
+        if (called is ConstructorInfo constructor && !IsRuntimeAssembly(owner))
+        {
+            if (parameters.Length != 0 || !PureConstructor(constructor))
+            {
+                return false;
+            }
+            relies.Add(called);
+            // The constructed class's initializer runs with it: what its verdict relies on, this one does too.
+            if (_initializerRelies.TryGetValue(owner, out MethodBase[]? inner))
+            {
+                relies.AddRange(inner);
+            }
+            return true;
+        }
+        return null;
+    }
+
+    /// <summary>Calls the lookup as the initializer will (deterministic over loaded types): false when it throws; its result kept for T.</summary>
+    private static bool Repeat(MethodInfo lookup, object? receiver, object?[] arguments, List<MethodBase> relies, out object? pushed)
+    {
+        pushed = null;
+        try
+        {
+            pushed = new InitStack.Found(lookup.Invoke(receiver, arguments));
+            relies.Add(lookup);
+            return true;
+        }
+        catch
+        {
+            return false; // An ambiguous name, or anything else: it would throw in the initializer too.
+        }
+    }
+
+    /// <summary>
+    /// The fingerprints of BaseLib's <c>SpireField&lt;TKey, TVal&gt;</c> and <c>NotNullSpireField&lt;TKey, TVal&gt;</c> constructors
+    /// (both overloads: a <c>Func&lt;TVal&gt;</c>, wrapped in a closure, or a <c>Func&lt;TKey, TVal&gt;</c>), per reviewed BaseLib
+    /// version (3.4.8): each only creates its <c>ConditionalWeakTable</c>, calls object's constructor and stores the delegate
+    /// (nothing runs it). Another version's code (another fingerprint) is refused until reviewed.
+    /// </summary>
+    private static readonly HashSet<string> SpireFieldConstructors = new(StringComparer.Ordinal)
+    {
+        "F940B8FED7377251", "ADCC45EC8E512CEC", // SpireField`2 (Func<TVal>), (Func<TKey, TVal>), BaseLib 3.4.8
+        "8AB5F592AEA23E6A", "E223F1A14AFA2F85", // NotNullSpireField`2, the same overloads, BaseLib 3.4.8
+    };
+
+    private static readonly ConcurrentDictionary<ConstructorInfo, bool> _spireFieldConstructors = new();
+
+    /// <summary>A constructor of BaseLib's SpireField or NotNullSpireField (by its open definition) whose code is a reviewed version's.</summary>
+    private static bool SpireFieldConstructor(ConstructorInfo constructor) => _spireFieldConstructors.GetOrAdd(constructor, static c =>
+    {
+        try
+        {
+            if (c.DeclaringType is not { IsGenericType: true } closed || closed.Assembly.GetName().Name != "BaseLib")
+            {
+                return false;
+            }
+            Type definition = closed.GetGenericTypeDefinition();
+            if (definition.FullName is not ("BaseLib.Utils.SpireField`2" or "BaseLib.Utils.NotNullSpireField`2"))
+            {
+                return false;
+            }
+            ConstructorInfo? open = definition.GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                .FirstOrDefault(d => d.MetadataToken == c.MetadataToken);
+            return open != null && SpireFieldConstructors.Contains(MethodFingerprint.Of(open)) && definition.TypeInitializer == null;
+        }
+        catch
+        {
+            return false;
+        }
+    });
+
+    /// <summary>
+    /// R1 (2026-11-18): a parameterless constructor of a non-generic, non-abstract class of a mod, its base <c>object</c>, no
+    /// finalizer, its own initializer none or pure (it runs with it), whose code only stores values <see cref="PureInitializer"/>'s
+    /// rules allow (constants, empty runtime collections, runtime comparers, arrays of constants) in its own instance fields
+    /// (<c>ldarg.0; value; stfld</c>), and calls <c>object</c>'s constructor. Unpatched at each answer (the caller records it).
+    /// SynergyMod's <c>new SynergyHandlerRegistry()</c>: empty dictionaries and sets.
+    /// </summary>
+    private static bool PureConstructor(ConstructorInfo constructor)
+    {
+        try
+        {
+            if (constructor.DeclaringType is not { } type || type.IsGenericType || type.IsAbstract || !type.IsClass || type.BaseType != typeof(object)
+                || type.GetMethod("Finalize", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly) != null
+                || constructor.IsStatic || !_pureInitializers.GetOrAdd(type, PureInitializer))
+            {
+                return false;
+            }
+            List<MethodFingerprint.Instruction> code = MethodFingerprint.Instructions(constructor, strict: true);
+            var sim = new InitStack();
+            var relies = new List<MethodBase>();
+            Type? arrayElement = null;
+            int arrayLength = 0;
+            bool baseCalled = false;
+            for (int i = 0; i < code.Count; i++)
+            {
+                MethodFingerprint.Instruction ins = code[i];
+                OpCode op = ins.Op;
+                if (op == OpCodes.Nop || op == OpCodes.Ret || op == OpCodes.Ldarg_0 || op == OpCodes.Dup || op == OpCodes.Pop || op == OpCodes.Ldnull
+                    || op == OpCodes.Ldstr || op == OpCodes.Ldtoken || op.Name!.StartsWith("ldc.", StringComparison.Ordinal) || op == OpCodes.Box)
+                {
+                    sim.Apply(ins);
+                    continue;
+                }
+                if (op.Name.StartsWith("stelem", StringComparison.Ordinal) && ArrayStore(code, i, arrayElement, arrayLength))
+                {
+                    sim.Apply(ins);
+                    continue;
+                }
+                if (op == OpCodes.Newarr && ins.Operand is Type element && IsRuntimeType(element) && i > 0 && IntConstant(code[i - 1]) is int size and >= 0 and <= 1 << 20)
+                {
+                    arrayElement = element;
+                    arrayLength = size;
+                    sim.Apply(ins);
+                    continue;
+                }
+                if (op == OpCodes.Stfld && ins.Operand is FieldInfo { IsStatic: false } field && field.DeclaringType == type)
+                {
+                    sim.Apply(ins);
+                    continue;
+                }
+                if (op == OpCodes.Ldsfld && ins.Operand is FieldInfo { IsInitOnly: true } runtimeField && runtimeField.DeclaringType is { } holder
+                    && holder.Assembly == typeof(object).Assembly && !holder.IsGenericType)
+                {
+                    sim.Apply(ins);
+                    continue;
+                }
+                if (op == OpCodes.Call && ins.Operand is ConstructorInfo baseConstructor && baseConstructor.DeclaringType == typeof(object) && i > 0 && code[i - 1].Op == OpCodes.Ldarg_0)
+                {
+                    baseCalled = true;
+                    sim.Apply(ins);
+                    continue;
+                }
+                // Values the type initializer rules allow (empty runtime collections, runtime comparers, Array.Empty), not the extensions' lookups.
+                if ((op == OpCodes.Call || op == OpCodes.Newobj) && ins.Operand is MethodBase called && IsRuntimeAssembly(called.DeclaringType!)
+                    && PureCall(code, i, called, sim, relies, out object? pushed) && relies.Count == 0)
+                {
+                    sim.Apply(ins, pushed);
+                    continue;
+                }
+                return false;
+            }
+            return baseCalled;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static bool RuntimeComparer(MethodBase getter) =>
         getter.IsStatic && getter.GetParameters().Length == 0 && getter.Name.StartsWith("get_", StringComparison.Ordinal) && getter.DeclaringType is { } t
         && (t == typeof(StringComparer)
@@ -2009,10 +3183,11 @@ public static partial class PatchSafety
 
     /// <summary>
     /// A postfix that provably does nothing when <c>__result</c> is null (<see cref="PatchTolerance.NullSkipped"/>): static,
-    /// returns void, not generic, a <c>__result</c> parameter of a reference type (by value, or by reference: <c>ref __result</c>), and from its first instruction (nops
-    /// aside) only <c>ldarg __result; [ldind.ref when by reference]; brfalse L</c> (taken on null) or <c>... brtrue L</c> (not
-    /// taken on null), unconditional branches, then <c>ret</c>: on that path nothing but that one load (no call, no field, no
-    /// store, no other argument). Harmony runs postfixes after a prefix that skipped the original, on the <c>__result</c> it
+    /// returns void, not generic, a <c>__result</c> parameter of a reference type (by value, or by reference: <c>ref __result</c>),
+    /// and the path a null <c>__result</c> takes evaluated to a plain <c>ret</c> by rule E (<see cref="EvaluatePath"/>, 2026-11-18:
+    /// <c>__result</c> null, read through <c>ldind.ref</c> when by reference; constants, locals and comparisons followed as for
+    /// the type gates, Debug IL included; no call, no field, no store but to locals, no branch on another argument). Harmony runs
+    /// postfixes after a prefix that skipped the original, on the <c>__result</c> it
     /// left: null there. Renamed parameters (<c>HarmonyArgument</c>) and factories are refused before (ShapeRefusal); a patch
     /// whose own method is patched at each recheck (Intolerable). No initializer is judged (B1, re-audit round 2 of
     /// 2026-11-17): the postfix runs at every call, a skipped one included, and the first call is never a skip, so it is compiled
@@ -2041,62 +3216,15 @@ public static partial class PatchSafety
             {
                 return false;
             }
-            List<MethodFingerprint.Instruction> code = MethodFingerprint.Instructions(patch);
-            var at = new Dictionary<int, int>();
-            for (int i = 0; i < code.Count; i++)
+            var arguments = new PathValue[parameters.Length];
+            arguments[result] = new PathValue(byRef ? PathKind.NullAddress : PathKind.Null);
+            var outcome = new PathOutcome(patch.Module.Assembly);
+            if (EvaluatePath(patch, arguments, PathExit.Void, false, 0, outcome, null) != null)
             {
-                at[code[i].Offset] = i;
+                return false;
             }
-            var visited = new HashSet<int>();
-            bool tested = false;
-            int index = 0;
-            while (index >= 0 && index < code.Count && visited.Add(index))
-            {
-                MethodFingerprint.Instruction ins = code[index];
-                if (ins.Op == OpCodes.Nop)
-                {
-                    index++;
-                    continue;
-                }
-                if (ins.Op == OpCodes.Br || ins.Op == OpCodes.Br_S)
-                {
-                    index = ins.Operand is int target && at.TryGetValue(target, out int next) ? next : -1;
-                    continue;
-                }
-                if (ins.Op == OpCodes.Ret)
-                {
-                    return tested;
-                }
-                // The test, once: ldarg __result; [ldind.ref]; brfalse|brtrue L.
-                if (tested || !LoadsArgument(ins, result))
-                {
-                    return false;
-                }
-                int branch = index + 1;
-                if (byRef)
-                {
-                    if (branch >= code.Count || code[branch].Op != OpCodes.Ldind_Ref)
-                    {
-                        return false;
-                    }
-                    branch++;
-                }
-                if (branch >= code.Count)
-                {
-                    return false;
-                }
-                MethodFingerprint.Instruction test = code[branch];
-                bool onFalse = test.Op == OpCodes.Brfalse || test.Op == OpCodes.Brfalse_S;
-                bool onTrue = test.Op == OpCodes.Brtrue || test.Op == OpCodes.Brtrue_S;
-                if (!onFalse && !onTrue || test.Operand is not int to || !at.TryGetValue(to, out int taken))
-                {
-                    return false;
-                }
-                tested = true;
-                // Null: brfalse is taken, brtrue falls through.
-                index = onFalse ? taken : branch + 1;
-            }
-            return false;
+            _pathCallees[patch.MethodHandle] = outcome.Callees.Distinct().ToArray();
+            return true;
         }
         catch
         {

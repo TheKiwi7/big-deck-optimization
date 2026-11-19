@@ -67,8 +67,11 @@ public static class IdleButtonInput
             postfix: new HarmonyMethod(typeof(IdleButtonInput), nameof(SyncPostfix)));
         PatchGuard.Patch(harmony, Reflect.Method(typeof(NClickableControl), "CheckMouseDragThreshold"),
             postfix: new HarmonyMethod(typeof(IdleButtonInput), nameof(SyncPostfix)));
+        // TG (2026-11-18): another mod's patch on _Input that provably does nothing unless the button is of some types
+        // (PatchSafety.TypeGates on __instance, rule E's evaluator) stands; buttons of those types are never muted.
+        PatchSafety.SetListenerParameter(_input, "__instance");
         // What Active asks about (display only).
-        PatchSafety.Watch(Name, _input);
+        PatchSafety.Watch(Name, _input, PatchTolerance.TypeGated);
         PatchSafety.Watch(Name, _dragCheck);
         // Display only: one gate in front of all it does, any of these back-offs keeps the whole patch vanilla (the menu's red title).
         PatchSafety.WholePatch(Name);
@@ -76,11 +79,34 @@ public static class IdleButtonInput
 
     private static System.Reflection.MethodInfo? _input, _dragCheck;
 
-    /// <summary>On, and nobody else patches what a muted button no longer runs.</summary>
-    // No tolerance: _Input is no longer called for idle buttons, its patches wouldn't run.
-    private static bool Active => Enabled && !PatchSafety.IsPatchedByOthers(_input) && !PatchSafety.IsPatchedByOthers(_dragCheck);
+    /// <summary>
+    /// On, and nobody else patches what a muted button no longer runs, except patches on <c>_Input</c> gated on the button's type
+    /// (TG, 2026-11-18: <paramref name="gates"/>, their types; such a patch does nothing for a button of none of them, so skipping
+    /// its <c>_Input</c> calls skips no-ops; buttons of a gate type keep their input, <see cref="Gated"/>).
+    /// <c>CheckMouseDragThreshold</c> keeps no tolerance (this mod's postfix there turns input on and off).
+    /// </summary>
+    private static bool ActiveGates(out Type[] gates)
+    {
+        gates = Array.Empty<Type>();
+        return Enabled && !PatchSafety.IsPatchedByOthers(_input, out gates) && !PatchSafety.IsPatchedByOthers(_dragCheck);
+    }
 
-    private static bool IsEligible(Node node) => IsEligibleType(node) && Active;
+    private static bool Active => ActiveGates(out _);
+
+    /// <summary>A button of a type another mod's gated <c>_Input</c> patch acts for: its input stays the game's.</summary>
+    private static bool Gated(Node node, Type[] gates)
+    {
+        foreach (Type gate in gates)
+        {
+            if (gate.IsInstanceOfType(node))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static bool IsEligible(Node node) => IsEligibleType(node) && ActiveGates(out Type[] gates) && !Gated(node, gates);
 
     private static bool IsEligibleType(Node node)
     {
@@ -121,9 +147,10 @@ public static class IdleButtonInput
             {
                 return;
             }
-            if (!Active)
+            if (!ActiveGates(out Type[] gates) || Gated(__instance, gates))
             {
-                // Turned off (or another mod patches _Input) at runtime: give buttons we muted their vanilla state back (input on while enabled).
+                // Turned off (or another mod patches _Input, or gates it on this button's type) at runtime: give buttons we muted
+                // their vanilla state back (input on while enabled).
                 if (!__instance.IsProcessingInput() && _isEnabled!(__instance))
                 {
                     __instance.SetProcessInput(true);
@@ -190,17 +217,24 @@ public static class IdleButtonInput
                 return;
             }
             _frames = 0;
-            if (Active)
+            bool active = ActiveGates(out Type[] gates);
+            if (active && gates.Length == 0)
             {
                 return;
             }
-            // A copy: giving input back runs our prefix again, which may track a button.
+            // A copy: giving input back runs our prefix again, which may track a button. On but gated (TG): only the buttons of a
+            // gate type get their input back, the others stay muted and tracked.
             WeakReference<NClickableControl>[] muted = _muted.ToArray();
             _muted.Clear();
             foreach (WeakReference<NClickableControl> reference in muted)
             {
-                if (reference.TryGetTarget(out NClickableControl? button) && GodotObject.IsInstanceValid(button)
-                    && !button.IsProcessingInput() && _isEnabled!(button))
+                bool alive = reference.TryGetTarget(out NClickableControl? button) && GodotObject.IsInstanceValid(button);
+                if (active && alive && !Gated(button!, gates))
+                {
+                    _muted.Add(reference);
+                    continue;
+                }
+                if (alive && !button!.IsProcessingInput() && _isEnabled!(button))
                 {
                     button.SetProcessInput(true);
                 }

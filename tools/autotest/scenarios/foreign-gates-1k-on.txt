@@ -1,0 +1,121 @@
+# The gate rules of 2026-11-18 (A/B, mod on; DESIGN "Re-verification of the leads", Bench/ForeignShapesGates.cs): synthetic
+# patches of "another mod" the rules let stand, counting their calls (STATE lines identical with foreign-gates-1k-off), and the
+# self-test of every shape's verdict (accept cases and the controls that must still back off).
+# F1: finalizers passing the exception on unchanged on hooks HookSkip transpiles (TranspiledOnly): Release IL (ldarg; ret) on
+# AfterCardPlayed, Debug IL (through a local) on BeforeCardPlayed; both kept, the hooks filtered.
+# E: Debug-IL type gates (emitted: the test build compiles C# optimized) on AbstractModel defaults, gated on Squeeze: a postfix
+# testing through a bool local (AfterCardPlayed), a bool prefix returning through a local (BeforeCardPlayed), a non-short-circuit
+# or of two tests (AfterPlayerTurnStart, Squeeze and RelicModel), a bool set as a constant before the branch (AfterCardDrawnEarly),
+# a copy prologue (AfterCardDrawn): kept, those types keeping their calls. Control: a count before the gate (AfterEnergyReset).
+# G: a branch on a trivial static getter (a config flag, turned on at the install) before the gate, both sides explored
+# (AfterSideTurnStart): kept. Control: the flag's side acting for every listener (BeforeSideTurnStart, counted every call).
+# Initializer extensions: a gated postfix whose class initializer repeats a lookup (AccessTools.Method ?? throw), builds a
+# constant decimal and a pure object (AfterCardPlayedLate): kept. Control: an ambiguous lookup there (AfterDamageGiven).
+# FW: a postfix forwarding (__instance, ref __result) to a gated helper of its class (AfterPlayerTurnStartLate): kept.
+# Control: the helper counting every call (AfterEnergySpent).
+# H (BaseLib loaded): a counting postfix and a void prefix (sorted before this mod's, which runs last) on BaseLib's
+# GetMaxHandSize: kept, its walk still filtered (the filter set only for a real RunState). Control: a void prefix at
+# Priority.Last patched after this mod's on the heal modifier (it runs after the filter is set): backs off.
+# TG on IdleButtonInput: a Debug bool prefix on NButton._Input gated on NCharacterSelectButton (Into The Spireverse's shape,
+# its gated path reading nothing impure): kept, idle buttons still muted (that type would keep its input).
+# CHECKSUM and STATE lines identical with the off side. ~945 cards.
+expect FOREIGN gates selftest: \d+ cases as expected
+expect HookSkip: Hook\.AfterCardPlayed is also patched by bdtest\.foreign\.gates-passthrough-finalizer \(prefixes and postfixes around the transpiled body: run around this mod's code as without it\): kept
+expect HookSkip: Hook\.BeforeCardPlayed is also patched by bdtest\.foreign\.gates-passthrough-finalizer-debug \(prefixes and postfixes around the transpiled body: run around this mod's code as without it\): kept
+expect FOREIGN runtime HookSkip Hook\.AfterCardPlayed \(TranspiledOnly\) kept [1-9][0-9]* backed off 0
+expect FOREIGN runtime HookSkip Hook\.BeforeCardPlayed \(TranspiledOnly\) kept [1-9][0-9]* backed off 0
+expect STATE foreign end gates-passthrough-finalizer Hook\.AfterCardPlayed [1-9]
+expect STATE foreign end gates-passthrough-finalizer-debug Hook\.BeforeCardPlayed [1-9]
+expect HookSkip: AbstractModel\.AfterCardPlayed is also patched by bdtest\.foreign\.gates-debug-gated-postfix \(patches gated on the listener's type: Squeeze treated as overriding it
+expect HookSkip: AbstractModel\.BeforeCardPlayed is also patched by bdtest\.foreign\.gates-debug-gated-prefix \(patches gated on the listener's type: Squeeze treated as overriding it
+expect HookSkip: AbstractModel\.AfterPlayerTurnStart is also patched by bdtest\.foreign\.gates-bitor-gated-postfix \(patches gated on the listener's type: .*RelicModel.* treated as overriding it
+expect HookSkip: AbstractModel\.AfterCardDrawnEarly is also patched by bdtest\.foreign\.gates-bool-local-postfix \(patches gated on the listener's type: Squeeze treated as overriding it
+expect HookSkip: AbstractModel\.AfterCardDrawn is also patched by bdtest\.foreign\.gates-copy-prologue-postfix \(patches gated on the listener's type: Squeeze treated as overriding it
+expect HookSkip: AbstractModel\.AfterEnergyReset is also patched by bdtest\.foreign\.gates-call-first-postfix \(patches gated on the listener's type not enough\)
+expect FOREIGN runtime HookSkip AbstractModel\.AfterCardPlayed \(TypeGated\) kept [1-9]
+expect FOREIGN runtime HookSkip AbstractModel\.BeforeCardPlayed \(TypeGated\) kept [1-9]
+expect FOREIGN runtime HookSkip AbstractModel\.AfterEnergyReset \(TypeGated\) kept 0 backed off [1-9]
+expect STATE foreign end gates-debug-gated-postfix AbstractModel\.AfterCardPlayed [1-9]
+expect STATE foreign end gates-call-first-postfix AbstractModel\.AfterEnergyReset every call [1-9]
+expect HookSkip: AbstractModel\.AfterSideTurnStart is also patched by bdtest\.foreign\.gates-getter-gated-postfix \(patches gated on the listener's type: Squeeze treated as overriding it
+expect HookSkip: AbstractModel\.BeforeSideTurnStart is also patched by bdtest\.foreign\.gates-getter-ungated-postfix \(patches gated on the listener's type not enough\)
+expect FOREIGN runtime HookSkip AbstractModel\.AfterSideTurnStart \(TypeGated\) kept [1-9]
+expect FOREIGN runtime HookSkip AbstractModel\.BeforeSideTurnStart \(TypeGated\) kept 0 backed off [1-9]
+expect STATE foreign end gates-getter-ungated-postfix AbstractModel\.BeforeSideTurnStart [1-9]
+expect HookSkip: AbstractModel\.AfterCardPlayedLate is also patched by bdtest\.foreign\.gates-init-extensions-postfix \(patches gated on the listener's type: Squeeze treated as overriding it
+expect HookSkip: AbstractModel\.AfterDamageGiven is also patched by bdtest\.foreign\.gates-init-ambiguous-postfix \(patches gated on the listener's type not enough\)
+expect FOREIGN runtime HookSkip AbstractModel\.AfterCardPlayedLate \(TypeGated\) kept [1-9]
+expect HookSkip: AbstractModel\.AfterPlayerTurnStartLate is also patched by bdtest\.foreign\.gates-forwarder-postfix \(patches gated on the listener's type: Squeeze treated as overriding it
+expect HookSkip: AbstractModel\.AfterEnergySpent is also patched by bdtest\.foreign\.gates-forwarder-acts-postfix \(patches gated on the listener's type not enough\)
+expect FOREIGN runtime HookSkip AbstractModel\.AfterPlayerTurnStartLate \(TypeGated\) kept [1-9]
+expect HookSkip: MaxHandSizePatch\.GetMaxHandSize is also patched by .*bdtest\.foreign\.gates-count-p.* \(postfixes and void prefixes: run around this mod's code as without it\): kept
+expect HookSkip: ModifyHealAmountPatches\.ModifyAdditive is also patched by .*bdtest\.foreign\.gates-count-prefix.* \(postfixes and void prefixes not enough\): normal game for that part
+expect FOREIGN runtime HookSkip MaxHandSizePatch\.GetMaxHandSize \(SurroundingOnly\) kept [1-9][0-9]* backed off 0
+expect STATE foreign end gates-count-postfix MaxHandSizePatch\.GetMaxHandSize [1-9]
+expect STATE foreign end gates-count-prefix MaxHandSizePatch\.GetMaxHandSize [1-9]
+expect IdleButtonInput: NButton\._Input is also patched by bdtest\.foreign\.gates-button-gated-prefix \(patches gated on the listener's type: NCharacterSelectButton treated as overriding it
+timeout 1500
+newrun NECROBINDER 1234
+waitfor run 120
+foreignpatch gates selftest
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+foreignpatch gates-passthrough-finalizer MegaCrit.Sts2.Core.Hooks.Hook:AfterCardPlayed
+foreignpatch gates-passthrough-finalizer-debug MegaCrit.Sts2.Core.Hooks.Hook:BeforeCardPlayed
+foreignpatch gates-debug-gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardPlayed
+foreignpatch gates-debug-gated-prefix MegaCrit.Sts2.Core.Models.AbstractModel:BeforeCardPlayed
+foreignpatch gates-bitor-gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterPlayerTurnStart
+foreignpatch gates-bool-local-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardDrawnEarly
+foreignpatch gates-copy-prologue-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardDrawn
+foreignpatch gates-call-first-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterEnergyReset
+foreignpatch gates-getter-gated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterSideTurnStart
+foreignpatch gates-getter-ungated-postfix MegaCrit.Sts2.Core.Models.AbstractModel:BeforeSideTurnStart
+foreignpatch gates-init-extensions-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardPlayedLate
+foreignpatch gates-init-ambiguous-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterDamageGiven
+foreignpatch gates-forwarder-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterPlayerTurnStartLate
+foreignpatch gates-forwarder-acts-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterEnergySpent
+foreignpatch gates-count-postfix BaseLib.Patches.Hooks.MaxHandSizePatch:GetMaxHandSize/2
+foreignpatch gates-count-prefix BaseLib.Patches.Hooks.MaxHandSizePatch:GetMaxHandSize/2
+foreignpatch gates-count-prefix BaseLib.Patches.Hooks.ModifyHealAmountPatches:ModifyAdditive priority 0
+foreignpatch gates-button-gated-prefix MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton:_Input
+effects start
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+play 4
+waitfor idle 120
+checksum t3 plays
+endturn
+waitfor idle 300
+checksum t3 end
+state t3
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+foreignpatch report end
+effects end
+effectcheck HookSkip grew start
+effectcheck HookSkip.BaseLib ran
+effectcheck IdleButtonInput grew start
+cmd bdopt why
+counters end
+foreignpatch remove
+quit
