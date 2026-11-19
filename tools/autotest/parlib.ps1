@@ -990,6 +990,10 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                 $job = $pending[0]
                 $pending.RemoveAt(0)
                 Remove-Item $job.Log -ErrorAction SilentlyContinue
+                # A vanilla job's baseline key from the tree as this session reads it (its script, the Bench files it runs), kept
+                # on the run and saved under at its end: computed then, an edit or a branch switch during the session would file
+                # its log under a key it never ran.
+                $baselineKey = if (Test-BaselineJob $job) { Get-BaselineKey $GameDir $job.Script } else { $null }
                 $env:APPDATA = Sync-Slot $slot
                 # A job may name its own game folder (mutations.ps1).
                 $jobDir = if ($job.PSObject.Properties["GameDir"]) { $job.GameDir } else { $GameDir }
@@ -1001,7 +1005,7 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                 $env:APPDATA = $realAppData
                 [void]$p.Handle # or its exit code is lost
                 $limit = if ($ScenarioTimeouts) { [Math]::Max($TimeoutSec, (Get-ScenarioTimeout $job.Script) + 120) } else { $TimeoutSec }
-                $running[$slot] = [pscustomobject]@{ Job = $job; Process = $p; Started = Get-Date; ScriptStarted = $false; TimeoutSec = $limit }
+                $running[$slot] = [pscustomobject]@{ Job = $job; Process = $p; Started = Get-Date; ScriptStarted = $false; TimeoutSec = $limit; BaselineKey = $baselineKey }
                 & $advertise $(if ($pending.Count -gt 0 -and $running.Count -lt $MaxJobs) { [string](& $lengthOf $pending[0]) } else { "none" })
             }
             # A slot this series holds and doesn't use goes back to the other series at once (a sweep's long mod-off tail, a slot left
@@ -1082,10 +1086,10 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                 & $finish $run.Job ([pscustomobject]@{ Name = $run.Job.Name; State = $state; Seconds = [int]$age; Failed = $failed; Restarts = [int]$retries[$run.Job.Name] })
                 # Kept as a baseline whether or not this series reads them: a run without -UseBaselines is the freshest mod-off
                 # log there is, and a rerun after a fix can then reuse it. Never stops the series.
-                if ($state -eq "done" -and $failed.Count -eq 0 -and (Test-BaselineJob $run.Job)) {
+                if ($state -eq "done" -and $failed.Count -eq 0 -and $run.BaselineKey) {
                     try {
                         New-Item -ItemType Directory -Force $baselineDir | Out-Null
-                        Copy-Item $run.Job.Log (Join-Path $baselineDir "$($run.Job.Name)-$(Get-BaselineKey $GameDir $run.Job.Script).log") -Force
+                        Copy-Item $run.Job.Log (Join-Path $baselineDir "$($run.Job.Name)-$($run.BaselineKey).log") -Force
                     }
                     catch { Write-Host "note: $($run.Job.Name) not kept as a baseline: $($_.Exception.Message)" }
                 }
