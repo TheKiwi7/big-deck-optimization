@@ -1,0 +1,85 @@
+# Rule B (2026-11-18): a bundled copy of BaseLib's SavedSpireFieldPatch inside another mod (Acheron's shape: the same IL once
+# the copy's own types are named without namespace), holding no field: Bench/ForeignShapesLimitlessTwins.cs's accepted twin
+# installed as a postfix on SavedProperties.FromInternal and FillInternal, three combat starts at ~945 cards (the reference
+# deck, Limitless stacked enchantments). Both postfixes do nothing while the twin's own list is empty.
+# Mod on. Compare foreign-limitless-b-2k-off and foreign-limitless-b-2k-on: CHECKSUM/STATE identical.
+# The on side: the twin is read as BaseLib's (kept line), LimitlessReserialize, LimitlessCloneMemo and LimitlessHookSkip keep
+# running (their effects grow), and the runtime checks of SavedProperties.FromInternal / FillInternal never back off.
+timeout 1500
+expect .*bdtest\.foreign\.lim-twin-accepted's bundled copy of BaseLib's saved-field patch on SavedProperties\.FromInternal .*: read as BaseLib's while it holds no field: kept
+expect .*bdtest\.foreign\.lim-twin-accepted's bundled copy of BaseLib's saved-field patch on SavedProperties\.FillInternal .*: read as BaseLib's while it holds no field: kept
+expect FOREIGN twin status: twins on FromInternal 1 .*, on FillInternal 1, one holds a field False
+expect FOREIGN twin accepted IL: FromInternal BaseLib's, FillInternal BaseLib's, GetFieldsForModel BaseLib's
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bdopt on
+cmd bigdeck import ref all all
+foreignpatch lim-twin MegaCrit.Sts2.Core.Saves.Runs.SavedProperties:FromInternal accepted
+foreignpatch lim-twin MegaCrit.Sts2.Core.Saves.Runs.SavedProperties:FillInternal accepted
+foreignpatch limitless twin status
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum CULTISTS_NORMAL start
+state CULTISTS_NORMAL start
+effects first
+play 5
+waitfor idle 300
+checksum CULTISTS_NORMAL plays
+state CULTISTS_NORMAL plays
+endturn
+waitfor idle 600
+checksum CULTISTS_NORMAL t1 end
+state CULTISTS_NORMAL t1 end
+cmd kill all
+waitfor nocombat 300
+wait 2
+cmd fight KNIGHTS_ELITE
+waitfor idle 600
+wait 1
+checksum KNIGHTS_ELITE start
+state KNIGHTS_ELITE start
+play 5
+waitfor idle 300
+checksum KNIGHTS_ELITE plays
+state KNIGHTS_ELITE plays
+endturn
+waitfor idle 600
+checksum KNIGHTS_ELITE t1 end
+state KNIGHTS_ELITE t1 end
+cmd kill all
+waitfor nocombat 300
+wait 2
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum CULTISTS_NORMAL start
+state CULTISTS_NORMAL start
+play 5
+waitfor idle 300
+checksum CULTISTS_NORMAL plays
+state CULTISTS_NORMAL plays
+endturn
+waitfor idle 600
+checksum CULTISTS_NORMAL t1 end
+state CULTISTS_NORMAL t1 end
+cmd kill all
+waitfor nocombat 300
+wait 2
+foreignpatch report end
+foreignpatch limitless report end
+effects end
+effectcheck LimitlessReserialize grew first
+effectcheck LimitlessCloneMemo grew first
+effectcheck LimitlessHookSkip grew first
+runtimebackoff LimitlessReserialize SavedProperties.FromInternal none
+runtimebackoff RelicStateReuse SavedProperties.FromInternal none
+runtimebackoff LimitlessCloneMemo SavedProperties.FillInternal none
+cmd bdopt on
+wait 1
+foreignpatch remove
+foreignpatch limitless remove
+quit

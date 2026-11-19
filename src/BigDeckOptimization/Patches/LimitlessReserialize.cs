@@ -79,6 +79,8 @@ public static class LimitlessReserialize
     private static MethodInfo? _enchantmentToSerializable;
     private static MethodInfo? _savedPropertiesFrom, _fromInternal;
     private static MethodInfo[] _allowedOnFromInternal = Array.Empty<MethodInfo>();
+    /// <summary>BaseLib's postfix and the bundled copies of it holding no field (rule B: <see cref="BaseLibTypes.WithTwins"/>).</summary>
+    private static MethodInfo[] AllowedOnFromInternal => BaseLibTypes.WithTwins(_allowedOnFromInternal, fromInternal: true);
     /// <summary>A MultiEnchantment's stored list (<c>SerializableEnchantmentsOnCards</c>).</summary>
     internal static AccessTools.FieldRef<object, List<SerializableCard>?>? Stored;
     private static ExtendedData? _cardData;
@@ -179,7 +181,7 @@ public static class LimitlessReserialize
             PatchSafety.Watch(patch, _setter);
         }
         PatchSafety.Watch(patch, _savedPropertiesFrom);
-        PatchSafety.Watch(patch, _fromInternal, () => _allowedOnFromInternal);
+        PatchSafety.Watch(patch, _fromInternal, () => AllowedOnFromInternal);
         PatchSafety.Watch(patch, _cardToSerializable, () => _cardData?.Postfix is { } cardPostfix ? new[] { cardPostfix } : Array.Empty<MethodInfo>());
         PatchSafety.Watch(patch, _enchantmentToSerializable, () => _enchantmentData?.Postfix is { } enchantmentPostfix ? new[] { enchantmentPostfix } : Array.Empty<MethodInfo>());
     }
@@ -473,12 +475,13 @@ public static class LimitlessReserialize
             // No tolerance: the comparison mirrors these methods and skips SetSerializableCards' rebuild.
             _patchedByOthers = (_original != null && (PatchSafety.IsPatchedByOthers(_original) || PatchSafety.IsPatchedByOthers(_setter)))
                 || PatchSafety.IsPatchedByOthers(_savedPropertiesFrom)
-                || PatchSafety.IsPatchedByOthers(_fromInternal, _allowedOnFromInternal)
+                || PatchSafety.IsPatchedByOthers(_fromInternal, AllowedOnFromInternal)
                 || PatchSafety.IsPatchedByOthers(_cardToSerializable, _cardData?.Postfix is { } cardPostfix ? new[] { cardPostfix } : Array.Empty<MethodInfo>())
                 || PatchSafety.IsPatchedByOthers(_enchantmentToSerializable, _enchantmentData?.Postfix is { } enchantmentPostfix ? new[] { enchantmentPostfix } : Array.Empty<MethodInfo>());
             _patchesCheckedAt = now;
         }
-        return _patchedByOthers;
+        // A bundled copy of BaseLib's patch let stand only while its own list is empty: read at each use, not from the 2 s answer.
+        return _patchedByOthers || BaseLibTypes.TwinHoldsField();
     }
 
     private static bool Prefix(EnchantmentModel __instance, List<CardModel> cards)

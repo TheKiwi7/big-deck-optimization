@@ -875,19 +875,25 @@ public static class MethodFingerprint
     {
         lock (_gameTypes)
         {
-            if (!_gameTypes.TryGetValue(game, out Type[]? types))
+            if (_gameTypes.TryGetValue(game, out Type[]? known))
             {
-                try
-                {
-                    types = game.GetTypes();
-                }
-                catch (ReflectionTypeLoadException e)
-                {
-                    types = e.Types.Where(t => t != null).ToArray()!;
-                }
-                _gameTypes[game] = types;
+                return known;
             }
-            return types;
+        }
+        // Read outside the lock (LimitlessCloneMemo's below-normal worker reads it too: the main thread never waits on it for
+        // GetTypes); two threads may both read it, the first stored wins (same types).
+        Type[] types;
+        try
+        {
+            types = game.GetTypes();
+        }
+        catch (ReflectionTypeLoadException e)
+        {
+            types = e.Types.Where(t => t != null).ToArray()!;
+        }
+        lock (_gameTypes)
+        {
+            return _gameTypes.TryAdd(game, types) ? types : _gameTypes[game];
         }
     }
 
@@ -896,7 +902,13 @@ public static class MethodFingerprint
     /// classes; for an interface method, each implementing class's target for every instantiation of the interface (default
     /// interface methods included, wherever declared).
     /// </summary>
-    public static List<MethodBase> Implementations(Assembly game, MethodInfo target)
+    public static List<MethodBase> Implementations(Assembly game, MethodInfo target) =>
+        // Each answer worked out once (a scan of every game type; the closures ask the same targets again and again): a copy each time.
+        new(_implementations.GetOrAdd((game, target), key => FindImplementations(key.Game, key.Target).ToArray()));
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(Assembly Game, MethodInfo Target), MethodBase[]> _implementations = new();
+
+    private static List<MethodBase> FindImplementations(Assembly game, MethodInfo target)
     {
         var found = new List<MethodBase>();
         Type declaring = target.DeclaringType!;

@@ -133,12 +133,11 @@ public static class LimitlessHookSkip
             // overrides of the inner card's type and of every inner enchantment type seen (types with a mod's code there are
             // never dropped: AnyKnown, AnyInner).
             // The chain's card methods with patches gated on the card's type count when the storage card is of a gate type.
-            patched = patched || _storageCard == null || LimitlessCloneMemo.ChainPatchedFor(_storageCard)
-                || LimitlessCloneMemo.OnTheWay(_storageCard) is not { } storage || LimitlessCloneMemo.AnyPatched(storage);
-            foreach (Type type in _knownRead)
-            {
-                patched = patched || (LimitlessCloneMemo.OnTheWay(type) is { } overrides && LimitlessCloneMemo.AnyPatched(overrides));
-            }
+            // Rule L: only the spine here (what every inner card's build runs) and the storage card's overrides with what they
+            // call; the groups an inner card reaches (its enchantment, its upgrades) and its enchantment type's overrides are
+            // judged per inner card (AnyInner, Unknown), the filters judging again when they may change (Stamp).
+            patched = patched || _storageCard == null || LimitlessCloneMemo.ChainPatchedFor(_storageCard, LimitlessCloneMemo.Reach.Spine)
+                || LimitlessCloneMemo.OnTheWay(_storageCard) is not { } storage || LimitlessCloneMemo.OverridesPatched(storage, _storageCard);
             _patchedByOthers = patched;
             _patchesCheckedAt = now;
         }
@@ -146,7 +145,7 @@ public static class LimitlessHookSkip
     }
 
     /// <summary>Changes when filters must judge MultiEnchantments again; -1 when none may be dropped.</summary>
-    internal static long Stamp => Active ? _version : -1;
+    internal static long Stamp => Active ? _version ^ (LimitlessCloneMemo.PatchStamp() << 24) : -1;
 
     private static long _version;
     private static readonly HashSet<Type> _known = new();
@@ -241,6 +240,7 @@ public static class LimitlessHookSkip
         }
         // Checked (and a change logged) now rather than at the first walk; a changed chain only keeps this from arming.
         LimitlessCloneMemo.GameChainKnown();
+        LimitlessCloneMemo.StartClosures();
         PatchGuard.Patch(harmony, add, prefix: new HarmonyMethod(typeof(LimitlessHookSkip), nameof(BeforeAdd)),
             finalizer: new HarmonyMethod(typeof(LimitlessHookSkip), nameof(AfterAdd)));
         Multi = multi;
@@ -364,11 +364,26 @@ public static class LimitlessHookSkip
     /// (<see cref="LimitlessCloneMemo.OnTheWay"/>): building a clone's inner cards may then not give what is saved, so a
     /// stacked enchantment holding one counts as reacting (never dropped, its forwarder runs as in the game).
     /// </summary>
-    private static bool Unknown(Type type) => LimitlessCloneMemo.OnTheWay(type) == null;
+    private static bool Unknown(Type type)
+    {
+        if (LimitlessCloneMemo.OnTheWay(type) is not { } overrides)
+        {
+            return true;
+        }
+        // Rule L: what its overrides call, judged for the inner card they act on (an enchantment's: the storage card).
+        Type? card = typeof(CardModel).IsAssignableFrom(type) ? type : _storageCard;
+        return overrides.Length > 0 && (card == null || LimitlessCloneMemo.OverridesPatched(overrides, card));
+    }
 
     /// <summary>Whether a recorded inner enchantment type answers yes (or has unknown code on the way).</summary>
     internal static bool AnyKnown(Func<Type, bool> overrides)
     {
+        // Rule L: a patched group an inner card may reach (its enchantment, its upgrades) is judged per instance (AnyInner):
+        // the type as a whole then counts as reacting.
+        if (_storageCard == null || LimitlessCloneMemo.ChainPatchedFor(_storageCard, LimitlessCloneMemo.Reach.Spine | LimitlessCloneMemo.Reach.Enchant | LimitlessCloneMemo.Reach.Upgrade))
+        {
+            return true;
+        }
         lock (_known)
         {
             foreach (Type type in _known)
@@ -392,8 +407,13 @@ public static class LimitlessHookSkip
         {
             for (int i = 0; i < saved.Count; i++)
             {
-                if (saved[i] is { Id: { } cardId, Enchantment.Id: { } enchantmentId }
-                    && (overrides(_seenPairs[(cardId, enchantmentId)]) || Unknown(_seenPairs[(cardId, enchantmentId)])))
+                if (saved[i] is { Id: { } cardId, Enchantment.Id: { } enchantmentId } && overrides(_seenPairs[(cardId, enchantmentId)]))
+                {
+                    return true;
+                }
+                // Rule L: a drop skips this inner card's build; what that build reaches (its groups, its card and enchantment types'
+                // code on the way, judged for its card type) is judged for this saved card.
+                if (saved[i] == null || LimitlessCloneMemo.ContentPatched(saved[i]))
                 {
                     return true;
                 }
