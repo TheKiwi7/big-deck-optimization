@@ -6,6 +6,10 @@
 # a kept note names them. (2) A draw gate (acts on the merged pile): one event per card, the back-off recorded. (3) A near miss (a
 # call before the test): the same. (4) A hand gate with CardPile.get_Type patched by another "mod": the same.
 timeout 1800
+expect FOREIGN pilegate pilegate-postfix: gated on Hand
+expect FOREIGN pilegate pilegate-beq-postfix: gated on Hand
+expect FOREIGN pilegate pilegate-postfix: gated on Draw
+expect FOREIGN pilegate pilegate-nearmiss-postfix: not gated
 expect FOREIGN kept CardFlightLimit: other mods' code on a pile's card-added event \(CardPile\.InvokeCardAddFinished\) that only acts on another kind of pile
 expect EFFECTCHECK CardFlightLimit grew since 'pg1': [0-9]+ -> [1-9]
 expect FOREIGN parts mergedflushes grew since 'pg1'

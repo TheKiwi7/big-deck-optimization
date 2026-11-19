@@ -132,6 +132,31 @@ internal sealed class CodeSet
         return patched;
     }
 
+    /// <summary>
+    /// <see cref="AnyPatched(string)"/> letting stand, on each method, the patches <paramref name="allowed"/> gives for it (rule RO:
+    /// CardFlightLimit's read-only postfixes on its combat-end head); one allowed function per set (its answer cached as the
+    /// strict one's: per Harmony epoch and 2 s).
+    /// </summary>
+    public bool AnyPatched(string caller, Func<MethodBase, MethodInfo[]> allowed)
+    {
+        Answer? last = _patchedAllowed;
+        if (Fresh(last))
+        {
+            return last!.Value;
+        }
+        int epoch = HarmonyWatch.Epoch;
+        long now = Environment.TickCount64;
+        bool patched = false;
+        foreach (MethodBase method in Checked)
+        {
+            patched |= PatchSafety.IsPatchedByOthers(method, allowed(method), caller);
+        }
+        _patchedAllowed = new Answer(epoch, now, patched);
+        return patched;
+    }
+
+    private Answer? _patchedAllowed;
+
     /// <summary>Whether another mod patches a method of the set, without recording a back-off (a replay decision).</summary>
     public bool AnyHasPatches()
     {

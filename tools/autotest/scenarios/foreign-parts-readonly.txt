@@ -1,0 +1,85 @@
+# CardFlightLimit next to another mod's read-only postfix in the combat-end check a soul's swoosh makes (mod on, one side; rule RO of
+# 2026-11-18, YutaMod's IndependentCurseLeaderPatch on Creature.get_IsSecondaryEnemy): a postfix that only reads the creature's own
+# auto-properties (through a static method of its own class) and may set __result changes nothing but the answer the skipped soul
+# would have got: souls are still skipped, a kept note names it. Synthetic postfixes of "another mod" (Bench/ForeignShapesParts.cs,
+# Release-build IL emitted; the type they test is never a monster's: no game state changes). (1) The read-only postfix: kept. (2) A
+# getter called on a returned object (null-checked): every soul flies, the back-off recorded. (3) A call to another class first:
+# the same. (4) The read-only postfix with Creature.get_Monster (a getter it calls) patched by another "mod": the same.
+timeout 1800
+expect FOREIGN ro ro-postfix: read-only
+expect FOREIGN kept CardFlightLimit: other mods' code in the combat-end check a card flight's sound makes \(Creature\.get_IsSecondaryEnemy\)
+expect EFFECTCHECK CardFlightLimit grew since 'ro1': [0-9]+ -> [1-9]
+expect FOREIGN ro ro-chain-postfix: not read-only
+expect CardFlightLimit: Creature\.get_IsSecondaryEnemy is also patched by bdtest\.foreign\.ro-chain-postfix: normal game for that part
+expect EFFECTCHECK CardFlightLimit same since 'ro2'
+expect FOREIGN ro ro-call-postfix: not read-only
+expect CardFlightLimit: Creature\.get_IsSecondaryEnemy is also patched by bdtest\.foreign\.ro-call-postfix: normal game for that part
+expect EFFECTCHECK CardFlightLimit same since 'ro3'
+expect CardFlightLimit: Creature\.get_IsSecondaryEnemy is also patched by bdtest\.foreign\.ro-postfix: normal game for that part
+expect EFFECTCHECK CardFlightLimit same since 'ro4'
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 999999
+speed fast
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+# (1) The read-only postfix: accepted.
+foreignpatch ro-postfix MegaCrit.Sts2.Core.Entities.Creatures.Creature:get_IsSecondaryEnemy
+wait 3
+effects ro1
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+wait 6
+effects ro1 end
+effectcheck CardFlightLimit grew ro1
+cmd bdopt why
+foreignpatch report ro1
+foreignpatch remove
+# (2) A getter on a returned object: the control.
+foreignpatch ro-chain-postfix MegaCrit.Sts2.Core.Entities.Creatures.Creature:get_IsSecondaryEnemy
+wait 3
+effects ro2
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+wait 6
+effects ro2 end
+effectcheck CardFlightLimit same ro2
+foreignpatch remove
+# (3) A call to another class first.
+foreignpatch ro-call-postfix MegaCrit.Sts2.Core.Entities.Creatures.Creature:get_IsSecondaryEnemy
+wait 3
+effects ro3
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+wait 6
+effects ro3 end
+effectcheck CardFlightLimit same ro3
+foreignpatch parts-report ro3
+foreignpatch remove
+# (4) The read-only postfix, a getter it calls patched by another mod.
+foreignpatch ro-postfix MegaCrit.Sts2.Core.Entities.Creatures.Creature:get_IsSecondaryEnemy
+foreignpatch noop-postfix MegaCrit.Sts2.Core.Entities.Creatures.Creature:get_Monster
+wait 3
+effects ro4
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+wait 6
+effects ro4 end
+effectcheck CardFlightLimit same ro4
+cmd bdopt why
+foreignpatch remove
+quit

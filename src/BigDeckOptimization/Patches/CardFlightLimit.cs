@@ -301,13 +301,16 @@ public static class CardFlightLimit
         // pile buttons' merged counts.
         PatchSafety.WholeMethods(Name, whole);
         // The game logic a skip removes (A4): strict whatever the shape rules, every soul kept by a patch there (once built).
-        PatchSafety.WatchAll(Name, () => _endHead?.Checked ?? Array.Empty<System.Reflection.MethodBase>());
+        // Rule RO: other mods' read-only postfixes there stand (HeadAllowed), as the runtime check lets them.
+        PatchSafety.WatchPairs(Name, () => (_endHead?.Checked ?? Array.Empty<System.Reflection.MethodBase>())
+            .Select(m => ((System.Reflection.MethodBase?)m, (System.Reflection.MethodInfo[]?)HeadAllowed(m))));
         PatchSafety.WholeMethods(Name, () => _endHead?.Checked ?? Array.Empty<System.Reflection.MethodBase>());
         PatchSafety.WatchNote(Name, NoteLogic);
         // Other mods' patches on the soul's own display code (and null-gated postfixes on Create) left out for the souls skipped:
         // shown as kept (bdopt why, the menu's hover), not as a back-off.
         PatchSafety.WatchNote(Name, NoteOwnDisplay);
         PatchSafety.WatchNote(Name, NotePileGates);
+        PatchSafety.WatchNote(Name, NoteReadOnlyHead);
     }
 
     private static bool CreatePrefix(CardPile targetPile, ref NCardFlyShuffleVfx? __result)
@@ -404,7 +407,7 @@ public static class CardFlightLimit
     /// </summary>
     private static bool EndCheckAllows(string caller)
     {
-        if (_endHead is not { Reviewed: true } head || _endWalk is not { Reviewed: true } walk || head.AnyPatched(caller) || head.ForeignOverrides()
+        if (_endHead is not { Reviewed: true } head || _endWalk is not { Reviewed: true } walk || head.AnyPatched(caller, HeadAllowed) || head.ForeignOverrides()
             || GameHookDelegates.TestHookForeign())
         {
             return false;
@@ -432,7 +435,7 @@ public static class CardFlightLimit
     /// Whether a primary enemy is alive in the combat <c>CombatManager.IsEnding</c> reads (v0.107.1 <c>_state</c>, v0.111.0 and
     /// v0.113.1 <c>_turnState.State</c>: <c>DebugOnlyGetState()</c> on each), by the game's own test (<c>e != null &amp;&amp; e.IsAlive
     /// &amp;&amp; e.IsPrimaryEnemy</c>): then IsEnding returns before its listener walk. Only called with the head free of other mods'
-    /// code, so these reads run the game's code alone, without side effects. False when it can't tell (the soul flies).
+    /// code (but read-only postfixes, rule RO, pure and unable to throw), so these reads have no side effects. False when it can't tell (the soul flies).
     /// </summary>
     private static bool PrimaryEnemyAlive()
     {
@@ -567,7 +570,44 @@ public static class CardFlightLimit
 
     /// <summary>The combat-end check's head free of other mods' code (no soul skipped otherwise).</summary>
     private static bool EndHeadClean(string caller) =>
-        _endHead is { Reviewed: true } head && _endWalk is { Reviewed: true } && !head.AnyPatched(caller) && !head.ForeignOverrides() && !GameHookDelegates.TestHookForeign();
+        _endHead is { Reviewed: true } head && _endWalk is { Reviewed: true } && !head.AnyPatched(caller, HeadAllowed) && !head.ForeignOverrides() && !GameHookDelegates.TestHookForeign();
+
+    /// <summary>
+    /// Rule RO (2026-11-18): the other mods' postfixes on a method of the combat-end check's head that only read and change its
+    /// answer (<see cref="PatchSafety.ReadOnlyPostfixes"/>: YutaMod's on <c>Creature.get_IsSecondaryEnemy</c>, reading the
+    /// creature's own auto-properties). The soul a skip removes is the only user of the answer its call gets, and such a postfix
+    /// does nothing else (no write, no call of its own beyond getters and its own pure methods, no throw): leaving that call out
+    /// leaves out nothing of it. None with the shape rules off. Never throws.
+    /// </summary>
+    private static System.Reflection.MethodInfo[] HeadAllowed(System.Reflection.MethodBase method) =>
+        PatchSafety.ShapeRules ? PatchSafety.ReadOnlyPostfixes(method) : Array.Empty<System.Reflection.MethodInfo>();
+
+    /// <summary>The kept note of rule RO: other mods' read-only postfixes on the combat-end check's head let stand.</summary>
+    private static void NoteReadOnlyHead()
+    {
+        var methods = new List<string>();
+        var postfixes = new List<System.Reflection.MethodInfo>();
+        if (Applied && !PatchSafety.IsFaulted(Name) && _endHead is { Reviewed: true } head)
+        {
+            foreach (System.Reflection.MethodBase method in head.Checked)
+            {
+                System.Reflection.MethodInfo[] allowed = HeadAllowed(method);
+                if (allowed.Length > 0)
+                {
+                    methods.Add($"{method.DeclaringType?.Name}.{method.Name}");
+                    postfixes.AddRange(allowed);
+                }
+            }
+        }
+        if (methods.Count == 0)
+        {
+            PatchSafety.ClearKept(Name, "end_readonly");
+            return;
+        }
+        PatchSafety.Kept(Name, "end_readonly", $"other mods' code in the combat-end check a card flight's sound makes ({string.Join(", ", methods.Distinct())}) "
+            + "only reads the game and changes that check's answer, which only the flights that don't happen would have used: kept",
+            PatchSafety.ModNamesOf(postfixes.Select(p => p.DeclaringType?.Assembly)));
+    }
 
     /// <summary>
     /// What no patch shows about the combat-end check (A4, re-audit round 2; patches on its head are back-offs of their own, the

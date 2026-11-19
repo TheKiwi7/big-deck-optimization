@@ -26,6 +26,7 @@ public static class ForeignShapesParts
         "nullfill-postfix", "nullfill-nearmiss-postfix",
         "latch-postfix", "latch-reset-postfix", "latch-open-postfix",
         "pilegate-postfix", "pilegate-beq-postfix", "pilegate-nearmiss-postfix",
+        "ro-postfix", "ro-chain-postfix", "ro-call-postfix",
         // Not a shape: "foreignpatch c0-override constant|patch|subclass|stateful" (rule C0: classes of "another mod" emitted into a
         // dynamic assembly, overriding PowerModel.OwnerIsSecondaryEnemy, which CardFlightLimit's combat-end check reaches).
         "c0-override",
@@ -97,6 +98,7 @@ public static class ForeignShapesParts
                 $"FOREIGN display {parts[1]} nullfill-postfix null results {NullFillNulls}, nearmiss every call {NullFillEvery}",
                 $"FOREIGN display {parts[1]} latch runs {LatchRuns}",
                 $"FOREIGN display {parts[1]} pilegate runs {PileGateRuns}, nearmiss every call {PileGateEvery}",
+                $"FOREIGN display {parts[1]} ro-call-postfix calls {ReadOnlyCalls}",
             };
         }
         MethodBase target = (parts[1].Contains("::", StringComparison.Ordinal) ? MethodFingerprint.Resolve(typeof(AbstractModel).Assembly, parts[1]) : AccessTools.Method(parts[1]))
@@ -118,6 +120,7 @@ public static class ForeignShapesParts
                 throw new ArgumentException($"{shape} goes on {type.FullName}:{method}");
             }
         }
+        string? verdict = null;
         switch (shape)
         {
             case "redirect-prefix":
@@ -198,15 +201,39 @@ public static class ForeignShapesParts
                     "draw" => PileType.Draw,
                     _ => throw new ArgumentException(shape + " gate: hand or draw"),
                 };
-                harmony.Patch(target, postfix: new HarmonyMethod(EmitPileGate(shape, type)) { priority = priority });
+                MethodInfo pileGate = EmitPileGate(shape, type);
+                harmony.Patch(target, postfix: new HarmonyMethod(pileGate) { priority = priority });
+                int? k = PatchSafety.ValueGatedPostfixes(target, AccessTools.PropertyGetter(typeof(CardPile), nameof(CardPile.Type)))?
+                    .Where(g => g.Patch.MethodHandle == pileGate.MethodHandle).Select(g => (int?)g.Value).FirstOrDefault();
+                verdict = $"FOREIGN pilegate {shape}: {(k is { } value ? "gated on " + (PileType)value : "not gated")}";
                 break;
             }
+            case "ro-postfix":
+            case "ro-chain-postfix":
+            case "ro-call-postfix":
+                // Rule RO (YutaMod's IndependentCurseLeaderPatch on Creature.get_IsSecondaryEnemy, in CardFlightLimit's combat-end
+                // check): a postfix calling a static method of its own class that reads the creature's own auto-properties (Side,
+                // Monster) and tests the monster's type, then may set __result (accepted). Controls: a getter called on a returned
+                // object (the creature's player's creature, null-checked: never throws), a call to another class's method first.
+                // Release-build IL emitted. No game state changes: the type tested is never a monster's, the call only counts.
+                if (target.DeclaringType != typeof(MegaCrit.Sts2.Core.Entities.Creatures.Creature) || target.Name != "get_IsSecondaryEnemy")
+                {
+                    throw new ArgumentException(shape + " goes on MegaCrit.Sts2.Core.Entities.Creatures.Creature:get_IsSecondaryEnemy");
+                }
+                MethodInfo readOnly = EmitReadOnly(shape);
+                harmony.Patch(target, postfix: new HarmonyMethod(readOnly) { priority = priority });
+                verdict = $"FOREIGN ro {shape}: {(PatchSafety.ReadOnlyPostfixes(target).Any(p => p.MethodHandle == readOnly.MethodHandle) ? "read-only" : "not read-only")}";
+                break;
             default:
                 throw new ArgumentException("unknown shape " + shape);
         }
         installed(id, target);
         var lines = new List<string> { $"FOREIGN installed {shape}{(gate.Length > 0 ? " " + gate : "")} on {target.DeclaringType?.Name}.{target.Name} as {id} (priority {priority})" };
         lines.AddRange(PatchSafety.Describe(target).Select(line => $"FOREIGN classify {target.DeclaringType?.Name}.{target.Name}: {line}"));
+        if (verdict != null)
+        {
+            lines.Add(verdict);
+        }
         return lines;
     }
 
@@ -214,7 +241,95 @@ public static class ForeignShapesParts
 
     private static readonly Dictionary<(string Label, string Counter), long> _marks = new();
 
-    public static long PileGateRuns, PileGateEvery;
+    public static long PileGateRuns, PileGateEvery, ReadOnlyCalls;
+
+    public static void CountReadOnly() => ReadOnlyCalls++;
+
+    /// <summary>
+    /// Rule RO's shapes as a Release build gives them, in a class of their own without a type initializer. ro-postfix and
+    /// ro-call-postfix: <c>Postfix(Creature __instance, ref bool __result) { [CountReadOnly();] if (IsMarked(__instance)) __result
+    /// = false; }</c> with <c>IsMarked(c)</c> = <c>c.Side == 2 &amp;&amp; c.Monster is ForeignShapesParts</c> (YutaMod's locals and
+    /// isinst; never true). ro-chain-postfix: <c>Player p = __instance.Player; if (p != null &amp;&amp; p.Creature.Side == 2) __result =
+    /// false;</c> (a getter on a returned object).
+    /// </summary>
+    private static MethodInfo EmitReadOnly(string shape)
+    {
+        if (_c0Module == null)
+        {
+            string unique = "BdoC0Shapes" + Environment.TickCount64.ToString("X");
+            _c0Module = System.Reflection.Emit.AssemblyBuilder.DefineDynamicAssembly(new AssemblyName(unique), System.Reflection.Emit.AssemblyBuilderAccess.Run)
+                .DefineDynamicModule(unique);
+        }
+        Type creature = typeof(MegaCrit.Sts2.Core.Entities.Creatures.Creature);
+        MethodInfo side = AccessTools.PropertyGetter(creature, "Side")!;
+        System.Reflection.Emit.TypeBuilder type = _c0Module.DefineType("BdoReadOnly" + (++_guards),
+            TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed | TypeAttributes.Class | TypeAttributes.BeforeFieldInit);
+        System.Reflection.Emit.MethodBuilder postfix = type.DefineMethod("Postfix", MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.HideBySig,
+            typeof(void), new[] { creature, typeof(bool).MakeByRefType() });
+        postfix.DefineParameter(1, ParameterAttributes.None, "__instance");
+        postfix.DefineParameter(2, ParameterAttributes.None, "__result");
+        System.Reflection.Emit.ILGenerator il = postfix.GetILGenerator();
+        System.Reflection.Emit.Label done = il.DefineLabel();
+        if (shape == "ro-chain-postfix")
+        {
+            il.DeclareLocal(typeof(MegaCrit.Sts2.Core.Entities.Players.Player));
+            il.Emit(System.Reflection.Emit.OpCodes.Ldarg_0);
+            il.Emit(System.Reflection.Emit.OpCodes.Callvirt, AccessTools.PropertyGetter(creature, "Player")!);
+            il.Emit(System.Reflection.Emit.OpCodes.Stloc_0);
+            il.Emit(System.Reflection.Emit.OpCodes.Ldloc_0);
+            il.Emit(System.Reflection.Emit.OpCodes.Brfalse_S, done);
+            il.Emit(System.Reflection.Emit.OpCodes.Ldloc_0);
+            il.Emit(System.Reflection.Emit.OpCodes.Callvirt, AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Entities.Players.Player), "Creature")!);
+            il.Emit(System.Reflection.Emit.OpCodes.Callvirt, side);
+            il.Emit(System.Reflection.Emit.OpCodes.Ldc_I4_2);
+            il.Emit(System.Reflection.Emit.OpCodes.Bne_Un_S, done);
+        }
+        else
+        {
+            System.Reflection.Emit.MethodBuilder marked = type.DefineMethod("IsMarked", MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.HideBySig,
+                typeof(bool), new[] { creature });
+            marked.DefineParameter(1, ParameterAttributes.None, "c");
+            System.Reflection.Emit.ILGenerator m = marked.GetILGenerator();
+            m.DeclareLocal(typeof(bool));
+            m.DeclareLocal(typeof(MonsterModel));
+            System.Reflection.Emit.Label end = m.DefineLabel(), yes = m.DefineLabel(), store = m.DefineLabel();
+            m.Emit(System.Reflection.Emit.OpCodes.Ldarg_0);
+            m.Emit(System.Reflection.Emit.OpCodes.Callvirt, side);
+            m.Emit(System.Reflection.Emit.OpCodes.Ldc_I4_2);
+            m.Emit(System.Reflection.Emit.OpCodes.Ceq);
+            m.Emit(System.Reflection.Emit.OpCodes.Stloc_0);
+            m.Emit(System.Reflection.Emit.OpCodes.Ldloc_0);
+            m.Emit(System.Reflection.Emit.OpCodes.Brfalse_S, end);
+            m.Emit(System.Reflection.Emit.OpCodes.Ldarg_0);
+            m.Emit(System.Reflection.Emit.OpCodes.Callvirt, AccessTools.PropertyGetter(creature, "Monster")!);
+            m.Emit(System.Reflection.Emit.OpCodes.Stloc_1);
+            m.Emit(System.Reflection.Emit.OpCodes.Ldloc_1);
+            m.Emit(System.Reflection.Emit.OpCodes.Isinst, typeof(ForeignShapesParts));
+            m.Emit(System.Reflection.Emit.OpCodes.Brtrue_S, yes);
+            m.Emit(System.Reflection.Emit.OpCodes.Ldc_I4_0);
+            m.Emit(System.Reflection.Emit.OpCodes.Br_S, store);
+            m.MarkLabel(yes);
+            m.Emit(System.Reflection.Emit.OpCodes.Ldc_I4_1);
+            m.MarkLabel(store);
+            m.Emit(System.Reflection.Emit.OpCodes.Stloc_0);
+            m.MarkLabel(end);
+            m.Emit(System.Reflection.Emit.OpCodes.Ldloc_0);
+            m.Emit(System.Reflection.Emit.OpCodes.Ret);
+            if (shape == "ro-call-postfix")
+            {
+                il.Emit(System.Reflection.Emit.OpCodes.Call, typeof(ForeignShapesParts).GetMethod(nameof(CountReadOnly))!);
+            }
+            il.Emit(System.Reflection.Emit.OpCodes.Ldarg_0);
+            il.Emit(System.Reflection.Emit.OpCodes.Call, marked);
+            il.Emit(System.Reflection.Emit.OpCodes.Brfalse_S, done);
+        }
+        il.Emit(System.Reflection.Emit.OpCodes.Ldarg_1);
+        il.Emit(System.Reflection.Emit.OpCodes.Ldc_I4_0);
+        il.Emit(System.Reflection.Emit.OpCodes.Stind_I1);
+        il.MarkLabel(done);
+        il.Emit(System.Reflection.Emit.OpCodes.Ret);
+        return type.CreateType()!.GetMethod("Postfix", BindingFlags.Public | BindingFlags.Static)!;
+    }
 
     public static void CountPileGate() => PileGateRuns++;
 
