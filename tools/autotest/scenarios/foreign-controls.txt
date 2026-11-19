@@ -8,7 +8,8 @@
 # and factory shapes there are HookSkip's positive cases now (still controls for SurroundingOnly in their classify lines and for
 # HookFilter); its controls there are an inner postfix on ModifyBlock (classified only) and, since F1 (2026-11-18: a finalizer
 # passing the exception on unchanged stands there, the void noop-finalizer on ModifyHpLost now kept), a finalizer returning
-# null on AfterCardDrawn and one merging null and __exception into one ret on AfterSideTurnEnd.
+# null on BeforeSideTurnStart and one merging null and __exception into one ret on AfterPlayerTurnStart (not on the Hook
+# methods of the TypeGated controls below: a Hook backed off whole never reaches its per-default runtime checks).
 timeout 600
 expect HookSkip: Hook\.AfterCardPlayed is also patched by bdtest\.foreign\.bool-prefix \(prefixes and postfixes around the transpiled body: run around this mod's code as without it\): kept
 expect FOREIGN runtime HookSkip Hook\.AfterCardPlayed \(TranspiledOnly\) kept [1-9][0-9]* backed off 0
@@ -17,11 +18,11 @@ expect FOREIGN runtime HookSkip Hook\.BeforeCombatStart \(SurroundingOnly\) kept
 expect FOREIGN classify Hook\.ModifyBlock \(synthetic\): bdtest\.foreign\.inner-postfix InnerPostfix .*TranspiledOnly backs off \(inner postfix
 expect HookSkip: Hook\.ModifyHpLost is also patched by bdtest\.foreign\.noop-finalizer \(prefixes and postfixes around the transpiled body: run around this mod's code as without it\): kept
 expect FOREIGN runtime HookSkip Hook\.ModifyHpLost \(TranspiledOnly\) kept [1-9][0-9]* backed off 0
-expect HookSkip: Hook\.AfterCardDrawn is also patched by bdtest\.foreign\.gates-swallow-finalizer \(prefixes and postfixes around the transpiled body not enough\): normal game for that part
-expect FOREIGN runtime HookSkip Hook\.AfterCardDrawn \(TranspiledOnly\) kept 0 backed off [1-9]
-expect FOREIGN classify Hook\.AfterCardDrawn: bdtest\.foreign\.gates-swallow-finalizer Finalizer .*TranspiledOnly backs off \(finalizer that may return another exception or none
-expect HookSkip: Hook\.AfterSideTurnEnd is also patched by bdtest\.foreign\.gates-ternary-finalizer \(prefixes and postfixes around the transpiled body not enough\): normal game for that part
-expect FOREIGN runtime HookSkip Hook\.AfterSideTurnEnd \(TranspiledOnly\) kept 0 backed off [1-9]
+expect HookSkip: Hook\.BeforeSideTurnStart is also patched by bdtest\.foreign\.gates-swallow-finalizer \(prefixes and postfixes around the transpiled body not enough\): normal game for that part
+expect FOREIGN runtime HookSkip Hook\.BeforeSideTurnStart \(TranspiledOnly\) kept 0 backed off [1-9]
+expect FOREIGN classify Hook\.BeforeSideTurnStart: bdtest\.foreign\.gates-swallow-finalizer Finalizer .*TranspiledOnly backs off \(finalizer that may return another exception or none
+expect HookSkip: Hook\.AfterPlayerTurnStart is also patched by bdtest\.foreign\.gates-ternary-finalizer \(prefixes and postfixes around the transpiled body not enough\): normal game for that part
+expect FOREIGN runtime HookSkip Hook\.AfterPlayerTurnStart \(TranspiledOnly\) kept 0 backed off [1-9]
 expect FOREIGN classify Hook\.AfterCardPlayed \(synthetic\): bdtest\.foreign\.inner-postfix InnerPostfix .*SurroundingOnly backs off \(inner postfix
 expect HookSkip: Hook\.AfterSideTurnStart is also patched by bdtest\.foreign\.ref-prefix \(prefixes and postfixes around the transpiled body: run around this mod's code as without it\): kept
 expect PileIndex: CardPile\.AddInternal is also patched by bdtest\.foreign\.identity-transpiler \(postfixes and prefixes running before this mod's not enough\)
@@ -74,8 +75,8 @@ foreignpatch inner-postfix MegaCrit.Sts2.Core.Hooks.Hook:AfterCardPlayed
 foreignpatch own-postfix MegaCrit.Sts2.Core.Hooks.Hook:BeforeCombatStart
 foreignpatch bool-prefix MegaCrit.Sts2.Core.Hooks.Hook:BeforeCombatStart
 foreignpatch noop-finalizer MegaCrit.Sts2.Core.Hooks.Hook:ModifyHpLost
-foreignpatch gates-swallow-finalizer MegaCrit.Sts2.Core.Hooks.Hook:AfterCardDrawn
-foreignpatch gates-ternary-finalizer MegaCrit.Sts2.Core.Hooks.Hook:AfterSideTurnEnd
+foreignpatch gates-swallow-finalizer MegaCrit.Sts2.Core.Hooks.Hook:BeforeSideTurnStart
+foreignpatch gates-ternary-finalizer MegaCrit.Sts2.Core.Hooks.Hook:AfterPlayerTurnStart
 foreignpatch inner-postfix MegaCrit.Sts2.Core.Hooks.Hook:ModifyBlock
 # A void prefix Harmony runs after this mod's tracking prefixes (Priority.Last, registered later), and a postfix taking the card by
 # reference (the finalizers read that slot after it), and one taking the pile's own card list (Harmony's ___ field injection).

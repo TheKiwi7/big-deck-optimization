@@ -1755,6 +1755,9 @@ public static partial class AutoTest
                 case "hover":
                     Hover(int.Parse(arg));
                     break;
+                case "targethover":
+                    TargetHover(int.Parse(arg));
+                    break;
                 case "eventtrace":
                     BenchPatches(EventTrace);
                     break;
@@ -2327,6 +2330,30 @@ public static partial class AutoTest
     }
 
     private static MegaCrit.Sts2.Core.Nodes.Combat.NCreature? _hovered;
+
+    /// <summary>
+    /// Script <c>targethover &lt;enemy index&gt;</c>: as a mouse aiming a card rests on that enemy, then cancels: targeting started
+    /// (<c>NTargetManager.StartTargeting</c>), the creature hovered (<c>OnNodeHovered</c>, which asks <c>Hook.ShouldAllowTargeting</c>:
+    /// its only caller), targeting cancelled. UI only, no game state; <c>play</c> calls cards directly and never gets there.
+    /// </summary>
+    private static void TargetHover(int enemyIndex)
+    {
+        CombatState state = CombatManager.Instance.DebugOnlyGetState() ?? throw new InvalidOperationException("not in combat");
+        Creature enemy = state.Enemies[enemyIndex];
+        MegaCrit.Sts2.Core.Nodes.Combat.NCreature node = MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom.Instance?.GetCreatureNode(enemy)
+            ?? throw new InvalidOperationException("no node for " + enemy);
+        MegaCrit.Sts2.Core.Nodes.Combat.NTargetManager manager = MegaCrit.Sts2.Core.Nodes.Combat.NTargetManager.Instance;
+        manager.StartTargeting(TargetType.AnyEnemy, node.GlobalPosition, MegaCrit.Sts2.Core.Nodes.Combat.TargetMode.ClickMouseToTarget, null, null);
+        try
+        {
+            manager.OnNodeHovered(node);
+            Say($"  target hovered {enemy}: allowed {ReferenceEquals(Traverse.Create(manager).Property("HoveredNode").GetValue(), node)}");
+        }
+        finally
+        {
+            manager.CancelTargeting();
+        }
+    }
 
     /// <summary>Script <c>hover &lt;enemy index&gt;</c>: as if the mouse rested on that enemy (its focus handler).</summary>
     private static void Hover(int enemyIndex)

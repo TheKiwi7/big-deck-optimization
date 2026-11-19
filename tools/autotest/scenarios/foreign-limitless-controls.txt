@@ -6,7 +6,9 @@
 # strict there), (2) a postfix gated on `is CardModel` on CardModel.AfterDeserialized (kept by TypeGated, but every inner card is
 # a CardModel: the per-card strict check backs off; on AfterDeserialized, which every inner card's build runs: rule L judges
 # UpgradeInternal only for an upgraded inner card), (3) a count before the gate's branch on CardModel.FinalizeUpgradeInternal
-# (not a gate: TypeGated backs off; the enchantment group, which every stacked inner card reaches).
+# (not a gate: TypeGated backs off; the enchantment group, which every stacked inner card reaches). The runtime counts add up
+# over the session: since rule L every content's groups are judged, so a1 and a2 already count FinalizeUpgradeInternal kept
+# (BaseLib's allowed postfixes only, "backed off 0" in a1's and a2's reports); a3 adds back-offs, its kept count unchanged.
 # Rule L (per content, Bench/ForeignShapesLimitless.cs `foreignpatch limitless reach`): strict count postfixes (Bench/ForeignPatches.cs
 # count-postfix) on (l1) CardModel.AddKeyword: a Goopy content (its OnEnchant's closure reaches it) no longer kept, a Sharp or Clone one
 # still is, the memo keeps running; (l2) NCard.FindOnTable (SoulsPower's closure only): Goopy and Sharp contents kept, the memo keeps
@@ -32,7 +34,8 @@ expect FOREIGN reach l2 storage Sharp 0: kept True
 expect FOREIGN reach l3 storage Sharp 1: kept False
 expect FOREIGN reach l3 storage Sharp 0: kept True
 expect FOREIGN classify CardModel\.FinalizeUpgradeInternal: bdtest\.foreign\.lim-write-then-gated-postfix-squeeze Postfix .*TypeGated backs off \(postfix not provably gated
-expect FOREIGN runtime LimitlessCloneMemo CardModel\.FinalizeUpgradeInternal \(TypeGated\) kept 0 backed off [1-9]
+expect FOREIGN runtime LimitlessCloneMemo CardModel\.FinalizeUpgradeInternal \(TypeGated\) kept [1-9][0-9]* backed off 0
+expect FOREIGN runtime LimitlessCloneMemo CardModel\.FinalizeUpgradeInternal \(TypeGated\) kept [0-9]+ backed off [1-9]
 expect LimitlessReserialize: SavedProperties\.FromInternal is also patched by bdtest\.foreign\.lim-twin-unfiltered: normal game for that part
 expect LimitlessReserialize: SavedProperties\.FromInternal is also patched by bdtest\.foreign\.lim-twin-alwaysstores: normal game for that part
 expect LimitlessReserialize: SavedProperties\.FromInternal is also patched by bdtest\.foreign\.lim-twin-impure: normal game for that part

@@ -1,7 +1,9 @@
 # CardSortKeys next to other mods' patches gated on the card's type (A/B, mod on; with foreign-parts-sort-1k-off; game v0.113+:
 # before, the game's comparison is cheap and the part not needed). Rule TG of 2026-11-18, Card Upgrader's shape: a postfix on
-# CardModel.get_DynamicVars doing nothing unless the card is a Squeeze (foreignpatch sort-gated-postfix squeeze). (1) A reshuffle
-# without a Squeeze: answered (CardSortKeys grew). (2) A Squeeze in the discard pile, reshuffled: that sort is the game's (the gated
+# CardModel.get_DynamicVars doing nothing unless the card is a Squeeze (foreignpatch sort-gated-postfix squeeze). (1) The combat
+# start's shuffles without a Squeeze: answered (CardSortKeys grew since before the fight; not the first reshuffle: the turn's
+# relics and powers make random cards of Necrobinder's pool, one of which is a Squeeze there, so that sort is rightly the game's,
+# `counters reshuffle` names it). (2) A Squeeze in the discard pile, reshuffled: that sort is the game's (the gated
 # patch acts on it; CardSortKeys same, the refusal names the gate). (3) The near miss (a static write before the test,
 # sort-nearmiss-postfix squeeze): every sort the game's. The patches' counts are display lines (DynamicVars is read at the
 # display's pace too); CHECKSUM and STATE lines must match the other side line for line. On v0.111 requiregame logs SKIPPED.
@@ -10,7 +12,7 @@
 requiregame v0.113
 expect CardSortKeys: CardModel\.get_DynamicVars is also patched by bdtest\.foreign\.sort-gated-postfix-squeeze \(patches gated on the listener's type: Squeeze treated as overriding it
 expect FOREIGN classify CardModel\.get_DynamicVars: bdtest\.foreign\.sort-gated-postfix-squeeze Postfix .*TypeGated tolerated, gates Squeeze
-expect EFFECTCHECK CardSortKeys grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK CardSortKeys grew since 'prefight': [0-9]+ -> [1-9]
 expect EFFECTCHECK CardSortKeys same since 'squeeze'
 expect COUNTERS gated:.*CardSortKeys sorts [1-9]\d*, answered [1-9]\d*, refused [1-9]\d* \(last: Squeeze is a Squeeze, whose comparison another mod's gated patch acts on\), checks \d+, mismatches 0
 expect FOREIGN classify CardModel\.get_DynamicVars: bdtest\.foreign\.sort-nearmiss-postfix-squeeze Postfix .*TypeGated backs off \(postfix not provably gated
@@ -28,13 +30,19 @@ waitfor run 120
 wait 2
 cmd bigdeck import ref all all
 enemyhp 999999
+# No Squeeze in the deck for (1) (the reference Necrobinder's deck holds 736: every sort would be the game's), nor from Vexing
+# Puzzlebox's random card at the combat start (Necrobinder's pool): ~208 cards. On both sides.
+deckfilter SQUEEZE
+cmd relic remove VEXING_PUZZLEBOX
 foreignpatch sort-gated-postfix MegaCrit.Sts2.Core.Models.CardModel:get_DynamicVars squeeze
+effects prefight
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 1
 checksum start
 state start
 effects start
+effectcheck CardSortKeys grew prefight
 play 3
 waitfor idle 120
 checksum t1 plays
@@ -45,7 +53,7 @@ waitfor idle 300
 checksum reshuffle
 state reshuffle
 effects reshuffle
-effectcheck CardSortKeys grew start
+counters reshuffle
 # (2) a Squeeze in the sorted cards.
 cmd card SQUEEZE discard
 waitfor idle 60

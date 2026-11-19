@@ -8,6 +8,8 @@
 # since 2026-11-18 (BeforeReplace), and HookSkip's filtered walk stays. ~945 cards. The hooks keep running filtered (require filtered: names of the other game version listed and
 # skipped), the patches' counts the same as mod off (STATE). A Shrug It Off played free (8 block, even) makes the replacing
 # prefix answer ModifyBlock at least once; ShouldDie is reached by the final kill (CreatureCmd.Kill, not forced).
+# Hook.ShouldAllowTargeting runs only from NTargetManager.OnCreatureHovered (a creature hovered while aiming a card), which
+# `play` never reaches: `targethover` drives that path (targeting started, the enemy hovered, cancelled), on both sides.
 timeout 2400
 expect HookSkip: Hook\.ModifyBlock is also patched by .*bdtest\.foreign\.hook-replacing-prefix.* \(prefixes and postfixes around the transpiled body: run around this mod's code as without it\): kept
 expect HookSkip: Hook\.ModifyHpLost is also patched by .*bdtest\.foreign\.hook-out-write-postfix.* \(prefixes and postfixes around the transpiled body: run around this mod's code as without it\): kept
@@ -23,6 +25,7 @@ expect STATE foreign end hook-out-write-postfix ModifyHpLost monster hp losses [
 expect STATE foreign end hook-args-prefix Hook\.ModifyHpLost [0-9]+ [1-9]
 expect FOREIGN runtime HookSkip Hook\.ModifyBlock \(TranspiledOnly\) kept [1-9][0-9]* backed off 0
 expect FOREIGN runtime HookSkip Hook\.ShouldAllowTargeting \(TranspiledOnly\) kept [1-9][0-9]* backed off 0
+expect STATE foreign end hook-out-write-postfix ShouldAllowTargeting True [1-9]
 expect FOREIGN runtime HookSkip Hook\.ShouldDie \(TranspiledOnly\) kept [1-9][0-9]* backed off 0
 expect STATE foreign end hook-replacing-prefix ModifyBlock replaced [1-9]
 expect STATE foreign end hook-args-prefix Hook\.ShouldDie [0-9]+ [1-9]
@@ -75,6 +78,9 @@ endturn
 waitfor idle 300
 checksum t3 end
 state t3
+targethover 0
+targethover 1
+checksum t3 hover
 foreignpatch require filtered ModifyBlock,ModifyHpLost,ShouldAllowTargeting,ModifyEnergyCostInCombat
 cmd kill all
 waitfor nocombat 300

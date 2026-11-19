@@ -8,6 +8,10 @@ waitfor run 120
 wait 2
 cmd bigdeck import ref all all
 enemyhp 999999
+# No Squeeze in the deck for (1) (the reference Necrobinder's deck holds 736: every sort would be the game's), nor from Vexing
+# Puzzlebox's random card at the combat start (Necrobinder's pool): ~208 cards. On both sides.
+deckfilter SQUEEZE
+cmd relic remove VEXING_PUZZLEBOX
 foreignpatch sort-gated-postfix MegaCrit.Sts2.Core.Models.CardModel:get_DynamicVars squeeze
 cmd fight CULTISTS_NORMAL
 waitfor idle 600

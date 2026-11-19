@@ -48,6 +48,9 @@ endturn
 waitfor idle 300
 checksum t3 end
 state t3
+targethover 0
+targethover 1
+checksum t3 hover
 cmd kill all
 waitfor nocombat 300
 wait 3

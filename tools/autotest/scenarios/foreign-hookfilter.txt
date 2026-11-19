@@ -50,6 +50,8 @@ newrun NECROBINDER
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
+# 1,016 cards: ReplayStateSkip leaves states out above 1,000 combat cards only (945 alone: its counter can't move).
+cmd bigdeck import ref 1 cards
 cmd relic add SPIKED_GAUNTLETS
 enemyhp 999999
 # Accepted (rule 1: a void prefix at the default priority, registered after the mirror, sorts before it; X: a no-op postfix, a bool
