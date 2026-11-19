@@ -829,11 +829,13 @@ public static class LimitlessCloneMemo
             bool first = true;
             while (true)
             {
-                // A walk stops at a method another mod patches (not a chain method: judged with its allowed patches and gates).
+                // A walk stops at a method another mod patches (not a chain method: judged with its allowed patches). Asked without
+                // recording a back-off (review C7): no content may use this override; a content asking records it (Patched, the
+                // blocker check).
                 Dictionary<(System.Reflection.Module, int), System.Reflection.MethodBase[]>? patchedNow = PatchedMethods();
                 bool Patched(System.Reflection.MethodBase m) =>
                     patchedNow != null && !chainMethods.Contains(m) && patchedNow.TryGetValue((m.Module, m.MetadataToken), out System.Reflection.MethodBase[]? instances)
-                    && instances.Any(instance => PatchSafety.IsPatchedByOthers(instance));
+                    && instances.Any(PatchSafety.HasOtherPatches);
                 foreach (string key in walks.Keys.ToArray())
                 {
                     ClosureWalk? walk = walks[key];
@@ -1089,7 +1091,9 @@ public static class LimitlessCloneMemo
     /// </summary>
     internal static bool ContentPatched(SerializableCard saved)
     {
-        if (saved.Id is not { } cardId)
+        // The spine first (review C7): it holds SaveUtil.CardOrDeprecated, which the type lookup below calls (once per id, maybe off
+        // the main thread): with another mod's patch there, that patch would run once more than in the game.
+        if (saved.Id is not { } cardId || ChainPatched())
         {
             return true;
         }

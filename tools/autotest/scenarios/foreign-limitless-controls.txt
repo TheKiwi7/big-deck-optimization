@@ -22,6 +22,8 @@
 # constructor, in Goopy's OnEnchant closure: a Goopy content no longer kept, a Sharp one still is. (g3, C6) a prefix gated on
 # Squeeze on CardModel.AddKeyword (Bench/ForeignPatches.cs gated-prefix): a closure's methods are judged strictly, gates included
 # (its code may call them on another card): Goopy no longer kept (it was, the storage card not being a Squeeze), Sharp still is.
+# (c7, C7) a count postfix on SaveUtil.CardOrDeprecated (the spine): LimitlessHookSkip's per content judgment of a card id it never
+# met (Dazed) answers patched without calling it (it looked the card type up first: one more call of that patch per id).
 # Rule B (copies of BaseLib's SavedSpireFieldPatch, Bench/ForeignShapesLimitlessTwins.cs, on SavedProperties.FromInternal):
 # (b1) GetFieldsForModel without its filter, (b2) a null result stored, (b3) its class's initializer doing more than make the
 # list, (b4) the accepted copy installed as a prefix, (b5) the accepted copy with its GetFieldsForModel patched, (b6) the accepted
@@ -47,6 +49,7 @@ expect FOREIGN reach g2 storage Goopy 0: kept False
 expect FOREIGN reach g2 storage Sharp 0: kept True
 expect FOREIGN reach g3 storage Goopy 0: kept False
 expect FOREIGN reach g3 storage Sharp 0: kept True
+expect FOREIGN reach c7 Dazed none 0: kept False, reaches Spine, hookskip patched True, foreign calls 0
 expect FOREIGN classify CardModel\.FinalizeUpgradeInternal: bdtest\.foreign\.lim-write-then-gated-postfix-squeeze Postfix .*TypeGated backs off \(postfix not provably gated
 expect FOREIGN runtime LimitlessCloneMemo CardModel\.FinalizeUpgradeInternal \(TypeGated\) kept [1-9][0-9]* backed off 0
 expect FOREIGN runtime LimitlessCloneMemo CardModel\.FinalizeUpgradeInternal \(TypeGated\) kept [0-9]+ backed off [1-9]
@@ -168,6 +171,12 @@ foreignpatch gated-prefix MegaCrit.Sts2.Core.Models.CardModel:AddKeyword squeeze
 wait 3
 foreignpatch limitless reach storage Goopy 0 g3
 foreignpatch limitless reach storage Sharp 0 g3
+foreignpatch remove
+wait 3
+# (c7) Review C7: the spine's CardOrDeprecated patched; a card id the per content judgment never met.
+foreignpatch count-postfix MegaCrit.Sts2.Core.Saves.SaveUtil:CardOrDeprecated
+wait 3
+foreignpatch limitless reach Dazed none 0 c7
 foreignpatch remove
 wait 3
 # (b1) Rule B: a copy whose GetFieldsForModel has no filter.

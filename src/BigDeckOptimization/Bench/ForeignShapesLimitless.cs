@@ -243,9 +243,13 @@ public static class ForeignShapesLimitless
             };
         }
         (bool kept, LimitlessCloneMemo.Reach reach) = LimitlessCloneMemo.KeptForTest(saved);
+        // Review C7: HookSkip's judgment runs no other mod's code (the count-postfix calls made during it).
+        long calls = ForeignPatches.CountPostfixCalls();
+        bool patched = LimitlessCloneMemo.ContentPatched(saved);
+        calls = ForeignPatches.CountPostfixCalls() - calls;
         return new[]
         {
-            $"FOREIGN reach {label} {card} {enchantment} {level}: kept {kept}, reaches {reach}, hookskip patched {LimitlessCloneMemo.ContentPatched(saved)}",
+            $"FOREIGN reach {label} {card} {enchantment} {level}: kept {kept}, reaches {reach}, hookskip patched {patched}, foreign calls {calls}",
             $"FOREIGN reach {label} closures done {LimitlessCloneMemo.ClosuresDone}: {LimitlessCloneMemo.ClosureStates()}",
         };
     }

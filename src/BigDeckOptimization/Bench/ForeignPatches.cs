@@ -1037,6 +1037,9 @@ public static class ForeignPatches
 
     private static void Count(string key) => _counts.AddOrUpdate(key, 1, (_, n) => n + 1);
 
+    /// <summary>Every count-postfix call so far, all methods together (a judgment that must run no other mod's code: ForeignShapesLimitless reach).</summary>
+    internal static long CountPostfixCalls() => _counts.Where(e => e.Key.StartsWith("count-postfix ", StringComparison.Ordinal)).Sum(e => e.Value);
+
     private static MegaCrit.Sts2.Core.Combat.CombatStateTracker? _stateTracker;
     private static Action<MegaCrit.Sts2.Core.Combat.CombatState>? _stateHandler;
 
