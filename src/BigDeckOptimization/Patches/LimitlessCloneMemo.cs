@@ -658,16 +658,19 @@ public static class LimitlessCloneMemo
         /// <summary>The chain methods in the closure, judged with their allowed patches and gates.</summary>
         public readonly (System.Reflection.MethodBase Method, System.Reflection.MethodInfo[] Allowed, bool Gated)[] Known;
 
-        private sealed record StrictAnswer(long Stamp, bool Patched);
+        private sealed record StrictAnswer(long Stamp, long CheckedAt, bool Patched);
 
-        /// <summary>Whether another mod patches one of <see cref="Methods"/>, per patch stamp (read and replaced whole: any thread).</summary>
+        /// <summary>
+        /// Whether another mod patches one of <see cref="Methods"/>, per patch stamp and for <see cref="RecheckMs"/> at most (read and
+        /// replaced whole: any thread).
+        /// </summary>
         private volatile StrictAnswer? _strict;
 
         public bool Patched(Type cardType)
         {
-            long stamp = PatchStamp();
+            long stamp = PatchStamp(), now = Environment.TickCount64;
             StrictAnswer? known = _strict;
-            if (known == null || known.Stamp != stamp)
+            if (known == null || known.Stamp != stamp || now - known.CheckedAt >= RecheckMs)
             {
                 // Only the methods Harmony lists as patched are asked (a method without any patch isn't another mod's); every one
                 // of those asked (each back-off recorded under this class's name), as the strict check of each would.
@@ -680,7 +683,7 @@ public static class LimitlessCloneMemo
                         patched |= PatchSafety.IsPatchedByOthers(method);
                     }
                 }
-                _strict = known = new StrictAnswer(stamp, patched);
+                _strict = known = new StrictAnswer(stamp, now, patched);
             }
             if (known.Patched)
             {
@@ -913,19 +916,26 @@ public static class LimitlessCloneMemo
         }
     }
 
-    private sealed record PatchedSet(long Stamp, HashSet<(System.Reflection.Module, int)>? Keys);
+    private sealed record PatchedSet(long Stamp, long CheckedAt, HashSet<(System.Reflection.Module, int)>? Keys);
 
     private static volatile PatchedSet? _patchedSet;
 
     /// <summary>
+    /// How long an answer made for one patch stamp stands (<see cref="PatchedKeys"/>, <see cref="OverrideClosure"/>'s strict answer):
+    /// as PatchSafety's own answers, which these are built from. A stamp alone would keep for good an answer PatchSafety gave from a
+    /// cache filled just before a patch landed (a check on another thread reading Harmony before the patch, storing after it).
+    /// </summary>
+    private const long RecheckMs = 2000;
+
+    /// <summary>
     /// The methods Harmony lists as patched now, by module and token (a generic instantiation counts as its definition: more, never
-    /// fewer), per patch stamp; null when Harmony can't tell (then everything counts as patched).
+    /// fewer), per patch stamp and for <see cref="RecheckMs"/> at most; null when Harmony can't tell (then everything counts as patched).
     /// </summary>
     private static HashSet<(System.Reflection.Module, int)>? PatchedKeys()
     {
-        long stamp = PatchStamp();
+        long stamp = PatchStamp(), now = Environment.TickCount64;
         PatchedSet? known = _patchedSet;
-        if (known == null || known.Stamp != stamp)
+        if (known == null || known.Stamp != stamp || now - known.CheckedAt >= RecheckMs)
         {
             HashSet<(System.Reflection.Module, int)>? keys;
             try
@@ -936,7 +946,7 @@ public static class LimitlessCloneMemo
             {
                 keys = null;
             }
-            _patchedSet = known = new PatchedSet(stamp, keys);
+            _patchedSet = known = new PatchedSet(stamp, now, keys);
         }
         return known.Keys;
     }
