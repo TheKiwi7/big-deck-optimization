@@ -653,6 +653,45 @@ public static class ForeignShapesGates
         il.Emit(OpCodes.Ret);
     });
 
+    private static MethodInfo? _relyingGetter, _relyingGetterPostfix;
+
+    /// <summary>
+    /// Rule G's getter in another (dynamic) assembly, <c>ldsfld Holder::Flag; ret</c>, Holder a third class there whose
+    /// beforefieldinit initializer constructs <see cref="PureRegistry"/> (R1: pure while that constructor is unpatched). Neither
+    /// class is in the code the patch is compiled with (another assembly): only rule G's own judgement covers Holder.
+    /// </summary>
+    private static MethodInfo RelyingGetter()
+    {
+        lock (Shapes)
+        {
+            if (_relyingGetter != null)
+            {
+                return _relyingGetter;
+            }
+            ConstructorInfo registry = PureRegistry().GetConstructor(Type.EmptyTypes)!;
+            string unique = "BdoForeignShapesGatesOther" + (++_serial);
+            ModuleBuilder module = AssemblyBuilder.DefineDynamicAssembly(new AssemblyName(unique), AssemblyBuilderAccess.Run).DefineDynamicModule(unique);
+            const TypeAttributes attributes = TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed | TypeAttributes.Class | TypeAttributes.BeforeFieldInit;
+            TypeBuilder holder = module.DefineType("BdoGatesOther.relying_holder", attributes);
+            FieldBuilder flag = holder.DefineField("Flag", typeof(bool), FieldAttributes.Public | FieldAttributes.Static);
+            FieldBuilder made = holder.DefineField("Registry", typeof(object), FieldAttributes.Public | FieldAttributes.Static);
+            ILGenerator init = holder.DefineTypeInitializer().GetILGenerator();
+            init.Emit(OpCodes.Newobj, registry);
+            init.Emit(OpCodes.Stsfld, made);
+            init.Emit(OpCodes.Ret);
+            Type holderType = holder.CreateType()!;
+            TypeBuilder owner = module.DefineType("BdoGatesOther.relying_getter", attributes);
+            MethodBuilder get = owner.DefineMethod("get_Flag", MethodAttributes.Public | MethodAttributes.Static, typeof(bool), Type.EmptyTypes);
+            ILGenerator g = get.GetILGenerator();
+            g.Emit(OpCodes.Ldsfld, holderType.GetField(flag.Name)!);
+            g.Emit(OpCodes.Ret);
+            return _relyingGetter = owner.CreateType()!.GetMethod("get_Flag")!;
+        }
+    }
+
+    /// <summary>The gated shape on <see cref="RelyingGetter"/> (one method: its verdict cached, the reliance asked at each answer).</summary>
+    private static MethodInfo RelyingGetterPostfix() => _relyingGetterPostfix ??= GetterGatedPostfix("selftest", RelyingGetter());
+
     // --- I: static calls and constructions into scanned code don't count as running an initializer ---
 
     private static Type? _impureHelper;
@@ -1305,6 +1344,11 @@ public static class ForeignShapesGates
         yield return new Case("G control: the getter's true side acts for every listener", GetterUngatedPostfix("selftest"), postfix, model, gated, false);
         yield return new Case("G control: a getter reading two fields (not trivial)", GetterGatedPostfix("selftest", typeof(GatesCounter).GetProperty(nameof(GatesCounter.ConfigBoth))!.GetGetMethod()), postfix, model, gated, false);
         yield return new Case("G control: a getter whose class initializer reads the clock", GetterImpureClass(), postfix, model, gated, false);
+        // Rule G's initializer verdict: the pure part cached, what it relies on asked at each answer (not only at the first).
+        yield return new Case("G a getter of another assembly, its field's class constructing a pure class", RelyingGetterPostfix(), postfix, model, gated, true, "Squeeze");
+        yield return new Case("G control: that class's constructor patched by another mod after the first judgement (asked at each answer)", RelyingGetterPostfix(),
+            postfix, model, gated, false, Before: PatchRegistry, After: UnpatchRegistry);
+        yield return new Case("G again once that patch is gone", RelyingGetterPostfix(), postfix, model, gated, true, "Squeeze");
         // I.
         yield return new Case("I a static call into the patch's own assembly (no static access)", HelperReachPostfix("wrap"), postfix, model, gated, true, "Squeeze");
         yield return new Case("I a construction of a class of the patch's own assembly", HelperReachPostfix("construct"), postfix, model, gated, true, "Squeeze");

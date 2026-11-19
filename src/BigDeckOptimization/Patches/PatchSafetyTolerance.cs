@@ -562,7 +562,7 @@ public static partial class PatchSafety
                 // it, not the IL read: asked at each recheck.
                 return Harmony.GetPatchInfo(method) is { } patchedNull && AllPatches(patchedNull).Any()
                     ? $"{KindText(kind, method)} whose own method is patched (judged a no-op for a null result from its IL)"
-                    : PatchedPathCallee(method) is { } calleeNull ? $"{KindText(kind, method)} calling {calleeNull.DeclaringType?.Name}.{calleeNull.Name}, which is patched" : null;
+                    : PatchedPathCallee((method.MethodHandle, PatchKind.Postfix, NullGateKey, -1)) is { } calleeNull ? $"{KindText(kind, method)} calling {calleeNull.DeclaringType?.Name}.{calleeNull.Name}, which is patched" : null;
             }
             // A postfix let stand because its IL only reads through a by-reference argument (OnlyReadThrough): the code that runs
             // is its replacement when anyone patches it, not the IL read. Asked at each recheck, as TypeGated's gates are.
@@ -1437,27 +1437,44 @@ public static partial class PatchSafety
         }
         // The initializers after the shape (a refusal then says which of the two failed: GateRefusal), then the methods the no-op
         // path calls, unpatched at each answer (their replacement isn't the IL read).
-        return shape != null && InitializersFree(patch) && PatchedPathCallee(patch) == null ? shape : null;
+        return shape != null && InitializersFree(patch) && PatchedPathCallee(gateKey) == null ? shape : null;
     }
 
     /// <summary>
-    /// Per analysed patch method, the methods its no-op path calls (rule G's static getters, rule FW's forwarded method): the
-    /// verdict holds while none of them is patched by anyone.
+    /// What one analysis of a patch's no-op path relies on: the methods it calls (rule G's static getters, rule FW's forwarded
+    /// method) and the classes whose initializers rule G judged pure (their getter's and field's classes).
     /// </summary>
-    private static readonly ConcurrentDictionary<RuntimeMethodHandle, MethodBase[]> _pathCallees = new();
+    private sealed record PathDeps(MethodBase[] Callees, Type[] Initialized);
 
-    /// <summary>A method the patch's no-op path calls that anyone patches now, or null.</summary>
-    private static MethodBase? PatchedPathCallee(MethodInfo patch)
+    /// <summary>
+    /// Per analysis, keyed as <see cref="_gates"/> (a gate on <c>__instance</c>, on <c>__result</c>, on an argument; the null gate
+    /// under <see cref="NullGateKey"/>): what its path relies on. The verdict holds while none of those methods is patched by anyone
+    /// and none of those initializers' reliances is (each analysis its own set: one patch method analysed several ways).
+    /// </summary>
+    private static readonly ConcurrentDictionary<(RuntimeMethodHandle Method, PatchKind Kind, string Listener, int Position), PathDeps> _pathCallees = new();
+
+    /// <summary>The listener slot of <see cref="AnalyseNullGate"/>'s entry in <see cref="_pathCallees"/> (no parameter has this name).</summary>
+    private const string NullGateKey = "\0null";
+
+    /// <summary>A method that analysis's no-op path calls, or one its judged initializers rely on, that anyone patches now, or null.</summary>
+    private static MethodBase? PatchedPathCallee((RuntimeMethodHandle Method, PatchKind Kind, string Listener, int Position) key)
     {
-        if (!_pathCallees.TryGetValue(patch.MethodHandle, out MethodBase[]? callees))
+        if (!_pathCallees.TryGetValue(key, out PathDeps? deps))
         {
             return null;
         }
-        foreach (MethodBase callee in callees)
+        foreach (MethodBase callee in deps.Callees)
         {
             if (Harmony.GetPatchInfo(callee) is { } info && AllPatches(info).Any())
             {
                 return callee;
+            }
+        }
+        foreach (Type type in deps.Initialized)
+        {
+            if (PatchedInitializerReliance(type) is { } relied)
+            {
+                return relied;
             }
         }
         return null;
@@ -1628,13 +1645,14 @@ public static partial class PatchSafety
         ListenerSlot? slot = ListenerOf(original);
         string name = slot?.Parameter ?? (ModelInstance(original) ? "__instance" : "");
         int position = name == "__instance" || name.Length == 0 ? -1 : Array.FindIndex(original.GetParameters(), p => p.Name == name);
+        var gateKey = (patch.MethodHandle, kind, name, position);
         bool shaped = name.Length > 0 && (name == "__instance" || position >= 0)
-            && _gates.GetOrAdd((patch.MethodHandle, kind, name, position), key => AnalyseGates(patch, key.Kind, key.Listener, key.Position)) != null;
+            && _gates.GetOrAdd(gateKey, key => AnalyseGates(patch, key.Kind, key.Listener, key.Position)) != null;
         if (shaped && InitializerRefusal(patch) is { } why)
         {
             return $"{KindText(kind, patch)} gated, but {why}";
         }
-        if (shaped && PatchedPathCallee(patch) is { } callee)
+        if (shaped && PatchedPathCallee(gateKey) is { } callee)
         {
             return $"{KindText(kind, patch)} gated, but {callee.DeclaringType?.Name}.{callee.Name}, which it calls on every call, is patched (its code isn't the one read)";
         }
@@ -1698,7 +1716,7 @@ public static partial class PatchSafety
             {
                 return null;
             }
-            _pathCallees[patch.MethodHandle] = outcome.Callees.Distinct().ToArray();
+            _pathCallees[(patch.MethodHandle, kind, listener, position)] = new PathDeps(outcome.Callees.Distinct().ToArray(), outcome.Initialized.Distinct().ToArray());
             if (outcome.Names.Count > 0)
             {
                 outcome.Gates.Add(typeof(NameGateMarker));
@@ -1775,6 +1793,9 @@ public static partial class PatchSafety
 
         /// <summary>The methods the paths call (inlined callees): unpatched at each answer (<see cref="PatchedPathCallee"/>).</summary>
         public readonly List<MethodBase> Callees = new();
+
+        /// <summary>The classes whose initializers rule G judged pure: their reliances unpatched at each answer (<see cref="PatchedPathCallee"/>).</summary>
+        public readonly List<Type> Initialized = new();
 
         public int Paths = 1;
         public int Steps;
@@ -1952,7 +1973,7 @@ public static partial class PatchSafety
                     returned?.Add(exitValue);
                     break;
                 }
-                else if (op == OpCodes.Call && ins.Operand is MethodInfo getter && TrivialStaticGetter(getter))
+                else if (op == OpCodes.Call && ins.Operand is MethodInfo getter && TrivialStaticGetter(getter, outcome.Initialized))
                 {
                     // Rule G: the flag's value isn't known (a config read at run time): forkable.
                     outcome.Callees.Add(getter);
@@ -2099,10 +2120,11 @@ public static partial class PatchSafety
     /// Rule G (2026-11-18): a static getter that only reads a static field, <c>ldsfld F; ret</c> (or Roslyn's Debug form through a
     /// local), no parameter, neither it nor its field generic, its class's and the field's class's initializers free
     /// (<see cref="InitializerFree"/>: calling it runs nothing else, now or later). Its value is unknown (a mod's config flag, set
-    /// at run time: its initializer's constant isn't its value), so a branch on it explores both sides. Whether it is patched is
-    /// asked at each answer (<see cref="PatchedPathCallee"/>).
+    /// at run time: its initializer's constant isn't its value), so a branch on it explores both sides. Whether it is patched, and
+    /// whether what those initializers rely on is (<paramref name="initialized"/> gets the two classes: the verdict cached is the
+    /// pure part), are asked at each answer (<see cref="PatchedPathCallee"/>).
     /// </summary>
-    private static bool TrivialStaticGetter(MethodInfo getter)
+    private static bool TrivialStaticGetter(MethodInfo getter, List<Type> initialized)
     {
         try
         {
@@ -2121,7 +2143,13 @@ public static partial class PatchSafety
             // Debug: ldsfld F; stloc.k; br L; L: ldloc.k; ret.
             bool debug = code.Count == 5 && StoresLocal(code[1], out int local) && (code[2].Op == OpCodes.Br || code[2].Op == OpCodes.Br_S)
                 && code[2].Operand is int target && target == code[3].Offset && LocalLoaded(code[3]) == local && code[4].Op == OpCodes.Ret;
-            return (plain || debug) && InitializerFree(owner) && InitializerFree(holder);
+            if (!(plain || debug) || !InitializerPure(owner) || !InitializerPure(holder))
+            {
+                return false;
+            }
+            initialized.Add(owner);
+            initialized.Add(holder);
+            return true;
         }
         catch
         {
@@ -3230,7 +3258,7 @@ public static partial class PatchSafety
             {
                 return false;
             }
-            _pathCallees[patch.MethodHandle] = outcome.Callees.Distinct().ToArray();
+            _pathCallees[(patch.MethodHandle, PatchKind.Postfix, NullGateKey, -1)] = new PathDeps(outcome.Callees.Distinct().ToArray(), outcome.Initialized.Distinct().ToArray());
             return true;
         }
         catch
