@@ -1175,7 +1175,7 @@ public static partial class PatchSafety
     }
 
     /// <summary>The index of each instruction by its offset.</summary>
-    private static Dictionary<int, int> IndexByOffset(List<MethodFingerprint.Instruction> code)
+    internal static Dictionary<int, int> IndexByOffset(List<MethodFingerprint.Instruction> code)
     {
         var at = new Dictionary<int, int>(code.Count);
         for (int i = 0; i < code.Count; i++)
@@ -1186,7 +1186,7 @@ public static partial class PatchSafety
     }
 
     /// <summary>Every instruction index a branch, a <c>leave</c> or a <c>switch</c> may jump to. Throws on a target that is no instruction.</summary>
-    private static HashSet<int> BranchTargets(List<MethodFingerprint.Instruction> code, Dictionary<int, int> at)
+    internal static HashSet<int> BranchTargets(List<MethodFingerprint.Instruction> code, Dictionary<int, int> at)
     {
         var targets = new HashSet<int>();
         for (int i = 0; i < code.Count; i++)

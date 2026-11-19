@@ -3,7 +3,8 @@
 # set. Once it ran (the install reads the getter once), none of its code can run again: flashes still merge (RelicFlashMerge grew),
 # a kept note names it. Controls (each a new run): the same class also clearing the flag elsewhere (latch-reset-postfix), and a
 # flag nobody sets (latch-open-postfix): every flash kept (RelicFlashMerge same), the back-off recorded. Release-build IL emitted
-# (Bench/ForeignShapesParts.cs). A campfire clone (~945 cards, Bing Bong) per phase.
+# (Bench/ForeignShapesParts.cs). A campfire clone (~945 cards, Bing Bong) per phase. Last, judged by its shape only (installed and
+# removed): the class also storing `a || b` in the flag (latch-or-postfix: the stsfld a branch target, not a latch).
 timeout 2000
 expect FOREIGN kept RelicFlashMerge: other mods' code that has already run once and can't run again \(.*SaveManager\.get_Progress.*\)
 expect EFFECTCHECK RelicFlashMerge grew since 'latch'
@@ -12,6 +13,8 @@ expect RelicFlashMerge: SaveManager\.get_Progress is also patched by bdtest\.for
 expect EFFECTCHECK RelicFlashMerge same since 'latchreset'
 expect RelicFlashMerge: SaveManager\.get_Progress is also patched by bdtest\.foreign\.latch-open-postfix: normal game for that part
 expect EFFECTCHECK RelicFlashMerge same since 'latchopen'
+expect FOREIGN latch latch-postfix: a latch on _ran
+expect FOREIGN latch latch-or-postfix: not a latch
 # Phase latch: accepted once it ran.
 newrun NECROBINDER
 waitfor run 120
@@ -72,5 +75,7 @@ wait 2
 effects latchopen end
 effectcheck RelicFlashMerge same latchopen
 cmd bdopt why
+foreignpatch remove
+foreignpatch latch-or-postfix MegaCrit.Sts2.Core.Saves.SaveManager:get_Progress
 foreignpatch remove
 quit

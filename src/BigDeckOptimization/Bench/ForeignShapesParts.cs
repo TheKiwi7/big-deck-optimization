@@ -24,7 +24,7 @@ public static class ForeignShapesParts
         "sort-gated-postfix", "sort-nearmiss-postfix",
         "ng-guard", "ng-true-guard", "ng-call-guard",
         "nullfill-postfix", "nullfill-nearmiss-postfix",
-        "latch-postfix", "latch-reset-postfix", "latch-open-postfix",
+        "latch-postfix", "latch-reset-postfix", "latch-open-postfix", "latch-or-postfix",
         "pilegate-postfix", "pilegate-beq-postfix", "pilegate-nearmiss-postfix",
         "ro-postfix", "ro-chain-postfix", "ro-call-postfix",
         // Not a shape: "foreignpatch c0-override constant|patch|subclass|stateful" (rule C0: classes of "another mod" emitted into a
@@ -171,13 +171,18 @@ public static class ForeignShapesParts
             case "latch-postfix":
             case "latch-reset-postfix":
             case "latch-open-postfix":
+            case "latch-or-postfix":
             {
                 // Rule latch (All Timeline Unlock's GetProgressPatch on SaveManager.Progress): a postfix returning at once when its
                 // private flag is set, the flag only ever set (latch-postfix: accepted once it ran, which the install makes happen by
                 // reading the getter once); controls: the class also clears the flag in another method (latch-reset-postfix), the
-                // flag set only by a method nobody calls (latch-open-postfix: the latch stays open). Release-build IL emitted. They
-                // count their runs only (display).
+                // flag set only by a method nobody calls (latch-open-postfix: the latch stays open), the class also storing
+                // `a || b` in it (latch-or-postfix: an ldc.i4.1 right before that stsfld, but the stsfld a branch target that
+                // stores b). Release-build IL emitted. They count their runs only (display); each logs the shape's verdict.
                 MethodInfo postfix = EmitLatch(shape);
+#if BENCH
+                verdict = $"FOREIGN latch {shape}: {(LazyGuard.LatchShapeForTest(postfix) is { } latch ? "a latch on " + latch.Name : "not a latch")}";
+#endif
                 harmony.Patch(target, postfix: new HarmonyMethod(postfix) { priority = priority });
                 if (target is MethodInfo { IsStatic: false } getter && getter.GetParameters().Length == 0 && target.DeclaringType == typeof(MegaCrit.Sts2.Core.Saves.SaveManager))
                 {
@@ -390,7 +395,7 @@ public static class ForeignShapesParts
     /// <summary>
     /// The latch postfix as a Release build gives it: <c>ldsfld _ran; brtrue.s L; ldc.i4.1; stsfld _ran; call CountLatch; L: ret</c>
     /// (_ran private static bool of its own class). latch-reset-postfix adds a method storing false; latch-open-postfix stores the
-    /// flag in a method of its own nobody calls, not in the postfix.
+    /// flag in a method of its own nobody calls, not in the postfix; latch-or-postfix adds a method storing <c>a || b</c>.
     /// </summary>
     private static MethodInfo EmitLatch(string shape)
     {
@@ -417,7 +422,23 @@ public static class ForeignShapesParts
         il.Emit(System.Reflection.Emit.OpCodes.Call, typeof(ForeignShapesParts).GetMethod(nameof(CountLatch))!);
         il.MarkLabel(done);
         il.Emit(System.Reflection.Emit.OpCodes.Ret);
-        if (shape != "latch-postfix")
+        if (shape == "latch-or-postfix")
+        {
+            // Set(bool a, bool b) { _ran = a || b; } as Roslyn's Release build gives it.
+            System.Reflection.Emit.ILGenerator or = type.DefineMethod("Set", MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.HideBySig,
+                typeof(void), new[] { typeof(bool), typeof(bool) }).GetILGenerator();
+            System.Reflection.Emit.Label one = or.DefineLabel(), store = or.DefineLabel();
+            or.Emit(System.Reflection.Emit.OpCodes.Ldarg_0);
+            or.Emit(System.Reflection.Emit.OpCodes.Brtrue_S, one);
+            or.Emit(System.Reflection.Emit.OpCodes.Ldarg_1);
+            or.Emit(System.Reflection.Emit.OpCodes.Br_S, store);
+            or.MarkLabel(one);
+            or.Emit(System.Reflection.Emit.OpCodes.Ldc_I4_1);
+            or.MarkLabel(store);
+            or.Emit(System.Reflection.Emit.OpCodes.Stsfld, ran);
+            or.Emit(System.Reflection.Emit.OpCodes.Ret);
+        }
+        else if (shape != "latch-postfix")
         {
             System.Reflection.Emit.ILGenerator other = type.DefineMethod(shape == "latch-reset-postfix" ? "Reset" : "Set",
                 MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.HideBySig, typeof(void), Type.EmptyTypes).GetILGenerator();
