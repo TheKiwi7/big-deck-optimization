@@ -25,7 +25,8 @@ namespace BigDeckOptimization.Bench;
 /// BaseLib's SavedSpireFieldPatch postfixes with BaseLib's IL (Acheron's shape), holding no field.</item>
 /// <item>Rule B, controls (must back off): <c>lim-twin unfiltered</c> (GetFieldsForModel without its filter), <c>lim-twin
 /// alwaysstores</c> (a null result stored), <c>lim-twin impure</c> (its class's initializer counts), <c>lim-twin aliased</c> (its
-/// GetFieldsForModel reads another class's list of the same name), <c>lim-twin-prefix accepted</c>
+/// GetFieldsForModel reads another class's list of the same name), <c>lim-twin mycopy</c> (review D1: a class of another name
+/// whose postfix calls another class's GetFieldsForModel; its code counts as BaseLib's by a test override), <c>lim-twin-prefix accepted</c>
 /// (installed as a prefix), <c>foreignpatch limitless twin patchcallee</c> (its GetFieldsForModel patched), <c>foreignpatch limitless
 /// twin register</c> (a field in its own list: for the rest of the session).</item>
 /// <item>Rule L: <c>lim-inner-count-postfix</c> on <c>CardModel:get_MaxUpgradeLevel</c> or <c>CardCmd::Enchant(EnchantmentModel,CardModel,Decimal)</c>,
@@ -92,7 +93,8 @@ public static class ForeignShapesLimitless
         "alwaysstores" => typeof(Twins.AlwaysStores.SavedSpireFieldPatch),
         "impure" => typeof(Twins.ImpureInitializer.SavedSpireFieldPatch),
         "aliased" => typeof(Twins.Aliased.SavedSpireFieldPatch),
-        _ => throw new ArgumentException("twin variant: accepted, unfiltered, alwaysstores, impure or aliased"),
+        "mycopy" => typeof(Twins.MyCopy.MyCopy),
+        _ => throw new ArgumentException("twin variant: accepted, unfiltered, alwaysstores, impure, aliased or mycopy"),
     };
 
     /// <summary>The twin's postfix for SavedProperties.FromInternal or FillInternal.</summary>
@@ -112,7 +114,7 @@ public static class ForeignShapesLimitless
     /// one's IL is BaseLib's, as the stored constants say); a field registered in the accepted twin's own list (for the session:
     /// it can't be taken back); a no-op postfix on the accepted twin's GetFieldsForModel (removed with <c>limitless remove</c>).
     /// </summary>
-    private static IReadOnlyList<string> TwinCommand(string what)
+    private static IReadOnlyList<string> TwinCommand(string what, string? label = null)
     {
         Type accepted = typeof(Twins.Accepted.SavedSpireFieldPatch);
         switch (what)
@@ -142,7 +144,7 @@ public static class ForeignShapesLimitless
             OwnNormalizedIl.Of((of ?? accepted).GetMethod(method, BindingFlags.Static | BindingFlags.NonPublic)!) == expected ? "BaseLib's" : "other";
         return new[]
         {
-            $"FOREIGN twin {what}: twins on FromInternal {from.Length} ({string.Join(", ", from.Select(m => m.DeclaringType?.FullName))}), on FillInternal {fill.Length}, one holds a field {holds}",
+            $"FOREIGN twin {what}{(label != null ? " " + label : "")}: twins on FromInternal {from.Length} ({string.Join(", ", from.Select(m => m.DeclaringType?.FullName))}), on FillInternal {fill.Length}, one holds a field {holds}",
             $"FOREIGN twin accepted IL: FromInternal {Il("PostfixFromInternal", "9DD9F273573E3F25")}, FillInternal {Il("PostfixFillInternal", "1441D774E03D0220")}, GetFieldsForModel {Il("GetFieldsForModel", "5D37A68AE0E65B5D")}",
             // The aliased control describes as BaseLib's (another class's list under the same name): only the owner check refuses it.
             $"FOREIGN twin aliased IL: FromInternal {Il("PostfixFromInternal", "9DD9F273573E3F25", typeof(Twins.Aliased.SavedSpireFieldPatch))}, GetFieldsForModel {Il("GetFieldsForModel", "5D37A68AE0E65B5D", typeof(Twins.Aliased.SavedSpireFieldPatch))}",
@@ -163,11 +165,11 @@ public static class ForeignShapesLimitless
             {
                 "report" => LimitlessShapeCounts.ReportLines(parts.Length > 2 ? parts[2] : "end"),
                 "remove" => Remove(),
-                "twin" when parts.Length > 2 => TwinCommand(parts[2]),
+                "twin" when parts.Length > 2 => TwinCommand(parts[2], parts.Length > 3 ? parts[3] : null),
                 "reach" when parts.Length > 4 => ReachCommand(parts[2], parts[3], int.Parse(parts[4]), parts.Length > 5 ? parts[5] : "now"),
                 "anyknown" => new[] { $"FOREIGN anyknown {(parts.Length > 2 ? parts[2] : "now")}: {LimitlessHookSkip.AnyKnownForTest()}" },
                 "memo" => new[] { $"FOREIGN clonememo {(parts.Length > 2 ? parts[2] : "now")}: entries {LimitlessCloneMemo.MemoCount}, patch stamp clears {LimitlessCloneMemo.PatchStampClears}, reused {LimitlessCloneMemo.Reused}" },
-                _ => throw new ArgumentException("foreignpatch limitless report [label] | remove | twin status|register|patchcallee | reach <storage|CardClass> <EnchantmentClass|none> <level> [label] | memo [label] | anyknown [label]"),
+                _ => throw new ArgumentException("foreignpatch limitless report [label] | remove | twin status|register|patchcallee [label] | reach <storage|CardClass> <EnchantmentClass|none> <level> [label] | memo [label] | anyknown [label]"),
             };
         }
         string shape = parts[0];
@@ -208,6 +210,11 @@ public static class ForeignShapesLimitless
                 harmony.Patch(target, postfix: Gated(nameof(LimitlessGates.WriteThenGatedPostfix)));
                 break;
             case "lim-twin":
+                if (gate == "mycopy")
+                {
+                    // Review D1: its code counts as BaseLib's (the shape needs IL no C# compiler emits): only the exact-member check refuses it.
+                    BaseLibTypes.CodeAsBaseLibForTest[typeof(Twins.MyCopy.MyCopy)] = 0;
+                }
                 harmony.Patch(target, postfix: new HarmonyMethod(TwinPostfix(target, gate)) { priority = priority });
                 break;
             case "lim-inner-count-postfix":

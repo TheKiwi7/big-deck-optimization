@@ -126,7 +126,8 @@ public static class CombatStartTimer
     [Patches.ReadOnlyProbePostfix]
     private static void AsyncPostfix(System.Reflection.MethodBase __originalMethod, Task __result)
     {
-        if (!_running || !_labels.TryGetValue(__originalMethod, out var info))
+        // A null task (another mod's prefix skipping the method without setting it, review M4): nothing to wait for.
+        if (!_running || __result == null || !_labels.TryGetValue(__originalMethod, out var info))
         {
             return;
         }

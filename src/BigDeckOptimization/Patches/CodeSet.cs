@@ -11,7 +11,8 @@ namespace BigDeckOptimization.Patches;
 /// every game method the roots reach through calls, the game's own overrides of the game's virtual methods they call included,
 /// type initializers and calls into other assemblies left out) and pinned per game version (<see cref="Reviewed"/>: the set's
 /// fingerprint, names and code, as tools/fingerprint <c>closure</c> prints it). Answers, cached per Harmony epoch and for at
-/// most 2 s like PatchSafety's own checks, whether another mod patches any of it, and whether a type outside the game (another
+/// most 2 s like PatchSafety's own checks, whether another mod patches any of it (a generic member, named by its definition, on
+/// every closed instantiation Harmony patches: <see cref="PatchSafety.PatchedInstantiations"/>), and whether a type outside the game (another
 /// mod's model or node) overrides one of the game's virtual methods the set calls: code the skip would also leave out.
 /// Built once at Apply; asked on the main thread or any other (answers are read and replaced whole).
 /// </summary>
@@ -125,8 +126,9 @@ internal sealed class CodeSet
         bool patched = false;
         foreach (MethodBase method in Checked)
         {
-            // Every method asked (not the first found only): each back-off is recorded, bdopt why names them all.
-            patched |= PatchSafety.IsPatchedByOthers(method, caller);
+            // Every method asked (not the first found only): each back-off is recorded, bdopt why names them all. A generic
+            // member (named by its definition) on each closed instantiation Harmony patches too (review D3).
+            patched |= PatchSafety.IsPatchedByOthersWithInstances(method, caller);
         }
         _patched = new Answer(epoch, now, patched);
         return patched;
@@ -149,7 +151,7 @@ internal sealed class CodeSet
         bool patched = false;
         foreach (MethodBase method in Checked)
         {
-            patched |= PatchSafety.IsPatchedByOthers(method, allowed(method), caller);
+            patched |= PatchSafety.IsPatchedByOthersWithInstances(method, allowed, caller);
         }
         _patchedAllowed = new Answer(epoch, now, patched);
         return patched;
@@ -170,7 +172,7 @@ internal sealed class CodeSet
         bool patched = false;
         foreach (MethodBase method in Checked)
         {
-            if (PatchSafety.HasOtherPatches(method))
+            if (PatchSafety.HasOtherPatchesWithInstances(method))
             {
                 patched = true;
                 break;

@@ -679,7 +679,8 @@ internal static class BaseLibTypes
     /// A twin, or null: a static void non-generic postfix of a non-generic class outside BaseLib, no HarmonyArgument, whose code
     /// (<see cref="OwnNormalizedIl"/>, signature included) is BaseLib's for that original; its class declares a static
     /// <c>GetFieldsForModel(object)</c> with BaseLib's code (its lambda included) and a static readonly <c>RegisteredFields</c>
-    /// list (the one that code reads: the descriptions name it, and every member they name under the class's name is its own); every class of its own assembly that code uses has no initializer,
+    /// list (the one that code reads: the postfix calls that very GetFieldsForModel and its code reads that very list, compared by
+    /// token, and every member the descriptions name under the class's name is its own); every class of its own assembly that code uses has no initializer,
     /// or a pure beforefieldinit one (<see cref="PatchSafety.InitializerFree"/>: run at another time with this mod, it must not
     /// matter; the pure part judged here, what it relies on asked at each recheck: <see cref="Twin.Initialized"/>); the game's <c>SavedProperties</c> constructor it may call has the known (empty) code. Faulted: null.
     /// </summary>
@@ -704,14 +705,15 @@ internal static class BaseLibTypes
                     return null;
                 }
             }
-            var used = new System.Collections.Generic.List<MemberInfo>();
-            if (!Hash(OwnNormalizedIl.Describe(postfix, used.Add)).Equals(fromInternal ? TwinFromInternalFingerprint : TwinFillInternalFingerprint, StringComparison.Ordinal))
+            var postfixUses = new System.Collections.Generic.List<MemberInfo>();
+            if (!TwinCode(owner, OwnNormalizedIl.Describe(postfix, postfixUses.Add), fromInternal ? TwinFromInternalFingerprint : TwinFillInternalFingerprint))
             {
                 return null;
             }
             const BindingFlags statics = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
             MethodInfo? fieldsFor = owner.GetMethod("GetFieldsForModel", statics, null, new[] { typeof(object) }, null);
-            if (fieldsFor == null || !Hash(OwnNormalizedIl.Describe(fieldsFor, used.Add)).Equals(TwinFieldsForModelFingerprint, StringComparison.Ordinal))
+            var fieldsForUses = new System.Collections.Generic.List<MemberInfo>();
+            if (fieldsFor == null || !TwinCode(owner, OwnNormalizedIl.Describe(fieldsFor, fieldsForUses.Add), TwinFieldsForModelFingerprint))
             {
                 return null;
             }
@@ -720,6 +722,16 @@ internal static class BaseLibTypes
             {
                 return null;
             }
+            // The code judged must use these two exactly (review D1): the descriptions name BaseLib's class (~SavedSpireFieldPatch)
+            // and the postfix's signature omits its own, so a postfix of another class (MyCopy, holding a GetFieldsForModel of the
+            // same code and an empty RegisteredFields) calling a class named SavedSpireFieldPatch would describe alike while the code
+            // run reads that other class's list. The postfix's code calls this GetFieldsForModel, whose own code reads this list.
+            if (!postfixUses.Any(m => SameMember(m, fieldsFor)) || !fieldsForUses.Any(m => SameMember(m, list)))
+            {
+                return null;
+            }
+            var used = new System.Collections.Generic.List<MemberInfo>(postfixUses);
+            used.AddRange(fieldsForUses);
             Assembly own = owner.Assembly;
             // The descriptions name the own assembly's types without their namespace: a member of another class of the owner's name
             // (another namespace) describes as the owner's would. Every one used must be the owner's (or of a class nested in it): the
@@ -783,6 +795,10 @@ internal static class BaseLibTypes
         }
     }
 
+    /// <summary>The same member of the same module (non-generic: the twin's class is): its metadata token, whatever object reflection gave.</summary>
+    private static bool SameMember(MemberInfo used, MemberInfo member) =>
+        used.Module == member.Module && used.MetadataToken == member.MetadataToken && used.DeclaringType == member.DeclaringType;
+
     /// <summary>An instance constructor of no parameter whose code is only <c>ldarg.0; call object::.ctor(); ret</c> (nops aside).</summary>
     private static bool TrivialConstructor(ConstructorInfo constructor)
     {
@@ -796,6 +812,23 @@ internal static class BaseLibTypes
             && baseType == typeof(object) && baseConstructor.GetParameters().Length == 0
             && code[2].Op == System.Reflection.Emit.OpCodes.Ret;
     }
+
+#if BENCH
+    /// <summary>
+    /// Test tooling (<c>foreignpatch lim-twin mycopy</c>, review D1): classes whose code counts as BaseLib's whatever it describes as.
+    /// The control's shape (a postfix calling another class's GetFieldsForModel while its own class holds one describing as
+    /// BaseLib's) needs IL no C# compiler emits (a lambda's closure class nested in another class): the code comparison is stood
+    /// in for, so that only the checks after it judge the control.
+    /// </summary>
+    internal static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, byte> CodeAsBaseLibForTest = new();
+#endif
+
+    /// <summary>Whether a twin candidate's code (its description) is BaseLib's: its hash is the stored one.</summary>
+    private static bool TwinCode(Type owner, string description, string expected) =>
+#if BENCH
+        CodeAsBaseLibForTest.ContainsKey(owner) ||
+#endif
+        Hash(description).Equals(expected, StringComparison.Ordinal);
 
     private static string Hash(string description) =>
         Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(description)))[..16];

@@ -496,6 +496,118 @@ public static partial class PatchSafety
         return mods.Length > 0;
     }
 
+    /// <summary>Harmony's patched methods by module and token, for a Harmony epoch and 2 s (null: Harmony couldn't tell).</summary>
+    private sealed record PatchedByToken(int Epoch, long CheckedAt, Dictionary<(Module, int), MethodBase[]>? Methods);
+
+    private static volatile PatchedByToken? _patchedByToken;
+
+    /// <summary>Whether a member is a generic definition's (a generic method definition, or a member of a generic type definition).</summary>
+    internal static bool GenericDefinitionMember(MethodBase method) =>
+        method.IsGenericMethodDefinition || method.DeclaringType is { IsGenericTypeDefinition: true };
+
+    /// <summary>
+    /// Review D3 (2026-11-19), shared: for a member of a generic definition as the game closures name it
+    /// (<see cref="MethodFingerprint.Definition"/>: <c>CodeSet</c>'s sets, RelicFlashMerge's strict members), the closed
+    /// instantiations Harmony patches now (Harmony patches, and <c>GetPatchInfo</c> answers for, an instantiation's own method,
+    /// never the definition): they share the definition's module and token. Empty for any other member (no allocation) and when
+    /// none is patched; null when Harmony can't tell (the caller then counts the member as patched). Per Harmony epoch and at most
+    /// 2 s (as the plain check's cache); read and replaced whole: any thread. The array is shared: never changed by callers.
+    /// LimitlessCloneMemo keeps its own map (per its patch stamp, which also follows its closures' publications).
+    /// </summary>
+    internal static MethodBase[]? PatchedInstantiations(MethodBase method)
+    {
+        if (!GenericDefinitionMember(method))
+        {
+            return Array.Empty<MethodBase>();
+        }
+        int epoch = HarmonyWatch.Epoch;
+        long now = Environment.TickCount64;
+        PatchedByToken? known = _patchedByToken;
+        if (known == null || known.Epoch != epoch || now - known.CheckedAt >= RecheckAfterMs)
+        {
+            Dictionary<(Module, int), MethodBase[]>? methods;
+            try
+            {
+                // An open definition can't be patched (Harmony refuses it): a group of a generic member holds instantiations only.
+                methods = Harmony.GetAllPatchedMethods().GroupBy(m => (m.Module, m.MetadataToken))
+                    .ToDictionary(g => g.Key, g => g.Where(m => !GenericDefinitionMember(m)).ToArray());
+            }
+            catch
+            {
+                methods = null;
+            }
+            _patchedByToken = known = new PatchedByToken(epoch, now, methods);
+        }
+        if (known.Methods == null)
+        {
+            return null;
+        }
+        return known.Methods.TryGetValue((method.Module, method.MetadataToken), out MethodBase[]? instances) ? instances : Array.Empty<MethodBase>();
+    }
+
+    /// <summary>
+    /// <see cref="IsPatchedByOthers(MethodBase?, string)"/> on the method and, for a generic definition's member, on each closed
+    /// instantiation Harmony patches (<see cref="PatchedInstantiations"/>, D3): every one asked (each back-off recorded); true when
+    /// Harmony can't tell.
+    /// </summary>
+    internal static bool IsPatchedByOthersWithInstances(MethodBase? method, string caller)
+    {
+        bool patched = IsPatchedByOthers(method, caller);
+        if (method == null)
+        {
+            return patched;
+        }
+        if (PatchedInstantiations(method) is not { } instances)
+        {
+            return true;
+        }
+        foreach (MethodBase instance in instances)
+        {
+            patched |= IsPatchedByOthers(instance, caller);
+        }
+        return patched;
+    }
+
+    /// <summary>As <see cref="IsPatchedByOthersWithInstances"/> with a function giving the allowed patches per method asked.</summary>
+    internal static bool IsPatchedByOthersWithInstances(MethodBase? method, Func<MethodBase, MethodInfo[]> allowed, string caller)
+    {
+        if (method == null)
+        {
+            return true;
+        }
+        bool patched = IsPatchedByOthers(method, allowed(method), caller);
+        if (PatchedInstantiations(method) is not { } instances)
+        {
+            return true;
+        }
+        foreach (MethodBase instance in instances)
+        {
+            patched |= IsPatchedByOthers(instance, allowed(instance), caller);
+        }
+        return patched;
+    }
+
+    /// <summary><see cref="HasOtherPatches"/> on the method and on each closed instantiation Harmony patches (D3); true when it can't tell.</summary>
+    internal static bool HasOtherPatchesWithInstances(MethodBase? method)
+    {
+        if (HasOtherPatches(method) || method == null)
+        {
+            return true;
+        }
+        if (PatchedInstantiations(method) is not { } instances)
+        {
+            return true;
+        }
+        foreach (MethodBase instance in instances)
+        {
+            if (HasOtherPatches(instance))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /// <summary>Every patch of the method with its kind, inner prefixes and postfixes included (as <see cref="AllPatches"/>).</summary>
     private static IEnumerable<(Patch Patch, PatchKind Kind)> PatchesWithKind(HarmonyLib.Patches info) =>
         info.Prefixes.Select(p => (p, PatchKind.Prefix))
@@ -1655,6 +1767,12 @@ public static partial class PatchSafety
         var gateKey = (patch.MethodHandle, kind, name, position);
         bool shaped = name.Length > 0 && (name == "__instance" || position >= 0)
             && _gates.GetOrAdd(gateKey, key => AnalyseGates(patch, key.Kind, key.Listener, key.Position)) != null;
+        // The __result fallback TypeGates takes (review D6): its verdict, and its path's callees, are under that key.
+        if (!shaped && kind == PatchKind.Postfix && name == "__instance" && ResultIsInstance(original))
+        {
+            gateKey = (patch.MethodHandle, kind, "__result", -1);
+            shaped = _gates.GetOrAdd(gateKey, key => AnalyseGates(patch, key.Kind, key.Listener, key.Position)) != null;
+        }
         if (shaped && InitializerRefusal(patch) is { } why)
         {
             return $"{KindText(kind, patch)} gated, but {why}";
