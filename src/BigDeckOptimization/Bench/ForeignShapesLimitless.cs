@@ -266,14 +266,17 @@ public static class ForeignShapesLimitless
                 Amount = 1,
             };
         }
+        // B-1 (owner's decision): back-offs and notes recorded by both judgments (a second enchantment's way records none).
+        int recorded = PatchSafety.RecordedBackOffs;
         (bool kept, LimitlessCloneMemo.Reach reach) = LimitlessCloneMemo.KeptForTest(saved);
         // Review C7: HookSkip's judgment runs no other mod's code (the count-postfix calls made during it).
         long calls = ForeignPatches.CountPostfixCalls();
         bool patched = LimitlessCloneMemo.ContentPatched(saved);
         calls = ForeignPatches.CountPostfixCalls() - calls;
+        recorded = PatchSafety.RecordedBackOffs - recorded;
         return new[]
         {
-            $"FOREIGN reach {label} {card} {enchantment} {level}: kept {kept}, reaches {reach}, hookskip patched {patched}, foreign calls {calls}",
+            $"FOREIGN reach {label} {card} {enchantment} {level}: kept {kept}, reaches {reach}, hookskip patched {patched}, foreign calls {calls}, new back-offs {recorded}",
             $"FOREIGN reach {label} closures done {LimitlessCloneMemo.ClosuresDone}: {LimitlessCloneMemo.ClosureStates()}",
         };
     }

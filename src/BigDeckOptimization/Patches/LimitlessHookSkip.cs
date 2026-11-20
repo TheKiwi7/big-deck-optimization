@@ -331,6 +331,14 @@ public static class LimitlessHookSkip
             {
                 continue;
             }
+            if (!_nonStorageInner && !ReferenceEquals(inner[i].GetType(), _storageCard))
+            {
+                lock (_known)
+                {
+                    _nonStorageInner = true;
+                    _version++;
+                }
+            }
             Type type = enchantment.GetType();
             if (ReferenceEquals(type, last) || known.Contains(type))
             {
@@ -406,10 +414,11 @@ public static class LimitlessHookSkip
     /// <summary>Whether a recorded inner enchantment type answers yes (or has unknown code on the way).</summary>
     internal static bool AnyKnown(Func<Type, bool> overrides)
     {
-        // Rule L: a patched group an inner card may reach (its enchantment, its upgrades, a second enchantment's CardCmd.Enchant for
-        // an inner card that isn't the storage card: every group ContentPatched may judge, review C8) is judged per instance
-        // (AnyInner): the type as a whole then counts as reacting.
-        if (_storageCard == null || AnyGroupPatched())
+        // Rule L: a patched group an inner card may reach (its enchantment, its upgrades: every group ContentPatched judges, review C8)
+        // is judged per instance (AnyInner): the type as a whole then counts as reacting. A second enchantment's way (an enchanted inner
+        // card that isn't exactly the storage card) isn't judged since the owner's decision on B-1 (2026-11-20): ContentPatched counts
+        // it patched, and once one was noted the type as a whole reacts too (none in Limitless 1.1.7 to 1.2.1).
+        if (_storageCard == null || _nonStorageInner || AnyGroupPatched())
         {
             return true;
         }
@@ -427,7 +436,10 @@ public static class LimitlessHookSkip
     }
 
     private static bool AnyGroupPatched() => LimitlessCloneMemo.ChainPatchedFor(_storageCard!, LimitlessCloneMemo.Reach.Spine | LimitlessCloneMemo.Reach.Enchant
-        | LimitlessCloneMemo.Reach.Upgrade | LimitlessCloneMemo.Reach.SecondEnchant);
+        | LimitlessCloneMemo.Reach.Upgrade);
+
+    /// <summary>An enchanted inner card not exactly Limitless's storage card was noted (<see cref="Note"/>): it reaches CardCmd.Enchant.</summary>
+    private static volatile bool _nonStorageInner;
 
 #if BENCH
     /// <summary>The type-level answer and its chain part (bench: <c>foreignpatch limitless anyknown</c>).</summary>

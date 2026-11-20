@@ -177,11 +177,10 @@ public static class LimitlessCloneMemo
         }),
         (typeof(CardModel), "DeepCloneFields", Reach.Spine, Array.Empty<(string, string)>()),
         (typeof(MegaCrit.Sts2.Core.Localization.DynamicVars.DynamicVar), "Clone", Reach.Spine, new[] { ("BaseLib.Extensions.DynamicVarExtensions+CloneTooltips:Copy", "443436F93886072A") }),
-        // Called by Limitless's set_Enchantment prefix when a card gets a second enchantment.
-        (typeof(MegaCrit.Sts2.Core.Commands.CardCmd), "Enchant", Reach.SecondEnchant, new[] { ("Limitless.LimitlessCode.UncappedEnchantments.CardCmdPatches.Patch_Enchant:Transpiler", "46E29C1A39F295FA") }),
-        // What CardCmd.Enchant asks first (full audit B-1: one of its own callees), with Limitless's transpiler there: its answer only adds
-        // the card's own inner enchantments (HasUselessSameEnchantments) and Limitless's uncapped option (in the stamp) to the game's.
-        (typeof(EnchantmentModel), nameof(EnchantmentModel.CanEnchant), Reach.SecondEnchant, new[] { ("Limitless.LimitlessCode.UncappedEnchantments.EnchantmentModelPatches.Patch_CanEnchant:Transpiler", "1B24CFB2B8A10CE5") }),
+        // Called by Limitless's set_Enchantment prefix (as Enchant<MultiEnchantment>) for a card other than its storage card only: on the
+        // chain's own way, a content reaching it (Reach.SecondEnchant) is never kept nor dropped (owner's decision on B-1, 2026-11-20),
+        // so this entry is only for the closures: SoulsPower's reaches set_Enchantment, whose allowed prefix calls it (C3).
+        (typeof(MegaCrit.Sts2.Core.Commands.CardCmd), "Enchant", Reach.None, new[] { ("Limitless.LimitlessCode.UncappedEnchantments.CardCmdPatches.Patch_Enchant:Transpiler", "46E29C1A39F295FA") }),
         // The enchantment's side of FromSerializable and of the clone, and what ModifyCard, UpgradeInternal and
         // FinalizeUpgradeInternal call (this mod's own patches there, e.g. on set_Amount, don't count).
         (typeof(MegaCrit.Sts2.Core.Saves.SaveUtil), "EnchantmentOrDeprecated", Reach.Enchant, Array.Empty<(string, string)>()),
@@ -312,9 +311,11 @@ public static class LimitlessCloneMemo
     /// <summary>
     /// Rule L (2026-11-18): which part of the chain a saved inner card's build reaches. The spine always (FromSerializable's
     /// card, its saved properties, the clone); the enchantment group when it has an enchantment; the upgrade group when its
-    /// <c>CurrentUpgradeLevel</c> is above 0 (FromSerializable's upgrade loop; set_CurrentUpgradeLevel's cap); CardCmd.Enchant
-    /// only for an enchanted card that isn't Limitless's storage card (its pinned set_Enchantment prefix calls it then only).
-    /// <see cref="None"/>: reached only inside an override's closure (<see cref="OverrideClosure"/>), listed for its allowed
+    /// <c>CurrentUpgradeLevel</c> is above 0 (FromSerializable's upgrade loop; set_CurrentUpgradeLevel's cap). <see cref="SecondEnchant"/>:
+    /// an enchanted card that isn't exactly Limitless's storage card (its pinned set_Enchantment prefix then calls CardCmd.Enchant):
+    /// no chain entry holds it, it isn't judged (owner's decision on B-1, 2026-11-20): such a content is never kept nor dropped, with
+    /// no back-off recorded (inner cards are always the storage card: Limitless 1.1.7 to 1.2.1, LimitlessHookSkip's inner list writers
+    /// guarded). <see cref="None"/>: reached only inside an override's closure (<see cref="OverrideClosure"/>), listed for its allowed
     /// patches and gates.
     /// </summary>
     [Flags]
@@ -419,8 +420,9 @@ public static class LimitlessCloneMemo
         {
             return answer;
         }
-        // Until the allowed patches' callees are known (a worker reads them at Apply), every group counts as patched.
-        Reach patched = _allowedCallees == null ? Reach.Spine | Reach.Enchant | Reach.Upgrade | Reach.SecondEnchant : Reach.None;
+        // Until the allowed patches' callees are known (a worker reads them at Apply), every group counts as patched. SecondEnchant isn't
+        // judged here (no entry holds it): its contents are never kept (KnownTypes, ContentPatched).
+        Reach patched = _allowedCallees == null ? Reach.Spine | Reach.Enchant | Reach.Upgrade : Reach.None;
         var gated = new List<(System.Reflection.MethodBase, System.Reflection.MethodInfo[], Type[], Reach)>();
         foreach ((System.Reflection.MethodBase method, Reach reach) in _allowedCallees ?? Array.Empty<(System.Reflection.MethodBase, Reach)>())
         {
@@ -772,15 +774,18 @@ public static class LimitlessCloneMemo
         }
         // Full audit B-1 (2026-11-20): the chain's own game callees, with their entry's group (until then never judged: AfterCloned's
         // setters and ModelDb.GetById, DeepCloneFields' GetKeywordsWithSources, AssertMutable...). One level into the game, as the allowed
-        // patches' callees: the chain's code is pinned (GameChain; CardCmd.Enchant's is read live), what it calls is judged by its
-        // patches (about 20 to 60 methods a group on v0.111.1 and v0.113.1). Their own closure isn't walked: the game's virtual dispatch and
-        // branches an inner card never takes (GetKeywordsWithSources' combat walk, the game cards' CanonicalVars) make it ~1,800 to
-        // 2,200 methods a group (37 to 151 without any dispatch on models, the spine's holding CombatState.IterateHookListeners, which
-        // RitsuLib patches), each a back-off. An entry reached only inside a closure: its closure's walk follows what it calls.
+        // patches' callees: the chain's code is pinned (GameChain), what it calls is judged by its patches (about 20 to 60 methods a
+        // group on v0.111.1 and v0.113.1). Known limit: the judged frontier is at depth 1 (what those callees call isn't judged). Their
+        // own closure isn't walked: the game's virtual dispatch and branches an inner card never takes (GetKeywordsWithSources' combat
+        // walk, the game cards' CanonicalVars) make it ~1,800 to 2,200 methods a group (37 to 151 without any dispatch on models, the
+        // spine's holding CombatState.IterateHookListeners, which RitsuLib patches), each a back-off. Only the spine, enchantment and
+        // upgrade groups (SecondEnchant isn't judged: its contents are never kept). An entry reached only inside a closure: its
+        // closure's walk follows what it calls.
         var graph = new CalleeGraph(game, ChainDispatch);
         var delegates = new HashSet<string>(StringComparer.Ordinal);
-        foreach ((System.Reflection.MethodBase method, _, _, Reach reach) in chain)
+        foreach ((System.Reflection.MethodBase method, _, _, Reach entryReach) in chain)
         {
+            Reach reach = entryReach & ~Reach.SecondEnchant;
             if (reach == Reach.None)
             {
                 continue;
@@ -811,8 +816,8 @@ public static class LimitlessCloneMemo
     /// <summary>
     /// B-1: the virtual game methods whose game implementations the chain's own callees include: all but the overrides on the way
     /// (<see cref="OverriddenOnTheWay"/>, declared on AbstractModel, CardModel or EnchantmentModel), which run the content's own types'
-    /// code, judged per type (<see cref="OnTheWay"/>, with their closures). Other virtual calls (a card's get_MaxUpgradeLevel, an
-    /// enchantment's CanEnchant) add every game implementation: strictly, whatever the content's types.
+    /// code, judged per type (<see cref="OnTheWay"/>, with their closures). Other virtual calls (a card's get_MaxUpgradeLevel) add every
+    /// game implementation: strictly, whatever the content's types.
     /// </summary>
     private static bool ChainDispatch(System.Reflection.MethodInfo callee) =>
         !(Array.IndexOf(OverriddenOnTheWay, callee.Name) >= 0 && callee.GetParameters().Length == 0
@@ -1231,7 +1236,13 @@ public static class LimitlessCloneMemo
             return true;
         }
         Type cardType = _cardTypeById.GetOrAdd(cardId, static id => MegaCrit.Sts2.Core.Saves.SaveUtil.CardOrDeprecated(id).GetType());
-        if (ChainPatchedFor(cardType, ReachOf(saved, cardType)) || OnTheWay(cardType) is not { } overrides || OverridesPatched(overrides))
+        Reach reach = ReachOf(saved, cardType);
+        // A second enchantment's way (a card other than the storage card) isn't judged: counted patched, nothing recorded.
+        if ((reach & Reach.SecondEnchant) != 0)
+        {
+            return true;
+        }
+        if (ChainPatchedFor(cardType, reach) || OnTheWay(cardType) is not { } overrides || OverridesPatched(overrides))
         {
             return true;
         }
@@ -1261,7 +1272,9 @@ public static class LimitlessCloneMemo
             return false;
         }
         Type cardType = _cardTypeOf[cardId];
-        if (OverridesPatched(card) || ChainPatchedFor(cardType, ReachOf(saved, cardType)))
+        Reach reach = ReachOf(saved, cardType);
+        // A second enchantment's way (a card other than the storage card) isn't judged: never kept, nothing recorded.
+        if ((reach & Reach.SecondEnchant) != 0 || OverridesPatched(card) || ChainPatchedFor(cardType, reach))
         {
             return false;
         }

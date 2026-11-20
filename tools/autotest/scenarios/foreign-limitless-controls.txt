@@ -17,19 +17,15 @@
 # (l3) CardModel.get_MaxUpgradeLevel: a level-1 content no longer kept, a level-0 one still is.
 # Review of 2026-11-19 (C2): a counting postfix on one closed instantiation of a generic member (Bench/ForeignShapesLimitless.cs
 # lim-generic-count-postfix: Harmony patches the instantiation, the chain and the closures name the definition, on which Harmony
-# finds nothing): (g1) CardCmd.Enchant<Sharp>, the chain's second-enchant entry: a game card with an enchantment (Clumsy, no override
-# on the way: it reaches that group) no longer kept, the storage card's one still is (run last, after every fight: Harmony
-# patches the code all reference-type instantiations share, compiled for Sharp, and unpatching leaves it so: Enchant<T> then
-# makes a Sharp for every T, and Limitless's set_Enchantment prefix, calling Enchant<MultiEnchantment> on a card without an
-# enchantment, recursed without end at the next reward's enchanted card: a stack overflow, the game's and Limitless's code
-# only); (g2) <>z__ReadOnlySingleElementList<int>'s
+# finds nothing): (g2) <>z__ReadOnlySingleElementList<int>'s
 # constructor, in Goopy's OnEnchant closure: a Goopy content no longer kept, a Sharp one still is. (g3, C6) a prefix gated on
 # Squeeze on CardModel.AddKeyword (Bench/ForeignPatches.cs gated-prefix): a closure's methods are judged strictly, gates included
 # (its code may call them on another card): Goopy no longer kept (it was, the storage card not being a Squeeze), Sharp still is.
 # (c7, C7) a count postfix on SaveUtil.CardOrDeprecated (the spine): LimitlessHookSkip's per content judgment of a card id it never
 # met (Dazed) answers patched without calling it (it looked the card type up first: one more call of that patch per id).
-# (c8, C8) a count postfix on CardCmd.Enchant (the second-enchant group): LimitlessHookSkip's type-level answer (AnyKnown) counts
-# it among the chain groups an inner card may reach, as its per content answer does.
+# (c8, C8 and the owner's decision on B-1, 2026-11-20) a count postfix on CardCmd.Enchant: the second-enchant way isn't judged any
+# more (only a card other than the storage card reaches it: such a content is never kept, no back-off), so LimitlessHookSkip's
+# type-level answer (AnyKnown) no longer counts it (its former g1 control, CardCmd.Enchant<Sharp>, went with it; C2 stays covered by g2).
 # Rule B (copies of BaseLib's SavedSpireFieldPatch, Bench/ForeignShapesLimitlessTwins.cs, on SavedProperties.FromInternal):
 # (b1) GetFieldsForModel without its filter, (b2) a null result stored, (b3) its class's initializer doing more than make the
 # list, (b3a) GetFieldsForModel reading another class's list of the same name (it describes as BaseLib's: the twin aliased IL
@@ -43,6 +39,9 @@
 # which only CardEnergyCost.UpgradeBy (the upgrade group) calls: a level-1 content no longer kept, a level-0 one still is.
 # Full audit A-L1, B-3 (h1): the patched-methods maps act as if Harmony couldn't list its patched methods (`foreignpatch limitless
 # cantlist`): a note under both parts (bdopt why, the menu), no content kept; once listed again, kept again.
+# Owner's decision on B-1 (2026-11-20): the second-enchant way isn't judged. (k1) a count postfix on EnchantmentModel.CanEnchant
+# (CardCmd.Enchant's first callee): storage contents stay kept, no back-off, both parts keep running through a combat start (memo
+# reuses, drops grow); (k2) a content of a game card with an enchantment (Clumsy, Sharp): never kept, counted patched, no back-off.
 timeout 1800
 expect FOREIGN runtime LimitlessCloneMemo AbstractModel\.MutableClone \(None\) kept 0 backed off [1-9]
 expect FOREIGN runtime LimitlessCloneMemo CardModel\.AfterDeserialized \(TypeGated\) kept [1-9]
@@ -57,16 +56,13 @@ expect FOREIGN reach l2 storage Goopy 0: kept True
 expect FOREIGN reach l2 storage Sharp 0: kept True
 expect FOREIGN reach l3 storage Sharp 1: kept False
 expect FOREIGN reach l3 storage Sharp 0: kept True
-expect FOREIGN reach base Clumsy Sharp 0: kept True, reaches Spine, Enchant, SecondEnchant
-expect FOREIGN reach g1 Clumsy Sharp 0: kept False
-expect FOREIGN reach g1 storage Sharp 0: kept True
 expect FOREIGN reach g2 storage Goopy 0: kept False
 expect FOREIGN reach g2 storage Sharp 0: kept True
 expect FOREIGN reach g3 storage Goopy 0: kept False
 expect FOREIGN reach g3 storage Sharp 0: kept True
 expect FOREIGN reach c7 Dazed none 0: kept False, reaches Spine, hookskip patched True, foreign calls 0
 expect FOREIGN anyknown base8: .*chain groups patched False
-expect FOREIGN anyknown c8: True \(chain groups patched True
+expect FOREIGN anyknown c8: False \(chain groups patched False
 expect LimitlessCloneMemo: CardModel\.set_HasBeenRemovedFromState is also patched by bdtest\.foreign\.count-postfix: normal game for that part
 expect FOREIGN reach s1 storage Sharp 0: kept False, reaches Spine, Enchant, hookskip patched True
 expect FOREIGN anyknown s1: True \(chain groups patched True
@@ -76,6 +72,8 @@ expect LimitlessCloneMemo: Harmony couldn't list the methods other mods patch: .
 expect LimitlessHookSkip: Harmony couldn't list the methods other mods patch: .*: normal game for all of it
 expect FOREIGN reach h1 storage Sharp 0: kept False
 expect FOREIGN reach h1off storage Sharp 0: kept True
+expect FOREIGN reach k1 storage Sharp 0: kept True, reaches Spine, Enchant, hookskip patched False, foreign calls 0, new back-offs 0
+expect FOREIGN reach k2 Clumsy Sharp 0: kept False, reaches Spine, Enchant, SecondEnchant, hookskip patched True, foreign calls 0, new back-offs 0
 expect FOREIGN classify CardModel\.FinalizeUpgradeInternal: bdtest\.foreign\.lim-write-then-gated-postfix-squeeze Postfix .*TypeGated backs off \(postfix not provably gated
 expect FOREIGN runtime LimitlessCloneMemo CardModel\.FinalizeUpgradeInternal \(TypeGated\) kept [1-9][0-9]* backed off 0
 expect FOREIGN runtime LimitlessCloneMemo CardModel\.FinalizeUpgradeInternal \(TypeGated\) kept [0-9]+ backed off [1-9]
@@ -213,6 +211,25 @@ foreignpatch limitless cantlist off
 wait 3
 foreignpatch limitless reach storage Sharp 0 h1off
 cmd bdopt why
+# (k1) B-1, owner's decision: CanEnchant patched (the second-enchant way, not judged).
+foreignpatch count-postfix MegaCrit.Sts2.Core.Models.EnchantmentModel:CanEnchant
+wait 3
+foreignpatch limitless reach storage Sharp 0 k1
+effects k1
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+play 5
+waitfor idle 300
+cmd kill all
+waitfor nocombat 300
+wait 2
+effectcheck LimitlessCloneMemo grew k1
+effectcheck LimitlessHookSkip grew k1
+foreignpatch remove
+wait 3
+# (k2) A game card's content with an enchantment (it would reach CardCmd.Enchant): never kept, no back-off.
+foreignpatch limitless reach Clumsy Sharp 0 k2
 # (g2) Review C2: one closed instantiation of a generic type's constructor in Goopy's closure patched.
 foreignpatch lim-generic-count-postfix <>z__ReadOnlySingleElementList`1:.ctor System.Int32
 wait 3
@@ -233,7 +250,7 @@ wait 3
 foreignpatch limitless reach Dazed none 0 c7
 foreignpatch remove
 wait 3
-# (c8) Review C8: the second-enchant group patched, LimitlessHookSkip's type-level answer.
+# (c8) Review C8: CardCmd.Enchant patched, LimitlessHookSkip's type-level answer (the second-enchant way not judged).
 foreignpatch limitless anyknown base8
 foreignpatch lim-inner-count-postfix MegaCrit.Sts2.Core.Commands.CardCmd::Enchant(EnchantmentModel,CardModel,Decimal)
 wait 3
@@ -360,15 +377,6 @@ waitfor nocombat 300
 wait 2
 effectcheck LimitlessCloneMemo same b6
 foreignpatch report b6
-foreignpatch limitless remove
-wait 3
-# (g1) Review C2: one closed instantiation of a generic chain member patched. Last, after every fight: patching Enchant<Sharp>
-# rewrites the code Enchant<T> shares for every reference type T, and unpatching doesn't restore it (see the header).
-foreignpatch limitless reach Clumsy Sharp 0 base
-foreignpatch lim-generic-count-postfix MegaCrit.Sts2.Core.Commands.CardCmd:Enchant MegaCrit.Sts2.Core.Models.Enchantments.Sharp
-wait 3
-foreignpatch limitless reach Clumsy Sharp 0 g1
-foreignpatch limitless reach storage Sharp 0 g1
 foreignpatch limitless remove
 wait 3
 cmd bdopt on
