@@ -3411,6 +3411,12 @@ public static class FastListeners
         }
     }
 
+    /// <summary>
+    /// <see cref="KeptOnly"/> over a walk output its caller got from the game's own call (HookFilter's cost color mirrors next to
+    /// other mods' postfixes on the walks): lazy, the output enumerated as far as the caller goes, as the game's foreach would.
+    /// </summary>
+    internal static IEnumerable<AbstractModel> KeptOver(IEnumerable<AbstractModel> walk, PileFilter filter) => KeptOnly(walk, filter);
+
 #if BENCH
     /// <summary>A KeptOnly test entry (ListenerCache's self-test): the filtered walk over <paramref name="walk"/>.</summary>
     internal static IEnumerable<AbstractModel> KeptOnlyForTest(IEnumerable<AbstractModel> walk, PileFilter filter) => KeptOnly(walk, filter);

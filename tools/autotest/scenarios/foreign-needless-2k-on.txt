@@ -7,7 +7,8 @@
 # parameter by reference (Who Carried?'s shape). The on side must let them stand at run time (FOREIGN runtime ... kept), keep
 # ListenerCache, FastListeners' served walks, PileIndex and HookSkip running (effectcheck), answer the narrowed and appended piles
 # as the game does (STATE), never run a walk postfix on its own output (require nodouble), and give the reference's listener
-# sequences inside a refresh scope too (bdperf listeners). HookFilter stays off while the walks carry other mods' patches.
+# sequences inside a refresh scope too (bdperf listeners). HookFilter stays off while the walks carry other mods' patches, but for
+# its cost color mirrors (since 2026-11-20: over the game's own walk, compared with the game's helper 1 in 64 here).
 timeout 2400
 expect ListenerCache: CombatState\.IterateHookListeners is also patched by .*bdtest\.foreign\.walk-expand-postfix.* \(postfixes and void prefixes: run around this mod's code as without it\): kept
 expect ListenerCache: RunState\.IterateHookListeners is also patched by .*bdtest\.foreign\.walk-filter-repeat.* \(postfixes and void prefixes: run around
@@ -36,6 +37,8 @@ expect FOREIGN runtime PileIndex CardModel\.get_Pile \(BeforeReplace\) kept [1-9
 expect FOREIGN runtime HookSkip Hook\.ModifyHpLost \(TranspiledOnly\) kept [1-9]
 expect FOREIGN runtime PileIndex CardPile\.AddInternal \(BeforeReplace\) kept [1-9]
 expect FOREIGN walk-expand-postfix never ran on its own output
+expect EFFECTCHECK HookFilter\.EnergyCostColorWalk grew since 'start': [0-9]+ -> [1-9]
+expect COUNTERS end: .*cost color checks [1-9][0-9]*, mismatches 0;
 newrun NECROBINDER
 waitfor run 120
 wait 2
@@ -101,6 +104,7 @@ effectcheck ListenerCache grew start
 effectcheck FastListeners.CombatWalk grew start
 effectcheck HookSkip grew start
 effectcheck PileIndex grew start
+effectcheck HookFilter.EnergyCostColorWalk grew start
 foreignpatch require tolerated
 foreignpatch require nodouble
 cmd bdopt why

@@ -203,7 +203,7 @@ public static class ForeignPatches
         "skip-prefix", "skip-and-add-prefix", "display-count-prefix",
         "name-gated-postfix", "fullname-gated-postfix", "name-nearmiss-postfix", "name-othervar-postfix", "walk-unstable-postfix",
         "flash-script-postfix", "energy-cost-postfix", "energy-cost-unstable-postfix", "walk-snapflip-postfix",
-        "walk-snapflip-cost-postfix", "walk-snaprng-postfix",
+        "walk-snapflip-cost-postfix", "walk-snaprng-postfix", "walk-expand-cost-postfix",
     };
 
     /// <summary>
@@ -219,7 +219,7 @@ public static class ForeignPatches
     public static bool ChangesState(string arg) =>
         arg.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() is "keyword-prefix" or "cost-postfix" or "nested-postfix"
             or "byref-arg-prefix" or "pilecard" or "skip-prefix" or "skip-and-add-prefix" or "hook-replacing-prefix" or "hook-out-write-postfix"
-            or "il-damage-bridge" or "il-damage-bridge-callfirst";
+            or "il-damage-bridge" or "il-damage-bridge-callfirst" or "walk-expand-cost-postfix";
 
     /// <summary>Runs one <c>foreignpatch</c> line; returns the lines to log.</summary>
     public static IReadOnlyList<string> Run(string arg)
@@ -231,6 +231,8 @@ public static class ForeignPatches
         }
         switch (parts[0])
         {
+            case "remove" when parts.Length > 1:
+                return RemoveShape(parts[1]);
             case "remove":
                 return Remove();
             case "statechanged" when parts.Length > 1 && parts[1] == "subscribe":
@@ -583,6 +585,16 @@ public static class ForeignPatches
                     throw new ArgumentException("flash-script-postfix goes on MegaCrit.Sts2.Core.Nodes.Vfx.NRelicFlashVfx::Create(RelicModel,Creature)");
                 }
                 harmony.Patch(target, postfix: Fix(nameof(FlashScriptPostfix)));
+                break;
+            case "walk-expand-cost-postfix":
+                // HookFilter's cost color mirrors next to a walk-wrapping postfix (2026-11-20): every Spiked Gauntlets relic yielded
+                // twice by the combat walk (a listener changing a cost added by another mod's postfix: power cards cost 2 more, in
+                // the game's hooks and in the cost colors alike). A mirror over the unpatched lists would miss the second one.
+                if (target.DeclaringType != typeof(MegaCrit.Sts2.Core.Combat.CombatState) || target.Name != "IterateHookListeners")
+                {
+                    throw new ArgumentException(shape + " goes on MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners");
+                }
+                harmony.Patch(target, postfix: Fix(nameof(WalkExpandCostPostfix)));
                 break;
             case "walk-unstable-postfix":
                 // The augmented-walk premise's control (2026-11-17): a postfix whose output changes from call to call at one state
@@ -949,6 +961,28 @@ public static class ForeignPatches
             throw new InvalidOperationException("PatchSafety.Describe listed no patch for a synthetic inner postfix: the inner postfixes aren't read");
         }
         return lines.Select(line => $"FOREIGN classify {Name(target)} (synthetic): {line}").ToList();
+    }
+
+    /// <summary>
+    /// <c>foreignpatch remove &lt;shape&gt;</c>: only that shape's patches taken away (every id starting with its Harmony id), the
+    /// others and the statechanged subscriber kept (a control removed before the next one, in one combat).
+    /// </summary>
+    private static IReadOnlyList<string> RemoveShape(string shape)
+    {
+        string prefix = IdPrefix + shape;
+        (string Id, MethodBase Target)[] removed;
+        lock (_installed)
+        {
+            removed = _installed.Where(p => p.Id == prefix || p.Id.StartsWith(prefix + "-", StringComparison.Ordinal) || p.Id.StartsWith(prefix + ".", StringComparison.Ordinal)).ToArray();
+            _installed.RemoveAll(p => removed.Contains(p));
+        }
+        var lines = new List<string>();
+        foreach ((string id, MethodBase target) in removed)
+        {
+            new Harmony(id).Unpatch(target, HarmonyPatchType.All, id);
+            lines.Add($"FOREIGN removed {id} from {Name(target)}");
+        }
+        return lines.Count > 0 ? lines : new[] { $"FOREIGN nothing to remove for {shape}" };
     }
 
     private static IReadOnlyList<string> Remove()
@@ -1653,6 +1687,9 @@ public static class ForeignPatches
             __result = DoubleSqueezes(__result);
         }
     }
+
+    /// <summary>walk-expand-cost-postfix: every Spiked Gauntlets yielded twice, at every call (lazy, by value: RitsuLib's walk shape).</summary>
+    private static void WalkExpandCostPostfix(ref IEnumerable<AbstractModel> __result) => __result = DoubleGauntlets(__result);
 
     private static void WalkSnapCostPostfix(ref IEnumerable<AbstractModel> __result)
     {

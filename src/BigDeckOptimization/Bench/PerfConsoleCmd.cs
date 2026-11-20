@@ -60,7 +60,7 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
 
     public override string CmdName => "bdperf";
 
-    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | verify [off|sample|all] | snapnet | combatstart | grid [cards:int] | probe [reset|log|on|off|nodes|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | sortkeys [wrong] | checks on|off | opt on|off [yes] | listeners [iterations:int] | costwrites | fault piles|walk | badges [clear|guard off|on] | snapgameerror <n> | reserialize [verify <n>] | clonememo [verify <n>] | conflicts | states | roomleft | modorder [none|<owner>] | firstturn inner | foreign <shape> <Type:Method> [gate] [priority N] | foreign remove|report|classify <Type:Method>";
+    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | costcolors [iterations:int] | verify [off|sample|all] | snapnet | combatstart | grid [cards:int] | probe [reset|log|on|off|nodes|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | sortkeys [wrong] | checks on|off | opt on|off [yes] | listeners [iterations:int] | costwrites | fault piles|walk | badges [clear|guard off|on] | snapgameerror <n> | reserialize [verify <n>] | clonememo [verify <n>] | conflicts | states | roomleft | modorder [none|<owner>] | firstturn inner | foreign <shape> <Type:Method> [gate] [priority N] | foreign remove|report|classify <Type:Method>";
 
     public override string Description => "[BigDeckOptimization] Measures the multiplayer post-action checksum cost, vanilla vs optimized, or shows/sets live snapshot verification.";
 
@@ -554,9 +554,78 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
             case "refresh":
                 int refreshIterations = args.Length >= 2 && int.TryParse(args[1], out int r) && r > 0 ? r : 5;
                 return CompareRefresh(refreshIterations);
+            case "costcolors":
+                int colorIterations = args.Length >= 2 && int.TryParse(args[1], out int ci) && ci > 0 ? ci : 20;
+                return TimeCostColors(colorIterations);
             default:
                 return new CmdResult(success: false, "Usage: bdperf " + Args);
         }
+    }
+
+    /// <summary>
+    /// <c>bdperf costcolors [iterations]</c> (leads measurement, 2026-11-20): what the hand's cost colors cost per hand refresh, through
+    /// the game's public <c>CardCostHelper.GetEnergyCostColor</c> / <c>GetStarCostColor</c> (HookFilter's mirrors when they serve, over
+    /// their lists or over the game's own walk next to other mods' patches on it; the game's helpers otherwise), inside a refresh
+    /// scope as the game's CombatStateChanged dispatch, and outside one.
+    /// </summary>
+    private static CmdResult TimeCostColors(int iterations)
+    {
+        CombatState? combat = CombatManager.Instance.DebugOnlyGetState();
+        NPlayerHand? hand = NPlayerHand.Instance;
+        if (combat == null || hand == null || !CombatManager.Instance.IsInProgress)
+        {
+            return new CmdResult(success: false, "Start a combat first.");
+        }
+        Type helper = typeof(MegaCrit.Sts2.Core.Helpers.Models.CardCostHelper);
+        MethodInfo? energy = AccessTools.Method(helper, "GetEnergyCostColor");
+        MethodInfo? star = AccessTools.Method(helper, "GetStarCostColor");
+        if (energy == null || star == null)
+        {
+            return new CmdResult(success: false, "CardCostHelper color methods not found");
+        }
+        List<CardModel> cards = hand.ActiveHolders.Select(h => h.CardNode?.Model).OfType<CardModel>().ToList();
+        int listeners = combat.IterateHookListeners().Count();
+        long served0 = HookFilter.MirrorAnswers[HookFilter.MirrorEnergyCostColor], starServed0 = HookFilter.MirrorAnswers[HookFilter.MirrorStarCostColor];
+        long walk0 = HookFilter.MirrorAnswers[HookFilter.MirrorEnergyCostColorWalk], starWalk0 = HookFilter.MirrorAnswers[HookFilter.MirrorStarCostColorWalk];
+        void Once()
+        {
+            foreach (CardModel card in cards)
+            {
+                energy.Invoke(null, new object?[] { card, card.CombatState });
+                star.Invoke(null, new object?[] { card, card.CombatState });
+            }
+        }
+        double Time(bool scoped)
+        {
+            if (scoped)
+            {
+                ListenerCache.InvokeStateChangedInScope(_ => Once(), combat);
+            }
+            else
+            {
+                Once();
+            }
+            Stopwatch sw = Stopwatch.StartNew();
+            for (int i = 0; i < iterations; i++)
+            {
+                if (scoped)
+                {
+                    ListenerCache.InvokeStateChangedInScope(_ => Once(), combat);
+                }
+                else
+                {
+                    Once();
+                }
+            }
+            return sw.Elapsed.TotalMilliseconds / iterations;
+        }
+        double inScope = Time(true), outside = Time(false);
+        long served = HookFilter.MirrorAnswers[HookFilter.MirrorEnergyCostColor] - served0, starServed = HookFilter.MirrorAnswers[HookFilter.MirrorStarCostColor] - starServed0;
+        long walk = HookFilter.MirrorAnswers[HookFilter.MirrorEnergyCostColorWalk] - walk0, starWalk = HookFilter.MirrorAnswers[HookFilter.MirrorStarCostColorWalk] - starWalk0;
+        string result = $"COSTCOLORS hand {cards.Count} cards, combat listeners {listeners}, per hand refresh: {inScope:F3} ms in a refresh scope, {outside:F3} ms outside; "
+            + $"mirror answers energy {served} (over the game's walk {walk}), star {starServed} (over the game's walk {starWalk}) of {(iterations + 1) * cards.Count} calls each in a scope";
+        Log.Info($"[{ModEntry.Id}] {result}");
+        return new CmdResult(success: true, result);
     }
 
     /// <summary>

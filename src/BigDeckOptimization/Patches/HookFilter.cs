@@ -429,19 +429,23 @@ public static class HookFilter
         PatchSafety.Watch(Name, HookFilterCostColors.StarCostColor, PatchTolerance.BeforeReplace);
         // Display only: the lists come from ListenerCache's scopes, which hand them to this class only while no other mod patches
         // the two walks (ListenerCache.IsCaching: postfixes there are let stand for the walks' own calls, not for lists used
-        // directly). Any patch there keeps all of this class vanilla (the menu's red title), not only a hook.
+        // directly). A patch there keeps all of this class vanilla (the menu's red title), not only a hook, but for the cost color
+        // mirrors where ListenerCache's scopes still serve (they call the game's own walk then: HookFilterCostColors.BesideWalks):
+        // a part of it then (orange), with an exact note naming them.
         MethodBase?[] walks =
         {
             Reflect.Method(typeof(CombatState), nameof(CombatState.IterateHookListeners)),
             Reflect.Method(typeof(RunState), nameof(RunState.IterateHookListeners), new[] { typeof(ICombatState) }),
         };
+        ListenerWalks = walks;
         PatchSafety.Watch(Name, walks);
-        PatchSafety.WholeMethods(Name, walks);
         // The same for the walk code ListenerCache's scopes also require unpatched (both state machines, Contains, ModHelper's
         // subscriber walks: EnterAny's _safe), resolved lazily as ListenerCache's own registration. (The walk_mirrors note needs a
-        // patch on the walks themselves, which the check above already shows as a whole back-off of this class.)
+        // patch on the walks themselves, which the check above already shows as a back-off of this class.)
         PatchSafety.WatchAll(Name, FastListeners.WalkCodeMethods);
-        PatchSafety.WholeMethods(Name, FastListeners.WalkCodeMethods);
+        PatchSafety.WholeMethods(Name, () => HookFilterCostColors.BesideWalks()
+            ? FastListeners.WalkCodeMethods() : FastListeners.WalkCodeMethods().Concat(walks));
+        PatchSafety.WatchNote(Name, HookFilterCostColors.NoteBesideWalks);
         ListenerCache.RunReleased += () =>
         {
             _filtered = null;
@@ -734,6 +738,40 @@ public static class HookFilter
         }
     }
 
+    /// <summary>The two listener walks (CombatState's, RunState's), for the display of the cost color mirrors next to their patches.</summary>
+    internal static MethodBase?[] ListenerWalks = Array.Empty<MethodBase?>();
+
+    /// <summary>
+    /// The pile filter of one hook for a mirror that calls the game's own walk itself (the cost color mirrors next to other mods'
+    /// patches on the walks, <see cref="ListenerCache.ServingAugmented"/>): null when filtering that hook isn't safe in this scope or
+    /// FastListeners can't filter (then the game's helper). Only this mod's code (callers treat a throw as this mod's).
+    /// </summary>
+    internal static FastListeners.PileFilter? WalkFilter(int hook)
+    {
+        if (!CanWalk || !HookSafe(hook))
+        {
+            return null;
+        }
+        return _gatesNow is { } gatesNow && gatesNow[hook].Length > 0 ? _pileFilters![hook].WithGates(gatesNow[hook]) : _pileFilters![hook];
+    }
+
+    /// <summary>
+    /// Whether a listener of the game's walk output is called for <paramref name="hook"/> by a mirror over that output: its type
+    /// overrides the hook's method (or matches this scope's gates); the others would run the <see cref="AbstractModel"/> default,
+    /// which changes nothing (<see cref="FilteredHook.IsSafe"/>). One lookup per run of listeners of one type, as
+    /// <see cref="Walked"/>.
+    /// </summary>
+    internal static bool Calls(AbstractModel listener, int hook, ref Type? lastType, ref bool lastCalls)
+    {
+        Type type = listener.GetType();
+        if (!ReferenceEquals(type, lastType))
+        {
+            lastType = type;
+            lastCalls = (OverrideMask(type) & (1 << hook)) != 0 || GateKeeps(hook, type);
+        }
+        return lastCalls;
+    }
+
     private static List<AbstractModel>? Walked((object, object?) key, int hook, Func<FastListeners.PileFilter, IEnumerable<AbstractModel>> walk,
         Func<IReadOnlyList<AbstractModel>> materialized)
     {
@@ -804,9 +842,14 @@ public static class HookFilter
 #if BENCH
     /// <summary>Answers each mirror gave from the filtered listeners (test builds: per-mirror effects, <c>HookFilter.&lt;Mirror&gt;</c>).</summary>
     internal const int MirrorDamage = 0, MirrorDamageLate = 1, MirrorEnergyCost = 2, MirrorKeywords = 3, MirrorShouldPlay = 4, MirrorHitting = 5,
-        MirrorEnergyCostColor = 6, MirrorStarCostColor = 7;
-    internal static readonly string[] MirrorNames = { "Damage", "DamageLate", "EnergyCost", "Keywords", "ShouldPlay", "Hitting", "EnergyCostColor", "StarCostColor" };
-    internal static readonly long[] MirrorAnswers = new long[8];
+        MirrorEnergyCostColor = 6, MirrorStarCostColor = 7, MirrorEnergyCostColorWalk = 8, MirrorStarCostColorWalk = 9;
+    /// <summary>The *Walk ones: the cost color mirrors over the game's own walk, next to other mods' patches on the walks.</summary>
+    internal static readonly string[] MirrorNames = { "Damage", "DamageLate", "EnergyCost", "Keywords", "ShouldPlay", "Hitting", "EnergyCostColor", "StarCostColor",
+        "EnergyCostColorWalk", "StarCostColorWalk" };
+    internal static readonly long[] MirrorAnswers = new long[10];
+
+    /// <summary>Exceptions of the walk's own code a cost color mirror over the game's walk passed on (PassOnWalk; hookfilter walkthrow).</summary>
+    public static long WalkThrowsPassedOn { get; private set; }
 
     public static long WalkChecks { get; private set; }
     public static long WalkMismatches { get; private set; }
@@ -847,6 +890,77 @@ public static class HookFilter
         }
         _passOn = e;
         return true;
+    }
+
+    /// <summary>
+    /// <see cref="PassOn"/> for a mirror that also enumerates the game's own listener walk (the cost color mirrors next to other
+    /// mods' patches on the walks): a listener's exception as there, and an exception the walk's own code threw (the game's
+    /// iterator, another mod's postfix or the iterator it returned: <see cref="ThrownOutsideThisMod"/>), which reached the
+    /// mirror through this mod's filtering enumerators unchanged (FastListeners' KeptOnly, ListenerCache's kept outputs: they
+    /// handle their own failures and only pass the source's exception on), at the element the game's foreach meets it.
+    /// </summary>
+    internal static bool PassOnWalk(Exception e, Type mirror)
+    {
+        if (!ThrownByListener(e, mirror))
+        {
+            if (!ThrownOutsideThisMod(e))
+            {
+                Disable(e);
+                return false;
+            }
+#if BENCH
+            WalkThrowsPassedOn++;
+#endif
+        }
+        _passOn = e;
+        return true;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="e"/> was thrown by code that is neither this mod's nor the runtime's: the first frame from where it
+    /// was thrown whose method is known and not in the runtime libraries (System.*, Harmony, MonoMod: code this mod calls too) is
+    /// another assembly's (the game's, another mod's, a dynamic one). Its earlier part included when a kept output rethrew it to a
+    /// later caller (ExceptionDispatchInfo keeps it). A bug of this mod throws from its own frame or from the runtime called by it:
+    /// never taken for the walk's.
+    /// </summary>
+    private static bool ThrownOutsideThisMod(Exception e)
+    {
+        try
+        {
+            foreach (System.Diagnostics.StackFrame frame in new System.Diagnostics.StackTrace(e).GetFrames())
+            {
+                Type? type = frame.GetMethod()?.DeclaringType;
+                if (type == null)
+                {
+                    continue;
+                }
+                Assembly assembly = type.Assembly;
+                if (assembly == typeof(HookFilter).Assembly)
+                {
+                    return false;
+                }
+                if (!IsRuntimeLibrary(assembly))
+                {
+                    return true;
+                }
+            }
+        }
+        catch
+        {
+            // Can't tell: this mod's, the game's helper runs.
+        }
+        return false;
+    }
+
+    private static bool IsRuntimeLibrary(Assembly assembly)
+    {
+        if (assembly == typeof(object).Assembly || assembly == typeof(Harmony).Assembly)
+        {
+            return true;
+        }
+        string name = assembly.GetName().Name ?? "";
+        return name.StartsWith("System.", StringComparison.Ordinal) || name == "System" || name == "netstandard" || name == "mscorlib"
+            || name.StartsWith("MonoMod", StringComparison.Ordinal) || name.StartsWith("Mono.Cecil", StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -1406,9 +1520,14 @@ internal static class HookFilterCostColors
     {
         // Mirror of the whole helper, skipping it: what runs around it as around the helper is let stand (BeforeReplace, as the
         // mirrored hooks).
-        if (!HookFilter.Active || state is not CombatState combat || PatchSafety.IsPatchedByOthers(EnergyCostColor, PatchTolerance.BeforeReplace))
+        if (!HookFilter.Enabled || state is not CombatState combat || !(ListenerCache.IsCaching || ListenerCache.ServingAugmented)
+            || PatchSafety.IsPatchedByOthers(EnergyCostColor, PatchTolerance.BeforeReplace))
         {
             return true;
+        }
+        if (!ListenerCache.IsCaching)
+        {
+            return EnergyBesideWalks(card, combat, ref hookModifiedCost, ref __result);
         }
         List<AbstractModel>? early, late;
         try
@@ -1464,9 +1583,14 @@ internal static class HookFilterCostColors
     internal static bool StarCostColorPrefix(CardModel card, ICombatState state, ref decimal hookModifiedCost, ref bool __result)
     {
         // As the energy cost color helper.
-        if (!HookFilter.Active || state is not CombatState combat || PatchSafety.IsPatchedByOthers(StarCostColor, PatchTolerance.BeforeReplace))
+        if (!HookFilter.Enabled || state is not CombatState combat || !(ListenerCache.IsCaching || ListenerCache.ServingAugmented)
+            || PatchSafety.IsPatchedByOthers(StarCostColor, PatchTolerance.BeforeReplace))
         {
             return true;
+        }
+        if (!ListenerCache.IsCaching)
+        {
+            return StarBesideWalks(card, combat, ref hookModifiedCost, ref __result);
         }
         List<AbstractModel>? listeners;
         try
@@ -1509,6 +1633,170 @@ internal static class HookFilterCostColors
                 throw;
             }
             return true;
+        }
+    }
+
+    // ---- Next to other mods' patches on the listener walks (DESIGN "Cost colours next to a walk-wrapping patch") ----
+
+    /// <summary>
+    /// <c>CardCostHelper.TryModifyEnergyCostWithHooks</c> inside a scope ListenerCache serves while other mods' patches on the
+    /// walks are let stand (<see cref="ListenerCache.ServingAugmented"/>, where no list of HookFilter may be used): the game's own
+    /// walk called where and as often as the helper calls it (twice), other mods' code on it running as in the game (and
+    /// ListenerCache's reuse of its output in a display refresh, an approved premise of its own), each output enumerated to its
+    /// end as the helper's foreach does, minus the listeners whose call is the <see cref="AbstractModel"/> default (false, the
+    /// cost as is): pile entries FastListeners' filter drops by type (KeptOnly, memoized over a kept output), then any listener
+    /// whose type doesn't override the hook (<see cref="HookFilter.Calls"/>). A throw from the walk's code or a listener reaches
+    /// the caller as from the game's loop (<see cref="HookFilter.PassOnWalk"/>).
+    /// </summary>
+    private static bool EnergyBesideWalks(CardModel card, CombatState combat, ref decimal hookModifiedCost, ref bool __result)
+    {
+        FastListeners.PileFilter? early, late;
+        try
+        {
+            // This mod's code only.
+            early = HookFilter.WalkFilter(HookFilter.EnergyCost);
+            late = HookFilter.WalkFilter(HookFilter.EnergyCostLate);
+        }
+        catch (Exception e)
+        {
+            HookFilter.Disable(e);
+            return true;
+        }
+        if (early == null || late == null)
+        {
+            return true;
+        }
+        try
+        {
+            ICombatState state = combat;
+            hookModifiedCost = card.EnergyCost.GetWithModifiers(CostModifiers.None);
+            bool modified = false;
+            Type? lastType = null;
+            bool lastCalls = false;
+            foreach (AbstractModel item in FastListeners.KeptOver(state.IterateHookListeners(), early))
+            {
+                if (HookFilter.Calls(item, HookFilter.EnergyCost, ref lastType, ref lastCalls))
+                {
+                    modified |= item.TryModifyEnergyCostInCombat(card, hookModifiedCost, out hookModifiedCost);
+                }
+            }
+            lastType = null;
+            foreach (AbstractModel item in FastListeners.KeptOver(state.IterateHookListeners(), late))
+            {
+                if (HookFilter.Calls(item, HookFilter.EnergyCostLate, ref lastType, ref lastCalls))
+                {
+                    modified |= item.TryModifyEnergyCostInCombatLate(card, hookModifiedCost, out hookModifiedCost);
+                }
+            }
+#if BENCH
+            CheckCostColor(EnergyCostColor!, card, state, modified, hookModifiedCost);
+            HookFilter.MirrorAnswers[HookFilter.MirrorEnergyCostColorWalk]++;
+#endif
+            __result = modified;
+            return false;
+        }
+        catch (Exception e)
+        {
+            // The walk's own exception or a listener's goes on to the caller from here, at the element the game's loop meets it
+            // (Harmony then runs no postfix, as the game runs none); this mod's: the game's helper.
+            if (HookFilter.PassOnWalk(e, typeof(HookFilterCostColors)))
+            {
+                throw;
+            }
+            return true;
+        }
+    }
+
+    /// <summary><c>CardCostHelper.TryModifyStarCostWithHooks</c> next to other mods' patches on the walks, as <see cref="EnergyBesideWalks"/> (one walk).</summary>
+    private static bool StarBesideWalks(CardModel card, CombatState combat, ref decimal hookModifiedCost, ref bool __result)
+    {
+        FastListeners.PileFilter? filter;
+        try
+        {
+            // This mod's code only.
+            filter = HookFilter.WalkFilter(HookFilter.StarCost);
+        }
+        catch (Exception e)
+        {
+            HookFilter.Disable(e);
+            return true;
+        }
+        if (filter == null)
+        {
+            return true;
+        }
+        try
+        {
+            ICombatState state = combat;
+            hookModifiedCost = card.BaseStarCost;
+            bool modified = false;
+            Type? lastType = null;
+            bool lastCalls = false;
+            foreach (AbstractModel item in FastListeners.KeptOver(state.IterateHookListeners(), filter))
+            {
+                if (HookFilter.Calls(item, HookFilter.StarCost, ref lastType, ref lastCalls))
+                {
+                    modified |= item.TryModifyStarCost(card, hookModifiedCost, out hookModifiedCost);
+                }
+            }
+#if BENCH
+            CheckCostColor(StarCostColor!, card, state, modified, hookModifiedCost);
+            HookFilter.MirrorAnswers[HookFilter.MirrorStarCostColorWalk]++;
+#endif
+            __result = modified;
+            return false;
+        }
+        catch (Exception e)
+        {
+            if (HookFilter.PassOnWalk(e, typeof(HookFilterCostColors)))
+            {
+                throw;
+            }
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Display only (never throws): whether the cost color mirrors still run next to other mods' patches on the listener walks,
+    /// as their runtime test decides it: a mirror patched, HookFilter and FastListeners on, and ListenerCache's scopes still
+    /// serving with those patches let stand. HookFilter's walk back-offs are then a part of it (orange), not all of it.
+    /// </summary>
+    internal static bool BesideWalks()
+    {
+        try
+        {
+            return (EnergyCostColor != null || StarCostColor != null) && HookFilter.Enabled && FastListeners.Applied && FastListeners.Enabled
+                && ListenerCache.ScopesServeBesideWalkPatches();
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Display only: bdopt why's exact note while the cost color mirrors run next to other mods' patches on the walks.</summary>
+    internal static void NoteBesideWalks()
+    {
+        try
+        {
+            MethodBase[] patched = HookFilter.ListenerWalks.Where(m => m != null && PatchSafety.HasOtherPatches(m)).Select(m => m!).ToArray();
+            if (patched.Length == 0 || !BesideWalks())
+            {
+                PatchSafety.ClearExact(HookFilter.Name, "cost_colors_walk");
+                return;
+            }
+            var mods = new List<string>(PatchSafety.OtherModsPatching(patched));
+            foreach (MethodBase walk in patched)
+            {
+                mods.AddRange(HarmonyWatch.HiddenOwners(walk));
+            }
+            PatchSafety.Exact(HookFilter.Name, "cost_colors_walk", "the card cost colors keep their filtered loops next to other mods' patches on the "
+                + "listener walks: they call the game's own walk where and as often as the game does (other mods' code there runs as in the "
+                + "game) and only ask the listeners whose type can change a cost", mods.ToArray());
+        }
+        catch
+        {
+            // Display only.
         }
     }
 
