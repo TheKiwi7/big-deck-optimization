@@ -564,9 +564,9 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
 
     /// <summary>
     /// <c>bdperf costcolors [iterations]</c> (leads measurement, 2026-11-20): what the hand's cost colors cost per hand refresh, through
-    /// the game's public <c>CardCostHelper.GetEnergyCostColor</c> / <c>GetStarCostColor</c> (HookFilter's mirrors when they serve, over
-    /// their lists or over the game's own walk next to other mods' patches on it; the game's helpers otherwise), inside a refresh
-    /// scope as the game's CombatStateChanged dispatch, and outside one.
+    /// the game's public <c>CardCostHelper.GetEnergyCostColor</c> / <c>GetStarCostColor</c> (HookFilter's mirrors when they serve, the
+    /// game's helpers otherwise): in a display refresh scope as the game's own CombatStateChanged handlers, in the dispatch scope
+    /// with this bench's handler (another mod's for ListenerCache: no walk output reused), and outside any scope.
     /// </summary>
     private static CmdResult TimeCostColors(int iterations)
     {
@@ -586,7 +586,6 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
         List<CardModel> cards = hand.ActiveHolders.Select(h => h.CardNode?.Model).OfType<CardModel>().ToList();
         int listeners = combat.IterateHookListeners().Count();
         long served0 = HookFilter.MirrorAnswers[HookFilter.MirrorEnergyCostColor], starServed0 = HookFilter.MirrorAnswers[HookFilter.MirrorStarCostColor];
-        long walk0 = HookFilter.MirrorAnswers[HookFilter.MirrorEnergyCostColorWalk], starWalk0 = HookFilter.MirrorAnswers[HookFilter.MirrorStarCostColorWalk];
         void Once()
         {
             foreach (CardModel card in cards)
@@ -595,35 +594,48 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                 star.Invoke(null, new object?[] { card, card.CombatState });
             }
         }
-        double Time(bool scoped)
+        // 0: one display refresh scope (as the game's own handlers of the CombatStateChanged dispatch, which update the hand: the
+        // augmented walks' outputs reused there); 1: the dispatch scope with this bench's handler (another mod's for ListenerCache:
+        // its walks at the exact tier, nothing reused); 2: outside any scope.
+        void Run(int mode)
         {
-            if (scoped)
+            switch (mode)
             {
-                ListenerCache.InvokeStateChangedInScope(_ => Once(), combat);
+                case 0:
+                    ListenerCache.EnterDisplayRefresh(out int state);
+                    try
+                    {
+                        Once();
+                    }
+                    finally
+                    {
+                        ListenerCache.ExitRefresh(null, state);
+                    }
+                    break;
+                case 1:
+                    ListenerCache.InvokeStateChangedInScope(_ => Once(), combat);
+                    break;
+                default:
+                    Once();
+                    break;
             }
-            else
-            {
-                Once();
-            }
+        }
+        double Time(int mode)
+        {
+            Run(mode);
             Stopwatch sw = Stopwatch.StartNew();
             for (int i = 0; i < iterations; i++)
             {
-                if (scoped)
-                {
-                    ListenerCache.InvokeStateChangedInScope(_ => Once(), combat);
-                }
-                else
-                {
-                    Once();
-                }
+                Run(mode);
             }
             return sw.Elapsed.TotalMilliseconds / iterations;
         }
-        double inScope = Time(true), outside = Time(false);
+        double display = Time(0);
+        double inScope = Time(1), outside = Time(2);
         long served = HookFilter.MirrorAnswers[HookFilter.MirrorEnergyCostColor] - served0, starServed = HookFilter.MirrorAnswers[HookFilter.MirrorStarCostColor] - starServed0;
-        long walk = HookFilter.MirrorAnswers[HookFilter.MirrorEnergyCostColorWalk] - walk0, starWalk = HookFilter.MirrorAnswers[HookFilter.MirrorStarCostColorWalk] - starWalk0;
-        string result = $"COSTCOLORS hand {cards.Count} cards, combat listeners {listeners}, per hand refresh: {inScope:F3} ms in a refresh scope, {outside:F3} ms outside; "
-            + $"mirror answers energy {served} (over the game's walk {walk}), star {starServed} (over the game's walk {starWalk}) of {(iterations + 1) * cards.Count} calls each in a scope";
+        string result = $"COSTCOLORS hand {cards.Count} cards, combat listeners {listeners}, per hand refresh: {display:F3} ms in a display scope (the game's handlers), "
+            + $"{inScope:F3} ms in a dispatch scope with this bench as another mod's handler, {outside:F3} ms outside; mirror answers in both scopes energy {served}, "
+            + $"star {starServed} of {2 * (iterations + 1) * cards.Count} calls each";
         Log.Info($"[{ModEntry.Id}] {result}");
         return new CmdResult(success: true, result);
     }

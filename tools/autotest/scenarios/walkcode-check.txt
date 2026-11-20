@@ -1,11 +1,10 @@
 # HookFilter's whole back-off on the walk code alone (DESIGN "Re-audit of the fourth pass", fifth pass, SHH-D2): another mod
 # patching only CombatState.Contains (walk code ListenerCache's scopes require unpatched, registered whole lazily under
-# HookFilter: WholeMethods with a source), neither IterateHookListeners patched. bdperf states lists HookFilter with its lazy
-# methods (the walk code, and the two walks unless the cost color mirrors run next to their patches: all lazy since
-# 2026-11-20), hook_filter is Inactive (red), and bdopt why marks the Contains back-off "(all of that
+# HookFilter: WholeMethods with a source), neither IterateHookListeners patched. bdperf states lists HookFilter with its fixed
+# walks and the lazy part ("+ lazy"), hook_filter is Inactive (red), and bdopt why marks the Contains back-off "(all of that
 # part)". A bool prefix returning true: no shape rule lets it stand, and the game's code still runs (nothing changed).
 timeout 300
-expect STATES whole .*HookFilter \(lazy methods\)
+expect STATES whole .*HookFilter \([0-9]+ methods \+ lazy\)
 expect STATES hook_filter Inactive
 expect HookFilter: CombatState\.Contains is also patched by bdtest\.fakeconflict
 expect HookFilter: CombatState\.Contains <- bdtest\.fakeconflict \(all of that part\)

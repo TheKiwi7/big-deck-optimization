@@ -52,10 +52,9 @@ public static class ForeignShapesHookFilter
             return parts[1] switch
             {
                 "throwonce" => ThrowOnce(),
-                "walkthrow" => WalkThrow(),
                 "gatedlists" => GatedLists(),
                 "synthetic" when parts.Length > 2 => Synthetic(AccessTools.Method(parts[2]) ?? throw new ArgumentException("no method " + parts[2])),
-                _ => throw new ArgumentException("foreignpatch hookfilter throwonce|walkthrow|gatedlists|synthetic <Type:Method>"),
+                _ => throw new ArgumentException("foreignpatch hookfilter throwonce|gatedlists|synthetic <Type:Method>"),
             };
         }
         string shape = parts[0];
@@ -359,156 +358,6 @@ public static class ForeignShapesHookFilter
         {
             new Harmony(listenerId).UnpatchAll(listenerId);
             new Harmony(postfixId).UnpatchAll(postfixId);
-        }
-    }
-
-    // --- hookfilter walkthrow ---
-
-    /// <summary>The step the walk postfix runs before each element it yields (the emitted thrower's prefix), null when not testing.</summary>
-    private static Action? _walkStep;
-
-    private static long _helperPostfixCalls;
-
-    private static void HelperCountingPostfix() => _helperPostfixCalls++;
-
-    /// <summary>A walk postfix of "another mod" running a step before each element (lazy, by value): the step throws once when armed.</summary>
-    private static void WalkStepPostfix(ref IEnumerable<AbstractModel> __result)
-    {
-        if (_walkStep is { } step)
-        {
-            __result = Stepped(__result, step);
-        }
-    }
-
-    private static IEnumerable<AbstractModel> Stepped(IEnumerable<AbstractModel> walk, Action step)
-    {
-        foreach (AbstractModel model in walk)
-        {
-            step();
-            yield return model;
-        }
-    }
-
-    /// <summary>
-    /// <c>foreignpatch hookfilter walkthrow</c> (in combat, the combat walk already carrying a postfix of "another mod", e.g.
-    /// walk-expand-cost-postfix): the energy cost color mirror over the game's walk (HookFilterCostColors.EnergyBesideWalks)
-    /// meeting a throw from the walk's own code. A postfix on the walk runs a step emitted into a dynamic assembly (not this
-    /// mod's) before each element, which throws once at a given step: in the helper's first walk, then in its second. The helper
-    /// is called inside a refresh scope (the mirror) and through <see cref="ListenerCache.RunVanilla{T}"/> (the game's helper):
-    /// both must throw the same exception after the same steps, with a counting postfix on the helper never run, the mirror
-    /// having passed the walk's exception on (HookFilter.WalkThrowsPassedOn), and HookFilter neither faulted nor off. Before that,
-    /// one call without a throw must be answered by the mirror over the game's walk (EnergyCostColorWalk). Bench checks off
-    /// meanwhile (their 1-in-64 call of the game's helper would walk again).
-    /// </summary>
-    private static IReadOnlyList<string> WalkThrow()
-    {
-        if (CombatManager.Instance.DebugOnlyGetState() is not { } combat)
-        {
-            throw new InvalidOperationException("hookfilter walkthrow: start a combat first");
-        }
-        MethodInfo helper = HookFilterCostColors.EnergyCostColor ?? throw new InvalidOperationException("hookfilter walkthrow: the energy cost color helper isn't mirrored here");
-        CardModel card = ListenerCache.GetListeners(combat).OfType<CardModel>().FirstOrDefault() ?? throw new InvalidOperationException("hookfilter walkthrow: no card in this combat");
-        MethodInfo walk = Reflect.Method(typeof(CombatState), nameof(CombatState.IterateHookListeners)) ?? throw new MissingMethodException(nameof(CombatState), nameof(CombatState.IterateHookListeners));
-        Type emitted = EmitThrower();
-        FieldInfo calls = emitted.GetField("Calls")!;
-        FieldInfo throwAt = emitted.GetField("ThrowAt")!;
-        // A delegate, not MethodInfo.Invoke: the exception is the emitted method's own, thrown from its frame.
-        Action step = emitted.GetMethod("Prefix")!.CreateDelegate<Action>();
-        string walkId = ForeignPatches.IdPrefix + "hf-walkthrow-postfix";
-        string helperId = ForeignPatches.IdPrefix + "hf-walkthrow-helper";
-        bool benchChecks = ExtraScopes.BenchChecks;
-        new Harmony(walkId).Patch(walk, postfix: new HarmonyMethod(typeof(ForeignShapesHookFilter), nameof(WalkStepPostfix)));
-        new Harmony(helperId).Patch(helper, postfix: new HarmonyMethod(typeof(ForeignShapesHookFilter), nameof(HelperCountingPostfix)));
-        _walkStep = step;
-        ExtraScopes.BenchChecks = false;
-        var lines = new List<string>();
-        try
-        {
-            (string Thrown, int Steps, long Postfix, long Passed, long Answered) Call(bool mirror, int at)
-            {
-                calls.SetValue(null, 0);
-                throwAt.SetValue(null, at);
-                long postfixBefore = _helperPostfixCalls;
-                long passedBefore = HookFilter.WalkThrowsPassedOn;
-                long answeredBefore = HookFilter.MirrorAnswers[HookFilter.MirrorEnergyCostColorWalk];
-                string thrown = "none";
-                void Invoke()
-                {
-                    try
-                    {
-                        helper.Invoke(null, new object[] { card, combat, 0m });
-                    }
-                    catch (TargetInvocationException e) when (e.InnerException != null)
-                    {
-                        thrown = $"{e.InnerException.GetType().Name}: {e.InnerException.Message}";
-                    }
-                }
-                if (mirror)
-                {
-                    ListenerCache.InvokeStateChangedInScope(_ => Invoke(), combat);
-                }
-                else
-                {
-                    ListenerCache.RunVanilla(() =>
-                    {
-                        Invoke();
-                        return 0;
-                    });
-                }
-                throwAt.SetValue(null, 0);
-                return (thrown, (int)calls.GetValue(null)!, _helperPostfixCalls - postfixBefore, HookFilter.WalkThrowsPassedOn - passedBefore,
-                    HookFilter.MirrorAnswers[HookFilter.MirrorEnergyCostColorWalk] - answeredBefore);
-            }
-            // The walk's length (steps per walk: the helper walks twice), then one call without a throw: the mirror over the game's
-            // walk must answer it.
-            var plain = Call(mirror: true, at: 0);
-            int length = plain.Steps / 2;
-            var plainGame = Call(mirror: false, at: 0);
-            bool served = plain.Answered == 1 && plain.Thrown == "none" && plain.Postfix == 1 && plainGame.Steps == plain.Steps;
-            lines.Add($"FOREIGN hookfilter walkthrow plain: walk of {length} listeners, mirror answered {plain.Answered}, steps {plain.Steps} (game's {plainGame.Steps}), "
-                + $"helper postfix {plain.Postfix}: " + (served ? "served over the game's walk" : "NOT SERVED"));
-            if (!served || length < 2)
-            {
-                return lines;
-            }
-            foreach ((string where, int at) in new[] { ("first walk", length / 2), ("second walk", length + length / 2) })
-            {
-                var mirrored = Call(mirror: true, at: at);
-                var game = Call(mirror: false, at: at);
-                bool faulted = PatchSafety.IsFaulted(HookFilter.Name);
-                var problems = new List<string>();
-                if (mirrored.Thrown != game.Thrown || game.Thrown == "none")
-                {
-                    problems.Add("not the same exception");
-                }
-                if (mirrored.Steps != game.Steps || game.Steps != at)
-                {
-                    problems.Add("not the same steps of the walk");
-                }
-                if (mirrored.Postfix != 0 || game.Postfix != 0)
-                {
-                    problems.Add("a postfix ran after the throw");
-                }
-                if (mirrored.Passed != 1)
-                {
-                    problems.Add("the mirror didn't pass the walk's exception on");
-                }
-                if (faulted || !HookFilter.Enabled)
-                {
-                    problems.Add("HookFilter faulted or off");
-                }
-                lines.Add($"FOREIGN hookfilter walkthrow {where}: step {at}; mirror {mirrored.Thrown}, steps {mirrored.Steps}, postfix {mirrored.Postfix}, passed on {mirrored.Passed}; "
-                    + $"game's helper {game.Thrown}, steps {game.Steps}, postfix {game.Postfix}; HookFilter faulted {faulted}, on {HookFilter.Enabled}: "
-                    + (problems.Count == 0 ? "same as the game's" : "DIFFERENT (" + string.Join("; ", problems) + ")"));
-            }
-            return lines;
-        }
-        finally
-        {
-            ExtraScopes.BenchChecks = benchChecks;
-            _walkStep = null;
-            new Harmony(walkId).UnpatchAll(walkId);
-            new Harmony(helperId).UnpatchAll(helperId);
         }
     }
 }

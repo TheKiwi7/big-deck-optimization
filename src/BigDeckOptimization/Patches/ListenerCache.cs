@@ -93,29 +93,6 @@ public static class ListenerCache
     /// </summary>
     public static bool IsCaching => Serving && !_combatAugmented && !_runAugmented;
 
-    /// <summary>
-    /// Inside a scope this class serves while other mods' patches on a walk are let stand (<see cref="IsCaching"/> false): HookFilter's
-    /// cost color mirrors then call the game's own walk and filter its output (FastListeners.KeptOver), the scope serving only their
-    /// per-scope patch checks, never a list built here.
-    /// </summary>
-    internal static bool ServingAugmented => Serving && (_combatAugmented || _runAugmented);
-
-    /// <summary>
-    /// Display only (HookFilter's cost color mirrors, <c>HookFilterCostColors.BesideWalks</c>): a scope would serve now with other
-    /// mods' patches on the walks let stand (the scope check an outermost scope makes, its parts on). Never throws.
-    /// </summary>
-    internal static bool ScopesServeBesideWalkPatches()
-    {
-        try
-        {
-            return (RefreshEnabled || SnapshotEnabled) && ScopesSafe(out bool combatOthers, out bool runOthers, atLoad: true) && (combatOthers || runOthers);
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
     /// <summary>Inside a scope where the walks' own calls are answered from the cached lists (<see cref="CombatIteratePrefix"/>).</summary>
     private static bool Serving => _safe && !_suspended
         && ((SnapshotEnabled && _snapshotDepth > 0) || (RefreshEnabled && _refreshDepth > 0));
