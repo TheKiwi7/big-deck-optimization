@@ -1014,10 +1014,35 @@ public static class LimitlessCloneMemo
             {
                 methods = null;
             }
+#if BENCH
+            if (PatchSafety.CantListForTest)
+            {
+                methods = null;
+            }
+#endif
+            bool couldTell = known == null || known.Methods != null;
             _patchedSet = known = new PatchedSet(stamp, now, methods);
+            // Full audit B-3 (2026-11-20): a map that can't be built (one entry unreadable: any method may be the one asked here, so
+            // no entry can be left out) leaves both parts idle (the spine's generic ModelDb members count as patched): said in a note,
+            // shown by bdopt why and the menu, as a back-off would be.
+            if (methods == null)
+            {
+                foreach (string patch in new[] { Name, LimitlessHookSkip.Name })
+                {
+                    PatchSafety.Note(patch, PatchedMethodsKey, "Harmony couldn't list the methods other mods patch: stacked enchantments' inner cards are "
+                        + "rebuilt at every clone and never skipped, as the game does", Array.Empty<string>(), whole: true);
+                }
+            }
+            else if (!couldTell)
+            {
+                PatchSafety.ClearNote(Name, PatchedMethodsKey);
+                PatchSafety.ClearNote(LimitlessHookSkip.Name, PatchedMethodsKey);
+            }
         }
         return known.Methods;
     }
+
+    private const string PatchedMethodsKey = "patched_methods";
 
     /// <summary>
     /// For a member of a generic definition (CardCmd.Enchant&lt;T&gt;, ModelDb.Card&lt;T&gt;, a generic type's method), as the chain and
