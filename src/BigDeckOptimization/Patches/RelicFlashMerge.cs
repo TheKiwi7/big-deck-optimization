@@ -229,8 +229,38 @@ public static class RelicFlashMerge
     /// (<see cref="LazyGuard"/>: SaveManager's <c>ConstructDefault</c>, which only <c>SaveManager.Instance</c> calls, and only
     /// before the instance exists). Its patches can't see a merged flash's skip: not a back-off.
     /// </summary>
-    private static bool Unreachable(System.Reflection.MethodBase method, Dictionary<System.Reflection.MethodBase, LazyGuard.Guard> guards) =>
-        PatchSafety.ShapeRules && ((guards.TryGetValue(method, out LazyGuard.Guard? guard) && LazyGuard.Shut(guard)) || Latched(method));
+    private static bool Unreachable(System.Reflection.MethodBase method, Dictionary<System.Reflection.MethodBase, LazyGuard.Guard> guards)
+    {
+        LazyGuard.Guard? read = null;
+        bool shut = false;
+        return Unreachable(method, guards, ref read, ref shut);
+    }
+
+    /// <summary>
+    /// <see cref="Unreachable(System.Reflection.MethodBase, Dictionary{System.Reflection.MethodBase, LazyGuard.Guard})"/> with the last
+    /// guard read and its answer (review M2: one flash reads each guard once, not once per strict member behind it).
+    /// </summary>
+    private static bool Unreachable(System.Reflection.MethodBase method, Dictionary<System.Reflection.MethodBase, LazyGuard.Guard> guards,
+        ref LazyGuard.Guard? read, ref bool shut)
+    {
+        if (!PatchSafety.ShapeRules)
+        {
+            return false;
+        }
+        if (guards.TryGetValue(method, out LazyGuard.Guard? guard))
+        {
+            if (!ReferenceEquals(guard, read))
+            {
+                read = guard;
+                shut = LazyGuard.Shut(guard);
+            }
+            if (shut)
+            {
+                return true;
+            }
+        }
+        return Latched(method);
+    }
 
     /// <summary>
     /// Rule latch (2026-11-18): a strict member whose every other mod's patch is a latch shut now (<see cref="LazyGuard.LatchedShut"/>:
@@ -479,15 +509,18 @@ public static class RelicFlashMerge
         if (PatchSafety.ShapeRules)
         {
             bool patched = false;
+            LazyGuard.Guard? read = null;
+            bool shut = false;
             foreach (System.Reflection.MethodBase method in strict)
             {
                 // Behind a lazily built instance that exists, or only latched patches shut there: the flash can't reach their code.
-                if (Unreachable(method, guards))
+                if (Unreachable(method, guards, ref read, ref shut))
                 {
                     continue;
                 }
-                // Every one asked: each back-off recorded (bdopt why names them all).
-                patched |= PatchSafety.IsPatchedByOthers(method, Caller);
+                // Every one asked: each back-off recorded (bdopt why names them all); a generic one on each closed instantiation
+                // Harmony patches too (D3).
+                patched |= PatchSafety.IsPatchedByOthersWithInstances(method, Caller);
             }
             return !patched && !StrictOverridden(strictVirtuals);
         }
@@ -563,14 +596,14 @@ public static class RelicFlashMerge
             void Collect(CodeSet set, System.Reflection.MethodBase[] strict, System.Reflection.MethodBase? handler,
                 Dictionary<System.Reflection.MethodBase, LazyGuard.Guard> guards)
             {
-                if (!set.Reviewed || PatchSafety.HasOtherPatches(handler) || strict.Any(m => !Unreachable(m, guards) && PatchSafety.HasOtherPatches(m))
+                if (!set.Reviewed || PatchSafety.HasOtherPatches(handler) || strict.Any(m => !Unreachable(m, guards) && PatchSafety.HasOtherPatchesWithInstances(m))
                     || StrictOverridden(sets.StrictVirtuals))
                 {
                     return;
                 }
                 foreach (System.Reflection.MethodBase method in set.Methods)
                 {
-                    if (method == handler || !PatchSafety.HasOtherPatches(method))
+                    if (method == handler || !PatchSafety.HasOtherPatchesWithInstances(method))
                     {
                         continue;
                     }

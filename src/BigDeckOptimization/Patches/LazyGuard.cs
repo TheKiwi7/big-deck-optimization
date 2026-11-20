@@ -102,7 +102,11 @@ internal static class LazyGuard
     internal static bool ForceOpen { get; set; }
 #endif
 
-    /// <summary>The guard is shut: its field holds an instance (read now: the methods behind it can't run from the set).</summary>
+    /// <summary>
+    /// The guard is shut: its field holds an instance (read now: the methods behind it can't run from the set), and no other mod
+    /// patches the getter (review M1: its IL was read from metadata; a patch there, or a hidden IL hook, may call the builder or
+    /// what only it reaches whatever the field holds). Asked at each use (the patch state through PatchSafety's 2 s cache).
+    /// </summary>
     internal static bool Shut(Guard guard)
     {
 #if BENCH
@@ -113,7 +117,9 @@ internal static class LazyGuard
 #endif
         try
         {
-            return guard.Field.GetValue(null) != null;
+            // HasOtherPatches counts the hidden IL hooks' owners too (WithHidden); no back-off recorded for the getter here (where
+            // it is a strict member of its own, it is judged there).
+            return !PatchSafety.HasOtherPatches(guard.Getter) && guard.Field.GetValue(null) != null;
         }
         catch
         {

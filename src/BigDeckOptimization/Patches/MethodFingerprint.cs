@@ -730,8 +730,9 @@ public static class MethodFingerprint
     /// such call is added to it (the delegate type's Invoke) for the caller to judge. Not seen (C5/C7, re-audit round 2): calli
     /// and jmp, and game methods the runtime, Godot or SmartFormat call back (comparers, signal handlers, format extensions,
     /// engine-called node methods unless their class is a root). Generic members are named by their open
-    /// definitions, while Harmony patches a closed instantiation's own method: a patch on one instantiation is seen on the
-    /// definition only if Harmony lists it there (theoretical: no generic member is in a set the patches rely on today).
+    /// definitions, while Harmony patches a closed instantiation's own method: the patch checks of these sets ask each patched
+    /// instantiation too (<c>PatchSafety.PatchedInstantiations</c>, review D3: CodeSet, RelicFlashMerge's strict members;
+    /// LimitlessCloneMemo keeps its own map).
     /// </summary>
     public static List<MethodBase> GameCallees(Assembly game, MethodBase method, List<MethodInfo>? delegates = null, bool initializers = true, bool dispatch = true,
         List<(MethodInfo Callee, List<MethodBase> Implementations)>? dispatches = null)
