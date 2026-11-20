@@ -13,6 +13,8 @@
 - With Limitless, stacked enchantments are no longer rebuilt at each combat start for the cards other content mods don't touch (next to mods that change how cards are built or upgraded, they are rebuilt as before). Next to mods that carry their own copy of BaseLib's saved-field code, relics (and with Limitless, cards and stacked enchantments) are no longer saved the slow way.
 - Relic flashes at a big campfire clone are merged again next to mods whose change to the game's save code only runs once.
 - The main menu no longer freezes for a moment right after it shows: the mod's start-up work is now partly done in the background while the game loads, and the rest is spread over the menu's first frames (its longest frame went from about 110-145 ms to about 25-35 ms in my tests).
+- On the game's beta (v0.113), a huge deck's combat start is much faster next to library mods like RitsuLib: the game's card sorting no longer redoes the same work for every card (with about 10,000 cards, a combat start went from about 3 minutes 15 seconds to under 50 seconds in my tests, and each sort before a reshuffle is as much faster). Without such mods it went from 10 to 5 seconds. The cards' order is unchanged.
+- Playing a card is faster with a huge deck of stacked enchantments next to such mods, on both game versions: with about 10,000 cards, a card play went from 7-10 seconds to 3.5-5.5.
 
 ## v1.1.0
 
