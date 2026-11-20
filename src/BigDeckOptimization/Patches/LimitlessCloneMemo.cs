@@ -179,6 +179,9 @@ public static class LimitlessCloneMemo
         (typeof(MegaCrit.Sts2.Core.Localization.DynamicVars.DynamicVar), "Clone", Reach.Spine, new[] { ("BaseLib.Extensions.DynamicVarExtensions+CloneTooltips:Copy", "443436F93886072A") }),
         // Called by Limitless's set_Enchantment prefix when a card gets a second enchantment.
         (typeof(MegaCrit.Sts2.Core.Commands.CardCmd), "Enchant", Reach.SecondEnchant, new[] { ("Limitless.LimitlessCode.UncappedEnchantments.CardCmdPatches.Patch_Enchant:Transpiler", "46E29C1A39F295FA") }),
+        // What CardCmd.Enchant asks first (full audit B-1: one of its own callees), with Limitless's transpiler there: its answer only adds
+        // the card's own inner enchantments (HasUselessSameEnchantments) and Limitless's uncapped option (in the stamp) to the game's.
+        (typeof(EnchantmentModel), nameof(EnchantmentModel.CanEnchant), Reach.SecondEnchant, new[] { ("Limitless.LimitlessCode.UncappedEnchantments.EnchantmentModelPatches.Patch_CanEnchant:Transpiler", "1B24CFB2B8A10CE5") }),
         // The enchantment's side of FromSerializable and of the clone, and what ModifyCard, UpgradeInternal and
         // FinalizeUpgradeInternal call (this mod's own patches there, e.g. on set_Amount, don't count).
         (typeof(MegaCrit.Sts2.Core.Saves.SaveUtil), "EnchantmentOrDeprecated", Reach.Enchant, Array.Empty<(string, string)>()),
@@ -721,7 +724,8 @@ public static class LimitlessCloneMemo
     /// required by this patch and LimitlessHookSkip: CardModel.ToSerializable, which Limitless's set_Enchantment prefix reaches when it
     /// stacks a second enchantment, with BaseLib's postfix there), nor the game's logger (a log line saves nothing). A transpiler's own
     /// code runs once at patch time: the helpers it inserts aren't followed (BaseLib's UpgradeVars calls DynamicVar.UpgradeValueBy, an
-    /// entry of its own). Null until worked out (<see cref="StartClosures"/>): every group then counts as patched.
+    /// entry of its own). Also the chain's own game callees, with their entry's group (full audit B-1, <see cref="AllowedCallees"/>).
+    /// Null until worked out (<see cref="StartClosures"/>): every group then counts as patched.
     /// </summary>
     private static volatile (System.Reflection.MethodBase Method, Reach Reach)[]? _allowedCallees;
 
@@ -766,8 +770,53 @@ public static class LimitlessCloneMemo
                 byChainMethod[method] = mine.ToArray();
             }
         }
+        // Full audit B-1 (2026-11-20): the chain's own game callees, with their entry's group (until then never judged: AfterCloned's
+        // setters and ModelDb.GetById, DeepCloneFields' GetKeywordsWithSources, AssertMutable...). One level into the game, as the allowed
+        // patches' callees: the chain's code is pinned (GameChain; CardCmd.Enchant's is read live), what it calls is judged by its
+        // patches (about 20 to 60 methods a group on v0.111.1 and v0.113.1). Their own closure isn't walked: the game's virtual dispatch and
+        // branches an inner card never takes (GetKeywordsWithSources' combat walk, the game cards' CanonicalVars) make it ~1,800 to
+        // 2,200 methods a group (37 to 151 without any dispatch on models, the spine's holding CombatState.IterateHookListeners, which
+        // RitsuLib patches), each a back-off. An entry reached only inside a closure: its closure's walk follows what it calls.
+        var graph = new CalleeGraph(game, ChainDispatch);
+        var delegates = new HashSet<string>(StringComparer.Ordinal);
+        foreach ((System.Reflection.MethodBase method, _, _, Reach reach) in chain)
+        {
+            if (reach == Reach.None)
+            {
+                continue;
+            }
+            System.Reflection.MethodBase definition = MethodFingerprint.Definition(method);
+            foreach (System.Reflection.MethodBase callee in graph.Callees(definition))
+            {
+                if (!chainMethods.Contains(callee) && !judgedElsewhere.Contains((callee.Module, callee.MetadataToken))
+                    && callee.DeclaringType?.Namespace != typeof(MegaCrit.Sts2.Core.Logging.Logger).Namespace)
+                {
+                    found[callee] = found.GetValueOrDefault(callee) | reach;
+                }
+            }
+            foreach (System.Reflection.MethodInfo invoked in graph.Delegates(definition))
+            {
+                delegates.Add(MethodFingerprint.MemberName(definition) + " invokes " + MethodFingerprint.MemberName(invoked.DeclaringType));
+            }
+        }
+        // B-4: the delegates the chain's code invokes are the inner card's own events (EnchantInternal's EnchantmentChanged,
+        // UpgradeInternal's Upgraded on a card just built, no subscriber yet): not judged, listed in the log.
+        if (delegates.Count > 0)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: delegates the clone chain's own code invokes (the card's events, unjudged): {string.Join("; ", delegates.OrderBy(d => d, StringComparer.Ordinal))}");
+        }
         return found.Select(e => (e.Key, e.Value)).ToArray();
     }
+
+    /// <summary>
+    /// B-1: the virtual game methods whose game implementations the chain's own callees include: all but the overrides on the way
+    /// (<see cref="OverriddenOnTheWay"/>, declared on AbstractModel, CardModel or EnchantmentModel), which run the content's own types'
+    /// code, judged per type (<see cref="OnTheWay"/>, with their closures). Other virtual calls (a card's get_MaxUpgradeLevel, an
+    /// enchantment's CanEnchant) add every game implementation: strictly, whatever the content's types.
+    /// </summary>
+    private static bool ChainDispatch(System.Reflection.MethodInfo callee) =>
+        !(Array.IndexOf(OverriddenOnTheWay, callee.Name) >= 0 && callee.GetParameters().Length == 0
+            && (callee.DeclaringType == typeof(AbstractModel) || callee.DeclaringType == typeof(CardModel) || callee.DeclaringType == typeof(EnchantmentModel)));
 
     /// <summary>
     /// What a closure reaching these chain methods also runs (C3): their allowed patches' callees (<paramref name="byChainMethod"/>), and

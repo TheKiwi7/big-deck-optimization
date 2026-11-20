@@ -37,6 +37,12 @@
 # another class's GetFieldsForModel (named SavedSpireFieldPatch, its own list): its code counts as BaseLib's by a test override
 # (the exact shape needs IL no C# compiler emits), so only the exact-member check refuses it, (b4) the accepted copy installed as a prefix, (b5) the accepted copy with its GetFieldsForModel patched, (b6) the accepted
 # copy holding a field (registered for the rest of the session: last). Each backs off: LimitlessCloneMemo idle.
+# Full audit B-1 (2026-11-20): the chain's own game callees, one level into the game, judged with their entry's group: (s1) a count
+# postfix on CardModel.set_HasBeenRemovedFromState, which CardModel.AfterCloned (the spine) calls: no content kept, LimitlessHookSkip's
+# per content and type-level answers patched, both parts idle through a combat start; (s2) one on CardEnergyCost.SetCustomBaseCost,
+# which only CardEnergyCost.UpgradeBy (the upgrade group) calls: a level-1 content no longer kept, a level-0 one still is.
+# Full audit A-L1, B-3 (h1): the patched-methods maps act as if Harmony couldn't list its patched methods (`foreignpatch limitless
+# cantlist`): a note under both parts (bdopt why, the menu), no content kept; once listed again, kept again.
 timeout 1800
 expect FOREIGN runtime LimitlessCloneMemo AbstractModel\.MutableClone \(None\) kept 0 backed off [1-9]
 expect FOREIGN runtime LimitlessCloneMemo CardModel\.AfterDeserialized \(TypeGated\) kept [1-9]
@@ -61,6 +67,15 @@ expect FOREIGN reach g3 storage Sharp 0: kept True
 expect FOREIGN reach c7 Dazed none 0: kept False, reaches Spine, hookskip patched True, foreign calls 0
 expect FOREIGN anyknown base8: .*chain groups patched False
 expect FOREIGN anyknown c8: True \(chain groups patched True
+expect LimitlessCloneMemo: CardModel\.set_HasBeenRemovedFromState is also patched by bdtest\.foreign\.count-postfix: normal game for that part
+expect FOREIGN reach s1 storage Sharp 0: kept False, reaches Spine, Enchant, hookskip patched True
+expect FOREIGN anyknown s1: True \(chain groups patched True
+expect FOREIGN reach s2 storage Sharp 1: kept False
+expect FOREIGN reach s2 storage Sharp 0: kept True
+expect LimitlessCloneMemo: Harmony couldn't list the methods other mods patch: .*: normal game for all of it
+expect LimitlessHookSkip: Harmony couldn't list the methods other mods patch: .*: normal game for all of it
+expect FOREIGN reach h1 storage Sharp 0: kept False
+expect FOREIGN reach h1off storage Sharp 0: kept True
 expect FOREIGN classify CardModel\.FinalizeUpgradeInternal: bdtest\.foreign\.lim-write-then-gated-postfix-squeeze Postfix .*TypeGated backs off \(postfix not provably gated
 expect FOREIGN runtime LimitlessCloneMemo CardModel\.FinalizeUpgradeInternal \(TypeGated\) kept [1-9][0-9]* backed off 0
 expect FOREIGN runtime LimitlessCloneMemo CardModel\.FinalizeUpgradeInternal \(TypeGated\) kept [0-9]+ backed off [1-9]
@@ -166,6 +181,38 @@ foreignpatch limitless reach storage Sharp 1 l3
 foreignpatch limitless reach storage Sharp 0 l3
 foreignpatch remove
 wait 3
+# (s1) Full audit B-1: a strict patch on a spine method's own callee (CardModel.AfterCloned's set_HasBeenRemovedFromState).
+foreignpatch count-postfix MegaCrit.Sts2.Core.Models.CardModel:set_HasBeenRemovedFromState
+wait 3
+foreignpatch limitless reach storage Sharp 0 s1
+foreignpatch limitless anyknown s1
+effects s1
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd kill all
+waitfor nocombat 300
+wait 2
+effectcheck LimitlessCloneMemo same s1
+effectcheck LimitlessHookSkip same s1
+foreignpatch remove
+wait 3
+# (s2) B-1, the upgrade group: CardEnergyCost.UpgradeBy's own callee SetCustomBaseCost.
+foreignpatch count-postfix MegaCrit.Sts2.Core.Entities.Cards.CardEnergyCost:SetCustomBaseCost
+wait 3
+foreignpatch limitless reach storage Sharp 1 s2
+foreignpatch limitless reach storage Sharp 0 s2
+foreignpatch remove
+wait 3
+# (h1) A-L1, B-3: Harmony can't list its patched methods (a test switch), then can again.
+foreignpatch limitless cantlist on
+wait 3
+foreignpatch limitless reach storage Sharp 0 h1
+cmd bdopt why
+foreignpatch limitless cantlist off
+wait 3
+foreignpatch limitless reach storage Sharp 0 h1off
+cmd bdopt why
 # (g2) Review C2: one closed instantiation of a generic type's constructor in Goopy's closure patched.
 foreignpatch lim-generic-count-postfix <>z__ReadOnlySingleElementList`1:.ctor System.Int32
 wait 3

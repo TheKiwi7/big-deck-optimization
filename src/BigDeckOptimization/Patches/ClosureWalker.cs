@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 
 namespace BigDeckOptimization.Patches;
@@ -15,9 +16,17 @@ namespace BigDeckOptimization.Patches;
 internal sealed class CalleeGraph
 {
     private readonly Assembly _game;
+    private readonly Func<MethodInfo, bool>? _dispatchTo;
     private readonly Dictionary<MethodBase, MethodBase[]> _callees = new();
+    private readonly Dictionary<MethodBase, MethodInfo[]> _delegates = new();
 
-    public CalleeGraph(Assembly game) => _game = game;
+    /// <param name="dispatchTo">When given, the virtual game methods whose game implementations a call adds (the others: the callee
+    /// as called only, see <see cref="MethodFingerprint.GameCallees"/>).</param>
+    public CalleeGraph(Assembly game, Func<MethodInfo, bool>? dispatchTo = null)
+    {
+        _game = game;
+        _dispatchTo = dispatchTo;
+    }
 
     /// <summary>Methods whose callees were read (each once).</summary>
     public int Read => _callees.Count;
@@ -26,10 +35,24 @@ internal sealed class CalleeGraph
     {
         if (!_callees.TryGetValue(method, out MethodBase[]? callees))
         {
-            // Delegates' Invoke are listed rather than thrown on, as CodeSet's sets do (their targets aren't followed there either).
-            _callees[method] = callees = MethodFingerprint.GameCallees(_game, method, new List<MethodInfo>(), initializers: false, dispatch: false).ToArray();
+            // A delegate's Invoke isn't thrown on: kept apart (Delegates), its targets neither followed nor judged here (full audit
+            // B-4: CodeSet judges its sets' delegates, this graph doesn't). LimitlessCloneMemo's overrides' closures leave them
+            // unjudged: on v0.111.1 and v0.113.1 they invoke the cards' own events (AddKeyword's, EnchantInternal's: a card being
+            // built has no subscriber), the logger's listeners, Sentry's scope callback, CalculatedVar's functions and, on
+            // combat paths an inner card's build (no owner, no combat) never takes, the mods' combat and run hook subscriptions
+            // (ModHelper). The chain's own callees list theirs in the log (the cards' events).
+            var invoked = new List<MethodInfo>();
+            _callees[method] = callees = MethodFingerprint.GameCallees(_game, method, invoked, initializers: false, dispatch: false, dispatchTo: _dispatchTo).ToArray();
+            _delegates[method] = invoked.Count == 0 ? Array.Empty<MethodInfo>() : invoked.Distinct().ToArray();
         }
         return callees;
+    }
+
+    /// <summary>The delegates' Invoke a method's code calls (read with its callees).</summary>
+    public MethodInfo[] Delegates(MethodBase method)
+    {
+        Callees(method);
+        return _delegates[method];
     }
 }
 

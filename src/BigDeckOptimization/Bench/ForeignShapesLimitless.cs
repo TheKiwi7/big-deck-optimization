@@ -169,7 +169,9 @@ public static class ForeignShapesLimitless
                 "reach" when parts.Length > 4 => ReachCommand(parts[2], parts[3], int.Parse(parts[4]), parts.Length > 5 ? parts[5] : "now"),
                 "anyknown" => new[] { $"FOREIGN anyknown {(parts.Length > 2 ? parts[2] : "now")}: {LimitlessHookSkip.AnyKnownForTest()}" },
                 "memo" => new[] { $"FOREIGN clonememo {(parts.Length > 2 ? parts[2] : "now")}: entries {LimitlessCloneMemo.MemoCount}, patch stamp clears {LimitlessCloneMemo.PatchStampClears}, reused {LimitlessCloneMemo.Reused}" },
-                _ => throw new ArgumentException("foreignpatch limitless report [label] | remove | twin status|register|patchcallee [label] | reach <storage|CardClass> <EnchantmentClass|none> <level> [label] | memo [label] | anyknown [label]"),
+                // Full audit A-L1, B-3: the patched-methods maps act as if Harmony couldn't list its patched methods (within 2 s).
+                "cantlist" when parts.Length > 2 && parts[2] is "on" or "off" => CantList(parts[2] == "on"),
+                _ => throw new ArgumentException("foreignpatch limitless report [label] | remove | twin status|register|patchcallee [label] | reach <storage|CardClass> <EnchantmentClass|none> <level> [label] | memo [label] | anyknown [label] | cantlist on|off"),
             };
         }
         string shape = parts[0];
@@ -238,6 +240,12 @@ public static class ForeignShapesLimitless
         var lines = new List<string> { $"FOREIGN installed {shape}{(gate.Length > 0 ? " " + gate : "")} on {LimitlessShapeCounts.Name(target)} as {id} (priority {priority})" };
         lines.AddRange(Classification(target));
         return lines;
+    }
+
+    private static IReadOnlyList<string> CantList(bool on)
+    {
+        PatchSafety.CantListForTest = on;
+        return new[] { $"FOREIGN cantlist {(on ? "on" : "off")}" };
     }
 
     /// <summary>
