@@ -18,9 +18,14 @@
 # Each mutation runs in parallel in its own folder of hard links to the copy (no disk used) holding only its modified file,
 # headless and without Steam, so the copy itself is never modified and stopping this script leaves nothing behind.
 # Debug build deployed in the copy first.
-param([string]$GameDir = "C:\Games\StS2-public-0.111.1", [string[]]$Only = @(), [string]$Scenario = "effects-check", [int]$TimeoutSec = 600, [int]$Jobs = 0, [switch]$AllowUndefined)
+# -DryRun: each mutation's files (the assembly mutate reads, the one it writes in the mutation's thin copy, its build output, its
+# session log) and the reference's log, checked (Test-MutationPlan) and printed, then the end: nothing built, copied or launched.
+# The run prints one '== <mutation> : PASS|FAIL' line per mutation, then its closing line '<n>/<m> as expected in <t> min'.
+param([string]$GameDir = "C:\Games\StS2-public-0.111.1", [string[]]$Only = @(), [string]$Scenario = "effects-check", [int]$TimeoutSec = 600, [int]$Jobs = 0, [switch]$AllowUndefined, [switch]$DryRun)
 $copy = $GameDir
 . (Join-Path $PSScriptRoot "parlib.ps1")
+# An error nothing catches ends this script with exit code 1 (common.ps1's Write-RunnerError), never with its work half done.
+trap { Write-RunnerError $_; exit 1 }
 if ($Jobs -le 0) { $Jobs = $SlotPool }
 if ($copy -like "*steamapps*") { throw "Use a game copy, not the Steam install" }
 $GameDir = Resolve-GameCopy $copy
@@ -93,6 +98,62 @@ $Expected = [ordered]@{
 }
 $unknown = @($Only | Where-Object { -not $Expected.Contains($_) })
 if ($unknown.Count) { throw "-Only: no such mutation in the table: $($unknown -join ', ')" }
+$thinRoot = Join-Path (Split-Path $GameDir) "bdmut-copies-$(Split-Path $GameDir -Leaf)"
+$Reference = Join-Path $out "mutation-reference.log"
+
+# Where a mutation's files go, for the run and -DryRun alike: its thin copy (Folder), the assembly mutate reads (In, the copy's)
+# and the one it writes in the thin copy (Dll), the folders mutate resolves references in (Search), its build output and its
+# session log (BuildOut, Log: results/<version>/, $out). $out stays the version folder: a loop variable of that name once made
+# every path after the first build point inside a mutated assembly's path (no log ever written, 2026-11-18 to 11-20).
+function Get-MutationPlan([string]$name) {
+    $folder = Join-Path $thinRoot $name
+    $target = $Expected[$name][0]
+    if ($target -eq "game") {
+        $in = Join-Path $Data "sts2.dll"
+        $dll = Join-Path $folder "data_sts2_windows_x86_64\sts2.dll"
+        $search = @("`"$Data`"")
+    }
+    else {
+        $source = Get-ChildItem (Join-Path $GameDir "mods_STEAMTEST") -Recurse -Filter "$target.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $source) { throw "mutation $name`: no $target.dll under $(Join-Path $GameDir 'mods_STEAMTEST') (the test mods not added?)" }
+        $in = $source.FullName
+        $dll = Join-Path $folder $source.FullName.Substring($GameDir.TrimEnd('\').Length + 1)
+        $search = @("`"$Data`"", "`"$($source.DirectoryName)`"")
+    }
+    [pscustomobject]@{ Name = $name; Folder = $folder; In = $in; Dll = $dll; Search = $search; BuildOut = Join-Path $out "mutation-$name.build.txt"; Log = Join-Path $out "mutation-$name.log" }
+}
+# The plan's paths where they belong, or a throw: the assembly read exists, the one written lies inside the mutation's own thin
+# copy (never the copy itself) and is that file's twin there, the build output and the log are files of the version folder.
+function Test-MutationPlan($plan) {
+    $problems = @()
+    if (-not (Test-Path $plan.In -PathType Leaf)) { $problems += "In $($plan.In) is not a file" }
+    if (-not $plan.Dll.StartsWith($plan.Folder.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { $problems += "Dll $($plan.Dll) is not inside its thin copy $($plan.Folder)" }
+    elseif ($plan.Dll.Substring($plan.Folder.TrimEnd('\').Length) -ne $plan.In.Substring($GameDir.TrimEnd('\').Length)) { $problems += "Dll $($plan.Dll) is not In's place in the thin copy" }
+    foreach ($file in $plan.BuildOut, $plan.Log) {
+        if ((Split-Path $file) -ne $out) { $problems += "$file is not in the version folder $out" }
+    }
+    if ($problems.Count) { throw "mutation $($plan.Name): $($problems -join '; ')" }
+}
+
+if ($DryRun) {
+    Write-Output "dry run on $GameDir ($(Get-GameTag $GameDir)): thin copies in $thinRoot, logs in $out"
+    $names = @($Expected.Keys | Where-Object { $Only.Count -eq 0 -or $Only -contains $_ })
+    foreach ($name in $names) {
+        $target = $Expected[$name][0]
+        if ($target -ne "game" -and -not (Get-ChildItem (Join-Path $GameDir "mods_STEAMTEST") -Recurse -Filter "$target.dll" -ErrorAction SilentlyContinue)) {
+            Write-Output "== $name ($target): not planned, no $target.dll in this copy's mods_STEAMTEST (the run adds the test mods first)"
+            continue
+        }
+        $plan = Get-MutationPlan $name
+        Test-MutationPlan $plan
+        Write-Output "== $name ($($Expected[$name][0])): reads $($plan.In)"
+        Write-Output "     writes $($plan.Dll)"
+        Write-Output "     build output $($plan.BuildOut), log $($plan.Log)"
+    }
+    Write-Output "reference: log $Reference, thin copy $(Join-Path $thinRoot 'reference')"
+    Write-Output "dry run: $($names.Count) mutation(s) planned, every path checked; nothing built, copied or launched"
+    exit 0
+}
 # One run at a time per copy: two would delete each other's thin copies and write the same results/<version>/mutation-<name>.log.
 $sha = [Security.Cryptography.SHA256]::Create()
 $copyHash = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes((Get-CopyKey $GameDir)))) -replace "-", "").Substring(0, 16)
@@ -117,7 +178,6 @@ $undefined = @()
 foreach ($name in @($Expected.Keys)) { if ($defined -notcontains $name -and ($Only.Count -eq 0 -or $Only -contains $name)) { Write-Output "NOT DEFINED in tools/mutate: $name (not run)"; $undefined += $name; $Expected.Remove($name) } }
 $started = Get-Date
 Add-TestMods $GameDir
-$thinRoot = Join-Path (Split-Path $GameDir) "bdmut-copies-$(Split-Path $GameDir -Leaf)"
 Remove-Item $thinRoot -Recurse -Force -ErrorAction SilentlyContinue
 $scriptPath = Join-Path $Scenarios "$Scenario.txt"
 # The copy must come out as it went in: hard links share their content with it.
@@ -126,37 +186,30 @@ try {
     # What each mutation changes, built side by side: most of the time here is reading and writing the game's assembly.
     $names = @($Expected.Keys | Where-Object { $Only.Count -eq 0 -or $Only -contains $_ })
     $building = foreach ($name in $names) {
-        $folder = Join-Path $thinRoot $name
-        New-ThinCopy $GameDir $folder
-        $target = $Expected[$name][0]
-        if ($target -eq "game") {
-            $in = Join-Path $Data "sts2.dll"
-            $out = Join-Path $folder "data_sts2_windows_x86_64\sts2.dll"
-            $search = @("`"$Data`"")
-        } else {
-            $source = Get-ChildItem (Join-Path $GameDir "mods_STEAMTEST") -Recurse -Filter "$target.dll" | Select-Object -First 1
-            $in = $source.FullName
-            $out = Join-Path $folder $source.FullName.Substring($GameDir.TrimEnd('\').Length + 1)
-            $search = @("`"$Data`"", "`"$($source.DirectoryName)`"")
-        }
-        Remove-Item $out -Force
-        $process = Start-Process -FilePath "dotnet" -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $out "mutation-$name.build.txt") -ArgumentList (@("`"$mutate`"", "`"$in`"", "`"$out`"", $name) + $search)
+        $plan = Get-MutationPlan $name
+        Test-MutationPlan $plan
+        New-ThinCopy $GameDir $plan.Folder
+        # The hard link goes first: mutate writes a new file there, never through the link into the copy's own.
+        Remove-Item $plan.Dll -Force
+        $process = Start-Process -FilePath "dotnet" -PassThru -WindowStyle Hidden -RedirectStandardOutput $plan.BuildOut -ArgumentList (@("`"$mutate`"", "`"$($plan.In)`"", "`"$($plan.Dll)`"", $name) + $plan.Search)
         [void]$process.Handle
-        [pscustomobject]@{ Name = $name; Process = $process; Out = $out }
+        [pscustomobject]@{ Plan = $plan; Process = $process }
     }
     foreach ($b in $building) {
         $b.Process.WaitForExit()
-        if ($b.Process.ExitCode -ne 0 -or -not (Test-Path $b.Out)) { throw "mutate failed for $($b.Name), see $(Join-Path $out "mutation-$($b.Name).build.txt")" }
+        if ($b.Process.ExitCode -ne 0 -or -not (Test-Path $b.Plan.Dll)) { throw "mutate failed for $($b.Plan.Name) (exit code $($b.Process.ExitCode)), see $($b.Plan.BuildOut)" }
     }
     Write-Output ("{0} mutations built in {1:F0} s" -f $names.Count, ((Get-Date) - $started).TotalSeconds)
     New-ThinCopy $GameDir (Join-Path $thinRoot "reference")
     # The reference: every effect must have fired on the unmodified game, or the check below proves nothing.
-    $sessions = @([pscustomobject]@{ Name = "reference"; Script = $scriptPath; Log = Join-Path $out "mutation-reference.log"; GameDir = Join-Path $thinRoot "reference" })
+    $sessions = @([pscustomobject]@{ Name = "reference"; Script = $scriptPath; Log = $Reference; GameDir = Join-Path $thinRoot "reference" })
     # Mutated: judge.py --mutated (parlib.ps1's Test-MutatedJob): a part the mutation leaves vanilla compares nothing and counts no
     # effect there, which this script checks against its table, not judge.py.
-    $sessions += foreach ($name in $names) { [pscustomobject]@{ Name = $name; Script = $scriptPath; Log = Join-Path $out "mutation-$name.log"; GameDir = Join-Path $thinRoot $name; Mutated = $true } }
+    $sessions += foreach ($b in $building) { [pscustomobject]@{ Name = $b.Plan.Name; Script = $scriptPath; Log = $b.Plan.Log; GameDir = $b.Plan.Folder; Mutated = $true } }
     $runs = Invoke-Sessions -Jobs $sessions -GameDir $GameDir -MaxJobs $Jobs -TimeoutSec $TimeoutSec -Label "mutations"
-    $Reference = Join-Path $out "mutation-reference.log"
+    # A session without its result never ran: its mutation (or the reference) is not as expected.
+    $notRun = @(Get-MissingResults $sessions $runs)
+    $notRun | ForEach-Object { Write-Output $_ }
     # Co-op only: effects-check, solo, can't make SyncedCardRelease run, nor ReplayStateSkip on v0.107.x (the game checksums solo
     # combats from v0.111 on: there it must run). SnapshotCardReuse.Hooks must run (effects-check applies Curious): a mutation losing
     # it is seen. (judge.py checks the same from effects-check's '# effects-ran' lines: the reference's problems below.)
@@ -182,17 +235,18 @@ try {
     $summary = @()
     foreach ($name in $names) {
         $target, $pattern, $mayLose = $Expected[$name]
-        $log = Join-Path $out "mutation-$name.log"
-        $text = Get-Content $log
+        $log = @($building | Where-Object { $_.Plan.Name -eq $name })[0].Plan.Log
+        $text = @(Get-Content $log -ErrorAction SilentlyContinue)
+        $problems = @()
+        if (-not (Test-Path $log)) { $problems += "no log: $log was never written" }
         $listed = @(python -I (Join-Path $Root "tools\check_versions.py") --local --log $log)
         # Exit code 2: it crashed (1 only says versions differ): a list cut short could make "nothing left vanilla" pass.
         $listCrashed = $LASTEXITCODE -ge 2
         $vanilla = $listed | Where-Object { $_ -match "^\s+\[" -and $_ -notmatch "hooks filtered, \d+ left vanilla" }
         $vanilla = @($vanilla | ForEach-Object { $_.Trim() })
-        $problems = @()
         if ($listCrashed) { $problems += "check_versions.py --log failed: $(@($listed | Select-Object -Last 1))" }
         $state = ($runs | Where-Object { $_.Name -eq $name }).State
-        if ($state -ne "done") { $problems += "session: $state" }
+        if ($state -ne "done") { $problems += "session: $(if ($state) { $state } else { 'never ran (no result)' })" }
         # An earlier session of it that ended early or froze in this mod's code (not the known renderer crash), a test mod not loaded.
         $problems += @(($runs | Where-Object { $_.Name -eq $name }).Failed | Where-Object { $_ -match '^(ended early|froze|test mod )' })
         if (-not ($text -match "AutoTest .*> quit")) { $problems += "the scenario did not reach its end" + $(if ($text -match "Patch AutoTest (skipped|could not)") { " (the test runner itself could not load: test tooling must stay compatible)" } else { "" }) }
@@ -225,7 +279,7 @@ try {
     }
     $summary | Format-Table Mutation, Verdict, Vanilla, Lost, Identical -AutoSize | Out-String -Width 200 | Write-Output
     Write-Output ("{0}/{1} as expected in {2:F1} min" -f @($summary | Where-Object { $_.Verdict -eq "PASS" }).Count, $summary.Count, ((Get-Date) - $started).TotalMinutes)
-    $failed = @($summary | Where-Object { $_.Verdict -ne "PASS" }).Count + $(if (-not $referenceOk -or $referenceIdentical -eq 0 -or $referenceProblems.Count) { 1 } else { 0 })
+    $failed = @($summary | Where-Object { $_.Verdict -ne "PASS" }).Count + $(if (-not $referenceOk -or $referenceIdentical -eq 0 -or $referenceProblems.Count -or -not (Test-Path $Reference)) { 1 } else { 0 })
     if ($undefined.Count -and -not $AllowUndefined) { $failed += $undefined.Count; Write-Output "NOT RUN: $($undefined -join ', ') (not defined in tools/mutate; -AllowUndefined to accept)" }
     if ($failed) { Write-Output "NOT AS EXPECTED: $failed (the reference counts as one when it is wrong, each mutation not run as one)" }
 }

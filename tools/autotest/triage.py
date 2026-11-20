@@ -24,9 +24,10 @@ import compare  # noqa: E402
 from check_scenarios import closest_line  # noqa: E402
 
 CATALOGUE = {
-    'pace-checkpoint': 'A checksum or state taken right after a fight/obtain/play while effects still run: the two sides differ by pace. '
-                       'Confirm: the scenario waits (`waitfor idle`) before that line? rerun the pair with par.ps1 -Instant or the '
-                       '*-instant variant; identical there = pace.',
+    'pace-checkpoint': 'A `checksum <label> same|vanilla` line that differs from the plain `checksum <label>` before it, right after a '
+                       'fight/obtain/play while effects still run (PACE_DEPENDENT: only that check; a state divergence, found wrong, '
+                       'changed unseen or a bdperf MISMATCH never gets this label). Confirm: the scenario waits (`waitfor idle`) before '
+                       'that line? rerun with par.ps1 -Instant or the *-instant variant; identical there = pace.',
     'limitless-rng': 'Limitless\'s per-player combat RNG on v0.107.x co-op: the end of turn runs inside whichever player\'s '
                      'ReadyToBeginEnemyTurnAction executed last (a network race), which picks the RNG slot. Labelled only when the '
                      'log has Limitless\'s "per-player combat rng prefix: ACTIVE" line, release=v0.107.x and two players\' ready '
@@ -46,6 +47,11 @@ CATALOGUE = {
 # Problems that follow from an earlier failure: they take its label.
 CONSEQUENCE = re.compile(r'^(did not reach its end|ABORT:|FAILED line)')
 MISMATCH = re.compile(r'MISMATCH|differs? from|mismatches [1-9]|changed unseen|found wrong|CHECKSUM|state divergence', re.I)
+# The only checks of one log that depend on pace: a 'checksum <label> same|vanilla' line whose state moved since the plain
+# 'checksum <label>' before it (AutoTest.LogChecksum: CHECKSUMPAIR ... DIFFERENT, then the line fails), effects still running
+# between the two. Never a co-op state divergence, the mod's own checks (found wrong, changed unseen, mismatches n) nor a bdperf
+# comparison (MISMATCH: vanilla and optimized on the same state at the same moment): those stay to look at.
+PACE_DEPENDENT = re.compile(r"checksum '[^']*' (same|vanilla) [0-9A-F]+ differs from the line before|CHECKSUMPAIR .+ (same|vanilla): \S+ vs \S+ DIFFERENT")
 NEVER_SEEN = re.compile(r'^expected "(.*)" never seen')
 BIG_DECK = re.compile(r'8k|8400|8,400|10k|16k|21k|32k|5k|big')
 NOISE = re.compile(r'^\s+at |^\s*$|^\[(DEBUG|VERBOSE)\]|^(ERROR|WARNING): |PerfProbe|Asset not cached|VSync|Invalid Task ID|\bRID\b|leaked')
@@ -168,7 +174,7 @@ def label_problem(log, problem, number, partners):
         if limitless_rng_race(log) and re.search(r'\bRng\b|\bRNG\b|random|shuffle', text):
             return 'limitless-rng', None
         cmd = max((i for i, x in enumerate(before) if ECHO_CMD.search(x)), default=-1)
-        if cmd >= 0 and not any(WAITED.search(x) for x in before[cmd + 1:]):
+        if PACE_DEPENDENT.search(problem) and cmd >= 0 and not any(WAITED.search(x) for x in before[cmd + 1:]):
             return 'pace-checkpoint', None
     return None, None
 

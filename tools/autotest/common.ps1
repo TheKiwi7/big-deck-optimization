@@ -14,6 +14,14 @@ $Scenarios = Join-Path $PSScriptRoot "scenarios"
 $Results = Join-Path $PSScriptRoot "results"
 New-Item -ItemType Directory -Force $Results | Out-Null
 
+# What a runner's trap prints for an error nothing caught, then exits 1 ('trap { Write-RunnerError $_; exit 1 }' after the
+# dot-sourcing). Without it a terminating error (Select-String on a missing file, a throw) skips only the statement it stopped,
+# its finally blocks run, and the script goes on to its exit code 0 with its work half done (the mutation runs of 2026-11-18/19).
+function Write-RunnerError($record) {
+    $where = if ($record.InvocationInfo -and $record.InvocationInfo.ScriptName) { " ($(Split-Path $record.InvocationInfo.ScriptName -Leaf):$($record.InvocationInfo.ScriptLineNumber))" } else { "" }
+    Write-Output "RUNNER ERROR$where`: $($record.Exception.Message) - stopped, exit code 1"
+}
+
 # A setting for a test copy, in the file Godot reads next to the exe; a copy keeps it, the Steam install never gets it (no
 # steam_appid.txt there). Sentry's logger deadlocked one headless session in 40: Godot's error on the dummy renderer's textures,
 # reported on the main thread while resource loads hold their locks (native stacks: main thread in libsentry, workers on locks).

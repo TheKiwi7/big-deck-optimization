@@ -8,6 +8,8 @@
 #   powershell -ExecutionPolicy Bypass -File tools/autotest/coop-modetag.ps1
 # Exit code 1 when the mixed pair was not refused, the off pair did not join, or coop.ps1 found a problem in a log.
 . (Join-Path $PSScriptRoot "common.ps1")
+# An error nothing catches ends this script with exit code 1 (common.ps1's Write-RunnerError), never with its work half done.
+trap { Write-RunnerError $_; exit 1 }
 $bad = 0
 # The games running before (none, or coop.ps1 refuses): the wait below is for the mixed pair's own games only.
 $before = @(Get-Process -Name SlayTheSpire2 -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
@@ -57,4 +59,6 @@ foreach ($role in "host", "client") {
     if (-not $tags.Count -or -not $run) { $joined = $false; Write-Output "PROBLEM coop-modetag: $role of the off pair: $(if (-not $tags.Count) { 'no +off join list' } else { 'no run (a failed line)' })" }
 }
 if ($joined) { Write-Output "ok      coop-modetag: two players with the mod off joined, their join lists saying '+off'" } else { $bad++ }
+# The closing line battery.ps1 requires: both pairs judged.
+Write-Output "coop-modetag done: $bad problem(s)"
 exit $(if ($bad) { 1 } else { 0 })

@@ -16,6 +16,8 @@ param([Parameter(Mandatory)][string[]]$Names, [string]$GameDir = "", [int]$Jobs 
 $Names = @($Names | ForEach-Object { $_ -split "," } | Where-Object { $_ })  # "-Names a,b" through powershell -File is one string
 $copy = $GameDir
 . (Join-Path $PSScriptRoot "parlib.ps1")
+# An error nothing catches ends this script with exit code 1 (common.ps1's Write-RunnerError), never with its work half done.
+trap { Write-RunnerError $_; exit 1 }
 $GameDir = Resolve-GameCopy $copy
 $out = Get-VersionDir $GameDir
 if ($Jobs -le 0) { $Jobs = $SlotPool }
@@ -37,7 +39,10 @@ $list = @($list | Where-Object { $_.Name -match '-off(\d*$|-)' }) + @($list | Wh
 $started = Get-Date
 $runs = Invoke-Sessions -Jobs $list -GameDir $GameDir -MaxJobs $Jobs -TimeoutSec $TimeoutSec -StallSec $StallSec -Rendered:$Rendered -UseBaselines:$UseBaselines -Label "par $(Get-GameTag $GameDir)" -StatusFile "status-par-$(Get-GameTag $GameDir).txt" -ScenarioTimeouts
 Remove-TestMods $GameDir
-$bad = 0
+# Every job has its result, or its pair would be compared on no log (Invoke-Sessions deletes a queued job's old log) or not at all.
+$missing = @(Get-MissingResults $list $runs)
+$missing | ForEach-Object { Write-Output $_ }
+$bad = $missing.Count
 foreach ($r in $runs) {
     Write-Output ("{0,-28} {1,-8} {2,5} s{3}{4}" -f $r.Name, $r.State, $r.Seconds, $(if ($r.Restarts) { "  started over $($r.Restarts)x" } else { "" }), $(if ($r.Failed.Count) { "  " + $r.Failed[0] } else { "" }))
     # Not ended, or a problem in its log (judge.py): a failed line (console commands included), the script's timeout, a sweep

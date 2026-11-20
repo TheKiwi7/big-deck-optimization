@@ -8,6 +8,8 @@
 param([string]$GameDir = "", [int]$TimeoutSec = 900)
 $copy = $GameDir
 . (Join-Path $PSScriptRoot "parlib.ps1")
+# An error nothing catches ends this script with exit code 1 (common.ps1's Write-RunnerError), never with its work half done.
+trap { Write-RunnerError $_; exit 1 }
 $GameDir = Resolve-GameCopy $copy
 Assert-GameNotRunning
 $runProblems = 0
@@ -56,6 +58,8 @@ try {
     }
     # Nothing of these sessions stays for the next series in this slot (Sync-Slot drops runs in progress too).
     Get-ChildItem $data -Recurse -File -Include current_run* -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    # The closing line battery.ps1 requires (parlib.ps1's Write-SessionLogSummary): printed only when every check above ran.
+    Write-SessionLogSummary $runProblems
 }
 finally { Unlock-Slot $KeptSlot }
 # Exit code 1 on any PROBLEM line above or a session run.ps1 judged with a problem.

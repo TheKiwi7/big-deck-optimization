@@ -32,6 +32,8 @@ if ($OffJobs -le 0) { $OffJobs = $Jobs }
 $Names = @($Names | ForEach-Object { $_ -split "," } | Where-Object { $_ })
 $copy = $GameDir
 . (Join-Path $PSScriptRoot "parlib.ps1")
+# An error nothing catches ends this script with exit code 1 (common.ps1's Write-RunnerError), never with its work half done.
+trap { Write-RunnerError $_; exit 1 }
 $GameDir = Resolve-GameCopy $copy
 $out = Get-VersionDir $GameDir
 $exe = Join-Path $GameDir "SlayTheSpire2.exe"
@@ -131,6 +133,9 @@ foreach ($entry in @($ranked | Sort-Object -Property @{ Expression = { $_.Length
         $done.Add([pscustomobject]@{ Group = $group; State = "cached"; Seconds = 0 })
         continue
     }
+    # An earlier series' logs go now (their length was read above), not at the launch: a series cut short leaves no old log to
+    # be compared as this run's.
+    Remove-Item $group.HostLog, $group.ClientLog -Force -ErrorAction SilentlyContinue
     $waiting.Add($group)
 }
 # Mod on / mod off pairs: <x> with <x>off, <x>-off, <x>van (scenarios) or <x>-autooff (-OnOff).
@@ -216,6 +221,10 @@ finally {
     Remove-TestMods $GameDir
 }
 $bad = 0
+# Every pair ran or came from the cache: one that never started has no log of this run (deleted when queued) to compare.
+foreach ($group in $groups) {
+    if (-not @($done | Where-Object { $_.Group.Name -eq $group.Name }).Count) { Write-Output "PROBLEM $($group.Name): no result, the pair never ran"; $bad++ }
+}
 foreach ($entry in $done) {
     $problems = @()
     if ($entry.State -notin "done", "cached") { $problems += $entry.State }
@@ -226,6 +235,8 @@ foreach ($entry in $done) {
         # in the slot both peers share, so a peer may start with the mod off, the game's own code: no problem there.
         $modOff = $entry.Group.Name -match $modOffSide
         Invoke-Judge @($log) -ModOff:$modOff | Select-Object -First 3 | ForEach-Object { $problems += "$role`: " + ($_ -replace '^PROBLEM [^:]+: ', '') }
+        # Select-String throws on a missing file whatever -ErrorAction says: a peer without its log is judge.py's "no log" above.
+        if (-not (Test-Path $log)) { continue }
         Select-String -Path $log -CaseSensitive -Pattern "State divergence" -ErrorAction SilentlyContinue | Select-Object -First 1 | ForEach-Object { $problems += "$role`: state divergence" }
         # The Workshop mods its game must have found (none with -Plain): a mods_STEAMTEST emptied by another series would go unseen.
         if (-not $Plain) { Get-MissingTestMods $log $GameDir | Select-Object -First 2 | ForEach-Object { $problems += "$role`: $_" } }
@@ -239,6 +250,7 @@ foreach ($entry in $done) {
     # the host's highest ping. Not every frame of the session: those of a combat start, where the long freezes are.
     $margins = foreach ($log in $entry.Group.HostLog, $entry.Group.ClientLog) {
         $role = if ($log -eq $entry.Group.HostLog) { "host" } else { "client" }
+        if (-not (Test-Path $log)) { [pscustomobject]@{ Role = $role; Frame = $null; Ping = $null }; continue }
         $frame = (@(Select-String -Path $log -Pattern "combat start: \d+ ms total.*longest frames: (\d+) ms" -ErrorAction SilentlyContinue | ForEach-Object { [int]$_.Matches[0].Groups[1].Value }) | Measure-Object -Maximum).Maximum
         $ping = (@(Select-String -Path $log -Pattern "\[NetQualityTracker\]\s+\d+ - Ping: (\d+(?:\.\d+)?)" -ErrorAction SilentlyContinue | ForEach-Object { [double]$_.Matches[0].Groups[1].Value }) | Measure-Object -Maximum).Maximum
         [pscustomobject]@{ Role = $role; Frame = $frame; Ping = $ping }
@@ -254,7 +266,7 @@ foreach ($entry in $done) {
     $enemyStates = Compare-PeerTurnStates $peerTurns @("host", "client") { $_ -cmatch '^[^:]+: enemy ' }
     $problems += @($enemyStates.Problems)
     # runstate lines (outside combat, every player's gold, HP, potions, relics, deck): each peer logs them for all players.
-    $runStates = foreach ($log in $entry.Group.HostLog, $entry.Group.ClientLog) { ,@(Select-String -Path $log -Pattern "STATE (?![^:]*\(local\))[^:]+: (floor \d+, act |\S+ gold )" -ErrorAction SilentlyContinue | ForEach-Object { $_.Line -replace '^.*STATE ', '' }) }
+    $runStates = foreach ($log in $entry.Group.HostLog, $entry.Group.ClientLog) { ,@(if (Test-Path $log) { Select-String -Path $log -Pattern "STATE (?![^:]*\(local\))[^:]+: (floor \d+, act |\S+ gold )" -ErrorAction SilentlyContinue | ForEach-Object { $_.Line -replace '^.*STATE ', '' } }) }
     if (($runStates[0] -join "`n") -ne ($runStates[1] -join "`n")) { $problems += "run states differ ($($runStates[0].Count) vs $($runStates[1].Count) lines)" }
     if ($enemyStates.Lines -eq 0 -and $runStates[0].Count -eq 0) { $problems += "no enemy or run state line" }
     $skippedText = if ($enemyStates.Skipped) { " ($($enemyStates.Skipped) player turn starts after the other player's action not compared)" } else { "" }
@@ -293,6 +305,7 @@ function Get-SettledChecksums([string]$script) {
 function Get-PairLines([string]$log, [string[]]$checksums, $skip) {
     $pattern = "STATE floor \d+ round |STATE (?![^:]*\(local\))[^:]+: (floor \d+, act |\S+ gold )|STATE foreign "
     if ($checksums.Count) { $pattern += "|CHECKSUM (" + (($checksums | ForEach-Object { [regex]::Escape($_) }) -join "|") + "): " }
+    if (-not (Test-Path $log)) { return @() }
     @(Select-String -Path $log -Pattern $pattern -ErrorAction SilentlyContinue | Where-Object { $null -eq $skip -or -not $skip.Contains($_.LineNumber) } | ForEach-Object { ($_.Line -replace '^.*?((STATE|CHECKSUM) )', '$1') -replace '^(CHECKSUM [^:]+: \w+).*$', '$1' })
 }
 # Limitless's per-player combat RNG on v0.107.x (Patch_PerPlayerCombatRng: RunRngSet.GetRng's prefix picks the RNG slot from the
@@ -366,6 +379,9 @@ foreach ($pair in $pairs) {
         $verdict = if ($common -eq 0) { "NOT COMPARED" } elseif ($first -ge 0) { "DIFFERENT" } elseif ($sameScript -and $on.Count -ne $off.Count) { "DIFFERENT LENGTHS" } else { "IDENTICAL" }
         # Everything before the round whose last ready player differs is identical: the rest is the race's (not a problem).
         if ($paceRound -and $verdict -eq "IDENTICAL") { $verdict = "PACE (Limitless per-player RNG: last ready player differs from $paceRound)" }
+        # Player turn starts on both sides, every one left out: the player side of mod on vs off was never compared (a problem, as in
+        # Compare-PeerTurnStates; none of the pairs of 2026-11-20 that ran to their end has it). A pair that already differs says so.
+        if ($unsynced.Blind -and $verdict -eq "IDENTICAL") { $verdict = "PLAYER SIDE NOT COMPARED (all $($unsynced.PlayerBlocks) player turn starts left out)" }
         $note = if ($paceRound) { " (compared up to $paceRound's enemy turn: $common of $fullOn lines mod on, $fullOff mod off)" }
             elseif ($on.Count -ne $off.Count) { " (compared the first $common`: $($on.Count) lines mod on, $($off.Count) mod off)" } else { "" }
         if ($unsynced.Blocks) { $note += " ($($unsynced.Blocks) player turn starts after the other player's action left out)" }
