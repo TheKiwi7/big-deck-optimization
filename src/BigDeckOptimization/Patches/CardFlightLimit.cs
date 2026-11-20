@@ -169,19 +169,22 @@ public static class CardFlightLimit
 
     /// <summary>
     /// The getter's field, read in its place (review of 2026-11-19, C9: the soul's prefix and each flush asked the pile's type
-    /// through the getter, which another mod may patch: its patch then ran more often than in the game), and the getter it stands
-    /// for; null when the getter's code isn't the pinned one.
+    /// through the getter, which another mod may patch: its patch then ran more often than in the game), null when the getter's
+    /// code isn't the pinned one (the getter is called then, as before C9); and the getter.
     /// </summary>
     private static AccessTools.FieldRef<CardPile, PileType>? _pileTypeField;
     private static System.Reflection.MethodInfo? _pileTypeGetter;
 
     /// <summary>
-    /// The pile's type as its pinned getter gives it, without running the getter; null when it isn't pinned or another mod patches it
-    /// (its answer may then differ from the field): the pile is then none of the souls' piles, the game's code for it.
+    /// The pile's type as its getter gives it: from the getter's field while its code is the pinned one (without running it), else
+    /// from the getter itself (review D5: a changed getter loses rule P and the field read only, as before C9); null when another
+    /// mod patches the getter (its answer may differ from the game's, and calling it would run their patch more often): the pile
+    /// is then none of the souls' piles, the game's code for it.
     /// </summary>
     private static PileType? PileTypeOf(CardPile pile) =>
-        // No tolerance: the getter isn't called here, whatever its patches would do.
-        _pileTypeField != null && !PatchSafety.IsPatchedByOthers(_pileTypeGetter) ? _pileTypeField(pile) : null;
+        // No tolerance: the getter is called only while nobody else patches it, whatever their patches would do.
+        _pileTypeGetter == null || PatchSafety.IsPatchedByOthers(_pileTypeGetter) ? null
+            : _pileTypeField != null ? _pileTypeField(pile) : pile.Type;
 
     /// <summary>The gated postfixes <see cref="PileGatesAllowed"/> last gave (the same array while its content is the same).</summary>
     private static System.Reflection.MethodInfo[] _pileGates = Array.Empty<System.Reflection.MethodInfo>();
@@ -222,14 +225,15 @@ public static class CardFlightLimit
         _invokeAddFinished = Reflect.Method(typeof(CardPile), nameof(CardPile.InvokeCardAddFinished))
             ?? throw new MissingMethodException(nameof(CardPile), nameof(CardPile.InvokeCardAddFinished));
         _cardAddFinished = Reflect.FieldRefAccess<CardPile, Action?>("CardAddFinished");
-        // The pile's type is read from the getter's field (C9): only while the getter is the pinned one.
+        // The pile's type is read from the getter's field (C9) while the getter is the pinned one; a changed getter leaves only rule
+        // P and the field read (D5): the getter is then called, as before C9.
         System.Reflection.MethodInfo typeGetter = Reflect.PropertyGetter(typeof(CardPile), nameof(CardPile.Type))
             ?? throw new MissingMethodException(nameof(CardPile), "get_Type");
-        PatchSafety.RequireFingerprint(typeGetter, PileTypeFingerprint);
-        _pileTypeField = Reflect.FieldRefAccess<CardPile, PileType>("<Type>k__BackingField");
         _pileTypeGetter = typeGetter;
         try
         {
+            PatchSafety.RequireFingerprint(typeGetter, PileTypeFingerprint);
+            _pileTypeField = Reflect.FieldRefAccess<CardPile, PileType>("<Type>k__BackingField");
             // Rule P: a postfix gated on the pile's type is judged by that type, which only the constructor writes.
             PatchSafety.RequireFieldWriters(typeof(CardPile), "<Type>k__BackingField", ".ctor");
             _pileType = typeGetter;
