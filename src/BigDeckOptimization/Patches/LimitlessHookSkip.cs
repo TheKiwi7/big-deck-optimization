@@ -144,8 +144,37 @@ public static class LimitlessHookSkip
         return _patchedByOthers;
     }
 
-    /// <summary>Changes when filters must judge MultiEnchantments again; -1 when none may be dropped.</summary>
-    internal static long Stamp => Active ? _version ^ (LimitlessCloneMemo.PatchStamp() << 24) : -1;
+    /// <summary>
+    /// Changes when filters must judge MultiEnchantments again; -1 when none may be dropped. Full audit B-2 (2026-11-20): also every
+    /// 2 s for <see cref="SettleMs"/> after the patch stamp changed. A verdict made just after a Harmony change may rest on answers
+    /// cached from before Harmony stored it (PatchSafety's 2-s answers refilled in that window: review D2), and the answers built on them
+    /// (the closures' strict answers and the patched-methods map, 2 s; the chain's and the overrides' answers, 1 s) stay up to ~5 s
+    /// in all: a filter's verdict cached per stamp would keep it until the next change. Without HarmonyWatch the stamp already
+    /// changes every 2 s (no extra cost); with it, a few more judgments after each change only.
+    /// </summary>
+    internal static long Stamp
+    {
+        get
+        {
+            if (!Active)
+            {
+                return -1;
+            }
+            long patches = LimitlessCloneMemo.PatchStamp(), now = Environment.TickCount64;
+            if (patches != _stampPatches)
+            {
+                _stampPatches = patches;
+                _stampChangedAt = now;
+            }
+            long settling = now - _stampChangedAt < SettleMs ? now / 2000 + 1 : 0;
+            return unchecked((_version ^ (patches << 24)) + settling * -7046029254386353131L);
+        }
+    }
+
+    /// <summary>How long after a patch stamp change <see cref="Stamp"/> keeps changing every 2 s (B-2: the ~5 s above, and a margin).</summary>
+    private const long SettleMs = 8000;
+
+    private static long _stampPatches = long.MinValue, _stampChangedAt = long.MinValue / 2;
 
     private static long _version;
     private static readonly HashSet<Type> _known = new();
@@ -302,6 +331,14 @@ public static class LimitlessHookSkip
             {
                 continue;
             }
+            if (!_nonStorageInner && !ReferenceEquals(inner[i].GetType(), _storageCard))
+            {
+                lock (_known)
+                {
+                    _nonStorageInner = true;
+                    _version++;
+                }
+            }
             Type type = enchantment.GetType();
             if (ReferenceEquals(type, last) || known.Contains(type))
             {
@@ -377,10 +414,11 @@ public static class LimitlessHookSkip
     /// <summary>Whether a recorded inner enchantment type answers yes (or has unknown code on the way).</summary>
     internal static bool AnyKnown(Func<Type, bool> overrides)
     {
-        // Rule L: a patched group an inner card may reach (its enchantment, its upgrades, a second enchantment's CardCmd.Enchant for
-        // an inner card that isn't the storage card: every group ContentPatched may judge, review C8) is judged per instance
-        // (AnyInner): the type as a whole then counts as reacting.
-        if (_storageCard == null || AnyGroupPatched())
+        // Rule L: a patched group an inner card may reach (its enchantment, its upgrades: every group ContentPatched judges, review C8)
+        // is judged per instance (AnyInner): the type as a whole then counts as reacting. A second enchantment's way (an enchanted inner
+        // card that isn't exactly the storage card) isn't judged since the owner's decision on B-1 (2026-11-20): ContentPatched counts
+        // it patched, and once one was noted the type as a whole reacts too (none in Limitless 1.1.7 to 1.2.1).
+        if (_storageCard == null || _nonStorageInner || AnyGroupPatched())
         {
             return true;
         }
@@ -398,7 +436,10 @@ public static class LimitlessHookSkip
     }
 
     private static bool AnyGroupPatched() => LimitlessCloneMemo.ChainPatchedFor(_storageCard!, LimitlessCloneMemo.Reach.Spine | LimitlessCloneMemo.Reach.Enchant
-        | LimitlessCloneMemo.Reach.Upgrade | LimitlessCloneMemo.Reach.SecondEnchant);
+        | LimitlessCloneMemo.Reach.Upgrade);
+
+    /// <summary>An enchanted inner card not exactly Limitless's storage card was noted (<see cref="Note"/>): it reaches CardCmd.Enchant.</summary>
+    private static volatile bool _nonStorageInner;
 
 #if BENCH
     /// <summary>The type-level answer and its chain part (bench: <c>foreignpatch limitless anyknown</c>).</summary>

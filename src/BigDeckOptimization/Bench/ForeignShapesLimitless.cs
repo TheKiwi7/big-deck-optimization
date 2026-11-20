@@ -169,7 +169,9 @@ public static class ForeignShapesLimitless
                 "reach" when parts.Length > 4 => ReachCommand(parts[2], parts[3], int.Parse(parts[4]), parts.Length > 5 ? parts[5] : "now"),
                 "anyknown" => new[] { $"FOREIGN anyknown {(parts.Length > 2 ? parts[2] : "now")}: {LimitlessHookSkip.AnyKnownForTest()}" },
                 "memo" => new[] { $"FOREIGN clonememo {(parts.Length > 2 ? parts[2] : "now")}: entries {LimitlessCloneMemo.MemoCount}, patch stamp clears {LimitlessCloneMemo.PatchStampClears}, reused {LimitlessCloneMemo.Reused}" },
-                _ => throw new ArgumentException("foreignpatch limitless report [label] | remove | twin status|register|patchcallee [label] | reach <storage|CardClass> <EnchantmentClass|none> <level> [label] | memo [label] | anyknown [label]"),
+                // Full audit A-L1, B-3: the patched-methods maps act as if Harmony couldn't list its patched methods (within 2 s).
+                "cantlist" when parts.Length > 2 && parts[2] is "on" or "off" => CantList(parts[2] == "on"),
+                _ => throw new ArgumentException("foreignpatch limitless report [label] | remove | twin status|register|patchcallee [label] | reach <storage|CardClass> <EnchantmentClass|none> <level> [label] | memo [label] | anyknown [label] | cantlist on|off"),
             };
         }
         string shape = parts[0];
@@ -240,6 +242,12 @@ public static class ForeignShapesLimitless
         return lines;
     }
 
+    private static IReadOnlyList<string> CantList(bool on)
+    {
+        PatchSafety.CantListForTest = on;
+        return new[] { $"FOREIGN cantlist {(on ? "on" : "off")}" };
+    }
+
     /// <summary>
     /// <c>foreignpatch limitless reach</c>: a saved card of that card (<c>storage</c>: Limitless's storage card, else a game card class),
     /// enchantment (a game enchantment class, or <c>none</c>) and upgrade level, judged as LimitlessCloneMemo judges a content now.
@@ -258,14 +266,17 @@ public static class ForeignShapesLimitless
                 Amount = 1,
             };
         }
+        // B-1 (owner's decision): back-offs and notes recorded by both judgments (a second enchantment's way records none).
+        int recorded = PatchSafety.RecordedBackOffs;
         (bool kept, LimitlessCloneMemo.Reach reach) = LimitlessCloneMemo.KeptForTest(saved);
         // Review C7: HookSkip's judgment runs no other mod's code (the count-postfix calls made during it).
         long calls = ForeignPatches.CountPostfixCalls();
         bool patched = LimitlessCloneMemo.ContentPatched(saved);
         calls = ForeignPatches.CountPostfixCalls() - calls;
+        recorded = PatchSafety.RecordedBackOffs - recorded;
         return new[]
         {
-            $"FOREIGN reach {label} {card} {enchantment} {level}: kept {kept}, reaches {reach}, hookskip patched {patched}, foreign calls {calls}",
+            $"FOREIGN reach {label} {card} {enchantment} {level}: kept {kept}, reaches {reach}, hookskip patched {patched}, foreign calls {calls}, new back-offs {recorded}",
             $"FOREIGN reach {label} closures done {LimitlessCloneMemo.ClosuresDone}: {LimitlessCloneMemo.ClosureStates()}",
         };
     }

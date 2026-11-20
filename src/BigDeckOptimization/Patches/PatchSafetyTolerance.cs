@@ -525,18 +525,18 @@ public static partial class PatchSafety
         PatchedByToken? known = _patchedByToken;
         if (known == null || known.Epoch != epoch || now - known.CheckedAt >= RecheckAfterMs)
         {
-            Dictionary<(Module, int), MethodBase[]>? methods;
-            try
-            {
-                // An open definition can't be patched (Harmony refuses it): a group of a generic member holds instantiations only.
-                methods = Harmony.GetAllPatchedMethods().GroupBy(m => (m.Module, m.MetadataToken))
-                    .ToDictionary(g => g.Key, g => g.Where(m => !GenericDefinitionMember(m)).ToArray());
-            }
-            catch
-            {
-                methods = null;
-            }
+            Dictionary<(Module, int), MethodBase[]>? methods = PatchedByTokenNow();
             _patchedByToken = known = new PatchedByToken(epoch, now, methods);
+            if (methods != null && !_cantTell.IsEmpty)
+            {
+                foreach (string patch in _cantTell.Keys)
+                {
+                    if (_cantTell.TryRemove(patch, out _))
+                    {
+                        ClearNote(patch, CantTellKey);
+                    }
+                }
+            }
         }
         if (known.Methods == null)
         {
@@ -546,9 +546,107 @@ public static partial class PatchSafety
     }
 
     /// <summary>
+    /// Full audit A-L1 (2026-11-20): Harmony's patched methods by module and token, built entry by entry. An entry whose module or token
+    /// can't be read is left out when it can't be a generic instantiation (a non-generic method of a non-generic type: no definition's
+    /// group may hold it, and this map is asked for generic definitions' members only); otherwise, or when Harmony can't list its
+    /// methods, null.
+    /// </summary>
+    private static Dictionary<(Module, int), MethodBase[]>? PatchedByTokenNow()
+    {
+#if BENCH
+        if (CantListForTest)
+        {
+            return null;
+        }
+#endif
+        try
+        {
+            var groups = new Dictionary<(Module, int), List<MethodBase>>();
+            foreach (MethodBase patched in Harmony.GetAllPatchedMethods())
+            {
+                (Module, int) key;
+                bool definition;
+                try
+                {
+                    key = (patched.Module, patched.MetadataToken);
+                    definition = GenericDefinitionMember(patched);
+                }
+                catch
+                {
+                    if (MayBeInstantiation(patched))
+                    {
+                        return null;
+                    }
+                    continue;
+                }
+                if (!groups.TryGetValue(key, out List<MethodBase>? group))
+                {
+                    groups[key] = group = new List<MethodBase>();
+                }
+                // An open definition can't be patched (Harmony refuses it): a group of a generic member holds instantiations only.
+                if (!definition)
+                {
+                    group.Add(patched);
+                }
+            }
+            return groups.ToDictionary(g => g.Key, g => g.Value.ToArray());
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+#if BENCH
+    /// <summary>
+    /// Test only (<c>foreignpatch limitless cantlist on|off</c>): the patched-methods maps (this one and LimitlessCloneMemo's) act as
+    /// if Harmony couldn't list its patched methods (A-L1, B-3), within 2 s.
+    /// </summary>
+    internal static volatile bool CantListForTest;
+#endif
+
+    /// <summary>Whether a method may be a generic instantiation's member (true when that can't be read either).</summary>
+    private static bool MayBeInstantiation(MethodBase method)
+    {
+        try
+        {
+            return method.IsGenericMethod || method.DeclaringType is not { IsGenericType: false };
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
+    /// <summary>The patches holding a <see cref="NoteCantTell"/> note, cleared once Harmony lists its patched methods again.</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _cantTell = new();
+
+    private const string CantTellKey = "patched_instances";
+
+    /// <summary>
+    /// A-L1: <see cref="PatchedInstantiations"/> couldn't tell, so the game's generic members a part relies on count as patched: a
+    /// note (no mod named) under that part, so bdopt why and the menu say why it is idle; cleared when the map is built again.
+    /// <paramref name="caller"/>: a call site's path or a patch name. Never throws.
+    /// </summary>
+    internal static void NoteCantTell(string caller)
+    {
+        try
+        {
+            string patch = PatchName(caller);
+            _cantTell[patch] = 0;
+            Note(patch, CantTellKey, "Harmony couldn't list the methods other mods patch: the game's generic methods this relies on count as patched",
+                Array.Empty<string>());
+        }
+        catch
+        {
+            // Display only.
+        }
+    }
+
+    /// <summary>
     /// <see cref="IsPatchedByOthers(MethodBase?, string)"/> on the method and, for a generic definition's member, on each closed
     /// instantiation Harmony patches (<see cref="PatchedInstantiations"/>, D3): every one asked (each back-off recorded); true when
-    /// Harmony can't tell.
+    /// Harmony can't tell (a note recorded under <paramref name="caller"/>, A-L1).
     /// </summary>
     internal static bool IsPatchedByOthersWithInstances(MethodBase? method, string caller)
     {
@@ -559,6 +657,7 @@ public static partial class PatchSafety
         }
         if (PatchedInstantiations(method) is not { } instances)
         {
+            NoteCantTell(caller);
             return true;
         }
         foreach (MethodBase instance in instances)
@@ -578,6 +677,7 @@ public static partial class PatchSafety
         bool patched = IsPatchedByOthers(method, allowed(method), caller);
         if (PatchedInstantiations(method) is not { } instances)
         {
+            NoteCantTell(caller);
             return true;
         }
         foreach (MethodBase instance in instances)
@@ -587,7 +687,10 @@ public static partial class PatchSafety
         return patched;
     }
 
-    /// <summary><see cref="HasOtherPatches"/> on the method and on each closed instantiation Harmony patches (D3); true when it can't tell.</summary>
+    /// <summary>
+    /// <see cref="HasOtherPatches"/> on the method and on each closed instantiation Harmony patches (D3); true when it can't tell
+    /// (nothing recorded, as HasOtherPatches: a replay or display decision; the parts' strict checks record the note).
+    /// </summary>
     internal static bool HasOtherPatchesWithInstances(MethodBase? method)
     {
         if (HasOtherPatches(method) || method == null)

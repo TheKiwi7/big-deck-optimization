@@ -689,8 +689,10 @@ public static partial class PatchSafety
                     try
                     {
                         PatchTolerance tolerance = entry.ToleranceOf?.Invoke() ?? entry.Tolerance;
+                        // Strict: a generic definition's member on each closed instantiation Harmony patches too, as the runtime's set
+                        // checks ask it (full audit A-L2; nothing more for any other member).
                         _ = tolerance != PatchTolerance.None ? CheckTolerant(method, allowed ?? Array.Empty<MethodInfo>(), tolerance, entry.Patch, out _)
-                            : allowed == null ? CheckPatched(method, entry.Patch) : CheckPatched(method, allowed, entry.Patch);
+                            : allowed == null ? IsPatchedByOthersWithInstances(method, entry.Patch) : IsPatchedByOthersWithInstances(method, _ => allowed, entry.Patch);
                         checks.Value++;
                     }
                     catch (Exception e)

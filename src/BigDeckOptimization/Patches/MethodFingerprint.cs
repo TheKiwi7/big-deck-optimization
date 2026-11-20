@@ -732,10 +732,12 @@ public static class MethodFingerprint
     /// engine-called node methods unless their class is a root). Generic members are named by their open
     /// definitions, while Harmony patches a closed instantiation's own method: the patch checks of these sets ask each patched
     /// instantiation too (<c>PatchSafety.PatchedInstantiations</c>, review D3: CodeSet, RelicFlashMerge's strict members;
-    /// LimitlessCloneMemo keeps its own map).
+    /// LimitlessCloneMemo keeps its own map). <paramref name="dispatchTo"/>: when given, a virtual call adds the implementations only
+    /// of the callees it says yes to (the callee as called is added either way; LimitlessCloneMemo's chain callees: not the overrides
+    /// on the way, judged per content type).
     /// </summary>
     public static List<MethodBase> GameCallees(Assembly game, MethodBase method, List<MethodInfo>? delegates = null, bool initializers = true, bool dispatch = true,
-        List<(MethodInfo Callee, List<MethodBase> Implementations)>? dispatches = null)
+        List<(MethodInfo Callee, List<MethodBase> Implementations)>? dispatches = null, Func<MethodInfo, bool>? dispatchTo = null)
     {
         var found = new List<MethodBase>();
         var seen = new HashSet<MethodBase>();
@@ -795,7 +797,7 @@ public static class MethodFingerprint
                     Add(callee);
                 }
                 if ((dispatch || callee.Module.Assembly == game) && (ins.Op == OpCodes.Callvirt || ins.Op == OpCodes.Ldvirtftn)
-                    && callee is MethodInfo { IsVirtual: true, IsFinal: false } dispatched)
+                    && callee is MethodInfo { IsVirtual: true, IsFinal: false } dispatched && (dispatchTo == null || dispatchTo(dispatched)))
                 {
                     List<MethodBase> implementations = Implementations(game, dispatched);
                     foreach (MethodBase implementation in implementations)

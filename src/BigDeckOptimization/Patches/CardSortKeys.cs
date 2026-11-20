@@ -213,6 +213,8 @@ public static class CardSortKeys
     /// what such a postfix may give where the game's getter gives null isn't there, so each card's real getter is read too and its
     /// combat judged with the others (a superset again: more refusals, never fewer). The getter then runs once per card in a sort
     /// instead of once per cost read: the sort-cost premise's scope (it is read by the cost chain).
+    /// CardFusion's own postfix, the rule's first case, is refused since the review of 2026-11-19 (C4: its fill calls
+    /// <c>FusedCard.ChildToParentMap.TryGetValue</c> and another card's getter, not read-only): CardSortKeys backs off next to it.
     /// </summary>
     private static bool NullFillNow() => PatchSafety.ShapeRules && PatchSafety.NullFillOnly(_cardCombat);
 
