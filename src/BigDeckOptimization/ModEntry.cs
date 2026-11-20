@@ -76,6 +76,8 @@ public static class ModEntry
         // Before the game's own start goes further: the test runner sets the window and the sound up.
         TryApply(Bench.CombatStartTimer.Name, Bench.CombatStartTimer.Apply);
         TryApply(Bench.AutoTest.Name, Bench.AutoTest.Apply);
+        // Test tooling (startup-measure branch): only with --bdstartprof.
+        TryApply(Bench.StartupProfile.Name, Bench.StartupProfile.Apply);
 #endif
         try
         {
