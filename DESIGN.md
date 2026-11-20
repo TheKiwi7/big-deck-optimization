@@ -1197,6 +1197,8 @@ the game's, unchanged).
 `release-checks`, `walkcode-check`, `conflict-check` no problem, pairs identical; after item 1's revert the same list again (no
 problem, pairs identical, `effects-check` all ran but its allowed zeros), and `mutations.ps1` 45/45 on both copies.
 
+**Declined by the owner (2026-11-20): an effect check on hidden IL hooks.** HarmonyWatch treats every method another mod rebuilds after a patch on Harmony's own pipeline (RitsuLib's ImportReference postfixes; CVC, Act 4 Heart elsewhere) as patched by it. A check reading each rebuilt DynamicMethod's emitted IL and member references and comparing them with Harmony's instruction list proved feasible in a spike (RitsuLib's shape unchanged; a renamed call target and a retyped class caught), and would recover ExtraScopes' first-turn filter next to RitsuLib (first turn -4.0 s at 10,300 cards; the filter is lost in 125 scan sessions; ~105 of 454 decompiled mods use RitsuLib). It reads private CoreLib fields (medium-low risk: fails closed if they change, but a bug in the check itself would let a redirected call through), so the owner declined it ("si le risque est moyen non"). The suspicion stays as it is; the premise alone was declined earlier.
+
 #### Card sorts and stacked enchantments next to walk-wrapping mods (2026-11-20)
 
 Branch `trace-proposals` (clone `bdo-coverage`, from 735ba02; 4688e29 code, 4d60df8 scenario expects). Evidence: a CPU-sampling trace of a 10,295-card combat (10,309 in combat, ~19.2k listeners) with RitsuLib 0.6.14 on v0.113.1, sampler attached from outside, plus timers and PerfProbe.
