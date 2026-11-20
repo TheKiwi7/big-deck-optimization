@@ -476,12 +476,16 @@ public static class CardSortKeys
     public static List<CardModel> StableShuffleInScope(List<CardModel> list, Rng rng)
     {
         Scope? scope = Open(list);
+        // An answered sort is a ListenerCache scope too: its cost reads' listener walks served from the lists of this state
+        // version, and other mods' walk postfixes' output reused within the sort (ListenerCache.SortWalksName).
+        int walks = scope != null ? ListenerCache.EnterSort() : 0;
         try
         {
             return list.StableShuffle(rng);
         }
         finally
         {
+            ListenerCache.ExitSort(walks);
             if (scope != null)
             {
                 Close(scope);
@@ -494,12 +498,14 @@ public static class CardSortKeys
     internal static bool SortInScope(List<CardModel> list)
     {
         Scope? scope = Open(list);
+        int walks = scope != null ? ListenerCache.EnterSort() : 0;
         try
         {
             list.Sort();
         }
         finally
         {
+            ListenerCache.ExitSort(walks);
             if (scope != null)
             {
                 Close(scope);
@@ -1075,12 +1081,15 @@ public static class CardSortKeys
     {
         int game;
         _verifying = true;
+        // The game's comparison with fresh listener walks: not the outputs the sort's walks reuse (ListenerCache.PauseSort).
+        bool paused = ListenerCache.PauseSort(true);
         try
         {
             game = card.CompareTo(other);
         }
         finally
         {
+            ListenerCache.PauseSort(paused);
             _verifying = false;
         }
         Checks++;

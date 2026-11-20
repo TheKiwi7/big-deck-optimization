@@ -27,6 +27,7 @@
   "kept_bridges": "Działa dalej z {mods}. Ich kod obliczania obrażeń nic nie zmienia dla kart, reliktów i mocy, których nie dotyczy: te pozostają przyspieszone.",
   "kept_walks": "Działa dalej z {mods}. Ich dodatki do list tego, co reaguje na efekt, są obliczane raz na odświeżenie ekranu zamiast przy każdym sprawdzeniu. Wynik jest taki sam.",
   "kept_snapwalks": "Działa dalej z {mods}. W sprawdzaniu stanu po każdej akcji ich dodatki do list tego, co reaguje na efekt, są obliczane raz na sprawdzenie zamiast dla każdej karty, a przed użyciem porównywane z tymi z gry. Sama gra nie jest zmieniana.",
+  "kept_sortwalks": "Działa dalej z {mods}. Przy sortowaniu kart przed tasowaniem ich dodatki do list tego, co reaguje na efekt, są obliczane raz na sortowanie zamiast dla każdej karty i po drodze porównywane z tymi z gry. Kolejność jest ta sama.",
   "coop_checksum.title": "Sprawdzanie stanu w co-opie",
   "coop_checksum.desc": "Szybsze sprawdzanie stanu po każdej akcji w co-opie, a w nowszych wersjach gry także w grze solo (największy lag co-opa przy ogromnych taliach). Przy modach, które dodają coś do list tego, co reaguje na efekty, gracze co-opa mogą do siebie dołączyć tylko wtedy, gdy wszyscy mają tę opcję ustawioną tak samo.",
   "combat_refresh.title": "Odświeżanie w walce",

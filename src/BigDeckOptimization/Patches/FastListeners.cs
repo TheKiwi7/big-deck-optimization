@@ -685,7 +685,12 @@ public static class FastListeners
             {
                 return;
             }
-            long stamp = LimitlessHookSkip.Stamp;
+            SyncMultiTo(LimitlessHookSkip.Stamp);
+        }
+
+        /// <summary><see cref="SyncMulti"/> with the stamp already read (main thread).</summary>
+        private void SyncMultiTo(long stamp)
+        {
             if (stamp == _multiStamp)
             {
                 return;
@@ -981,6 +986,18 @@ public static class FastListeners
         {
             Type type = model.GetType();
             bool multi = ReferenceEquals(type, LimitlessHookSkip.Multi);
+            if (multi && Environment.CurrentManagedThreadId == _mainThread && LimitlessHookSkip.HeldInactive)
+            {
+                // The Limitless part inactive in a combat, not armed (exact, see HeldInactive): NoteMulti notes nothing, the stamp
+                // is -1 and MultiDoesNothing answers false, so the verdict is the type's, cached per filter until the stamp moves
+                // (SyncMulti with -1, as SyncMulti would read it). No side effect, the same answer at every replay: KeptOnly's memo
+                // still judges it live (one test and an array read here instead of three evaluations of the part's conditions).
+#if BENCH
+                MultiHeldVerdicts++;
+#endif
+                SyncMultiTo(-1);
+                return Reacts(_multiTypeId >= 0 ? _multiTypeId : TypeIdOf(type)) || (_keepSubscribed && _executionFinished!(model) != null);
+            }
             if (multi)
             {
                 // Entries judged one by one (the game's walk, a shuffle, piles read live, the live checks): no snapshot was
@@ -3427,6 +3444,8 @@ public static class FastListeners
     [ThreadStatic] internal static bool _countDisablesForTest;
     [ThreadStatic] internal static int _disablesForTest;
     internal static long MemoLiveJudged;
+    /// <summary>Stacked enchantments judged by their type's verdict while the Limitless part is held inactive (PileFilter.Keeps' short path).</summary>
+    public static long MultiHeldVerdicts;
 #endif
 
     private static List<AbstractModel> Rent()

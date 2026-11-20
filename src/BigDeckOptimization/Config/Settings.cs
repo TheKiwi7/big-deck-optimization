@@ -327,6 +327,8 @@ public static class Settings
 
     public const string KeptTipsText = "Still on with {mods}. When a creature's tooltips haven't changed, they aren't rebuilt and keep what those mods added.";
 
+    public const string KeptSortWalksText = "Still on with {mods}. To sort the cards before a shuffle, their additions to the lists of what reacts to an effect are worked out once per sort instead of for every card, and checked against the game's own along the way. The order is the same.";
+
     public const string KeptSnapWalksText = "Still on with {mods}. In the state check after each action, their additions to the lists of what reacts to an effect are worked out once per check instead of for every card, then compared with the game's own before the check is used. The game itself isn't changed.";
 
     /// <summary>
@@ -343,6 +345,7 @@ public static class Settings
         ("identity_bridges", "kept_bridges", KeptBridgesText),
         ("walk_reuse", "kept_walks", KeptWalksText),
         ("snapshot_walks", "kept_snapwalks", KeptSnapWalksText),
+        ("sort_walks", "kept_sortwalks", KeptSortWalksText),
     };
 
     /// <summary>
@@ -662,9 +665,10 @@ public static class Settings
             new[] { PileIndex.Name }, on => PileIndex.Enabled = on,
             () => NoneApplied(PileIndex.Name, CardSortKeys.Name),
             // Sorting a pile before a reshuffle (game v0.113's card comparison): its own part, not needed on earlier versions.
-            parts: new OptionPart[] { new(CardSortKeys.Name, NotNeeded: () => CardSortKeys.NotNeeded) },
+            // The sort's listener walks (ListenerCache's scope around an answered sort): needed where the sort is.
+            parts: new OptionPart[] { new(CardSortKeys.Name, NotNeeded: () => CardSortKeys.NotNeeded), new(ListenerCache.SortWalksName, NotNeeded: () => CardSortKeys.NotNeeded) },
             // PileIndex.ContainsCardEnabled: the RunState.ContainsCard shortcut reads no index, so a PileIndex fault doesn't stop it.
-            setParts: on => { Flag(() => CardSortKeys.Enabled = Part(on, CardSortKeys.Name)); Flag(() => PileIndex.ContainsCardEnabled = on); }),
+            setParts: on => { Flag(() => CardSortKeys.Enabled = Part(on, CardSortKeys.Name)); Flag(() => ListenerCache.SortWalksEnabled = Part(on, ListenerCache.SortWalksName)); Flag(() => PileIndex.ContainsCardEnabled = on); }),
         new("card_ids", "Combat card IDs",
             "Skips re-scanning whole card piles for new cards on every card move (reshuffles, end of combat).",
             new[] { CardDbScan.Name }, on => CardDbScan.Enabled = on,

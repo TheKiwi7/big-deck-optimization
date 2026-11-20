@@ -272,6 +272,27 @@ public static class ForeignPatches
 #else
                 return Array.Empty<string>();
 #endif
+            case "require" when parts.Length > 2 && parts[1] == "sortwalks":
+                // The answered card sort's walk reuse (DESIGN "Sort walk reuse"): "on" (kept, reused, checked, no difference, the
+                // part on), "exact" (sort scopes with nothing kept: no other mod's postfix on the walks) or "off" (the control).
+#if BENCH
+                return new[] { ListenerCache.SortWalksControl("require " + parts[2]) };
+#else
+                return Array.Empty<string>();
+#endif
+            case "require" when parts.Length > 1 && parts[1] == "multiheld":
+                // Stacked enchantments judged by their type's verdict while the Limitless part is held inactive in a combat, and
+                // the held answers never contradicted by its conditions evaluated (LimitlessHookSkip.HeldInactive).
+#if BENCH
+                string held = $"FOREIGN multiheld verdicts {FastListeners.MultiHeldVerdicts}, held answers {LimitlessHookSkip.HeldAnswers}, contradicted {LimitlessHookSkip.HeldMismatches}";
+                if (FastListeners.MultiHeldVerdicts == 0 || LimitlessHookSkip.HeldMismatches > 0)
+                {
+                    throw new InvalidOperationException(held);
+                }
+                return new[] { held };
+#else
+                return Array.Empty<string>();
+#endif
             case "require" when parts.Length > 1 && parts[1] == "dropped":
                 return RequireDropped();
             case "report":
@@ -341,6 +362,10 @@ public static class ForeignPatches
             return new[] { ListenerCache.MemoControl(string.Join(" ", parts.Skip(1))) };
         }
         // The checksum snapshot's walk reuse: its counters (foreignpatch require snapwalks on|detected for the checks).
+        if (parts[0] == "sortwalks" && parts.Length > 1 && parts[1] == "status")
+        {
+            return new[] { ListenerCache.SortWalksControl("status") };
+        }
         if (parts[0] == "snapwalks" && parts.Length > 1 && parts[1] == "status")
         {
             return new[] { ListenerCache.SnapshotWalksControl("status"), $"FOREIGN walk-snapflip shapes changed walks {_snapFlips}, RNG draws {_snapRngDraws}" };

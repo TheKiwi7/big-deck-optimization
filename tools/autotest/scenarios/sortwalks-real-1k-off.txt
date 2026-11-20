@@ -1,0 +1,44 @@
+# Same as foreign-sortwalks-1k-* without the synthetic postfix: for a real walk-postfix mod loaded with BDTEST_EXTRA_MODS (RitsuLib).
+# The answered card sort's walk reuse (A/B, mod off): the same synthetic postfix as foreign-sortwalks-1k-on (see there); CHECKSUM
+# and STATE lines must match line for line.
+requiregame v0.113
+timeout 1200
+cmd bdopt off
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+cmd bdperf checks off
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+state start
+play 3
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+pilemove draw discard 2
+wait 1
+checksum moved
+endturn
+waitfor idle 300
+checksum reshuffle
+state reshuffle
+play 3
+waitfor idle 120
+checksum t3 plays
+state t3
+cmd kill all
+waitfor nocombat 300
+wait 2
+checksum after combat
+state after combat
+foreignpatch report end
+foreignpatch remove
+cmd bdopt on
+quit
