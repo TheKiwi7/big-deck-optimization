@@ -33,9 +33,11 @@
 # Rule B (copies of BaseLib's SavedSpireFieldPatch, Bench/ForeignShapesLimitlessTwins.cs, on SavedProperties.FromInternal):
 # (b1) GetFieldsForModel without its filter, (b2) a null result stored, (b3) its class's initializer doing more than make the
 # list, (b3a) GetFieldsForModel reading another class's list of the same name (it describes as BaseLib's: the twin aliased IL
-# line), (b4) the accepted copy installed as a prefix, (b5) the accepted copy with its GetFieldsForModel patched, (b6) the accepted
+# line), (b3b, review D1) a class of another name (MyCopy) holding a GetFieldsForModel and an empty list, whose postfix calls
+# another class's GetFieldsForModel (named SavedSpireFieldPatch, its own list): its code counts as BaseLib's by a test override
+# (the exact shape needs IL no C# compiler emits), so only the exact-member check refuses it, (b4) the accepted copy installed as a prefix, (b5) the accepted copy with its GetFieldsForModel patched, (b6) the accepted
 # copy holding a field (registered for the rest of the session: last). Each backs off: LimitlessCloneMemo idle.
-timeout 1700
+timeout 1800
 expect FOREIGN runtime LimitlessCloneMemo AbstractModel\.MutableClone \(None\) kept 0 backed off [1-9]
 expect FOREIGN runtime LimitlessCloneMemo CardModel\.AfterDeserialized \(TypeGated\) kept [1-9]
 expect FOREIGN runtime LimitlessCloneMemo CardModel\.AfterDeserialized \(None\) kept 0 backed off [1-9]
@@ -67,6 +69,8 @@ expect LimitlessReserialize: SavedProperties\.FromInternal is also patched by bd
 expect LimitlessReserialize: SavedProperties\.FromInternal is also patched by bdtest\.foreign\.lim-twin-impure: normal game for that part
 expect LimitlessReserialize: SavedProperties\.FromInternal is also patched by bdtest\.foreign\.lim-twin-aliased: normal game for that part
 expect FOREIGN twin aliased IL: FromInternal BaseLib's, GetFieldsForModel BaseLib's
+expect LimitlessReserialize: SavedProperties\.FromInternal is also patched by bdtest\.foreign\.lim-twin-mycopy: normal game for that part
+expect FOREIGN twin status b3b: twins on FromInternal 0 \(\)
 expect LimitlessReserialize: SavedProperties\.FromInternal is also patched by bdtest\.foreign\.lim-twin-prefix-accepted: normal game for that part
 expect LimitlessReserialize: SavedProperties\.FromInternal is also patched by bdtest\.foreign\.lim-twin-accepted: normal game for that part
 expect FOREIGN twin patchcallee: twins on FromInternal 0 \(\)
@@ -247,6 +251,21 @@ waitfor nocombat 300
 wait 2
 effectcheck LimitlessCloneMemo same b3a
 foreignpatch report b3a
+foreignpatch limitless remove
+wait 3
+# (b3b) Rule B, review D1: a class of another name whose postfix calls another class's GetFieldsForModel.
+foreignpatch lim-twin MegaCrit.Sts2.Core.Saves.Runs.SavedProperties:FromInternal mycopy
+wait 3
+foreignpatch limitless twin status b3b
+effects b3b
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd kill all
+waitfor nocombat 300
+wait 2
+effectcheck LimitlessCloneMemo same b3b
+foreignpatch report b3b
 foreignpatch limitless remove
 wait 3
 # (b4) Rule B: the accepted copy installed as a prefix.

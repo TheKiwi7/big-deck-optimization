@@ -289,3 +289,86 @@ namespace BigDeckOptimization.Bench.Twins.Aliased
         }
     }
 }
+
+namespace BigDeckOptimization.Bench.Twins.MyCopyHolder
+{
+    using BigDeckOptimization.Bench.Twins;
+
+    /// <summary>The MyCopy control's other class: named as BaseLib's, its own list and GetFieldsForModel (the ones the copy's postfix runs).</summary>
+    internal static class SavedSpireFieldPatch
+    {
+        internal static readonly List<ISavedSpireField> RegisteredFields = new List<ISavedSpireField>();
+
+        internal static IEnumerable<ISavedSpireField> GetFieldsForModel(object model)
+        {
+            return RegisteredFields.Where((ISavedSpireField f) => f.TargetType.IsInstanceOfType(model));
+        }
+    }
+}
+
+namespace BigDeckOptimization.Bench.Twins.MyCopy
+{
+    using BigDeckOptimization.Bench.Twins;
+    using Holder = BigDeckOptimization.Bench.Twins.MyCopyHolder.SavedSpireFieldPatch;
+
+    /// <summary>
+    /// Control (review D1): a class of another name holding a GetFieldsForModel and an empty RegisteredFields of BaseLib's code,
+    /// whose postfixes call another class's GetFieldsForModel (MyCopyHolder's, reading that class's list): the list rule B would read
+    /// to tell it holds no field isn't the one used. Its code counts as BaseLib's through the test override
+    /// (<c>BaseLibTypes.CodeAsBaseLibForTest</c>): only the exact-member check refuses it.
+    /// </summary>
+    internal static class MyCopy
+    {
+        private static readonly List<ISavedSpireField> RegisteredFields = new List<ISavedSpireField>();
+
+        private static IEnumerable<ISavedSpireField> GetFieldsForModel(object model)
+        {
+            return RegisteredFields.Where((ISavedSpireField f) => f.TargetType.IsInstanceOfType(model));
+        }
+
+        private static void PostfixFromInternal(ref SavedProperties? __result, object model)
+        {
+            SavedProperties savedProperties = __result ?? new SavedProperties();
+            bool flag = false;
+            IEnumerator<ISavedSpireField> fields = Holder.GetFieldsForModel(model).GetEnumerator();
+            try
+            {
+                while (fields.MoveNext())
+                {
+                    fields.Current.Export(model, savedProperties);
+                    flag = true;
+                }
+            }
+            finally
+            {
+                if (fields != null)
+                {
+                    fields.Dispose();
+                }
+            }
+            if (__result == null && flag)
+            {
+                __result = savedProperties;
+            }
+        }
+
+        private static void PostfixFillInternal(SavedProperties __instance, object model)
+        {
+            IEnumerator<ISavedSpireField> fields = Holder.GetFieldsForModel(model).GetEnumerator();
+            try
+            {
+                while (fields.MoveNext())
+                {
+                    fields.Current.Import(model, __instance);
+                }
+            }
+            finally
+            {
+                if (fields != null)
+                {
+                    fields.Dispose();
+                }
+            }
+        }
+    }
+}
