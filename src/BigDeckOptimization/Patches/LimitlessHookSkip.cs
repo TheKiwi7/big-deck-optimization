@@ -442,9 +442,22 @@ public static class LimitlessHookSkip
     private static volatile bool _nonStorageInner;
 
 #if BENCH
-    /// <summary>The type-level answer and its chain part (bench: <c>foreignpatch limitless anyknown</c>).</summary>
-    internal static string AnyKnownForTest() =>
-        $"{AnyKnown(_ => false)} (chain groups patched {_storageCard == null || AnyGroupPatched()}, types recorded {_knownRead.Count})";
+    /// <summary>
+    /// The type-level answer and its parts (bench: <c>foreignpatch limitless anyknown</c>): the chain groups, the non-storage inner card
+    /// flag, and the recorded inner enchantment types whose code on the way is unknown or patched (a blocked closure: SoulsPower's next
+    /// to BaseLib and Limitless), each enough to make it true.
+    /// </summary>
+    internal static string AnyKnownForTest()
+    {
+        Type[] recorded;
+        lock (_known)
+        {
+            recorded = _known.ToArray();
+        }
+        string unknown = string.Join(" ", recorded.Where(Unknown).Select(t => t.Name).OrderBy(n => n, StringComparer.Ordinal));
+        return $"{AnyKnown(_ => false)} (chain groups patched {_storageCard == null || AnyGroupPatched()}, types recorded {recorded.Length}, "
+            + $"non-storage inner {_nonStorageInner}, unknown types [{unknown}])";
+    }
 #endif
 
     /// <summary>Whether one of this MultiEnchantment's inner enchantment types answers yes.</summary>
