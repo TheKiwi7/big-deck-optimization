@@ -1158,25 +1158,28 @@ public static partial class AutoTest
 
     /// <summary>
     /// Script <c>requiregame v0.113</c>: the rest of the scenario needs this game version or a later one (a patch or mode only it
-    /// has): on an earlier one the line logs SKIPPED and the script ends as finished (<see cref="SkipRest"/>).
+    /// has): on an earlier one the line logs SKIPPED and the script ends as finished (<see cref="SkipRest"/>). Script
+    /// <c>beforegame v0.113</c> (<paramref name="before"/>), the other way: the rest runs only on a game older than that one (what the
+    /// game itself can't finish in time on it, mod off: outside-2k's act 2 combat at 3,440 cards on v0.113); on that version or a
+    /// later one the line logs SKIPPED and the script ends as finished. Both sides of a comparison stop at the same line.
     /// </summary>
-    private static void RequireGame(string wanted)
+    private static void RequireGame(string wanted, bool before = false)
     {
         string? running = Reflect.GameVersion();
         if (!Version.TryParse(wanted.TrimStart('v'), out Version? need))
         {
-            throw new ArgumentException("requiregame v<major.minor[.patch]>");
+            throw new ArgumentException((before ? "beforegame" : "requiregame") + " v<major.minor[.patch]>");
         }
         if (running == null || !Version.TryParse(running.TrimStart('v').Split('-', '+', ' ')[0], out Version? have))
         {
             throw new InvalidOperationException($"the game's version is unknown ({running ?? "none"}): can't tell whether {wanted} is met");
         }
-        if (have < need)
+        if (before ? have >= need : have < need)
         {
-            SkipRest($"game {running} is older than {wanted}");
+            SkipRest(before ? $"game {running} is {wanted} or later" : $"game {running} is older than {wanted}");
             return;
         }
-        Say($"  game {running}: {wanted} or later");
+        Say(before ? $"  game {running}: older than {wanted}" : $"  game {running}: {wanted} or later");
     }
 
     /// <summary>
@@ -1571,6 +1574,9 @@ public static partial class AutoTest
                     break;
                 case "requiregame":
                     RequireGame(arg.Trim());
+                    break;
+                case "beforegame":
+                    RequireGame(arg.Trim(), before: true);
                     break;
                 case "selector" when arg.Trim() is "ui" or "auto":
                     // ui: no automatic selector, the game opens its card choice screens (deck grids) and autoroom's handlers answer them.

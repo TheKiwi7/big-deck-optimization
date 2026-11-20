@@ -26,8 +26,9 @@ Verdict (last word of its line, exit code 0 only for IDENTICAL and SKIPPED):
   PROBLEMS        the same lines, but a log has a problem (a check of the mod failed, a session didn't end, a game error with B
                   only...)
 --lines-only: the verdict is about the lines alone (mutations.ps1, which judges the errors itself).
---prefix: up to what both reached (vanillacheck.ps1, two mod-off sessions of a scenario the game itself can't finish in time:
-                outside-2k-off on v0.113, its rest site's clone): the lines of the shorter log must be the longer's first ones,
+--prefix: up to what both reached (vanillacheck.ps1 -PrefixNames, two mod-off sessions of a scenario the game itself can't
+                finish in time; none by default since outside-2k stops before its v0.113 combat with 'beforegame'): the lines
+                of the shorter log must be the longer's first ones,
                 and a problem both logs have alike (the same text, numbers aside: the game's own failure, mod off on both
                 sides) is listed, not counted.
 """

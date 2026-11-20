@@ -89,6 +89,9 @@ runstate act 2
 automap
 autoroom 900
 runstate act 2 room 1
+# On v0.113 outside-2k-off (the game itself, mod off) takes minutes over act 2's next combat start, at 3,440 cards since the
+# rest site's clone: both sides stop here there (42 compared lines); v0.111 plays on through the save, the reload and room 2.
+beforegame v0.113
 automap
 wait 3
 runstate before save

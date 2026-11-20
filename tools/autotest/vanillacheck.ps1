@@ -7,11 +7,12 @@
 # Once per release on every supported game version. No baselines: every session runs. Exit code 1 on any difference or problem.
 #   powershell -ExecutionPolicy Bypass -File tools/autotest/vanillacheck.ps1 -GameDir <copy> [-Jobs n] [-Names ab-2k-off,outside-2k-off] [-SweepKind potions|none]
 # -Names: solo mod-off scenarios (their first console command 'cmd bdopt off'). -PrefixNames: those the game itself may not finish
-# mod off (outside-2k-off on v0.113: its rest site's clone makes the next combat start last minutes and automap gives up):
-# compared up to what both sessions reached, a failure both share listed, not counted (compare.py --prefix).
+# mod off: compared up to what both sessions reached, a failure both share listed, not counted (compare.py --prefix), a session
+# that timed out or stalled accepted. None by default: outside-2k-off, which needed it on v0.113 (its rest site's clone makes
+# act 2's combat start last minutes), now stops before that combat there itself ('beforegame v0.113'), so it must end.
 # -SweepKind: a whole sweep both ways (parsweep.ps1 -PatchedOff; parts and report in results/<version>/vanillacheck/), none to skip.
 param([string]$GameDir = "", [int]$Jobs = 0, [string[]]$Names = @("ab-2k-off", "outside-2k-off"),
-    [string[]]$PrefixNames = @("outside-2k-off"), [ValidateSet("cards", "relics", "potions", "encounters", "powers", "none")][string]$SweepKind = "potions",
+    [string[]]$PrefixNames = @(), [ValidateSet("cards", "relics", "potions", "encounters", "powers", "none")][string]$SweepKind = "potions",
     [int]$TimeoutSec = 3600, [int]$StallSec = 600)
 $Names = @($Names | ForEach-Object { $_ -split "," } | Where-Object { $_ })  # "-Names a,b" through powershell -File is one string
 $PrefixNames = @($PrefixNames | ForEach-Object { $_ -split "," } | Where-Object { $_ })
