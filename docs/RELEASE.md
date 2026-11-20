@@ -71,7 +71,7 @@ On demand only: same zip, same description.
 
 ## Version check protocol
 
-When `python -I tools/check_versions.py` reports a game, BaseLib, Limitless, BetterSpire2, SpeedX or Unlimited version other than the verified ones (`tools/versions.json`; Steam may be on the `public-beta` branch: name the version explicitly to every other tool, `refs/v<version>` or a copy's data folder):
+When `python -I tools/check_versions.py` reports a game, BaseLib, Limitless, BetterSpire2 or SpeedX version other than the verified ones (`tools/versions.json`; Steam may be on the `public-beta` branch: name the version explicitly to every other tool, `refs/v<version>` or a copy's data folder):
 
 1. `dotnet run --project tools/compat -- src/BigDeckOptimization/bin/Debug/BigDeckOptimization.dll refs/v<version>`: every member of the DLL that version lacks.
 2. A fresh session applying everything (`run.ps1 -Name release-checks`, with `BDTEST_EXTRA_MODS` for the optional mods), then `python -I tools/check_versions.py --log <its log>`: every patch skipped or failed, every part left vanilla, every method another mod now patches, every error or warning line of the mod.

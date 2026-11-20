@@ -1,4 +1,4 @@
-"""Version check protocol: the game, BaseLib and Limitless versions installed (and BetterSpire2, SpeedX and Unlimited, which
+"""Version check protocol: the game, BaseLib and Limitless versions installed (and BetterSpire2 and SpeedX, which
 some patches are pinned to, when installed) vs the ones every optimization was last verified with (tools/versions.json),
 and what a game log says was left vanilla or which of those mods it didn't load.
 
@@ -68,9 +68,10 @@ STEAMAPPS = steamapps()
 WORKSHOP = STEAMAPPS / "workshop" / "content" / "2868840"
 MODS = ("BaseLib", "Limitless")
 # Other mods some patches are pinned to (fingerprints or allowed patches: ExtraScopes' BetterSpire2 scope, SpeedX's soul
-# postfix, Unlimited's list-width transpiler): an update there leaves that part vanilla, so it is watched the same way.
-# Unlike BaseLib and Limitless, one that isn't installed is not a change.
-EXTRA_MODS = ("BetterSpire2", "SpeedX", "sts2unlimited")
+# postfix): an update there leaves that part vanilla, so it is watched the same way. Unlike BaseLib and Limitless, one that
+# isn't installed is not a change. Unlimited (sts2unlimited) is no longer watched (owner, 2026-11-20): no part relies on its
+# code by name any more, its transpiler being judged by a generic rule like any other mod's patch.
+EXTRA_MODS = ("BetterSpire2", "SpeedX")
 WATCHED = MODS + EXTRA_MODS
 APP_ID = "2868840"
 # Published branches checked, and the versions.json key of their build.
