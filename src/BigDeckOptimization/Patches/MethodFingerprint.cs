@@ -45,7 +45,8 @@ public static class MethodFingerprint
 #endif
         byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(Describe(method)));
 #if BENCH
-        LoadTicks[0] += System.Diagnostics.Stopwatch.GetTimestamp() - start;
+        // Also called by the background builds (BackgroundBuild): an atomic add.
+        System.Threading.Interlocked.Add(ref LoadTicks[0], System.Diagnostics.Stopwatch.GetTimestamp() - start);
 #endif
         return Convert.ToHexString(hash)[..16];
     }

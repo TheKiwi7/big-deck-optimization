@@ -345,6 +345,8 @@ function Get-ScenarioLaunchArgs([string]$script) {
     $launch = @()
     if (Select-String -Path $script -Pattern '^\s*launchoff\s*$' -Quiet) { $launch += "--bdoff" }
     foreach ($m in (Select-String -Path $script -Pattern '^\s*launchforeign\s+(\S+)\s*$')) { $launch += @("--bdforeign", $m.Matches[0].Groups[1].Value) }
+    # --bdearly for a 'launchearly' line: the script starts as soon as the main menu shows (InlineGuard's rebuilds still going).
+    if (Select-String -Path $script -Pattern '^\s*launchearly\s*$' -Quiet) { $launch += "--bdearly" }
     $launch
 }
 
@@ -454,6 +456,9 @@ $BaselineBenchParts = [ordered]@{
     'ShuffleBench.cs'       = '^\s*(cmd|autoslayfirst)\s+bdperf\s+shufflebench\b'
     'UpgradeBench.cs'       = '^\s*(cmd|autoslayfirst)\s+bdperf\s+upgradebench\b'
     'SortKeysBench.cs'      = '^\s*(cmd|autoslayfirst)\s+bdperf\s+sortkeys\b'
+    'AutoTestStartup.cs'    = '^\s*(startsets|launchearly)\b'
+    # Only the launch argument --bdstartprof turns it on, never a script line: no scripted session depends on it.
+    'StartupProfile.cs'     = '(?!)'
 }
 function Get-BaselineBenchFiles([string]$scriptText) {
     $bench = Join-Path $PSScriptRoot "..\..\src\BigDeckOptimization\Bench"

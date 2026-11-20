@@ -340,6 +340,43 @@ internal sealed class CodeSet
     }
 
 #if BENCH
+    /// <summary>
+    /// Test builds (script <c>startsets</c>): two builds of a set compared as built, everything Compute gives (no answer cached
+    /// since, which is asked at use time): each difference added to <paramref name="diffs"/>.
+    /// </summary>
+    internal static void BenchCompare(string what, CodeSet a, CodeSet b, List<string> diffs)
+    {
+        if (a.Fingerprint != b.Fingerprint || a.Reviewed != b.Reviewed || a.ConstantOverridesHarmless != b.ConstantOverridesHarmless)
+        {
+            diffs.Add($"{what}: fingerprint {a.Fingerprint} ({(a.Reviewed ? "reviewed" : "not reviewed")}) against {b.Fingerprint} ({(b.Reviewed ? "reviewed" : "not reviewed")})");
+        }
+        BenchCompareList(what + " methods", a.Methods, b.Methods, diffs);
+        BenchCompareList(what + " checked", a.Checked, b.Checked, diffs);
+        BenchCompareList(what + " virtuals", a.Virtuals, b.Virtuals, diffs);
+        if (!a.Delegates.SequenceEqual(b.Delegates, StringComparer.Ordinal))
+        {
+            diffs.Add($"{what} delegates ({a.Delegates.Length} against {b.Delegates.Length})");
+        }
+    }
+
+    /// <summary>Test builds: the same members in the same order (the runtime's reflection objects are unique per member).</summary>
+    internal static void BenchCompareList(string what, IReadOnlyList<MemberInfo> a, IReadOnlyList<MemberInfo> b, List<string> diffs)
+    {
+        if (a.Count != b.Count)
+        {
+            diffs.Add($"{what}: {a.Count} against {b.Count}");
+            return;
+        }
+        for (int i = 0; i < a.Count; i++)
+        {
+            if (!Equals(a[i], b[i]))
+            {
+                diffs.Add($"{what}: [{i}] {MethodFingerprint.MemberName(a[i])} against {MethodFingerprint.MemberName(b[i])}");
+                return;
+            }
+        }
+    }
+
     /// <summary>Test builds: how rule C0 judges this type's own code for <paramref name="virtualMethod"/>.</summary>
     internal static string OverrideVerdictForTest(Type type, MethodInfo virtualMethod) =>
         OverridingMethod(type, virtualMethod) is not { } m ? "no override"

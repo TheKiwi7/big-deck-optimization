@@ -950,6 +950,12 @@ public static partial class HookSkip
     private const int HooksPerFrame = 8;
 
     /// <summary>
+    /// Hooks still queued for <see cref="PatchOverFrames"/> (main thread): InlineGuard's rebuilds wait for them, so every
+    /// protection is in when they judge which replacements to rebuild (ModEntry, P2 of 2026-11-20).
+    /// </summary>
+    internal static bool HooksPending => _toPatch.Count > 0;
+
+    /// <summary>
     /// Transpiles the checked hooks a few per frame (~1.5 ms each: ~140 of them took ~200 ms of the game's start). Hooks only
     /// run in a run, seconds later; one not patched yet just runs vanilla. Main thread, like every patch of this mod.
     /// Falls back to patching them all now when frames can't be awaited.

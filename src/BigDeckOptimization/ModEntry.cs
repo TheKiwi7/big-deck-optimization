@@ -161,30 +161,95 @@ public static class ModEntry
     }
 
     /// <summary>
-    /// <see cref="InlineGuard.RecompileInliners"/> a few methods per frame, at once when a run is under way: what it fixes only
-    /// matters to cards in a run. The frames it took.
+    /// The longest <see cref="RecompileOverFrames"/> waits for the main menu (and HookSkip's hooks) before rebuilding anyway (a
+    /// game or mod that never shows it): the rebuilds then go on at <see cref="ApplyBudgetMs"/> a frame.
+    /// </summary>
+    private const double MenuWaitMs = 30000;
+
+    /// <summary>
+    /// <see cref="InlineGuard.RecompileInliners"/> once the main menu shows (P2 of 2026-11-20: while the intro logo plays its
+    /// steps were the logo's remaining hitches, and on a menu that showed early a share of the long frame that loaded it made a
+    /// 0.3 s freeze), <see cref="ApplyBudgetMs"/> a frame (a step is one method: some take 20-40 ms), at once when a run is
+    /// under way: what it fixes only matters to cards in a run (the guarantee as before: a run started before the rebuilds end
+    /// gets the rest at once, in the next frame, before its first combat). The list of methods is taken now, as soon as every
+    /// patch of the start is in, as before (<see cref="InlineGuard.PatchedNow"/>): HookSkip's hooks patched after it were
+    /// compiled with the flags set. Which of them to rebuild is judged once HookSkip's hooks are all patched (protected), so
+    /// against every protection, whenever the menu shows (before, the steps ran beside HookSkip's batches, and a method judged
+    /// before a hook it reaches was patched wasn't rebuilt: a set that depended on the frames). The frames it took.
     /// </summary>
     private static async System.Threading.Tasks.Task<int> RecompileOverFrames()
     {
         Godot.SceneTree? tree = Godot.Engine.GetMainLoop() as Godot.SceneTree;
         int frames = 0;
-        using IEnumerator<bool> steps = InlineGuard.RecompileInliners(new Harmony(Harmony.Id + "." + nameof(InlineGuard))).GetEnumerator();
-        long last = System.Diagnostics.Stopwatch.GetTimestamp();
+        using IEnumerator<bool> steps = InlineGuard.RecompileInliners(new Harmony(Harmony.Id + "." + nameof(InlineGuard)), InlineGuard.PatchedNow()).GetEnumerator();
+        long waitStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        bool menu = false, started = false;
         while (true)
         {
-            double frameMs = System.Diagnostics.Stopwatch.GetElapsedTime(last).TotalMilliseconds;
-            double budget = tree == null || MegaCrit.Sts2.Core.Runs.RunManager.Instance.IsInProgress ? double.MaxValue : Math.Max(ApplyBudgetMs, frameMs * ApplyFrameShare);
+            double budget = 0;
+            if (tree == null || RunInProgress())
+            {
+                if (tree != null)
+                {
+                    Log.Info($"[{Id}] {nameof(InlineGuard)}: a run is under way, the rebuilds left run now ({System.Diagnostics.Stopwatch.GetElapsedTime(waitStart).TotalMilliseconds:F0} ms after the patches)");
+                }
+                budget = double.MaxValue;
+            }
+            else
+            {
+                // Once the menu showed, never waiting for it again (it is gone while a run is being set up).
+                bool late = System.Diagnostics.Stopwatch.GetElapsedTime(waitStart).TotalMilliseconds >= MenuWaitMs;
+                menu = menu || late || CanRunStart();
+                if (started || (menu && (late || !HookSkip.HooksPending)))
+                {
+                    if (!started)
+                    {
+                        started = true;
+                        Log.Info($"[{Id}] {nameof(InlineGuard)}: rebuilds start, {ApplyBudgetMs} ms a frame ({System.Diagnostics.Stopwatch.GetElapsedTime(waitStart).TotalMilliseconds:F0} ms after the patches"
+                            + (CanRunStart() ? ", the main menu shows)" : ", no main menu yet)"));
+#if BENCH
+                        // Test tooling (--bdearly, a scenario's 'launchearly' line): the test runner's script starts now, and the
+                        // rebuilds are held until a run is under way, as a player starting a run within the menu's first frames
+                        // would find them (a combat started right after the menu: the rest at once when the run is under way).
+                        if (LaunchedWith(EarlyArg))
+                        {
+                            Ready = true;
+                            _holdRebuilds = true;
+                        }
+#endif
+                    }
+                    budget = ApplyBudgetMs;
+#if BENCH
+                    if (_holdRebuilds)
+                    {
+                        budget = 0;
+                    }
+#endif
+                }
+            }
             long start = System.Diagnostics.Stopwatch.GetTimestamp();
-            while (System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds < budget)
+            while (budget > 0 && System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds < budget)
             {
                 if (!steps.MoveNext())
                 {
                     return frames;
                 }
             }
-            last = System.Diagnostics.Stopwatch.GetTimestamp();
             await tree!.ToSignal(tree, Godot.SceneTree.SignalName.ProcessFrame);
             frames++;
+        }
+    }
+
+    /// <summary>A run exists (true when that can't be read: everything at once, as before).</summary>
+    private static bool RunInProgress()
+    {
+        try
+        {
+            return MegaCrit.Sts2.Core.Runs.RunManager.Instance.IsInProgress;
+        }
+        catch (Exception e) when (e is MissingMemberException or TypeLoadException or NullReferenceException)
+        {
+            return true;
         }
     }
 
@@ -308,6 +373,28 @@ public static class ModEntry
 
     /// <summary>Launched with <see cref="VanillaArg"/>: this session is a vanilla reference.</summary>
     internal static bool LaunchedVanilla { get; private set; }
+
+    /// <summary>
+    /// The test tooling's launch argument (a scenario's <c>launchearly</c> line) making <see cref="Ready"/> true as soon as the
+    /// main menu shows and InlineGuard's rebuilds start: the script's run starts while they go on.
+    /// </summary>
+    internal const string EarlyArg = "--bdearly";
+
+    /// <summary>Launched with <see cref="EarlyArg"/>: InlineGuard's rebuilds wait for a run (then all at once).</summary>
+    private static bool _holdRebuilds;
+
+    /// <summary>Whether the game was launched with <paramref name="arg"/> (false when that can't be read).</summary>
+    internal static bool LaunchedWith(string arg)
+    {
+        try
+        {
+            return Godot.OS.GetCmdlineArgs().Concat(Godot.OS.GetCmdlineUserArgs()).Contains(arg);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
 #endif
 
     /// <summary>Why nothing is applied in a vanilla reference session (<c>--bdvanilla</c>, test tooling only); null otherwise, always in a Release build.</summary>

@@ -1,0 +1,25 @@
+# A combat right after the main menu (A/B, mod off): vanilla, run before startup-early-on; the CHECKSUM and STATE lines must
+# match line for line.
+timeout 900
+launchearly
+cmd bdopt off
+newrun NECROBINDER 1234
+waitfor run 120
+cmd bigdeck import ref all all
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 2
+checksum first fight
+state first fight
+play 4
+waitfor idle 120
+wait 1
+checksum plays
+state plays
+cmd kill all
+waitfor nocombat 300
+wait 2
+checksum after
+state after optional
+quit

@@ -58,7 +58,8 @@ public static class CardFlightLimit
     /// <c>QueueFreeSafely</c>, <c>Rng.Chaotic</c>'s draws, v0.113.1's <c>OwnerFreeingTween</c> and <c>OwnedTween</c>, the
     /// Godot-generated members), pinned per version (<see cref="FlightSets"/>). The premise's scope: other mods' patches there
     /// stand (named in the kept note), and so do other mods' overrides of a game virtual method it calls. Strict with the shape
-    /// rules off. Built once on the main thread (the preflight's note step, else the first soul made).
+    /// rules off. Built once, in the background while the game loads, else on the main thread (the preflight's note step, else
+    /// the first soul made).
     /// </summary>
     private static CodeSet? _flightSet;
     private static bool _flightSetFailed;
@@ -334,6 +335,9 @@ public static class CardFlightLimit
         PatchSafety.WatchNote(Name, NoteOwnDisplay);
         PatchSafety.WatchNote(Name, NotePileGates);
         PatchSafety.WatchNote(Name, NoteReadOnlyHead);
+        // The flight and combat-end sets, off the main thread while the game loads (P1): ready long before the menu's note steps
+        // or the first soul need them.
+        _background.Start();
     }
 
     private static bool CreatePrefix(CardPile targetPile, ref NCardFlyShuffleVfx? __result)
@@ -484,9 +488,24 @@ public static class CardFlightLimit
         }
     }
 
+    /// <summary>The flight set and the combat-end check's two parts, as one build gives them.</summary>
+    private sealed record BuiltSets(CodeSet EndHead, CodeSet EndWalk, CodeSet Flight);
+
     /// <summary>
-    /// The flight set (<see cref="_flightSet"/>) and the combat-end check's sets (<see cref="_endHead"/>), computed once on the main thread; null
-    /// when they can't be (logged once: no soul is skipped then).
+    /// The sets built on a background thread while the game loads (P1 of 2026-11-20), started at Apply: <see cref="BuildFlightSets"/>
+    /// reads only the game's code and what Apply looked up first.
+    /// </summary>
+    private static readonly BackgroundBuild<BuiltSets> _background = new(Name + " sets", () => BuildFlightSets(null));
+
+#if BENCH
+    /// <summary>Test builds: where <see cref="_flightSet"/> came from ("background", "main thread"), null while not built.</summary>
+    internal static string? SetsSource { get; private set; }
+#endif
+
+    /// <summary>
+    /// The flight set (<see cref="_flightSet"/>) and the combat-end check's sets (<see cref="_endHead"/>), computed once (the
+    /// preflight's note step on the menu, else the first soul made): taken from the background build when it is done, built on
+    /// the main thread otherwise (never waiting for it); null when they can't be (logged once: no soul is skipped then).
     /// </summary>
     private static CodeSet? FlightSet()
     {
@@ -494,31 +513,28 @@ public static class CardFlightLimit
         {
             return _flightSet;
         }
+        if (_background.Result is { } built)
+        {
+            // In the order the main thread's build sets them.
+            _endHead = built.EndHead;
+            _endWalk = built.EndWalk;
+            _flightSet = built.Flight;
+#if BENCH
+            SetsSource = "background";
+#endif
+            return _flightSet;
+        }
         try
         {
-            const System.Reflection.BindingFlags declared = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
-                | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly;
-            static IEnumerable<System.Reflection.MethodBase?> Whole(Type type) => type.GetMethods(declared).Cast<System.Reflection.MethodBase>()
-                .Concat(type.GetConstructors(declared)).Where(m => m.GetMethodBody() != null);
-            // The combat-end check's two parts first: a flight set without them skips nothing (EndCheckAllows).
-            System.Reflection.MethodBase? walkRoot = Reflect.Method(typeof(MegaCrit.Sts2.Core.Hooks.Hook), nameof(MegaCrit.Sts2.Core.Hooks.Hook.ShouldStopCombatFromEnding),
-                new[] { typeof(MegaCrit.Sts2.Core.Combat.ICombatState) });
-            Type manager = typeof(MegaCrit.Sts2.Core.Combat.CombatManager);
-            _endHead = CodeSet.Compute(Name + " (combat end check)", new System.Reflection.MethodBase?[]
+            // Each part set as soon as it is built, as before (a later part that throws leaves the earlier ones set).
+            _flightSet = BuildFlightSets((head, walk) =>
             {
-                Reflect.Method(manager, "get_" + nameof(MegaCrit.Sts2.Core.Combat.CombatManager.IsEnding)),
-                Reflect.Method(typeof(MegaCrit.Sts2.Core.Helpers.NonInteractiveMode), "get_" + nameof(MegaCrit.Sts2.Core.Helpers.NonInteractiveMode.IsActive)),
-                Reflect.Method(manager, nameof(MegaCrit.Sts2.Core.Combat.CombatManager.DebugOnlyGetState)),
-                Reflect.Method(manager, "get_" + nameof(MegaCrit.Sts2.Core.Combat.CombatManager.Instance)),
-            }, 500, EndHeadSets, interfaces: true, stopAt: new[] { walkRoot ?? throw new MissingMethodException(nameof(MegaCrit.Sts2.Core.Hooks.Hook), "ShouldStopCombatFromEnding") },
-                constantOverridesHarmless: true);
-            // Rule C0 (2026-11-18): another mod's override in either part that only returns a constant (a mod power's
-            // OwnerIsSecondaryEnemy => true: Succubus, St2bs, erowatcher, Zone the Spire), unpatched, isn't other mods' code a skip
-            // leaves out in any way that matters: it reads, writes and calls nothing (CodeSet.ConstantOverridesHarmless).
-            _endWalk = CodeSet.Compute(Name + " (combat end walk)", new[] { walkRoot }, 500, EndWalkSets, interfaces: true, constantOverridesHarmless: true);
-            // _Ready is checked with SpeedX's allowed postfix; the pile's event and the button's AddCard are still called (Flush).
-            _flightSet = CodeSet.Compute(Name, Whole(typeof(NCardFlyShuffleVfx)).Concat(Whole(typeof(NCardTrailVfx))).Concat(Whole(typeof(NCardTrail))), 1500, FlightSets,
-                new System.Reflection.MethodBase?[] { _readyMethod, _invokeAddFinished, _addCard });
+                _endHead = head;
+                _endWalk = walk;
+            }).Flight;
+#if BENCH
+            SetsSource = "main thread";
+#endif
         }
         catch (Exception e)
         {
@@ -527,6 +543,75 @@ public static class CardFlightLimit
         }
         return _flightSet;
     }
+
+    /// <summary>
+    /// The sets from the game's code alone (its IL, the methods Apply looked up): the same on any thread and at any time; throws
+    /// when one can't be computed. <paramref name="progress"/>: told each combat-end part once built (the main thread's build).
+    /// </summary>
+    private static BuiltSets BuildFlightSets(Action<CodeSet, CodeSet?>? progress)
+    {
+        const System.Reflection.BindingFlags declared = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+            | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly;
+        static IEnumerable<System.Reflection.MethodBase?> Whole(Type type) => type.GetMethods(declared).Cast<System.Reflection.MethodBase>()
+            .Concat(type.GetConstructors(declared)).Where(m => m.GetMethodBody() != null);
+        // The combat-end check's two parts first: a flight set without them skips nothing (EndCheckAllows).
+        System.Reflection.MethodBase? walkRoot = Reflect.Method(typeof(MegaCrit.Sts2.Core.Hooks.Hook), nameof(MegaCrit.Sts2.Core.Hooks.Hook.ShouldStopCombatFromEnding),
+            new[] { typeof(MegaCrit.Sts2.Core.Combat.ICombatState) });
+        Type manager = typeof(MegaCrit.Sts2.Core.Combat.CombatManager);
+        CodeSet head = CodeSet.Compute(Name + " (combat end check)", new System.Reflection.MethodBase?[]
+        {
+            Reflect.Method(manager, "get_" + nameof(MegaCrit.Sts2.Core.Combat.CombatManager.IsEnding)),
+            Reflect.Method(typeof(MegaCrit.Sts2.Core.Helpers.NonInteractiveMode), "get_" + nameof(MegaCrit.Sts2.Core.Helpers.NonInteractiveMode.IsActive)),
+            Reflect.Method(manager, nameof(MegaCrit.Sts2.Core.Combat.CombatManager.DebugOnlyGetState)),
+            Reflect.Method(manager, "get_" + nameof(MegaCrit.Sts2.Core.Combat.CombatManager.Instance)),
+        }, 500, EndHeadSets, interfaces: true, stopAt: new[] { walkRoot ?? throw new MissingMethodException(nameof(MegaCrit.Sts2.Core.Hooks.Hook), "ShouldStopCombatFromEnding") },
+            constantOverridesHarmless: true);
+        progress?.Invoke(head, null);
+        // Rule C0 (2026-11-18): another mod's override in either part that only returns a constant (a mod power's
+        // OwnerIsSecondaryEnemy => true: Succubus, St2bs, erowatcher, Zone the Spire), unpatched, isn't other mods' code a skip
+        // leaves out in any way that matters: it reads, writes and calls nothing (CodeSet.ConstantOverridesHarmless).
+        CodeSet walk = CodeSet.Compute(Name + " (combat end walk)", new[] { walkRoot }, 500, EndWalkSets, interfaces: true, constantOverridesHarmless: true);
+        progress?.Invoke(head, walk);
+        // _Ready is checked with SpeedX's allowed postfix; the pile's event and the button's AddCard are still called (Flush).
+        CodeSet flight = CodeSet.Compute(Name, Whole(typeof(NCardFlyShuffleVfx)).Concat(Whole(typeof(NCardTrailVfx))).Concat(Whole(typeof(NCardTrail))), 1500, FlightSets,
+            new System.Reflection.MethodBase?[] { _readyMethod, _invokeAddFinished, _addCard });
+        return new BuiltSets(head, walk, flight);
+    }
+
+#if BENCH
+    /// <summary>
+    /// Test builds (script <c>startsets</c>): the sets in use (and the background build's) against a build made now on the main
+    /// thread, member by member; throws on any difference. The description of the comparison.
+    /// </summary>
+    internal static string BenchCompareSets()
+    {
+        CodeSet? flight = FlightSet();
+        if (flight == null || _endHead == null || _endWalk == null)
+        {
+            throw new InvalidOperationException($"{Name}: no sets in use (background: {_background.Describe()})");
+        }
+        BuiltSets reference = BuildFlightSets(null);
+        var diffs = new List<string>();
+        void Compare(CodeSet head, CodeSet walk, CodeSet set)
+        {
+            CodeSet.BenchCompare("combat end check", head, reference.EndHead, diffs);
+            CodeSet.BenchCompare("combat end walk", walk, reference.EndWalk, diffs);
+            CodeSet.BenchCompare("flight", set, reference.Flight, diffs);
+        }
+        Compare(_endHead, _endWalk, flight);
+        if (_background.Result is { } background && !ReferenceEquals(background.Flight, flight))
+        {
+            Compare(background.EndHead, background.EndWalk, background.Flight);
+        }
+        if (diffs.Count > 0)
+        {
+            throw new InvalidOperationException($"{Name}: sets differ from a main-thread build: {string.Join("; ", diffs)}");
+        }
+        return $"{Name}: sets from the {SetsSource} (background: {_background.Describe()}) identical to a main-thread build: "
+            + $"combat end check {_endHead.Methods.Length} methods {_endHead.Fingerprint}, combat end walk {_endWalk.Methods.Length} {_endWalk.Fingerprint}, "
+            + $"flight {flight.Methods.Length} {flight.Fingerprint}";
+    }
+#endif
 
     /// <summary>
     /// The kept note (display only): which other mods' patches (or hidden IL hooks) on the souls' own display code (_Ready, its

@@ -106,6 +106,9 @@ public static class StartupProfile
         (typeof(Patches.HarmonyWatch), "CheckPending", true),
         (typeof(Patches.HarmonyWatch), "Revalidate", false),
         (typeof(Config.Settings), "NotifyStatesChanged", true),
+        // P1 (2026-11-20): the code sets, built in the background (other threads) or on the main thread when not ready.
+        (typeof(Patches.RelicFlashMerge), "BuildSets", false),
+        (typeof(Patches.CardFlightLimit), "BuildFlightSets", false),
     };
 
     public static void Apply(Harmony harmony)

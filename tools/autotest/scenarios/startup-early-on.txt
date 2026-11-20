@@ -1,0 +1,47 @@
+# A combat right after the main menu (A/B, mod on; P1 and P2 of 2026-11-20): the script starts as soon as the menu shows
+# (launchearly: --bdearly), InlineGuard's rebuilds held until a run is under way (a player starting a run within the menu's first
+# frames; they otherwise wait for the menu, then go 4 ms a frame), so the run's start
+# takes the rest at once ("a run is under way" line) before its first combat. CHECKSUM and STATE identical with
+# startup-early-off; the InlineGuard count line the same as a session started normally (read from the log). Then RelicFlashMerge's
+# and CardFlightLimit's code sets, built in the background while the game loaded, are compared with a main-thread build
+# (startsets: every member, fingerprints, strict members, guards) and the flashes still merge (bdperf relicflash, after the last
+# compared line). ~945 cards.
+timeout 900
+expect LAUNCHEARLY script started at the menu, InlineGuard recompiled 0 so far
+expect InlineGuard: a run is under way, the rebuilds left run now
+expect InlineGuard: \d+ patched methods calling protected ones compiled again
+expect STARTSETS RelicFlashMerge: sets from the background .* identical to a main-thread build
+expect STARTSETS CardFlightLimit: sets from the background .* identical to a main-thread build
+expect EFFECTCHECK RelicFlashMerge grew since 'start': [0-9]+ -> [1-9]
+launchearly
+newrun NECROBINDER 1234
+waitfor run 120
+cmd bigdeck import ref all all
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 2
+checksum first fight
+state first fight
+play 4
+waitfor idle 120
+wait 1
+checksum plays
+state plays
+cmd kill all
+waitfor nocombat 300
+wait 2
+checksum after
+state after optional
+effects start
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd bdperf relicflash 50
+wait 1
+effects end
+effectcheck RelicFlashMerge grew start
+startsets
+cmd bdopt why
+quit

@@ -163,7 +163,12 @@ public static class InlineGuard
     /// nothing is rebuilt: inlined callees are a smaller loss than another mod's patches. <see cref="Available"/> isn't needed:
     /// MonoMod set the flags when it detoured the protected methods.
     /// </summary>
-    public static IEnumerable<bool> RecompileInliners(Harmony harmony)
+    /// <remarks>
+    /// The patched methods are listed by the caller (<see cref="PatchedNow"/>) once every patch of the start is in, while the
+    /// rebuilds themselves may wait for the main menu (<see cref="ModEntry"/>, P2 of 2026-11-20): what is rebuilt is decided by
+    /// that list, the same whenever the steps run (HookSkip's hooks patched meanwhile, after the flags were set, aren't in it).
+    /// </remarks>
+    public static IEnumerable<bool> RecompileInliners(Harmony harmony, List<MethodBase> patchedMethods)
     {
         if (_protected.Count == 0)
         {
@@ -177,7 +182,10 @@ public static class InlineGuard
         double spent = 0;
         int failed = 0;
         Dictionary<MethodBase, Reach> reaches = new();
-        foreach (MethodBase patched in Harmony.GetAllPatchedMethods().ToList())
+#if BENCH
+        HashSet<MethodBase> protectedAtList = _protectedAtList ?? new HashSet<MethodBase>(_protected);
+#endif
+        foreach (MethodBase patched in patchedMethods)
         {
             if (patched.DeclaringType?.Assembly == typeof(Harmony).Assembly)
             {
@@ -201,8 +209,21 @@ public static class InlineGuard
 #endif
                 if (rebuild)
                 {
+#if BENCH
+                    // Test builds: a method rebuilt only for methods protected after the list was taken (P2's later evaluation):
+                    // named with them.
+                    if (!ReplacementReaches(patched, protectedAtList.Contains, new Dictionary<MethodBase, Reach>()))
+                    {
+                        string late = string.Join(", ", _protected.Where(p => !protectedAtList.Contains(p)
+                            && ReplacementReaches(patched, m => m == p, new Dictionary<MethodBase, Reach>())).Select(HarmonyRebuild.Describe).Take(6));
+                        Log.Info($"[{ModEntry.Id}] {nameof(InlineGuard)} (test builds): {HarmonyRebuild.Describe(patched)} rebuilt for methods protected after the list: {late}");
+                    }
+#endif
                     HarmonyRebuild.Run(patched, "compiling it again", () => new PatchProcessor(harmony, patched).Patch());
                     Recompiled++;
+#if BENCH
+                    _rebuiltNames.Add(HarmonyRebuild.Describe(patched));
+#endif
                 }
             }
             catch (Exception e)
@@ -215,7 +236,30 @@ public static class InlineGuard
         }
         Log.Info($"[{ModEntry.Id}] {nameof(InlineGuard)}: {Recompiled} patched methods calling protected ones compiled again"
             + (failed > 0 ? $", {failed} not" : "") + $" ({spent:F0} ms)");
+#if BENCH
+        // Test builds: which ones, sorted (the same set whenever the steps run: P2 of 2026-11-20), out of how many listed.
+        Log.Info($"[{ModEntry.Id}] {nameof(InlineGuard)} rebuilt (test builds), {patchedMethods.Count} patched methods listed: "
+            + string.Join(", ", _rebuiltNames.OrderBy(n => n, StringComparer.Ordinal)));
+#endif
     }
+
+#if BENCH
+    private static readonly List<string> _rebuiltNames = new();
+#endif
+
+    /// <summary>Every method Harmony has patched now, in its order: <see cref="RecompileInliners"/>'s list.</summary>
+    public static List<MethodBase> PatchedNow()
+    {
+#if BENCH
+        _protectedAtList = new HashSet<MethodBase>(_protected);
+#endif
+        return Harmony.GetAllPatchedMethods().ToList();
+    }
+
+#if BENCH
+    /// <summary>Test builds: the methods protected when <see cref="PatchedNow"/> listed the patched ones.</summary>
+    private static HashSet<MethodBase>? _protectedAtList;
+#endif
 
     /// <summary>
     /// Methods carrying this mod's patches compiled again after another mod's first patch on a method their replacements may

@@ -155,8 +155,8 @@ public static class RelicFlashMerge
             _playerPatched = true;
         }
         Applied = true;
-        // What Usable asks about (display only): the handlers at once, the computed sets once built (NoteOverrides, a note step:
-        // the menu's frames, never the game's loading; ~0.1-0.2 s each). With the shape rules on, only what stays strict under
+        // What Usable asks about (display only): the handlers at once, the computed sets once taken (NoteOverrides, a note step on
+        // the menu's frames: built in the background while the game loads, ~0.1-0.2 s, else then on the main thread). With the shape rules on, only what stays strict under
         // the display premise (the handlers, the sets' random number generators); the rest is the kept note (NoteDisplay). With
         // them off, DoFlash and the flash scene's script at once too.
         PatchSafety.WatchAll(Name, () => (_holderPatched ? new System.Reflection.MethodBase?[] { _holderFlash } : Array.Empty<System.Reflection.MethodBase?>())
@@ -172,6 +172,8 @@ public static class RelicFlashMerge
         }
         PatchSafety.WatchNote(Name, NoteOverrides);
         PatchSafety.WatchNote(Name, NoteDisplay);
+        // The sets, off the main thread while the game loads (P1): ready long before the menu's note step or a flash needs them.
+        _background.Start();
     }
 
     /// <summary>The methods of a visual set the strict checks (and the menu's back-off rows) ask about now.</summary>
@@ -273,8 +275,20 @@ public static class RelicFlashMerge
     private static bool _setsFailed;
 
     /// <summary>
-    /// The three sets, computed once on the main thread (the preflight's step on the menu, else the first flash). Null when they
-    /// can't be computed (logged once): nothing is merged then.
+    /// The sets built on a background thread while the game loads (P1 of 2026-11-20), started at Apply: <see cref="BuildSets"/>
+    /// reads only the game's code and what Apply looked up first.
+    /// </summary>
+    private static readonly BackgroundBuild<ComputedSets> _background = new(Name + " sets", BuildSets);
+
+#if BENCH
+    /// <summary>Test builds: where <see cref="_sets"/> came from ("background", "main thread"), null while not built.</summary>
+    internal static string? SetsSource { get; private set; }
+#endif
+
+    /// <summary>
+    /// The three sets, computed once (the preflight's step on the menu, else the first flash): taken from the background build
+    /// when it is done, built on the main thread otherwise (never waiting for it). Null when they can't be computed (logged
+    /// once): nothing is merged then.
     /// </summary>
     private static ComputedSets? Sets()
     {
@@ -282,47 +296,20 @@ public static class RelicFlashMerge
         {
             return _sets;
         }
+        if (_background.Result is { } built)
+        {
+            _sets = built;
+#if BENCH
+            SetsSource = "background";
+#endif
+            return _sets;
+        }
         try
         {
-            const System.Reflection.BindingFlags declared = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
-                | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly;
-            Type vfx = typeof(MegaCrit.Sts2.Core.Nodes.Vfx.NRelicFlashVfx);
-            // The effect's whole class: its instances only exist through flashes (its constructor, _Ready, StartVfx's state
-            // machine, _ExitTree, the Godot-generated members the engine calls).
-            IEnumerable<System.Reflection.MethodBase?> vfxMethods = vfx.GetMethods(declared).Cast<System.Reflection.MethodBase>()
-                .Concat(vfx.GetConstructors(declared)).Where(m => m.GetMethodBody() != null);
-            // The FlashSfx getter and every game override of it (any relic's class chain: the one a flash runs is the relic's).
-            var soundRoots = new List<System.Reflection.MethodBase?> { _sfxPlay, _flashSfx };
-            if (_flashSfx != null)
-            {
-                soundRoots.AddRange(MethodFingerprint.Implementations(typeof(MegaCrit.Sts2.Core.Hooks.Hook).Assembly, _flashSfx));
-            }
-            var sound = CodeSet.Compute(Name + " (sound)", soundRoots, SetLimit, SoundSets, interfaces: true);
-            System.Reflection.MethodBase?[] playerRoots = vfxMethods.Concat(new System.Reflection.MethodBase?[]
-            {
-                Reflect.Method(typeof(Creature), nameof(Creature.GetVfxContainer), Type.EmptyTypes),
-                Reflect.Method(typeof(MegaCrit.Sts2.Core.Helpers.GodotTreeExtensions), nameof(MegaCrit.Sts2.Core.Helpers.GodotTreeExtensions.AddChildSafely), new[] { typeof(Node), typeof(Node) }),
-            }).ToArray();
-            var player = CodeSet.Compute(Name + " (creature effect)", playerRoots, SetLimit, PlayerVisualSets);
-            // The relic bar effect: the handler, DoFlash, and the whole class of its scene's script (NVfxParticleSystem: its
-            // instances in that scene only exist through flashes; the same class elsewhere runs as before, only a merged flash's
-            // calls are left out).
-            System.Reflection.MethodBase?[] holderRoots = new System.Reflection.MethodBase?[] { _holderFlash, _doFlash }.Concat(_holderScript).ToArray();
-            var holderSet = CodeSet.Compute(Name + " (relic bar effect)", holderRoots, SetLimit, HolderVisualSets);
-            System.Reflection.MethodBase[] playerStrict = player.Methods.Where(StrictMember).ToArray();
-            System.Reflection.MethodBase[] holderStrict = holderSet.Methods.Where(StrictMember).ToArray();
-            System.Reflection.MethodInfo[] strictVirtuals = player.Virtuals.Concat(holderSet.Virtuals).Where(StrictMember).Distinct().ToArray();
-            // Strict members behind a lazily built instance, per set (a method behind it in one set may be reached otherwise in
-            // the other): used with the shape rules on only, asked per flash.
-            Dictionary<System.Reflection.MethodBase, LazyGuard.Guard> playerGuards = LazyGuard.Find(playerRoots, player, playerStrict, SetLimit);
-            Dictionary<System.Reflection.MethodBase, LazyGuard.Guard> holderGuards = LazyGuard.Find(holderRoots, holderSet, holderStrict, SetLimit);
-            if (playerGuards.Count + holderGuards.Count > 0)
-            {
-                Log.Info($"[{ModEntry.Id}] {Name}: strict members behind a lazily built instance (can't run once it exists): "
-                    + string.Join(", ", playerGuards.Concat(holderGuards).GroupBy(p => p.Value.Field).Select(g =>
-                        $"{g.Key.DeclaringType?.Name}.{g.Key.Name} ({g.Select(p => p.Key).Distinct().Count()} methods, {g.First().Value.Builder.Name} among them)")));
-            }
-            _sets = new ComputedSets(sound, player, holderSet, playerStrict, holderStrict, strictVirtuals, playerGuards, holderGuards);
+            _sets = BuildSets();
+#if BENCH
+            SetsSource = "main thread";
+#endif
         }
         catch (Exception e)
         {
@@ -331,6 +318,106 @@ public static class RelicFlashMerge
         }
         return _sets;
     }
+
+    /// <summary>
+    /// The sets from the game's code alone (its IL, the methods Apply looked up): the same on any thread and at any time; throws
+    /// when they can't be computed. Logs what it finds, as the sets' own checks do.
+    /// </summary>
+    private static ComputedSets BuildSets()
+    {
+        const System.Reflection.BindingFlags declared = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+            | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly;
+        Type vfx = typeof(MegaCrit.Sts2.Core.Nodes.Vfx.NRelicFlashVfx);
+        // The effect's whole class: its instances only exist through flashes (its constructor, _Ready, StartVfx's state
+        // machine, _ExitTree, the Godot-generated members the engine calls).
+        IEnumerable<System.Reflection.MethodBase?> vfxMethods = vfx.GetMethods(declared).Cast<System.Reflection.MethodBase>()
+            .Concat(vfx.GetConstructors(declared)).Where(m => m.GetMethodBody() != null);
+        // The FlashSfx getter and every game override of it (any relic's class chain: the one a flash runs is the relic's).
+        var soundRoots = new List<System.Reflection.MethodBase?> { _sfxPlay, _flashSfx };
+        if (_flashSfx != null)
+        {
+            soundRoots.AddRange(MethodFingerprint.Implementations(typeof(MegaCrit.Sts2.Core.Hooks.Hook).Assembly, _flashSfx));
+        }
+        var sound = CodeSet.Compute(Name + " (sound)", soundRoots, SetLimit, SoundSets, interfaces: true);
+        System.Reflection.MethodBase?[] playerRoots = vfxMethods.Concat(new System.Reflection.MethodBase?[]
+        {
+            Reflect.Method(typeof(Creature), nameof(Creature.GetVfxContainer), Type.EmptyTypes),
+            Reflect.Method(typeof(MegaCrit.Sts2.Core.Helpers.GodotTreeExtensions), nameof(MegaCrit.Sts2.Core.Helpers.GodotTreeExtensions.AddChildSafely), new[] { typeof(Node), typeof(Node) }),
+        }).ToArray();
+        var player = CodeSet.Compute(Name + " (creature effect)", playerRoots, SetLimit, PlayerVisualSets);
+        // The relic bar effect: the handler, DoFlash, and the whole class of its scene's script (NVfxParticleSystem: its
+        // instances in that scene only exist through flashes; the same class elsewhere runs as before, only a merged flash's
+        // calls are left out).
+        System.Reflection.MethodBase?[] holderRoots = new System.Reflection.MethodBase?[] { _holderFlash, _doFlash }.Concat(_holderScript).ToArray();
+        var holderSet = CodeSet.Compute(Name + " (relic bar effect)", holderRoots, SetLimit, HolderVisualSets);
+        System.Reflection.MethodBase[] playerStrict = player.Methods.Where(StrictMember).ToArray();
+        System.Reflection.MethodBase[] holderStrict = holderSet.Methods.Where(StrictMember).ToArray();
+        System.Reflection.MethodInfo[] strictVirtuals = player.Virtuals.Concat(holderSet.Virtuals).Where(StrictMember).Distinct().ToArray();
+        // Strict members behind a lazily built instance, per set (a method behind it in one set may be reached otherwise in
+        // the other): used with the shape rules on only, asked per flash.
+        Dictionary<System.Reflection.MethodBase, LazyGuard.Guard> playerGuards = LazyGuard.Find(playerRoots, player, playerStrict, SetLimit);
+        Dictionary<System.Reflection.MethodBase, LazyGuard.Guard> holderGuards = LazyGuard.Find(holderRoots, holderSet, holderStrict, SetLimit);
+        if (playerGuards.Count + holderGuards.Count > 0)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: strict members behind a lazily built instance (can't run once it exists): "
+                + string.Join(", ", playerGuards.Concat(holderGuards).GroupBy(p => p.Value.Field).Select(g =>
+                    $"{g.Key.DeclaringType?.Name}.{g.Key.Name} ({g.Select(p => p.Key).Distinct().Count()} methods, {g.First().Value.Builder.Name} among them)")));
+        }
+        return new ComputedSets(sound, player, holderSet, playerStrict, holderStrict, strictVirtuals, playerGuards, holderGuards);
+    }
+
+#if BENCH
+    /// <summary>
+    /// Test builds (script <c>startsets</c>): the sets in use (and the background build's) against a build made now on the main
+    /// thread, member by member; throws on any difference. The description of the comparison.
+    /// </summary>
+    internal static string BenchCompareSets()
+    {
+        ComputedSets? used = Sets();
+        ComputedSets? background = _background.Result;
+        if (used == null)
+        {
+            throw new InvalidOperationException($"{Name}: no sets in use (background: {_background.Describe()})");
+        }
+        ComputedSets reference = BuildSets();
+        var diffs = new List<string>();
+        CompareSets(used, reference, diffs);
+        if (background != null && !ReferenceEquals(background, used))
+        {
+            CompareSets(background, reference, diffs);
+        }
+        if (diffs.Count > 0)
+        {
+            throw new InvalidOperationException($"{Name}: sets differ from a main-thread build: {string.Join("; ", diffs)}");
+        }
+        return $"{Name}: sets from the {SetsSource} (background: {_background.Describe()}) identical to a main-thread build: "
+            + $"sound {used.Sound.Methods.Length} methods {used.Sound.Fingerprint}, creature effect {used.Player.Methods.Length} {used.Player.Fingerprint}, "
+            + $"relic bar effect {used.Holder.Methods.Length} {used.Holder.Fingerprint}, strict {used.PlayerStrict.Length}/{used.HolderStrict.Length}, "
+            + $"strict virtuals {used.StrictVirtuals.Length}, guards {used.PlayerGuards.Count}/{used.HolderGuards.Count}";
+    }
+
+    private static void CompareSets(ComputedSets a, ComputedSets b, List<string> diffs)
+    {
+        CodeSet.BenchCompare("sound", a.Sound, b.Sound, diffs);
+        CodeSet.BenchCompare("creature effect", a.Player, b.Player, diffs);
+        CodeSet.BenchCompare("relic bar effect", a.Holder, b.Holder, diffs);
+        CodeSet.BenchCompareList("creature strict", a.PlayerStrict, b.PlayerStrict, diffs);
+        CodeSet.BenchCompareList("relic bar strict", a.HolderStrict, b.HolderStrict, diffs);
+        CodeSet.BenchCompareList("strict virtuals", a.StrictVirtuals, b.StrictVirtuals, diffs);
+        CompareGuards("creature guards", a.PlayerGuards, b.PlayerGuards, diffs);
+        CompareGuards("relic bar guards", a.HolderGuards, b.HolderGuards, diffs);
+    }
+
+    private static void CompareGuards(string what, Dictionary<System.Reflection.MethodBase, LazyGuard.Guard> a,
+        Dictionary<System.Reflection.MethodBase, LazyGuard.Guard> b, List<string> diffs)
+    {
+        if (a.Count != b.Count || a.Any(p => !b.TryGetValue(p.Key, out LazyGuard.Guard? other) || other.Field != p.Value.Field
+            || other.Builder != p.Value.Builder || other.Getter != p.Value.Getter || !other.Behind.SetEquals(p.Value.Behind)))
+        {
+            diffs.Add($"{what} ({a.Count} against {b.Count})");
+        }
+    }
+#endif
 
     /// <summary>
     /// The relic bar effect: once per holder per frame. <paramref name="__state"/>: the holder's record when its handler runs for
