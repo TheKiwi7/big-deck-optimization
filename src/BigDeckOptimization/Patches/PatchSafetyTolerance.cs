@@ -3279,12 +3279,21 @@ public static partial class PatchSafety
         return null;
     }
 
-    /// <summary>Calls the lookup as the initializer will (deterministic over loaded types): false when it throws; its result kept for T.</summary>
+    /// <summary>
+    /// Calls the lookup as the initializer will (deterministic over loaded types): false when it throws; its result kept for T.
+    /// False without calling it when anyone patches the lookup now or it carries a hidden IL hook (asked before the call: another
+    /// mod's code there, e.g. a prefix on AccessTools' lookups, would run at this mod's time, not the initializer's; the verdict
+    /// refuses a patched reliance anyway, <see cref="PatchedInitializerReliance"/>).
+    /// </summary>
     private static bool Repeat(MethodInfo lookup, object? receiver, object?[] arguments, List<MethodBase> relies, out object? pushed)
     {
         pushed = null;
         try
         {
+            if ((Harmony.GetPatchInfo(lookup) is { } info && AllPatches(info).Any()) || HarmonyWatch.HiddenOwners(lookup).Length > 0)
+            {
+                return false;
+            }
             pushed = new InitStack.Found(lookup.Invoke(receiver, arguments));
             relies.Add(lookup);
             return true;
