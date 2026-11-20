@@ -700,6 +700,96 @@ function Get-FailedLines([string]$log, [switch]$Mutated) {
 # effect, which judge.py --mutated doesn't hold against it (mutations.ps1 checks them against its table).
 function Test-MutatedJob($job) { [bool]($job.PSObject.Properties["Mutated"] -and $job.Mutated) }
 
+# A co-op log's turn-start states (--bdturnstates: AutoTest.LogTurnStates, at CombatManager.TurnStarted), block by block in log
+# order, each saying whether it shows the point every peer shares. An enemy-side block does: TurnStarted comes just before the
+# game's "After enemy turn start" checksum, the action queue paused. A player-side block may not: CombatManager.StartTurn takes its
+# "After player turn start" checksum, then unpauses the queue (ActionQueueSynchronizer.SetCombatState(PlayPhase) starts it at
+# once) and only then raises TurnStarted, so another player's first action of the turn, already received by a slower peer, has
+# run there before its STATE lines (coop4 on v0.113.1: an enemy's hp 197 on three peers, 198 on the one that had not run a
+# PURITY yet, every game checksum equal). A player-side block is Synced when no "Executing action: " line (ActionExecutor) but a
+# barrier's 'bigdeck mark' comes between the last "Combat state becomes PlayPhase" line (ActionQueueSynchronizer) and it; a log without those debug lines leaves
+# every block Synced (compared strictly, as before). Returns a list of [pscustomobject]@{ Label = "floor F round R Side";
+# Lines = the block's lines after "STATE "; LineNumbers; Synced }.
+function Get-TurnStates([string]$log) {
+    $blocks = [Collections.Generic.List[object]]::new()
+    if (-not (Test-Path $log)) { return ,$blocks }
+    $ran = $false
+    $current = $null
+    foreach ($match in Select-String -Path $log -CaseSensitive -Pattern 'Combat state becomes PlayPhase|Executing action: |STATE (floor \d+ round \d+ (\w+)): ') {
+        $groups = $match.Matches[0].Groups
+        if ($groups[1].Success) {
+            if ($null -eq $current -or $current.Label -cne $groups[1].Value) {
+                $current = [pscustomobject]@{ Label = $groups[1].Value; Lines = [Collections.Generic.List[string]]::new(); LineNumbers = [Collections.Generic.List[int]]::new(); Synced = ($groups[2].Value -cne "Player" -or -not $ran) }
+                $blocks.Add($current)
+            }
+            $current.Lines.Add(($match.Line -creplace '^.*?STATE ', ''))
+            $current.LineNumbers.Add($match.LineNumber)
+            continue
+        }
+        # Anything between two STATE lines ends a block (two fights on one floor give the same labels again).
+        $current = $null
+        if ($match.Line.Contains("Combat state becomes PlayPhase")) { $ran = $false }
+        # A barrier's mark (bigdeck mark, BigDeckConsoleCmd) changes no game state: the other player's barrier, not a play.
+        elseif ($match.Line -cnotmatch 'Executing action: ConsoleCmdGameAction player \d+ cmd bigdeck mark ') { $ran = $true }
+    }
+    ,$blocks
+}
+
+# One co-op session's peers' turn-start states (Get-TurnStates, one list per peer, $names[0] the reference): the same blocks in
+# the same order on every peer, and in each block the lines $keep selects equal on every peer, a player-side block on the peers
+# that took it Synced only (at least two, otherwise it is not compared). A real divergence still shows: in the enemy-side blocks,
+# in the player-side ones of the synced peers, and in the game's own checksums ("State divergence", which the runners check).
+# Returns [pscustomobject]@{ Problems; Compared; Skipped (player-side blocks with fewer than two synced peers); Lines (the
+# reference's selected lines) }.
+function Compare-PeerTurnStates([object[]]$states, [string[]]$names, [scriptblock]$keep) {
+    $problems = [Collections.Generic.List[string]]::new()
+    $compared = 0; $skipped = 0; $lines = 0
+    # Indexed loops only: Windows PowerShell 5.1 throws "argument types do not match" on @() around these lists.
+    $labels = for ($p = 0; $p -lt $states.Count; $p++) { $list = $states[$p]; $text = for ($i = 0; $i -lt $list.Count; $i++) { $list[$i].Label }; $text -join "|" }
+    for ($p = 1; $p -lt $states.Count; $p++) {
+        if ($labels[$p] -cne $labels[0]) { $problems.Add("turn starts differ: $($names[0]) $($states[0].Count) blocks, $($names[$p]) $($states[$p].Count)") }
+    }
+    $selected = { param($block) ($block.Lines | Where-Object $keep) -join "`n" }
+    $count = $states[0].Count
+    for ($p = 0; $p -lt $states.Count; $p++) { $count = [Math]::Min($count, $states[$p].Count) }
+    for ($i = 0; $i -lt $states[0].Count; $i++) { $lines += ($states[0][$i].Lines | Where-Object $keep | Measure-Object).Count }
+    for ($i = 0; $i -lt $count; $i++) {
+        $peers = for ($p = 0; $p -lt $states.Count; $p++) { if ($states[$p][$i].Synced) { $p } }
+        $peers = @($peers)
+        if ($peers.Count -lt 2) { $skipped++; continue }
+        $compared++
+        $first = $peers[0]
+        $expected = & $selected $states[$first][$i]
+        foreach ($p in $peers[1..($peers.Count - 1)]) {
+            $actual = & $selected $states[$p][$i]
+            if ($actual -cne $expected -and $problems.Count -lt 4) {
+                $problems.Add("states differ at turn start $($i + 1) ($($states[$first][$i].Label)): $($names[$first]) vs $($names[$p])")
+            }
+        }
+    }
+    [pscustomobject]@{ Problems = $problems; Compared = $compared; Skipped = $skipped; Lines = $lines }
+}
+
+# The log line numbers of the player-side turn-start blocks to leave out of a comparison of two sessions (mod on vs off, peer by
+# peer): those either side took after another player's action ran (Get-TurnStates' Synced), block by block in order. Returns
+# @{ First = line numbers in the first log; Second = in the second; Blocks = how many }.
+function Get-UnsyncedTurnLines([string]$first, [string]$second) {
+    $a = Get-TurnStates $first
+    $b = Get-TurnStates $second
+    $left = [Collections.Generic.HashSet[int]]::new()
+    $right = [Collections.Generic.HashSet[int]]::new()
+    $blocks = 0
+    for ($i = 0; $i -lt [Math]::Min($a.Count, $b.Count); $i++) {
+        # Sessions gone different ways: nothing after is left out, the comparison shows where.
+        if ($a[$i].Label -cne $b[$i].Label) { break }
+        if ($a[$i].Synced -and $b[$i].Synced) { continue }
+        $blocks++
+        foreach ($n in $a[$i].LineNumbers) { [void]$left.Add($n) }
+        foreach ($n in $b[$i].LineNumbers) { [void]$right.Add($n) }
+    }
+    [pscustomobject]@{ First = $left; Second = $right; Blocks = $blocks }
+}
+
 # results/status.txt: progress and time left (from the items done when jobs have an Items count, else the sessions done),
 # each running session's current line. Read with status.ps1.
 function Write-SessionStatus([string]$label, [int]$total, [int]$finished, [int]$waiting, $running, [datetime]$started, $jobs, [string]$file = "status.txt") {

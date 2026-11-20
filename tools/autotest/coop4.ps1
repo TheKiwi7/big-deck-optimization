@@ -1,6 +1,7 @@
 # Co-op with more than two players, headless, without Steam: a host and N-1 clients on one lobby. Every other co-op tool stops at two
 # peers; the runs this mod is for have four or five. The scenario pair is <name>-host.txt and <name>-client.txt, CHARACTER in the
 # client's script is replaced for each one. Pass: every peer reaches its end, the same enemy and run states on all, no divergence.
+# A player-side turn start is compared on the peers that took it before any action of the turn ran (parlib.ps1's Get-TurnStates).
 # Logs: results/<game version>/<name>-host.log, -client1.log...
 #   powershell -ExecutionPolicy Bypass -File tools/autotest/coop4.ps1 -Name coop4 -GameDir C:\Games\StS2-public-0.111.1 [-Peers 4] [-Rendered]
 # -Rendered: the host renders, off screen, for fps and frame times; the clients stay headless (one GPU). -RenderedClient: the first
@@ -77,22 +78,28 @@ finally {
 }
 $problems = @()
 if ($state -ne "done") { $problems += $state }
-$enemies = @(); $runs = @()
+$turnStates = @(); $roles = @(); $runs = @()
 foreach ($log in $logs) {
     $role = [IO.Path]::GetFileNameWithoutExtension($log)
+    $roles += $role
     # judge.py: not ended, a failed line, an error or a difference this mod found itself, a positive control that saw nothing...
     Invoke-Judge @($log) | Select-Object -First 3 | ForEach-Object { $problems += "$role`: " + ($_ -replace '^PROBLEM [^:]+: ', '') }
     Select-String -Path $log -CaseSensitive -Pattern "State divergence" -ErrorAction SilentlyContinue | Select-Object -First 1 | ForEach-Object { $problems += "$role`: $($_.Line.Trim())" }
     # The Workshop mods its game must have found (a mods_STEAMTEST emptied by another series would go unseen).
     Get-MissingTestMods $log $GameDir | Select-Object -First 2 | ForEach-Object { $problems += "$role`: $_" }
-    $enemies += ,@(Select-String -Path $log -Pattern "STATE floor .*: enemy " | ForEach-Object { $_.Line -replace '^.*?STATE ', '' })
+    # The enemies at each turn start (--bdturnstates; each peer's own player and piles differ by design).
+    $turnStates += ,(Get-TurnStates $log)
     $runs += ,@(Select-String -Path $log -Pattern "STATE (?![^:]*\(local\))[^:]+: (floor \d+, act |\S+ gold )" | ForEach-Object { $_.Line -replace '^.*?STATE ', '' })
 }
+# Enemy-side turn starts on every peer, player-side ones on the peers that took them before any action of the turn ran
+# (parlib.ps1's Get-TurnStates: a faster player's first card may already have run on a slower peer, the game's checksums equal).
+$enemyStates = Compare-PeerTurnStates $turnStates $roles { $_ -cmatch '^[^:]+: enemy ' }
+$problems += @($enemyStates.Problems)
 # Peers agreeing on nothing proves nothing: a session that logged no state at all is a problem.
-if ($enemies[0].Count -eq 0 -and $runs[0].Count -eq 0) { $problems += "no enemy or run state line" }
+if ($enemyStates.Lines -eq 0 -and $runs[0].Count -eq 0) { $problems += "no enemy or run state line" }
 foreach ($i in 1..($logs.Count - 1)) {
-    if (($enemies[0] -join "`n") -ne ($enemies[$i] -join "`n")) { $problems += "enemy states differ: host $($enemies[0].Count) lines, peer $i $($enemies[$i].Count)" }
     if (($runs[0] -join "`n") -ne ($runs[$i] -join "`n")) { $problems += "run states differ: host $($runs[0].Count) lines, peer $i $($runs[$i].Count)" }
 }
-Write-Output ("{0}: {1} peers, {2} in {3:F0} s, {4} enemy and {5} run state lines{6}" -f $Name, $logs.Count, $state, ((Get-Date) - $started).TotalSeconds, $enemies[0].Count, $runs[0].Count, $(if ($problems.Count) { "`n  PROBLEMS: " + ($problems -join "`n  ") } else { ", agree" }))
+$skippedText = if ($enemyStates.Skipped) { " ($($enemyStates.Skipped) player turn starts not compared: fewer than two peers took them before another player's action ran)" } else { "" }
+Write-Output ("{0}: {1} peers, {2} in {3:F0} s, {4} enemy lines in {5} turn starts compared, {6} run state lines{7}{8}" -f $Name, $logs.Count, $state, ((Get-Date) - $started).TotalSeconds, $enemyStates.Lines, $enemyStates.Compared, $runs[0].Count, $skippedText, $(if ($problems.Count) { "`n  PROBLEMS: " + ($problems -join "`n  ") } else { ", agree" }))
 exit $(if ($problems.Count) { 1 } else { 0 })
