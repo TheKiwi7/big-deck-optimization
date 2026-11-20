@@ -324,6 +324,25 @@ public static class HarmonyWatch
             _pending.Clear();
             _checkScheduled = false;
         }
+        // D2 (2026-11-20): Changed runs before Harmony stores the method's new patch list, so a check made on another thread in
+        // between (the closures worker) could put the old answer back in PatchSafety's cache, trusted up to its 2 s recheck (and
+        // a cache keyed on the epoch would keep it): the list is stored now, so the answers about these methods are dropped again
+        // and the epoch moves once more. The window shrinks to this frame.
+        if (pending.Length > 0)
+        {
+            foreach ((MethodBase original, bool _) in pending)
+            {
+                try
+                {
+                    PatchSafety.Invalidate(original);
+                }
+                catch (Exception)
+                {
+                    // The 2 s recheck stands.
+                }
+            }
+            Interlocked.Increment(ref _epoch);
+        }
         foreach ((MethodBase original, bool failed) in pending)
         {
             try
