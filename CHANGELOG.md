@@ -12,6 +12,7 @@
 - Big decks keep their fast card tracking and their steady stream of flying cards next to more mods: mods that redirect cards between piles, mark some monsters as secondary enemies, react to only some piles, or only read a creature's state; on the game's beta, the card sort before a reshuffle stays fast next to mods that change only some cards' values; and the check after each action stays fast next to mods that guard the game's combat lists against empty entries.
 - With Limitless, stacked enchantments are no longer rebuilt at each combat start for the cards other content mods don't touch (next to mods that change how cards are built or upgraded, they are rebuilt as before). Next to mods that carry their own copy of BaseLib's saved-field code, relics (and with Limitless, cards and stacked enchantments) are no longer saved the slow way.
 - Relic flashes at a big campfire clone are merged again next to mods whose change to the game's save code only runs once.
+- The main menu no longer freezes for a moment right after it shows: the mod's start-up work is now partly done in the background while the game loads, and the rest is spread over the menu's first frames (its longest frame went from about 110-145 ms to about 25-35 ms in my tests).
 
 ## v1.1.0
 
