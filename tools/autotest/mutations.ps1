@@ -5,7 +5,8 @@
 #   - the session ran to its end with no error from this mod outside what the mutation explains (a part left vanilla at load;
 #     a part faulting at run time, "disabled after exception", "turned off and removed", is never explained by the mutation),
 #   - exactly the parts relying on the changed code were left vanilla (every "left vanilla" line matches the
-#     mutation's pattern; none for mutations that change nothing the mod relies on),
+#     mutation's pattern; none for mutations that change nothing the mod relies on; the reference's own lines, pinned by
+#     $ReferenceBackOffs, don't count),
 #   - every bdperf comparison still says identical,
 #   - the optimizations not relying on the changed code still work: against a session on the unmodified game, only the
 #     effects (AutoTest's "effects" counters) the mutation may take away dropped to zero,
@@ -96,6 +97,11 @@ $Expected = [ordered]@{
     "hand-select"        = @("game", "SelectCards|dispatch scope", "ListenerCache\.Suspended")
     "orb-enqueue"        = @("game", "ListenerCache|TryEnqueue", "ListenerCache(\.\w+)?|HookFilter|SnapshotCardReuse\.(Trust|Moved|Dirty|Hooks)")
 }
+# What the unmodified game itself leaves vanilla next to the test mods (the reference's own "left vanilla" lines): each must
+# match this pattern (a new one is a reference problem), and a mutation's lines that the reference has too are not its doing.
+# LimitlessCloneMemo: SoulsPower's closure reaches NCard.UpdateVisuals, which BetterSpire2 and Limitless patch: that content stays
+# vanilla (owner's decision of 2026-11-19, DESIGN "Owner's decisions (2026-11-19)").
+$ReferenceBackOffs = "LimitlessCloneMemo: NCard\.UpdateVisuals is also patched by BetterSpire2, Limitless: normal game for that part"
 $unknown = @($Only | Where-Object { -not $Expected.Contains($_) })
 if ($unknown.Count) { throw "-Only: no such mutation in the table: $($unknown -join ', ')" }
 $thinRoot = Join-Path (Split-Path $GameDir) "bdmut-copies-$(Split-Path $GameDir -Leaf)"
@@ -230,6 +236,12 @@ try {
     $referenceProblems = @(Invoke-Judge @($Reference)) + @(($runs | Where-Object { $_.Name -eq "reference" }).Failed | Where-Object { $_ -match '^(ended early|froze|test mod )' })
     if (-not $referenceOk) { Write-Output "REFERENCE: an effect never ran (or stayed open) on the unmodified game: what a mutation loses there can't be seen" }
     if ($referenceIdentical -eq 0) { Write-Output "REFERENCE: no bdperf comparison said 'OK: identical' on the unmodified game" }
+    # The reference's own "left vanilla" lines: each pinned by $ReferenceBackOffs, then not held against any mutation.
+    $referenceListed = @(python -I (Join-Path $Root "tools\check_versions.py") --local --log $Reference)
+    if ($LASTEXITCODE -ge 2) { $referenceProblems += "check_versions.py --log failed on the reference: $(@($referenceListed | Select-Object -Last 1))" }
+    $referenceVanilla = @($referenceListed | Where-Object { $_ -match "^\s+\[" -and $_ -notmatch "hooks filtered, \d+ left vanilla" } | ForEach-Object { $_.Trim() })
+    $referenceVanilla | ForEach-Object { Write-Output "reference left vanilla: $($_.Substring(0, [Math]::Min(180, $_.Length)))" }
+    $referenceProblems += @($referenceVanilla | Where-Object { $_ -notmatch $ReferenceBackOffs } | ForEach-Object { "left vanilla on the unmodified game, not in `$ReferenceBackOffs: $_" })
     $referenceProblems | ForEach-Object { Write-Output "REFERENCE: $_" }
     $RuntimeFault = "disabled after exception|turned off and removed|faulted|error inside the game's code"
     $summary = @()
@@ -243,7 +255,7 @@ try {
         # Exit code 2: it crashed (1 only says versions differ): a list cut short could make "nothing left vanilla" pass.
         $listCrashed = $LASTEXITCODE -ge 2
         $vanilla = $listed | Where-Object { $_ -match "^\s+\[" -and $_ -notmatch "hooks filtered, \d+ left vanilla" }
-        $vanilla = @($vanilla | ForEach-Object { $_.Trim() })
+        $vanilla = @($vanilla | ForEach-Object { $_.Trim() } | Where-Object { $referenceVanilla -notcontains $_ })
         if ($listCrashed) { $problems += "check_versions.py --log failed: $(@($listed | Select-Object -Last 1))" }
         $state = ($runs | Where-Object { $_.Name -eq $name }).State
         if ($state -ne "done") { $problems += "session: $(if ($state) { $state } else { 'never ran (no result)' })" }
