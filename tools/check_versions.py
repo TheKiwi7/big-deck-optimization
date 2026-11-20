@@ -68,8 +68,9 @@ STEAMAPPS = steamapps()
 WORKSHOP = STEAMAPPS / "workshop" / "content" / "2868840"
 MODS = ("BaseLib", "Limitless")
 # Other mods some patches are pinned to (fingerprints or allowed patches: ExtraScopes' BetterSpire2 scope, SpeedX's soul
-# postfix, Unlimited's list-width transpiler): an update there leaves that part vanilla, so it is watched the same way.
-# Unlike BaseLib and Limitless, one that isn't installed is not a change.
+# postfix): an update there leaves that part vanilla, so it is watched the same way. Unlimited is pinned by nothing since
+# 2026-11-20 (its transpilers judged by the code they produce, UnchangedTranspilers), but it is a test mod players combine
+# with this one: watched too. Unlike BaseLib and Limitless, one that isn't installed is not a change.
 EXTRA_MODS = ("BetterSpire2", "SpeedX", "sts2unlimited")
 WATCHED = MODS + EXTRA_MODS
 APP_ID = "2868840"

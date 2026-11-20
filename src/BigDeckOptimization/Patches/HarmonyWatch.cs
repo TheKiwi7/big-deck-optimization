@@ -312,7 +312,8 @@ public static class HarmonyWatch
 
     /// <summary>
     /// The frame after other mods' Patch or Unpatch calls: a method carrying this mod's patches that lost its detour (a rebuild
-    /// that threw after Harmony undid the old one) runs none of them; the parts patching it turn off (normal game there).
+    /// that threw after Harmony undid the old one) runs none of them; the parts patching it turn off (normal game there). Then
+    /// <see cref="UnchangedTranspilers.AfterForeignRebuild"/>.
     /// </summary>
     private static void CheckPending()
     {
@@ -356,6 +357,11 @@ public static class HarmonyWatch
             {
                 Log.Warn($"[{ModEntry.Id}] {Name}: detour check of {original.Name} failed: {e.Message}");
             }
+        }
+        // A method whose other mods' transpilers a part judges by their result (UnchangedTranspilers): its capture, if it now needs one.
+        foreach ((MethodBase original, bool _) in pending)
+        {
+            UnchangedTranspilers.AfterForeignRebuild(original);
         }
     }
 

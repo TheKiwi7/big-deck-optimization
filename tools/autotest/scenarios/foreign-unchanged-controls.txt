@@ -1,0 +1,123 @@
+# UnchangedTranspilers (DESIGN "Transpilers leaving the game's code unchanged"; mod on): other mods' transpilers on the
+# serializers RelicStateReuse and SnapshotCardReuse rely on are let stand only when what Harmony compiled is the game's code
+# instruction for instruction. Synthetic transpilers of "another mod" (Bench/ForeignShapesUnchanged.cs), one set at a time on
+# SerializableRelic.Serialize (RelicStateReuse) and NetFullCombatState+CardState.Serialize (SnapshotCardReuse's card bits), each
+# for a play and a turn between effects marks; ~945 cards and the reference run's relics:
+# (1) unchanged-transpiler, Unlimited's PacketSizePatch shape (a list width 3 before WriteList/ReadList replaced by a call: no
+# such constant there): kept, both parts' effects grow. (2) identity-transpiler at the default priority: kept. (3) The same at
+# priority 0 once the capture is there (Harmony sorts it after the capture): refused. (4) getter-transpiler (the first 8 or 32
+# replaced by a pure static getter returning it), (5) field-transpiler (a mutable static holding it), (6) nop-transpiler,
+# (7) branch-transpiler (a br to the next instruction): refused, the effects stay the same. Plus the judge's selftest on
+# instruction lists (a branch retargeted, a label moved, an exception block, a constant changed or replaced, an instruction dropped).
+timeout 1500
+expect FOREIGN unchanged selftest passed
+expect UnchangedTranspilers: SerializableRelic\.Serialize: other mods' transpilers \(bdtest\.foreign\.unchanged-transpiler\) leave the game's code unchanged
+expect UnchangedTranspilers: CardState\.Serialize: other mods' transpilers \(bdtest\.foreign\.unchanged-transpiler\) leave the game's code unchanged
+expect EFFECTCHECK RelicStateReuse grew since 'unchanged': [0-9]+ -> [1-9]
+expect EFFECTCHECK SnapshotCardReuse\.CardBits grew since 'unchanged': [0-9]+ -> [1-9]
+expect UnchangedTranspilers: SerializableRelic\.Serialize: other mods' transpilers \(bdtest\.foreign\.identity-transpiler\) leave the game's code unchanged
+expect EFFECTCHECK RelicStateReuse grew since 'identity': [0-9]+ -> [1-9]
+expect UnchangedTranspilers: SerializableRelic\.Serialize: other mods' transpilers \(bdtest\.foreign\.identity-transpiler\) refused \(another mod's transpiler runs after this mod's capture\)
+expect RelicStateReuse: SerializableRelic\.Serialize is also patched by bdtest\.foreign\.identity-transpiler
+expect EFFECTCHECK RelicStateReuse same since 'late'
+expect UnchangedTranspilers: SerializableRelic\.Serialize: other mods' transpilers \(bdtest\.foreign\.getter-transpiler\) refused \(instruction \d+ changed \(ldc\.i4\.8 +-> call
+expect UnchangedTranspilers: CardState\.Serialize: other mods' transpilers \(bdtest\.foreign\.getter-transpiler\) refused \(instruction \d+ changed
+expect RelicStateReuse: SerializableRelic\.Serialize is also patched by bdtest\.foreign\.getter-transpiler
+expect SnapshotCardReuse: CardState\.Serialize is also patched by bdtest\.foreign\.getter-transpiler
+expect EFFECTCHECK RelicStateReuse same since 'getter'
+expect EFFECTCHECK SnapshotCardReuse\.CardBits same since 'getter'
+expect UnchangedTranspilers: SerializableRelic\.Serialize: other mods' transpilers \(bdtest\.foreign\.field-transpiler\) refused \(instruction \d+ changed \(ldc\.i4\.8 +-> ldsfld
+expect EFFECTCHECK RelicStateReuse same since 'field'
+expect UnchangedTranspilers: SerializableRelic\.Serialize: other mods' transpilers \(bdtest\.foreign\.nop-transpiler\) refused \(\d+ instructions where the game has \d+\)
+expect EFFECTCHECK RelicStateReuse same since 'nop'
+expect UnchangedTranspilers: CardState\.Serialize: other mods' transpilers \(bdtest\.foreign\.branch-transpiler\) refused \(\d+ instructions where the game has \d+\)
+expect EFFECTCHECK SnapshotCardReuse\.CardBits same since 'branch'
+newrun NECROBINDER 1234
+waitfor run 120
+foreignpatch unchanged selftest
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+immortal
+cmd bdperf checks off
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+# (1) Unlimited's shape: kept.
+foreignpatch unchanged-transpiler MegaCrit.Sts2.Core.Saves.Runs.SerializableRelic:Serialize
+foreignpatch unchanged-transpiler MegaCrit.Sts2.Core.Entities.Multiplayer.NetFullCombatState+CardState:Serialize
+wait 2
+effects unchanged
+play 2
+waitfor idle 120
+endturn
+waitfor idle 300
+effectcheck RelicStateReuse grew unchanged
+effectcheck SnapshotCardReuse.CardBits grew unchanged
+foreignpatch remove
+# (2) An identity transpiler at the default priority: kept (sorted before the capture, which stays after (1)).
+foreignpatch identity-transpiler MegaCrit.Sts2.Core.Saves.Runs.SerializableRelic:Serialize
+wait 2
+effects identity
+play 2
+waitfor idle 120
+endturn
+waitfor idle 300
+effectcheck RelicStateReuse grew identity
+foreignpatch remove
+# (3) The same at priority 0, added after the capture: sorted after it, refused.
+foreignpatch identity-transpiler MegaCrit.Sts2.Core.Saves.Runs.SerializableRelic:Serialize priority 0
+wait 2
+effects late
+play 2
+waitfor idle 120
+endturn
+waitfor idle 300
+effectcheck RelicStateReuse same late
+foreignpatch remove
+# (4) A pure static getter returning the constant it replaces: refused (the rule takes no difference).
+foreignpatch getter-transpiler MegaCrit.Sts2.Core.Saves.Runs.SerializableRelic:Serialize
+foreignpatch getter-transpiler MegaCrit.Sts2.Core.Entities.Multiplayer.NetFullCombatState+CardState:Serialize
+wait 2
+effects getter
+play 2
+waitfor idle 120
+endturn
+waitfor idle 300
+effectcheck RelicStateReuse same getter
+effectcheck SnapshotCardReuse.CardBits same getter
+foreignpatch remove
+# (5) A mutable static field holding the constant: refused.
+foreignpatch field-transpiler MegaCrit.Sts2.Core.Saves.Runs.SerializableRelic:Serialize
+wait 2
+effects field
+play 2
+waitfor idle 120
+endturn
+waitfor idle 300
+effectcheck RelicStateReuse same field
+foreignpatch remove
+# (6) A nop inserted: refused.
+foreignpatch nop-transpiler MegaCrit.Sts2.Core.Saves.Runs.SerializableRelic:Serialize
+wait 2
+effects nop
+play 2
+waitfor idle 120
+endturn
+waitfor idle 300
+effectcheck RelicStateReuse same nop
+foreignpatch remove
+# (7) A branch inserted (to the next instruction): refused.
+foreignpatch branch-transpiler MegaCrit.Sts2.Core.Entities.Multiplayer.NetFullCombatState+CardState:Serialize
+wait 2
+effects branch
+play 2
+waitfor idle 120
+endturn
+waitfor idle 300
+effectcheck SnapshotCardReuse.CardBits same branch
+foreignpatch unchanged report
+cmd bdopt why
+counters end
+foreignpatch remove
+quit

@@ -45,7 +45,8 @@ namespace BigDeckOptimization.Patches;
 /// while they hold, the card's snapshot object is the same without comparing it again. Keywords and the energy cost
 /// are read without allocating when no listener changes them. <c>CardState.Serialize</c>, which the checksum runs for
 /// every card, appends the bits the game's method produced for the same state last time: the serializers that run there are
-/// fingerprinted, another mod's patch on them (BaseLib's known postfixes and Unlimited's list-width transpiler aside) leaves bits to
+/// fingerprinted, another mod's patch on them (BaseLib's known postfixes aside, and transpilers producing the game's code: see
+/// <see cref="UnchangedTranspilers"/>) leaves bits to
 /// the game, and bits written with other id widths or BaseLib saves (<see cref="BitsEpoch"/>) are written again.
 ///
 /// A card that only got upgraded (some relics upgrade thousands of cards per action) gets a new snapshot object sharing
@@ -375,7 +376,8 @@ public static class SnapshotCardReuse
     /// <summary>
     /// What this class's runtime checks ask about, for the back-off preflight (display only, never throws): the pile and card
     /// snapshot methods, the fast reads' methods and the getters kept states skip, the serializers kept bits stand for (BaseLib's
-    /// and Unlimited's allowed writes read at each preflight), LimitlessReserialize's checks this relies on, and the pure
+    /// allowed writes and other mods' transpilers leaving the game's code unchanged, read at each preflight), LimitlessReserialize's
+    /// checks this relies on, and the pure
     /// listener overrides of the listener types met so far (who is in a combat isn't known at the menu: those of later
     /// combats show when checked). Notes: other mods' saved data this keeps no memo for.
     /// </summary>
@@ -395,8 +397,10 @@ public static class SnapshotCardReuse
                 .Where(m => m != null).Select(m => m!).ToArray());
         }
         PatchSafety.Watch(Name, _skippedGetters);
-        Func<MethodInfo[]> allowed = () => RelicStateReuse.UnlimitedTranspilerMethod is { } unlimited ? _baseLibWrites.Append(unlimited).ToArray() : _baseLibWrites;
-        PatchSafety.WatchAll(Name, () => (_cardSerializers ?? Array.Empty<MethodBase>()).Concat(_pileSerializers ?? Array.Empty<MethodBase>()).ToArray(), allowed);
+        // Other mods' transpilers on them judged by the code they produce (a mod transpiling every Serialize that changes nothing here).
+        UnchangedTranspilers.Register((_cardSerializers ?? Array.Empty<MethodBase>()).Concat(_pileSerializers ?? Array.Empty<MethodBase>()));
+        PatchSafety.WatchPairs(Name, () => (_cardSerializers ?? Array.Empty<MethodBase>()).Concat(_pileSerializers ?? Array.Empty<MethodBase>())
+            .Select(method => ((MethodBase?)method, (MethodInfo[]?)UnchangedTranspilers.With(_baseLibWrites, method))).ToArray());
         PatchSafety.WatchAll(Name, () => _pureTypes.Values.ToArray().Where(methods => methods != null).SelectMany(methods => methods!).ToArray());
         LimitlessReserialize.WatchFor(Name);
         PatchSafety.WatchNote(Name, () => LimitlessReserialize.NoteSavedData(Name, "those cards' state is built again as the game does at every check"));
@@ -927,7 +931,8 @@ public static class SnapshotCardReuse
 
     /// <summary>
     /// Another mod's patch on what kept card bits stand for (a prefix, postfix or finalizer may write anything; a transpiler, change what
-    /// is written): BaseLib's known postfixes and Unlimited's known list-width transpiler (fingerprinted by RelicStateReuse) aside.
+    /// is written): BaseLib's known postfixes aside, and other mods' transpilers whose combined result is the game's code
+    /// (<see cref="UnchangedTranspilers"/>: the bits written are then the game's method's).
     /// Rechecked every 2 s: this runs for every card serialized.
     /// </summary>
     private static bool CardBitsBlocked()
@@ -959,11 +964,10 @@ public static class SnapshotCardReuse
         {
             return true;
         }
-        MethodInfo[] allowed = RelicStateReuse.UnlimitedTranspilerMethod is { } unlimited ? _baseLibWrites.Append(unlimited).ToArray() : _baseLibWrites;
         foreach (MethodBase method in methods)
         {
             // No tolerance: serializers whose output is reused instead of written again.
-            if (PatchSafety.IsPatchedByOthers(method, allowed))
+            if (PatchSafety.IsPatchedByOthers(method, UnchangedTranspilers.With(_baseLibWrites, method)))
             {
                 return true;
             }
@@ -2369,7 +2373,7 @@ public static class SnapshotCardReuse
     /// The kept bits of a card <see cref="Upgraded"/> remade from the very object they were written for, with the rest of the state
     /// the same: its upgrade level written into them as <c>WriteInt(level, 8)</c> would (the low byte, least significant bit first,
     /// right after the entry id), instead of serializing the card again with its enchantments. Only while nothing of another mod but
-    /// BaseLib's postfixes (after these bits) and Unlimited's list-width transpiler (no list here) patches the card's serialization:
+    /// BaseLib's postfixes (after these bits) and transpilers leaving the game's code unchanged patch the card's serialization:
     /// a prefix would write before the entry id and move them (<see cref="CardBitsBlocked"/>, checked by every caller).
     /// </summary>
     [PatchPart("bits")]

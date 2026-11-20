@@ -1,0 +1,71 @@
+# UnchangedTranspilers (A/B, mod on; DESIGN "Transpilers leaving the game's code unchanged"): Unlimited's PacketSizePatch shape
+# (unchanged-transpiler: a list width 3 before WriteList/ReadList replaced by a call, none there) on every serializer
+# RelicStateReuse and SnapshotCardReuse register, as Unlimited transpiles every public Serialize: kept, the relic reuse and the
+# card bits run (effectcheck). A pure getter for a constant on CombatPileState.Serialize (getter-transpiler): refused, the pile
+# bits back off. CHECKSUM and STATE lines identical with foreign-unchanged-1k-off. ~945 cards and the reference run's relics.
+timeout 1500
+expect UnchangedTranspilers: SerializableRelic\.Serialize: other mods' transpilers \(bdtest\.foreign\.unchanged-transpiler\) leave the game's code unchanged
+expect UnchangedTranspilers: SavedProperties\.Serialize: other mods' transpilers \(bdtest\.foreign\.unchanged-transpiler\) leave the game's code unchanged
+expect UnchangedTranspilers: RelicState\.Serialize: other mods' transpilers \(bdtest\.foreign\.unchanged-transpiler\) leave the game's code unchanged
+expect UnchangedTranspilers: CardState\.Serialize: other mods' transpilers \(bdtest\.foreign\.unchanged-transpiler\) leave the game's code unchanged
+expect UnchangedTranspilers: SerializableCard\.Serialize: other mods' transpilers \(bdtest\.foreign\.unchanged-transpiler\) leave the game's code unchanged
+expect UnchangedTranspilers: SerializableEnchantment\.Serialize: other mods' transpilers \(bdtest\.foreign\.unchanged-transpiler\) leave the game's code unchanged
+expect UnchangedTranspilers: CombatPileState\.Serialize: other mods' transpilers \(bdtest\.foreign\.getter-transpiler\) refused \(instruction \d+ changed
+expect SnapshotCardReuse: CombatPileState\.Serialize is also patched by bdtest\.foreign\.getter-transpiler
+expect EFFECTCHECK RelicStateReuse grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK SnapshotCardReuse\.CardBits grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK SnapshotCardReuse\.PileBits same since 'start'
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+cmd bdperf checks off
+foreignpatch unchanged-transpiler MegaCrit.Sts2.Core.Saves.Runs.SerializableRelic:Serialize
+foreignpatch unchanged-transpiler MegaCrit.Sts2.Core.Saves.Runs.SavedProperties:Serialize
+foreignpatch unchanged-transpiler MegaCrit.Sts2.Core.Entities.Multiplayer.NetFullCombatState+RelicState:Serialize
+foreignpatch unchanged-transpiler MegaCrit.Sts2.Core.Entities.Multiplayer.NetFullCombatState+CardState:Serialize
+foreignpatch unchanged-transpiler MegaCrit.Sts2.Core.Saves.Runs.SerializableCard:Serialize
+foreignpatch unchanged-transpiler MegaCrit.Sts2.Core.Saves.Runs.SerializableEnchantment:Serialize
+foreignpatch getter-transpiler MegaCrit.Sts2.Core.Entities.Multiplayer.NetFullCombatState+CombatPileState:Serialize
+wait 2
+effects start
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+play 4
+waitfor idle 120
+checksum t3 plays
+endturn
+waitfor idle 300
+checksum t3 end
+state t3
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+foreignpatch report end
+foreignpatch unchanged report
+effectcheck RelicStateReuse grew start
+effectcheck SnapshotCardReuse.CardBits grew start
+effectcheck SnapshotCardReuse.PileBits same start
+cmd bdopt why
+counters end
+foreignpatch remove
+quit
