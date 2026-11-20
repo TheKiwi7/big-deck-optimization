@@ -1,0 +1,46 @@
+# UnchangedTranspilers next to the real "Unlimited: No Player Limit" (mod on; run with BDTEST_EXTRA_MODS=sts2unlimited, game
+# v0.113+: on v0.111.1 Unlimited's initializer throws before any patch, so the session ends SKIPPED there). Unlimited's
+# PacketSizePatch transpiles every public Serialize; on the seven serializers RelicStateReuse and SnapshotCardReuse register
+# its result is the game's code (no list width 3 there): the capture is installed, the transpilers kept, and the relic reuse,
+# the card bits and the pile bits all run (effectcheck). Without Unlimited loaded the expect lines fail: run it with the mod.
+timeout 1200
+expect UnchangedTranspilers: SerializableRelic\.Serialize: other mods' transpilers \(sts2unlimited\.modifier\) leave the game's code unchanged
+expect UnchangedTranspilers: SavedProperties\.Serialize: other mods' transpilers \(sts2unlimited\.modifier\) leave the game's code unchanged
+expect UnchangedTranspilers: RelicState\.Serialize: other mods' transpilers \(sts2unlimited\.modifier\) leave the game's code unchanged
+expect UnchangedTranspilers: CardState\.Serialize: other mods' transpilers \(sts2unlimited\.modifier\) leave the game's code unchanged
+expect UnchangedTranspilers: SerializableCard\.Serialize: other mods' transpilers \(sts2unlimited\.modifier\) leave the game's code unchanged
+expect UnchangedTranspilers: SerializableEnchantment\.Serialize: other mods' transpilers \(sts2unlimited\.modifier\) leave the game's code unchanged
+expect UnchangedTranspilers: CombatPileState\.Serialize: other mods' transpilers \(sts2unlimited\.modifier\) leave the game's code unchanged
+expect EFFECTCHECK RelicStateReuse grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK SnapshotCardReuse\.CardBits grew since 'start': [0-9]+ -> [1-9]
+expect EFFECTCHECK SnapshotCardReuse\.PileBits grew since 'start': [0-9]+ -> [1-9]
+requiregame v0.113
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+cmd bdperf checks off
+effects start
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+play 4
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+play 4
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+effectcheck RelicStateReuse grew start
+effectcheck SnapshotCardReuse.CardBits grew start
+effectcheck SnapshotCardReuse.PileBits grew start
+cmd bdopt why
+counters end
+quit
