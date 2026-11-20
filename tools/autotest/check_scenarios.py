@@ -3,8 +3,10 @@
     python -I tools/autotest/check_scenarios.py
 
 Known commands: the labels of AutoTest.cs's dispatcher switch only (a nested switch's labels, such as a subcommand's, are
-not commands), plus the top-level labels of a local LocalCommand implementation when one exists (untracked tooling). Also
-checked: the kinds `waitfor` knows (WaitFor's own labels) and the numbers `wait`, `timeout`, `play` and `waitfor` parse;
+not commands), the `[ScriptCommand("name")]` methods of the Bench part files, plus the top-level labels of a local
+LocalCommand implementation when one exists (untracked tooling). Each `[ScriptCommand]` must be matched by its file's pattern
+in parlib.ps1's `$BaselineBenchParts` (a file missing there counts in every baseline key, so adding it would invalidate every
+mod-off baseline) and must not also be a switch label (the switch would take it first). Also checked: the kinds `waitfor` knows (WaitFor's own labels) and the numbers `wait`, `timeout`, `play` and `waitfor` parse;
 the directive comments judge.py and par.ps1 read (`# effects-ran:`, `# effects-zero-ok:`, `# uncompared:`, `# compare-with:`:
 a regex Python compiles, an `effects` line for effects-ran, a scenario that exists for compare-with), and every `expect` regex
 both compile and name their target in a line of several parts: one a COUNTERS line (or any line of 'Part ..., mismatches n;'
@@ -25,6 +27,51 @@ import sys
 ROOT = os.path.dirname(os.path.abspath(__file__))
 BENCH = os.path.join(ROOT, '..', '..', 'src', 'BigDeckOptimization', 'Bench')
 CASE = re.compile(r'^(\s*)case "(\w+)"(?: when [^:]+)?:')
+SCRIPT_COMMAND = re.compile(r'^\s*\[ScriptCommand\("(\w+)"\)\]', re.M)
+PARLIB = os.path.join(ROOT, 'parlib.ps1')
+
+
+def bench_parts():
+    """parlib.ps1's $BaselineBenchParts: {file name: the pattern of the script lines that make a key count that file}."""
+    with open(PARLIB, encoding='utf-8') as f:
+        text = f.read()
+    start = text.find('$BaselineBenchParts = [ordered]@{')
+    if start < 0:
+        return None
+    parts = {}
+    for line in text[start:].splitlines()[1:]:
+        if line.strip() == '}':
+            break
+        if m := re.match(r"\s*'([^']+)'\s*=\s*'((?:[^']|'')*)'", line):
+            parts[m.group(1)] = m.group(2).replace("''", "'")
+    return parts
+
+
+def part_command_problems():
+    """Each [ScriptCommand] of a Bench file: matched by its file's $BaselineBenchParts pattern, and not a switch label too."""
+    parts = bench_parts()
+    if parts is None:
+        return ["parlib.ps1: '$BaselineBenchParts = [ordered]@{' not found: update check_scenarios.py"]
+    with open(os.path.join(BENCH, 'AutoTest.cs'), encoding='utf-8') as f:
+        main = f.read()
+    labels = switch_labels(main, main.find('switch (parts[0].ToLowerInvariant())'))
+    problems = []
+    for path in sorted(glob.glob(os.path.join(BENCH, '*.cs'))):
+        name = os.path.basename(path)
+        with open(path, encoding='utf-8') as f:
+            commands = SCRIPT_COMMAND.findall(f.read())
+        for command in commands:
+            if command.lower() in labels:
+                problems.append(f'{name}: [ScriptCommand("{command}")] is also a case of AutoTest.cs\'s switch, which takes it first')
+            if name == 'AutoTest.cs':
+                continue  # the engine: every key counts it anyway
+            if name not in parts:
+                problems.append(f'{name}: [ScriptCommand("{command}")] in a file parlib.ps1\'s $BaselineBenchParts doesn\'t list: '
+                                'every mod-off baseline key counts that file; add it with a pattern of its commands')
+            elif not re.search(parts[name], f'{command} 0', re.M):
+                problems.append(f'{name}: [ScriptCommand("{command}")] not matched by its pattern in parlib.ps1\'s '
+                                f'$BaselineBenchParts: a scenario using it would reuse a baseline made without that code')
+    return problems
 
 
 def switch_labels(text, start):
@@ -51,6 +98,7 @@ def known_commands():
     for path in glob.glob(os.path.join(BENCH, '*.cs')):
         with open(path, encoding='utf-8') as f:
             text = f.read()
+        known |= {name.lower() for name in SCRIPT_COMMAND.findall(text)}
         local = re.search(r'static partial void LocalCommand\([^)]*\)\s*\{', text)
         if local and (inner := text.find('switch (', local.end())) >= 0:
             known |= switch_labels(text, inner)
@@ -279,6 +327,9 @@ def main():
     names = {os.path.basename(p)[:-4] for p in scenarios}
     if template is None:
         print("AutoTest.cs: the 'counters' command's COUNTERS line not found: loose expects not checked (update check_scenarios.py)")
+        bad += 1
+    for problem in part_command_problems():
+        print(problem)
         bad += 1
     for path in scenarios:
         lines = [line.strip() for line in open(path, encoding='utf-8')]

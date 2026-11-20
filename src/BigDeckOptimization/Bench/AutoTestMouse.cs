@@ -243,4 +243,28 @@ public static partial class AutoTest
         }
         Say($"  played {played} of {count} with the mouse");
     }
+
+    /// <summary>
+    /// Script <c>targethover &lt;enemy index&gt;</c>: as a mouse aiming a card rests on that enemy, then cancels: targeting started
+    /// (<c>NTargetManager.StartTargeting</c>), the creature hovered (<c>OnNodeHovered</c>, which asks <c>Hook.ShouldAllowTargeting</c>:
+    /// its only caller), targeting cancelled. UI only, no game state; <c>play</c> calls cards directly and never gets there.
+    /// </summary>
+    [ScriptCommand("targethover")]
+    private static void TargetHover(SceneTree tree, string arg)
+    {
+        CombatState state = CombatManager.Instance.DebugOnlyGetState() ?? throw new InvalidOperationException("not in combat");
+        Creature enemy = state.Enemies[int.Parse(arg)];
+        NCreature node = NCombatRoom.Instance?.GetCreatureNode(enemy) ?? throw new InvalidOperationException("no node for " + enemy);
+        NTargetManager manager = NTargetManager.Instance;
+        manager.StartTargeting(MegaCrit.Sts2.Core.Entities.Cards.TargetType.AnyEnemy, node.GlobalPosition, TargetMode.ClickMouseToTarget, null, null);
+        try
+        {
+            manager.OnNodeHovered(node);
+            Say($"  target hovered {enemy}: allowed {ReferenceEquals(Traverse.Create(manager).Property("HoveredNode").GetValue(), node)}");
+        }
+        finally
+        {
+            manager.CancelTargeting();
+        }
+    }
 }

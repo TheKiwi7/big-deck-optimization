@@ -417,10 +417,12 @@ $script:CoopProfilesSalt = $null
 # The test tooling a script runs: the scenario engine and its helpers always, each optional part only when one of its commands is
 # in the script (AutoTest.cs reaches them only through those commands; a few CPU-time helpers feed timings, which no comparison
 # reads). A change elsewhere in Bench/ leaves this scenario's baseline valid. A console command counts through 'cmd' and through
-# 'autoslayfirst' (the same Command() at the auto player's first room).
+# 'autoslayfirst' (the same Command() at the auto player's first room). A new script command goes in a part file as a
+# [ScriptCommand] method (AutoTest.PartCommand), with its name added to that file's pattern here (check_scenarios.py checks
+# both): a new case in AutoTest.cs's switch changes AutoTest.cs, which every key counts, and so invalidates every baseline.
 $BaselineBenchParts = [ordered]@{
     'AutoTestRooms.cs'      = '^\s*(autoroom|automap|barrier|continuerun|runstate|restsite|selector|eventoption)\b'
-    'AutoTestMouse.cs'      = '^\s*(hover|checktips|mouseplay|mousesweep|movehovered|buttoninput|controllermap|forcefocus|tipsrebuilt)\b'
+    'AutoTestMouse.cs'      = '^\s*(hover|checktips|mouseplay|mousesweep|movehovered|buttoninput|controllermap|forcefocus|tipsrebuilt|targethover)\b'
     'AutoTestSweep.cs'      = '^\s*(sweep|sweeptimeout)\b'
     'AutoTestLeak.cs'       = '^\s*leakcheck\b'
     'AutoTestTrace.cs'      = '^\s*eventtrace\b'
@@ -628,9 +630,10 @@ function Get-BaselineKey([string]$gameDir, [string]$scriptPath, [switch]$Legacy)
 
 # A co-op vanilla pair's key (parcoop.ps1 -OnOff's -autooff twins, both peers launched with --bdvanilla): the solo key's parts
 # (the game, the test mods unless -Plain, run files, profile 3, mod_configs, mod_data), the co-op profiles the peers play
-# (default\1 and default\1001: their saves and mod data, which Sync-Slot -Coop mirrors), CoopModeTag.cs's code (the one patch a
+# (default\1 and default\1001: their saves and mod data, which Sync-Slot -Coop mirrors), CoopModeTag.cs's code (a patch a
 # vanilla peer installs: its "+off" join entry, which the twin's 'coopmodetag off' checks), the Bench files both scripts run
-# and both scripts' text.
+# and both scripts' text. JoinMismatchNote, the other patch a vanilla peer installs, only rewrites the text of the joining
+# player's mod mismatch popup, which a twin's peers (both vanilla, the same mods) never show: not in the key.
 function Get-CoopBaselineKey([string]$gameDir, [string]$hostScript, [string]$clientScript, [bool]$plain) {
     if ($null -eq $script:CoopProfilesSalt) {
         $files = foreach ($id in "1", "1001") {
@@ -696,6 +699,96 @@ function Get-FailedLines([string]$log, [switch]$Mutated) {
 # A job on a game mutations.ps1 modified (its Mutated property): the parts the mutation leaves vanilla compare nothing and count no
 # effect, which judge.py --mutated doesn't hold against it (mutations.ps1 checks them against its table).
 function Test-MutatedJob($job) { [bool]($job.PSObject.Properties["Mutated"] -and $job.Mutated) }
+
+# A co-op log's turn-start states (--bdturnstates: AutoTest.LogTurnStates, at CombatManager.TurnStarted), block by block in log
+# order, each saying whether it shows the point every peer shares. An enemy-side block does: TurnStarted comes just before the
+# game's "After enemy turn start" checksum, the action queue paused. A player-side block may not: CombatManager.StartTurn takes its
+# "After player turn start" checksum, then unpauses the queue (ActionQueueSynchronizer.SetCombatState(PlayPhase) starts it at
+# once) and only then raises TurnStarted, so another player's first action of the turn, already received by a slower peer, has
+# run there before its STATE lines (coop4 on v0.113.1: an enemy's hp 197 on three peers, 198 on the one that had not run a
+# PURITY yet, every game checksum equal). A player-side block is Synced when no "Executing action: " line (ActionExecutor) but a
+# barrier's 'bigdeck mark' comes between the last "Combat state becomes PlayPhase" line (ActionQueueSynchronizer) and it; a log without those debug lines leaves
+# every block Synced (compared strictly, as before). Returns a list of [pscustomobject]@{ Label = "floor F round R Side";
+# Lines = the block's lines after "STATE "; LineNumbers; Synced }.
+function Get-TurnStates([string]$log) {
+    $blocks = [Collections.Generic.List[object]]::new()
+    if (-not (Test-Path $log)) { return ,$blocks }
+    $ran = $false
+    $current = $null
+    foreach ($match in Select-String -Path $log -CaseSensitive -Pattern 'Combat state becomes PlayPhase|Executing action: |STATE (floor \d+ round \d+ (\w+)): ') {
+        $groups = $match.Matches[0].Groups
+        if ($groups[1].Success) {
+            if ($null -eq $current -or $current.Label -cne $groups[1].Value) {
+                $current = [pscustomobject]@{ Label = $groups[1].Value; Lines = [Collections.Generic.List[string]]::new(); LineNumbers = [Collections.Generic.List[int]]::new(); Synced = ($groups[2].Value -cne "Player" -or -not $ran) }
+                $blocks.Add($current)
+            }
+            $current.Lines.Add(($match.Line -creplace '^.*?STATE ', ''))
+            $current.LineNumbers.Add($match.LineNumber)
+            continue
+        }
+        # Anything between two STATE lines ends a block (two fights on one floor give the same labels again).
+        $current = $null
+        if ($match.Line.Contains("Combat state becomes PlayPhase")) { $ran = $false }
+        # A barrier's mark (bigdeck mark, BigDeckConsoleCmd) changes no game state: the other player's barrier, not a play.
+        elseif ($match.Line -cnotmatch 'Executing action: ConsoleCmdGameAction player \d+ cmd bigdeck mark ') { $ran = $true }
+    }
+    ,$blocks
+}
+
+# One co-op session's peers' turn-start states (Get-TurnStates, one list per peer, $names[0] the reference): the same blocks in
+# the same order on every peer, and in each block the lines $keep selects equal on every peer, a player-side block on the peers
+# that took it Synced only (at least two, otherwise it is not compared). A real divergence still shows: in the enemy-side blocks,
+# in the player-side ones of the synced peers, and in the game's own checksums ("State divergence", which the runners check).
+# Returns [pscustomobject]@{ Problems; Compared; Skipped (player-side blocks with fewer than two synced peers); Lines (the
+# reference's selected lines) }.
+function Compare-PeerTurnStates([object[]]$states, [string[]]$names, [scriptblock]$keep) {
+    $problems = [Collections.Generic.List[string]]::new()
+    $compared = 0; $skipped = 0; $lines = 0
+    # Indexed loops only: Windows PowerShell 5.1 throws "argument types do not match" on @() around these lists.
+    $labels = for ($p = 0; $p -lt $states.Count; $p++) { $list = $states[$p]; $text = for ($i = 0; $i -lt $list.Count; $i++) { $list[$i].Label }; $text -join "|" }
+    for ($p = 1; $p -lt $states.Count; $p++) {
+        if ($labels[$p] -cne $labels[0]) { $problems.Add("turn starts differ: $($names[0]) $($states[0].Count) blocks, $($names[$p]) $($states[$p].Count)") }
+    }
+    $selected = { param($block) ($block.Lines | Where-Object $keep) -join "`n" }
+    $count = $states[0].Count
+    for ($p = 0; $p -lt $states.Count; $p++) { $count = [Math]::Min($count, $states[$p].Count) }
+    for ($i = 0; $i -lt $states[0].Count; $i++) { $lines += ($states[0][$i].Lines | Where-Object $keep | Measure-Object).Count }
+    for ($i = 0; $i -lt $count; $i++) {
+        $peers = for ($p = 0; $p -lt $states.Count; $p++) { if ($states[$p][$i].Synced) { $p } }
+        $peers = @($peers)
+        if ($peers.Count -lt 2) { $skipped++; continue }
+        $compared++
+        $first = $peers[0]
+        $expected = & $selected $states[$first][$i]
+        foreach ($p in $peers[1..($peers.Count - 1)]) {
+            $actual = & $selected $states[$p][$i]
+            if ($actual -cne $expected -and $problems.Count -lt 4) {
+                $problems.Add("states differ at turn start $($i + 1) ($($states[$first][$i].Label)): $($names[$first]) vs $($names[$p])")
+            }
+        }
+    }
+    [pscustomobject]@{ Problems = $problems; Compared = $compared; Skipped = $skipped; Lines = $lines }
+}
+
+# The log line numbers of the player-side turn-start blocks to leave out of a comparison of two sessions (mod on vs off, peer by
+# peer): those either side took after another player's action ran (Get-TurnStates' Synced), block by block in order. Returns
+# @{ First = line numbers in the first log; Second = in the second; Blocks = how many }.
+function Get-UnsyncedTurnLines([string]$first, [string]$second) {
+    $a = Get-TurnStates $first
+    $b = Get-TurnStates $second
+    $left = [Collections.Generic.HashSet[int]]::new()
+    $right = [Collections.Generic.HashSet[int]]::new()
+    $blocks = 0
+    for ($i = 0; $i -lt [Math]::Min($a.Count, $b.Count); $i++) {
+        # Sessions gone different ways: nothing after is left out, the comparison shows where.
+        if ($a[$i].Label -cne $b[$i].Label) { break }
+        if ($a[$i].Synced -and $b[$i].Synced) { continue }
+        $blocks++
+        foreach ($n in $a[$i].LineNumbers) { [void]$left.Add($n) }
+        foreach ($n in $b[$i].LineNumbers) { [void]$right.Add($n) }
+    }
+    [pscustomobject]@{ First = $left; Second = $right; Blocks = $blocks }
+}
 
 # results/status.txt: progress and time left (from the items done when jobs have an Items count, else the sessions done),
 # each running session's current line. Read with status.ps1.
@@ -988,6 +1081,10 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                 $job = $pending[0]
                 $pending.RemoveAt(0)
                 Remove-Item $job.Log -ErrorAction SilentlyContinue
+                # A vanilla job's baseline key from the tree as this session reads it (its script, the Bench files it runs), kept
+                # on the run and saved under at its end: computed then, an edit or a branch switch during the session would file
+                # its log under a key it never ran.
+                $baselineKey = if (Test-BaselineJob $job) { Get-BaselineKey $GameDir $job.Script } else { $null }
                 $env:APPDATA = Sync-Slot $slot
                 # A job may name its own game folder (mutations.ps1).
                 $jobDir = if ($job.PSObject.Properties["GameDir"]) { $job.GameDir } else { $GameDir }
@@ -999,7 +1096,7 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                 $env:APPDATA = $realAppData
                 [void]$p.Handle # or its exit code is lost
                 $limit = if ($ScenarioTimeouts) { [Math]::Max($TimeoutSec, (Get-ScenarioTimeout $job.Script) + 120) } else { $TimeoutSec }
-                $running[$slot] = [pscustomobject]@{ Job = $job; Process = $p; Started = Get-Date; ScriptStarted = $false; TimeoutSec = $limit }
+                $running[$slot] = [pscustomobject]@{ Job = $job; Process = $p; Started = Get-Date; ScriptStarted = $false; TimeoutSec = $limit; BaselineKey = $baselineKey }
                 & $advertise $(if ($pending.Count -gt 0 -and $running.Count -lt $MaxJobs) { [string](& $lengthOf $pending[0]) } else { "none" })
             }
             # A slot this series holds and doesn't use goes back to the other series at once (a sweep's long mod-off tail, a slot left
@@ -1080,10 +1177,10 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                 & $finish $run.Job ([pscustomobject]@{ Name = $run.Job.Name; State = $state; Seconds = [int]$age; Failed = $failed; Restarts = [int]$retries[$run.Job.Name] })
                 # Kept as a baseline whether or not this series reads them: a run without -UseBaselines is the freshest mod-off
                 # log there is, and a rerun after a fix can then reuse it. Never stops the series.
-                if ($state -eq "done" -and $failed.Count -eq 0 -and (Test-BaselineJob $run.Job)) {
+                if ($state -eq "done" -and $failed.Count -eq 0 -and $run.BaselineKey) {
                     try {
                         New-Item -ItemType Directory -Force $baselineDir | Out-Null
-                        Copy-Item $run.Job.Log (Join-Path $baselineDir "$($run.Job.Name)-$(Get-BaselineKey $GameDir $run.Job.Script).log") -Force
+                        Copy-Item $run.Job.Log (Join-Path $baselineDir "$($run.Job.Name)-$($run.BaselineKey).log") -Force
                     }
                     catch { Write-Host "note: $($run.Job.Name) not kept as a baseline: $($_.Exception.Message)" }
                 }

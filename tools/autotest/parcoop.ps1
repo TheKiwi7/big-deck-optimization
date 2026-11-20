@@ -247,15 +247,18 @@ foreach ($entry in $done) {
     }
     $marginText = ($margins | ForEach-Object { "{0} {1} ms{2}" -f $_.Role, $(if ($null -ne $_.Frame) { $_.Frame } else { "?" }), $(if ($null -ne $_.Ping) { ", ping {0:F0}" -f $_.Ping } else { "" }) }) -join "; "
     # Each peer logs its own player and plays; the enemies are the same for both. At each turn start only (--bdturnstates): a
-    # script's state line comes when that peer gets there, maybe after the other one's plays of the turn.
-    $enemies = foreach ($log in $entry.Group.HostLog, $entry.Group.ClientLog) { ,@(Select-String -Path $log -Pattern "STATE floor .*: enemy " -ErrorAction SilentlyContinue | ForEach-Object { $_.Line -replace '^.*STATE ', '' }) }
-    $same = (($enemies[0] -join "`n") -eq ($enemies[1] -join "`n"))
-    if (-not $same) { $problems += "enemy states differ ($($enemies[0].Count) vs $($enemies[1].Count) lines)" }
+    # script's state line comes when that peer gets there, maybe after the other one's plays of the turn. A player-side turn
+    # start only where both peers took it before any action of the turn ran (parlib.ps1's Get-TurnStates: the other player's
+    # first card may already have run on the slower peer, the game's checksums equal).
+    $peerTurns = @((Get-TurnStates $entry.Group.HostLog), (Get-TurnStates $entry.Group.ClientLog))
+    $enemyStates = Compare-PeerTurnStates $peerTurns @("host", "client") { $_ -cmatch '^[^:]+: enemy ' }
+    $problems += @($enemyStates.Problems)
     # runstate lines (outside combat, every player's gold, HP, potions, relics, deck): each peer logs them for all players.
     $runStates = foreach ($log in $entry.Group.HostLog, $entry.Group.ClientLog) { ,@(Select-String -Path $log -Pattern "STATE (?![^:]*\(local\))[^:]+: (floor \d+, act |\S+ gold )" -ErrorAction SilentlyContinue | ForEach-Object { $_.Line -replace '^.*STATE ', '' }) }
     if (($runStates[0] -join "`n") -ne ($runStates[1] -join "`n")) { $problems += "run states differ ($($runStates[0].Count) vs $($runStates[1].Count) lines)" }
-    if ($enemies[0].Count -eq 0 -and $runStates[0].Count -eq 0) { $problems += "no enemy or run state line" }
-    Write-Output ("{0,-16} {1,-8} {2,4} s  {3} enemy, {4} run state lines, longest frame {5}{6}" -f $entry.Group.Name, $entry.State, $entry.Seconds, $enemies[0].Count, $runStates[0].Count, $marginText, $(if ($problems.Count) { "  PROBLEMS: " + ($problems -join "; ") } else { "  agree" }))
+    if ($enemyStates.Lines -eq 0 -and $runStates[0].Count -eq 0) { $problems += "no enemy or run state line" }
+    $skippedText = if ($enemyStates.Skipped) { " ($($enemyStates.Skipped) player turn starts after the other player's action not compared)" } else { "" }
+    Write-Output ("{0,-16} {1,-8} {2,4} s  {3} enemy, {4} run state lines{5}, longest frame {6}{7}" -f $entry.Group.Name, $entry.State, $entry.Seconds, $enemyStates.Lines, $runStates[0].Count, $skippedText, $marginText, $(if ($problems.Count) { "  PROBLEMS: " + ($problems -join "; ") } else { "  agree" }))
     if ($problems.Count) { $bad++ }
     # A vanilla twin that ran to its end with nothing to say: kept for -UseBaselines (both peers' logs, under its key).
     if ($entry.Group.Vanilla -and $entry.State -eq "done" -and -not $problems.Count) {
@@ -286,10 +289,11 @@ function Get-SettledChecksums([string]$script) {
 # the settled checksums (the whole combat state: what counts, HP and powers don't show) and the synthetic foreign patches'
 # counts ('STATE foreign <label> <key> <n>', foreignpatch report: a call this mod drops changes only that count; coop-foreign
 # installs them before its imports and reports after a barrier, so both sides count the same calls). Checksums without their timing.
-function Get-PairLines([string]$log, [string[]]$checksums) {
+# $skip: line numbers left out (Get-UnsyncedTurnLines: a player-side turn start either side took after the other player's action ran).
+function Get-PairLines([string]$log, [string[]]$checksums, $skip) {
     $pattern = "STATE floor \d+ round |STATE (?![^:]*\(local\))[^:]+: (floor \d+, act |\S+ gold )|STATE foreign "
     if ($checksums.Count) { $pattern += "|CHECKSUM (" + (($checksums | ForEach-Object { [regex]::Escape($_) }) -join "|") + "): " }
-    @(Select-String -Path $log -Pattern $pattern -ErrorAction SilentlyContinue | ForEach-Object { ($_.Line -replace '^.*?((STATE|CHECKSUM) )', '$1') -replace '^(CHECKSUM [^:]+: \w+).*$', '$1' })
+    @(Select-String -Path $log -Pattern $pattern -ErrorAction SilentlyContinue | Where-Object { $null -eq $skip -or -not $skip.Contains($_.LineNumber) } | ForEach-Object { ($_.Line -replace '^.*?((STATE|CHECKSUM) )', '$1') -replace '^(CHECKSUM [^:]+: \w+).*$', '$1' })
 }
 # Limitless's per-player combat RNG on v0.107.x (Patch_PerPlayerCombatRng: RunRngSet.GetRng's prefix picks the RNG slot from the
 # running action's OwnerId, an AsyncLocal): the game's end of turn (phase two, the enemy turn, the next turn's start) runs inside
@@ -343,8 +347,11 @@ foreach ($pair in $pairs) {
         $onLog = if ($role -eq "host") { $pair.On.HostLog } else { $pair.On.ClientLog }
         $offLog = if ($role -eq "host") { $pair.Off.HostLog } else { $pair.Off.ClientLog }
         $checksums = @(Get-SettledChecksums $pair.On.Scripts[$role])
-        $on = @(Get-PairLines $onLog $checksums)
-        $off = @(Get-PairLines $offLog $checksums)
+        # Mod on and off go at different paces: a player-side turn start taken after the other player's first action of the turn
+        # ran on one side only is left out on both (the enemy-side ones and the settled checksums still show a real difference).
+        $unsynced = Get-UnsyncedTurnLines $onLog $offLog
+        $on = @(Get-PairLines $onLog $checksums $unsynced.First)
+        $off = @(Get-PairLines $offLog $checksums $unsynced.Second)
         $fullOn = $on.Count; $fullOff = $off.Count
         if ($paceRound) {
             $on = @(Select-BeforeRound $on $paceRound)
@@ -361,6 +368,7 @@ foreach ($pair in $pairs) {
         if ($paceRound -and $verdict -eq "IDENTICAL") { $verdict = "PACE (Limitless per-player RNG: last ready player differs from $paceRound)" }
         $note = if ($paceRound) { " (compared up to $paceRound's enemy turn: $common of $fullOn lines mod on, $fullOff mod off)" }
             elseif ($on.Count -ne $off.Count) { " (compared the first $common`: $($on.Count) lines mod on, $($off.Count) mod off)" } else { "" }
+        if ($unsynced.Blocks) { $note += " ($($unsynced.Blocks) player turn starts after the other player's action left out)" }
         Write-Output ("{0} vs {1} ({2}): {3} lines, {4}{5}" -f $pair.On.Name, $pair.Off.Name, $role, $common, $verdict, $note)
         if ($first -ge 0) { Write-Output "    on : $($on[$first])"; Write-Output "    off: $($off[$first])" }
         if ($verdict -ne "IDENTICAL" -and -not $verdict.StartsWith("PACE ")) { $bad++ }

@@ -3,8 +3,11 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Threading.Tasks;
+using BigDeckOptimization.Patches;
 using Godot;
+using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
@@ -233,11 +236,80 @@ public static partial class AutoTest
     {
         await SweepReady(tree);
         // Refused only for an id the command can't find: the tooling's failure. Remove may be refused: a relic its own effect removed.
-        await SweepMeasure(tree, "relic", id, "obtain", () => SweepCommand($"relic add {id}"));
+        await SweepMeasure(tree, "relic", id, "obtain", () => SweepObtain(tree, id));
         await SweepTurn(tree, "relic", id);
         // Back to the same relics for the next one (a relic its own effect removed stays removed).
         await SweepReady(tree);
         await Command($"relic remove {id}", mayFail: true);
+    }
+
+    private static bool _sweepObtainPatched, _sweepObtainWatch;
+    private static Task? _sweepObtainTask;
+
+    /// <summary>
+    /// <c>relic add</c>, then until the relic's obtain is over. The console command starts <c>RelicCmd.Obtain</c> without waiting
+    /// for it (<c>TaskHelper.RunSafely</c>), and its <c>AfterObtained</c> may run outside the action queue, which is all
+    /// <see cref="SweepSettle"/> watches: Pandora's Box transforms the deck's Strikes and Defends one by one (another relic cloning
+    /// each card added), so the step's checksum caught the deck mid-way, at a point set by the session's pace (1,035 vs 1,041 cards,
+    /// 2026-11-19). Waits for that task to end, or for a screen it opened that waits for the player (a rewards screen: Calling
+    /// Bell), then for the deck and combat card counts to hold 10 frames; at most the item timeout, after which the step goes on as
+    /// before, said in the log.
+    /// </summary>
+    private static async Task SweepObtain(SceneTree tree, string id)
+    {
+        if (!_sweepObtainPatched)
+        {
+            _sweepObtainPatched = true;
+            BenchPatches(() => PatchGuard.Patch(ModEntry.Harmony,
+                AccessTools.Method(typeof(RelicCmd), nameof(RelicCmd.Obtain), new[] { typeof(RelicModel), typeof(Player), typeof(int) }),
+                postfix: new HarmonyMethod(typeof(AutoTest), nameof(SweepObtainStarted))));
+        }
+        object? overlayBefore = NOverlayStack.Instance?.Peek();
+        object? capstoneBefore = MegaCrit.Sts2.Core.Nodes.Screens.Capstones.NCapstoneContainer.Instance?.CurrentCapstoneScreen;
+        _sweepObtainTask = null;
+        _sweepObtainWatch = true;
+        try
+        {
+            await SweepCommand($"relic add {id}");
+        }
+        finally
+        {
+            _sweepObtainWatch = false;
+        }
+        Task? obtain = _sweepObtainTask;
+        _sweepObtainTask = null;
+        if (obtain == null)
+        {
+            Say($"  {id}: its obtain task wasn't seen (RelicCmd.Obtain's postfix): waiting for the card counts only");
+        }
+        (int, int) last = (-1, -1);
+        try
+        {
+            await Until(tree, () =>
+            {
+                Player? me = Me();
+                (int, int) counts = (me?.Deck.Cards.Count ?? 0, me?.PlayerCombatState?.AllPiles.Sum(p => p.Cards.Count) ?? 0);
+                bool still = counts == last;
+                last = counts;
+                object? overlay = NOverlayStack.Instance?.Peek();
+                object? capstone = MegaCrit.Sts2.Core.Nodes.Screens.Capstones.NCapstoneContainer.Instance?.CurrentCapstoneScreen;
+                bool waitsForPlayer = (overlay != null && !ReferenceEquals(overlay, overlayBefore))
+                    || (capstone != null && !ReferenceEquals(capstone, capstoneBefore));
+                return still && (obtain == null || obtain.IsCompleted || waitsForPlayer);
+            }, SweepItemTimeout, "obtained");
+        }
+        catch (TimeoutException)
+        {
+            Say($"  {id}: obtain still running after {SweepItemTimeout:F0} s: its step goes on");
+        }
+    }
+
+    private static void SweepObtainStarted(Task<RelicModel> __result)
+    {
+        if (_sweepObtainWatch)
+        {
+            _sweepObtainTask = __result;
+        }
     }
 
     private static async Task SweepPotion(SceneTree tree, string id)

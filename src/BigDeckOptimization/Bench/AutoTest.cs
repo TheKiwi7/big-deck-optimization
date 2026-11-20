@@ -1755,9 +1755,6 @@ public static partial class AutoTest
                 case "hover":
                     Hover(int.Parse(arg));
                     break;
-                case "targethover":
-                    TargetHover(int.Parse(arg));
-                    break;
                 case "eventtrace":
                     BenchPatches(EventTrace);
                     break;
@@ -1917,6 +1914,13 @@ public static partial class AutoTest
                     _continueOnFail = arg.Trim() == "continue";
                     break;
                 default:
+                    // A command of an optional part file ([ScriptCommand]): added there, it leaves this file and so every mod-off
+                    // baseline that doesn't run it valid (parlib.ps1's $BaselineBenchParts).
+                    if (PartCommand(tree, parts[0], arg) is { } partCommand)
+                    {
+                        await partCommand;
+                        break;
+                    }
                     // Commands of local, untracked tooling (another partial file implements this; without it, nothing).
                     bool handled = false;
                     LocalCommand(tree, parts[0], arg, ref handled);
@@ -2331,30 +2335,6 @@ public static partial class AutoTest
 
     private static MegaCrit.Sts2.Core.Nodes.Combat.NCreature? _hovered;
 
-    /// <summary>
-    /// Script <c>targethover &lt;enemy index&gt;</c>: as a mouse aiming a card rests on that enemy, then cancels: targeting started
-    /// (<c>NTargetManager.StartTargeting</c>), the creature hovered (<c>OnNodeHovered</c>, which asks <c>Hook.ShouldAllowTargeting</c>:
-    /// its only caller), targeting cancelled. UI only, no game state; <c>play</c> calls cards directly and never gets there.
-    /// </summary>
-    private static void TargetHover(int enemyIndex)
-    {
-        CombatState state = CombatManager.Instance.DebugOnlyGetState() ?? throw new InvalidOperationException("not in combat");
-        Creature enemy = state.Enemies[enemyIndex];
-        MegaCrit.Sts2.Core.Nodes.Combat.NCreature node = MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom.Instance?.GetCreatureNode(enemy)
-            ?? throw new InvalidOperationException("no node for " + enemy);
-        MegaCrit.Sts2.Core.Nodes.Combat.NTargetManager manager = MegaCrit.Sts2.Core.Nodes.Combat.NTargetManager.Instance;
-        manager.StartTargeting(TargetType.AnyEnemy, node.GlobalPosition, MegaCrit.Sts2.Core.Nodes.Combat.TargetMode.ClickMouseToTarget, null, null);
-        try
-        {
-            manager.OnNodeHovered(node);
-            Say($"  target hovered {enemy}: allowed {ReferenceEquals(Traverse.Create(manager).Property("HoveredNode").GetValue(), node)}");
-        }
-        finally
-        {
-            manager.CancelTargeting();
-        }
-    }
-
     /// <summary>Script <c>hover &lt;enemy index&gt;</c>: as if the mouse rested on that enemy (its focus handler).</summary>
     private static void Hover(int enemyIndex)
     {
@@ -2736,6 +2716,47 @@ public static partial class AutoTest
 
     /// <summary>A script command of a local tool file (untracked): sets <paramref name="handled"/> when it knows it.</summary>
     static partial void LocalCommand(SceneTree tree, string command, string arg, ref bool handled);
+
+    /// <summary>
+    /// A script command implemented in an optional part file (<c>AutoTestMouse.cs</c>...) rather than in this file's switch: a
+    /// static method of <see cref="AutoTest"/> taking <c>(SceneTree tree, string arg)</c>, returning void or a Task. The part
+    /// file's entry in parlib.ps1's <c>$BaselineBenchParts</c> must match the command (check_scenarios.py checks it), or every
+    /// baseline counts that file.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Method, AllowMultiple = true)]
+    private sealed class ScriptCommandAttribute(string name) : Attribute
+    {
+        public string Name { get; } = name;
+    }
+
+    private static Dictionary<string, Func<SceneTree, string, Task>>? _partCommands;
+
+    /// <summary>The running command when a part file implements <paramref name="command"/>, else null.</summary>
+    private static Task? PartCommand(SceneTree tree, string command, string arg)
+    {
+        if (_partCommands == null)
+        {
+            var found = new Dictionary<string, Func<SceneTree, string, Task>>(StringComparer.OrdinalIgnoreCase);
+            foreach (MethodInfo method in typeof(AutoTest).GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic))
+            {
+                foreach (ScriptCommandAttribute attribute in method.GetCustomAttributes<ScriptCommandAttribute>())
+                {
+                    // Delegates, not Invoke: the command's own exception reaches the line's handler, not a TargetInvocationException.
+                    found.Add(attribute.Name, method.ReturnType == typeof(void)
+                        ? WrapVoid(method.CreateDelegate<Action<SceneTree, string>>())
+                        : method.CreateDelegate<Func<SceneTree, string, Task>>());
+                }
+            }
+            _partCommands = found;
+        }
+        return _partCommands.TryGetValue(command, out var run) ? run(tree, arg) : null;
+
+        static Func<SceneTree, string, Task> WrapVoid(Action<SceneTree, string> action) => (t, a) =>
+        {
+            action(t, a);
+            return Task.CompletedTask;
+        };
+    }
 
     private static Player? Me() => RunManager.Instance.DebugOnlyGetState() is { } state ? LocalContext.GetMe(state) : null;
 
