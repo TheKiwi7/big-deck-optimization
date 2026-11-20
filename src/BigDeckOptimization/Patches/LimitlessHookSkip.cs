@@ -144,8 +144,37 @@ public static class LimitlessHookSkip
         return _patchedByOthers;
     }
 
-    /// <summary>Changes when filters must judge MultiEnchantments again; -1 when none may be dropped.</summary>
-    internal static long Stamp => Active ? _version ^ (LimitlessCloneMemo.PatchStamp() << 24) : -1;
+    /// <summary>
+    /// Changes when filters must judge MultiEnchantments again; -1 when none may be dropped. Full audit B-2 (2026-11-20): also every
+    /// 2 s for <see cref="SettleMs"/> after the patch stamp changed. A verdict made just after a Harmony change may rest on answers
+    /// cached from before Harmony stored it (PatchSafety's 2-s answers refilled in that window: review D2), and the answers built on them
+    /// (the closures' strict answers and the patched-methods map, 2 s; the chain's and the overrides' answers, 1 s) stay up to ~5 s
+    /// in all: a filter's verdict cached per stamp would keep it until the next change. Without HarmonyWatch the stamp already
+    /// changes every 2 s (no extra cost); with it, a few more judgments after each change only.
+    /// </summary>
+    internal static long Stamp
+    {
+        get
+        {
+            if (!Active)
+            {
+                return -1;
+            }
+            long patches = LimitlessCloneMemo.PatchStamp(), now = Environment.TickCount64;
+            if (patches != _stampPatches)
+            {
+                _stampPatches = patches;
+                _stampChangedAt = now;
+            }
+            long settling = now - _stampChangedAt < SettleMs ? now / 2000 + 1 : 0;
+            return unchecked((_version ^ (patches << 24)) + settling * -7046029254386353131L);
+        }
+    }
+
+    /// <summary>How long after a patch stamp change <see cref="Stamp"/> keeps changing every 2 s (B-2: the ~5 s above, and a margin).</summary>
+    private const long SettleMs = 8000;
+
+    private static long _stampPatches = long.MinValue, _stampChangedAt = long.MinValue / 2;
 
     private static long _version;
     private static readonly HashSet<Type> _known = new();
