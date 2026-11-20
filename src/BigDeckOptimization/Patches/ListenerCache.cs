@@ -294,10 +294,11 @@ public static class ListenerCache
         public readonly int Version;
         public readonly LazyOutput Output;
         public bool Checked;
-        /// <summary>Reused in the current checksum snapshot: compared with a fresh walk at its end (<see cref="EndSnapshotWalks"/>).</summary>
+        /// <summary>
+        /// Reused in the current checksum snapshot or answered card sort: compared with a fresh walk at its end
+        /// (<see cref="EndSnapshotWalks"/>, <see cref="EndSortWalks"/>).
+        /// </summary>
         public bool InNet;
-        /// <summary>Its reuses in the answered card sort it was kept in (the sort's own check schedule, <see cref="EnterSort"/>).</summary>
-        public int SortUses;
 
         public KeptOutput(int version, LazyOutput output)
         {
@@ -478,11 +479,10 @@ public static class ListenerCache
                 // when a check is handed out. D2: the per-key sample's position moves with the scope (display only). In a checksum
                 // snapshot the schedule is the snapshot's own (its first reuse of each key until one covered what its caller read,
                 // none after it): no count kept across scopes, so every peer checks the same walks for the same state (R3-3). In an
-                // answered card sort, the sort's own count: its first reuse of each key until one covered what its caller read, then
-                // one in WalkVerifyEvery of that key's reuses in the sort (a synchronized game action: every peer answering it checks
-                // the same walks, as CardSortKeys' own schedule, A2).
-                bool check = _snapshotReuse ? !entry.Checked
-                    : _sortReuse ? !entry.Checked || ++entry.SortUses % WalkVerifyEvery == 0
+                // answered card sort, the same schedule as the snapshot's (owner's decision of 2026-11-20): its first reuse of each
+                // key until one covered what its caller read, none after it, and every key it reused compared with one fresh walk
+                // at the sort's end (EndSortWalks; a synchronized game action: every peer answering it checks the same walks).
+                bool check = _snapshotReuse || _sortReuse ? !entry.Checked
                     : !entry.Checked || CountReuse(key) % WalkVerifyEvery == 0;
                 if (_snapshotReuse && !entry.InNet)
                 {
@@ -492,6 +492,12 @@ public static class ListenerCache
                 }
                 if (!check)
                 {
+                    if (_sortReuse && !entry.InNet)
+                    {
+                        // Handed to a walk after its first: compared with a fresh walk at the sort's end (EndSortWalks).
+                        entry.InNet = true;
+                        (_sortReused ??= new List<KeptOutput>()).Add(entry);
+                    }
 #if BENCH
                     if (_snapshotReuse)
                     {
@@ -653,7 +659,7 @@ public static class ListenerCache
             }
 #endif
             SortWalkMismatches++;
-            SortWalksFailed($"a kept listener walk output differs from a fresh one ({key.Item1.GetType().Name}{(key.Item2 == null ? "" : " with a child combat")}: {what})");
+            SortWalksFailed($"a kept listener walk output differs from a fresh one at its checked reuse ({KeyName(key)}: {what})");
             return;
         }
 #if BENCH
@@ -1448,8 +1454,9 @@ public static class ListenerCache
     /// (exact, as every scope's), HookFilter's lists with them while no other mod patches the walks. With other mods' postfixes on a
     /// walk, its output after them is kept at the sort's first walk and reused for the sort's later walks (<see cref="Augmented"/>,
     /// KeptOnly's memo over it), on Walks Tier 2's premise, narrower scope: within one synchronous sort, at one state version, the
-    /// walk's output after other mods' postfixes is the same at every call. Its own part and switch: a difference found, or an error
-    /// here, turns it off for the session (the display part is not touched).
+    /// walk's output after other mods' postfixes is the same at every call. The snapshot's schedule (owner's decision of 2026-11-20):
+    /// each key's first reuse checked, then one fresh walk of each reused key at the sort's end (<see cref="EndSortWalks"/>). Its
+    /// own part and switch: a difference found, or an error here, turns it off for the session (the display part is not touched).
     /// </summary>
     public const string SortWalksName = Name + ".SortWalks";
 
@@ -1461,8 +1468,10 @@ public static class ListenerCache
     [ThreadStatic] private static int _sortVersion;
     /// <summary>CardSortKeys checks an answer against the game's comparison (<see cref="PauseSort"/>): its walks get their own outputs.</summary>
     [ThreadStatic] private static bool _sortPaused;
+    /// <summary>The kept outputs the current sort handed to a walk after its first (unchecked): what its end compares (<see cref="EndSortWalks"/>).</summary>
+    [ThreadStatic] private static List<KeptOutput>? _sortReused;
 
-    /// <summary>Checked reuses in sorts that differed from a fresh walk (each turned the part off).</summary>
+    /// <summary>Reuses in sorts that differed from a fresh walk, at a checked reuse or at the sort's end (each turned the part off).</summary>
     public static long SortWalkMismatches { get; private set; }
 #if BENCH
     /// <summary>Sort scopes opened, walks answered from a kept output, outputs kept, reuses compared with a fresh walk (the effects check).</summary>
@@ -1470,6 +1479,22 @@ public static class ListenerCache
     public static long SortWalkReuses { get; private set; }
     public static long SortWalksKept { get; private set; }
     public static long SortWalkChecks { get; private set; }
+    /// <summary>Fresh walks compared at sorts' ends; reused outputs left out there (kept at a state version the sort no longer had).</summary>
+    public static long SortEndWalks { get; private set; }
+    public static long SortEndSkipped { get; private set; }
+    /// <summary>Of <see cref="SortWalkMismatches"/>, those found by the fresh walks at a sort's end.</summary>
+    public static long SortEndMismatches { get; private set; }
+
+    /// <summary>
+    /// The test postfixes' view (<c>walk-sortcheck-postfix</c>, <c>walk-sortend-postfix</c>): 1 inside an answered sort whose walks
+    /// may reuse (not paused), 2 in the fresh walks of its end, else 0.
+    /// </summary>
+    internal static int SortPhaseForTest => _sortEnding ? 2 : _sortReuse && !_sortPaused && !_exactScope ? 1 : 0;
+
+    /// <summary>The scope a sort phase belongs to (<see cref="SortScopes"/> at its start): the test postfixes count calls per sort.</summary>
+    internal static long SortSerialForTest => SortScopes;
+
+    [ThreadStatic] private static bool _sortEnding;
 #endif
 
     /// <summary>
@@ -1491,6 +1516,7 @@ public static class ListenerCache
             BlockReuse();
             _sortVersion = _version;
             _sortPaused = false;
+            _sortReused?.Clear();
             // The augmented reuse only with the shape rules on (AugmentedReuse asks the rest per walk: other mods' postfixes on it,
             // this class's postfix last); without, no output is kept (exact mode, as a game-value refresh).
             if (PatchSafety.ShapeRules)
@@ -1515,7 +1541,10 @@ public static class ListenerCache
         }
     }
 
-    /// <summary>The sort's end (its <c>finally</c>): the scope closed, every kept output with it. Never throws.</summary>
+    /// <summary>
+    /// The sort's end (its <c>finally</c>): every output it reused compared with a fresh walk (<see cref="EndSortWalks"/>), then the
+    /// scope closed, every kept output with it. Never throws.
+    /// </summary>
     internal static void ExitSort(int state)
     {
         if (state == 0)
@@ -1524,8 +1553,101 @@ public static class ListenerCache
         }
         _sortReuse = false;
         _sortPaused = false;
-        ExitRefresh(null, state);
+        try
+        {
+            EndSortWalks();
+        }
+        finally
+        {
+            ExitRefresh(null, state);
+        }
     }
+
+    /// <summary>
+    /// The net at an answered sort's end (the snapshot's schedule, owner's decision of 2026-11-20): for each kept output the sort
+    /// handed to a walk after its first and unchecked, one fresh call of the game's walk (every other mod's postfix run as the game
+    /// runs it; this mod's listener optimizations suspended), enumerated as far as the kept output was pulled and compared element
+    /// by element, by reference (<see cref="CompareWithFresh"/>, as the snapshot's net). A difference, a reused output that threw,
+    /// or the comparison failing (another mod's code throwing in the fresh walk, an error here): the part off for the session,
+    /// logged (the sort is not redone: the residue of the premise). An output kept at a state version the sort no longer has (a
+    /// change ended its reuse) is not compared: its walks read a state that is gone. Nothing is reused from here. Never throws.
+    /// </summary>
+    private static void EndSortWalks()
+    {
+        List<KeptOutput>? reused = _sortReused;
+        if (reused == null || reused.Count == 0)
+        {
+            return;
+        }
+        (object, object?) key = default;
+        try
+        {
+            _exactScope = true;
+            ClearAugmented();
+            if (!SortWalksEnabled)
+            {
+                return; // Turned off in this sort already (a checked reuse differed): logged there.
+            }
+#if BENCH
+            _sortEnding = true;
+#endif
+            foreach (KeptOutput entry in reused)
+            {
+                if (entry.Version != _version)
+                {
+#if BENCH
+                    SortEndSkipped++;
+#endif
+                    continue;
+                }
+#if BENCH
+                SortEndWalks++;
+#endif
+                key = entry.Output.Key;
+                if (CompareWithFresh(entry.Output) is { } why)
+                {
+                    SortEndFound($"a kept listener walk output differs from a fresh one at the sort's end ({KeyName(key)}: {why})", mismatch: true);
+                    return;
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            SortEndFound($"the comparison with a fresh walk at the sort's end failed ({(key.Item1 == null ? "no walk" : KeyName(key))}): {e}", mismatch: false);
+        }
+        finally
+        {
+#if BENCH
+            _sortEnding = false;
+#endif
+            reused.Clear();
+        }
+    }
+
+    /// <summary>The sort's net found a difference or failed: the part off for the session, logged. Never throws.</summary>
+    private static void SortEndFound(string what, bool mismatch)
+    {
+#if BENCH
+        if (_selfTesting)
+        {
+            _selfTestMismatches++;
+            _selfTestSortEnd = what;
+            return;
+        }
+#endif
+        if (mismatch)
+        {
+            SortWalkMismatches++;
+#if BENCH
+            SortEndMismatches++;
+#endif
+        }
+        SortWalksFailed(what);
+    }
+
+    /// <summary>A walk key as the log lines name it.</summary>
+    private static string KeyName((object, object?) key) =>
+        $"{key.Item1?.GetType().Name ?? "none"}{(key.Item2 == null ? "" : " with a child combat")}";
 
     /// <summary>
     /// CardSortKeys' check of an answer against the game's comparison: while paused, the walks get their own outputs (other mods'
@@ -1569,13 +1691,13 @@ public static class ListenerCache
     internal static string SortWalksControl(string what)
     {
         string status = $"FOREIGN sortwalks scopes {SortScopes}, kept {SortWalksKept}, reused {SortWalkReuses}, checked {SortWalkChecks}, "
-            + $"mismatches {SortWalkMismatches}, on {SortWalksEnabled}, faulted {PatchSafety.IsFaulted(SortWalksName)}, served {Served}, "
+            + $"end walks {SortEndWalks}, end skipped {SortEndSkipped}, mismatches {SortWalkMismatches} (at the end {SortEndMismatches}), on {SortWalksEnabled}, faulted {PatchSafety.IsFaulted(SortWalksName)}, served {Served}, "
             + $"memo hits {MemoHits}, live verdicts {FastListeners.MemoLiveJudged}, held verdicts {FastListeners.MultiHeldVerdicts}";
         bool fail = what switch
         {
             "status" => false,
-            "require on" => SortScopes == 0 || SortWalksKept == 0 || SortWalkReuses == 0 || SortWalkChecks == 0 || SortWalkMismatches > 0
-                || !SortWalksEnabled || PatchSafety.IsFaulted(SortWalksName),
+            "require on" => SortScopes == 0 || SortWalksKept == 0 || SortWalkReuses == 0 || SortWalkChecks == 0 || SortEndWalks == 0
+                || SortWalkMismatches > 0 || !SortWalksEnabled || PatchSafety.IsFaulted(SortWalksName),
             "require exact" => SortScopes == 0 || SortWalksKept > 0 || SortWalkMismatches > 0 || !SortWalksEnabled,
             "require off" => SortWalkMismatches == 0 || SortWalksEnabled || !PatchSafety.IsFaulted(SortWalksName),
             _ => throw new ArgumentException("foreignpatch sortwalks status | foreignpatch require sortwalks on|exact|off"),
@@ -1620,8 +1742,8 @@ public static class ListenerCache
             PatchSafety.Kept(SortWalksName, "sort_walks", $"other mods' code on the listener walks ({names}) runs once per card sort before "
                 + "a shuffle instead of once per card's cost read: its output, enumerated only as far as the game goes, is reused for that "
                 + "sort's walks (a stated premise: within one sort, at one state, it gives the same listeners; each sort's first reuse of a "
-                + $"walk and one in {WalkVerifyEvery} after it are compared with a fresh call, a difference turns this off; the sort's own "
-                + "checks against the game's comparison take fresh walks)", mods.ToArray());
+                + "walk is compared with a fresh call, and each walk it reused with one more fresh call at the sort's end, a difference "
+                + "turns this off; the sort's own checks against the game's comparison take fresh walks)", mods.ToArray());
         }
         catch
         {
@@ -2340,6 +2462,8 @@ public static class ListenerCache
 
     /// <summary>Set while the self-test runs: a difference found is counted here instead of turning the part off.</summary>
     [ThreadStatic] private static int _selfTestMismatches;
+    /// <summary>The self-test's last difference found by a sort's end (<see cref="SortEndFound"/>).</summary>
+    [ThreadStatic] private static string? _selfTestSortEnd;
     /// <summary>The self-test's errors of the dispatch's own code (<see cref="DispatchFailed"/>), and its injected one.</summary>
     [ThreadStatic] private static int _selfTestDispatchFaults;
     [ThreadStatic] private static bool _selfTestFailPlan;
@@ -2822,9 +2946,10 @@ public static class ListenerCache
             Expect(d3, "at the scope's end a kept source no caller finished is disposed (D3)");
 
             // 7b. An answered card sort (EnterSort, DESIGN "Sort walk reuse"): opened only with nothing else open; the first walk
-            // kept, the next reuse checked, then one in WalkVerifyEvery of the key's reuses counted from the sort's start (the same in
-            // every sort); a pause (CardSortKeys' check) and a state version change give the call's own output; a nested game-value
-            // refresh ends the reuse; a difference ends it and leaves the display part alone; the scope's end closes everything.
+            // kept, the next reuse checked, none after it (the same in every sort), each reused key compared with one fresh walk at
+            // the sort's end; a pause (CardSortKeys' check) and a state version change give the call's own output; a nested
+            // game-value refresh ends the reuse; a difference (a checked reuse, the end's fresh walk) ends it and leaves the display
+            // part alone; the scope's end closes everything.
             SortSelfTest(Expect, models);
 
             // 8. KeptOnly's memo over a kept output (Walks Tier 2): the same result, the same pulls, every way it falls back.
@@ -2868,15 +2993,22 @@ public static class ListenerCache
         return lines;
     }
 
-    /// <summary>The answered card sort's scope and walk reuse (no game state: the walks are the test's arrays).</summary>
+    /// <summary>
+    /// The answered card sort's scope and walk reuse (no game state: the walks are the test's arrays, the end's fresh walks the
+    /// test's source). Removing the end's net (EndSortWalks returning at once) fails the end cases.
+    /// </summary>
     private static void SortSelfTest(Action<bool, string> expect, AbstractModel[] models)
     {
         bool wasExact = _exactScope, wasSafeHere = _safe, wasSuspended = _suspended, wasPart = SortWalksEnabled, wasDisplay = WalkReuseEnabled;
         bool wasRefreshEnabled = RefreshEnabled;
         int wasSnapshot = _snapshotDepth, wasRefresh = _refreshDepth, wasSerial = _scopeSerial, wasVersion = _version;
         long wasScopes = SortScopes, wasKept = SortWalksKept, wasReuses = SortWalkReuses, wasChecks = SortWalkChecks;
+        long wasEndWalks = SortEndWalks, wasEndSkipped = SortEndSkipped;
         var key = ((object)models[2], (object?)null);
         AbstractModel[] kept = models.Take(3).ToArray(), other = models.Skip(3).ToArray();
+        // The end's fresh walks: the test's source (the same as the kept output unless a case says otherwise), counted.
+        int freshCalls = 0;
+        AbstractModel[] fresh = kept;
         // One sort: EnterSort, then body inside it (the scope's _safe forced: no game state here), then ExitSort.
         bool Sort(Func<bool> body)
         {
@@ -2893,7 +3025,7 @@ public static class ListenerCache
             _safe = true;
             bool ok = _sortReuse && _refreshDepth == 1 && body();
             ExitSort(state);
-            return ok && !_sortReuse && _refreshDepth == 0 && (_augmented == null || _augmented.Count == 0);
+            return ok && !_sortReuse && _refreshDepth == 0 && (_augmented == null || _augmented.Count == 0) && (_sortReused == null || _sortReused.Count == 0);
         }
         // The kinds of output 40 walks of one key get in a sort: k kept, c checked, r reused.
         string Pattern()
@@ -2909,11 +3041,28 @@ public static class ListenerCache
         }
         try
         {
+            _netSourceForTest = _ =>
+            {
+                freshCalls++;
+                return fresh;
+            };
+            int mismatches = _selfTestMismatches;
             string first = "", second = "";
             bool scheduled = Sort(() => (first = Pattern()).Length == 40) && Sort(() => (second = Pattern()).Length == 40);
-            string expected = "kc" + new string('r', WalkVerifyEvery - 1) + "c" + new string('r', WalkVerifyEvery - 1) + "c" + new string('r', 40 - 2 * WalkVerifyEvery - 2);
-            expect(scheduled && first == expected && second == expected, $"a sort keeps, checks its first reuse, then one in {WalkVerifyEvery} from its own start ({first})");
+            string expected = "kc" + new string('r', 38);
+            expect(scheduled && first == expected && second == expected && freshCalls == 2 && _selfTestMismatches == mismatches,
+                $"a sort keeps, checks its first reuse, none after it, and compares each reused key once at its end ({first}, {freshCalls} fresh walks)");
 
+            freshCalls = 0;
+            bool lone = Sort(() =>
+            {
+                Augmented(key, kept).ToList();
+                Augmented(key, kept).ToList(); // Checked: the call's own output, nothing reused.
+                return true;
+            });
+            expect(lone && freshCalls == 0, "a sort that reused nothing (a key kept, then checked) walks nothing at its end");
+
+            freshCalls = 0;
             bool paused = Sort(() =>
             {
                 Augmented(key, kept).ToList();
@@ -2924,37 +3073,91 @@ public static class ListenerCache
                 PauseSort(wasPaused);
                 return own && ReuseOpen && held.SequenceEqual(kept);
             });
-            expect(paused, "a pause (CardSortKeys' check) gives the call's own output, the reuse back after it");
+            expect(paused && freshCalls == 1, "a pause (CardSortKeys' check) gives the call's own output, the reuse back after it");
 
+            freshCalls = 0;
+            long skippedBefore = SortEndSkipped;
             bool versioned = Sort(() =>
             {
                 Augmented(key, kept).ToList();
                 Augmented(key, kept).ToList();
+                Augmented(key, kept).ToList(); // Reused at the sort's first version.
                 IEnumerable<AbstractModel> held = Augmented(key, other);
                 _version++;
                 return !ReuseOpen && held.SequenceEqual(other);
             });
-            expect(versioned, "a state version change ends a sort's reuse");
+            expect(versioned && freshCalls == 0 && SortEndSkipped == skippedBefore + 1,
+                "a state version change ends a sort's reuse; what was reused before it isn't walked again at the end");
 
+            freshCalls = 0;
             bool nested = Sort(() =>
             {
                 Augmented(key, kept).ToList();
                 Augmented(key, kept).ToList();
                 IEnumerable<AbstractModel> held = Augmented(key, other);
+                held.ToList(); // Reused.
                 EnterRefresh();
                 ExitRefresh(null);
                 return _exactScope && !ReuseOpen && held.SequenceEqual(other);
             });
-            expect(nested, "a game-value refresh nested in a sort ends its reuse");
+            expect(nested && freshCalls == 1, "a game-value refresh nested in a sort ends its reuse; what was reused before it is compared at the end");
 
             int before = _selfTestMismatches;
+            freshCalls = 0;
             bool differs = Sort(() =>
             {
                 Augmented(key, kept).ToList();
                 Augmented(key, other).ToList(); // The first reuse is checked: another output.
                 return _exactScope && !ReuseOpen;
             });
-            expect(differs && _selfTestMismatches == before + 1 && WalkReuseEnabled == wasDisplay, "a difference in a sort ends its reuse, the display part untouched");
+            expect(differs && _selfTestMismatches == before + 1 && freshCalls == 0 && WalkReuseEnabled == wasDisplay,
+                "a difference at a sort's checked reuse ends its reuse, the display part untouched");
+
+            // The end's fresh walk differing: another listener, a shorter walk, a longer one than a complete output; none past a
+            // partly pulled output.
+            bool EndFinds(AbstractModel[] freshNow, int read)
+            {
+                fresh = freshNow;
+                int was = _selfTestMismatches;
+                _selfTestSortEnd = null;
+                bool ok = Sort(() =>
+                {
+                    Augmented(key, kept).Take(read).ToList();
+                    Augmented(key, kept).Take(read).ToList(); // Checked, covered (stopped within what was pulled).
+                    Augmented(key, kept).Take(read).ToList(); // Reused.
+                    return ReuseOpen;
+                });
+                fresh = kept;
+                return ok && _selfTestMismatches == was + 1 && _selfTestSortEnd != null && _selfTestSortEnd.Contains("at the sort's end");
+            }
+            expect(EndFinds(new[] { models[0], models[1], models[5] }, 99), "a sort's end: another listener in the fresh walk found");
+            expect(EndFinds(models.Take(2).ToArray(), 99), "a sort's end: a shorter fresh walk found");
+            expect(EndFinds(models.Take(4).ToArray(), 99), "a sort's end: longer than a complete reused output found");
+            expect(!EndFinds(models.Take(4).ToArray(), 2), "a sort's end: longer than a partly pulled output: no difference (nothing past it was read)");
+            expect(WalkReuseEnabled == wasDisplay, "a sort's end finding a difference leaves the display part untouched");
+
+            // The end's fresh walk throwing (another mod's code): found, nothing escapes.
+            Func<(object, object?), IEnumerable<AbstractModel>>? wasSource = _netSourceForTest;
+            _netSourceForTest = _ => new CountingSource(kept, throwAt: 1);
+            int beforeThrow = _selfTestMismatches;
+            bool escaped = false;
+            try
+            {
+                Sort(() =>
+                {
+                    Augmented(key, kept).ToList();
+                    Augmented(key, kept).ToList();
+                    Augmented(key, kept).ToList();
+                    return true;
+                });
+            }
+            catch
+            {
+                escaped = true;
+            }
+            _netSourceForTest = wasSource;
+            expect(!escaped && _selfTestMismatches == beforeThrow + 1 && _selfTestSortEnd != null && _selfTestSortEnd.Contains("failed"),
+                "a sort's end: a fresh walk that throws is found, nothing escapes");
 
             _refreshDepth = 1;
             int refused = EnterSort();
@@ -2963,6 +3166,9 @@ public static class ListenerCache
         }
         finally
         {
+            _netSourceForTest = null;
+            _selfTestSortEnd = null;
+            _sortReused?.Clear();
             _exactScope = wasExact;
             _safe = wasSafeHere;
             _suspended = wasSuspended;
@@ -2979,6 +3185,8 @@ public static class ListenerCache
             SortWalksKept = wasKept;
             SortWalkReuses = wasReuses;
             SortWalkChecks = wasChecks;
+            SortEndWalks = wasEndWalks;
+            SortEndSkipped = wasEndSkipped;
         }
     }
 

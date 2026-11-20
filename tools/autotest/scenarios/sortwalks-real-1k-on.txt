@@ -2,13 +2,13 @@
 # The answered card sort's walk reuse (A/B, mod on; game v0.113+: before, the game's comparison is cheap and CardSortKeys not
 # next to v0.113's card sort before a shuffle, whose comparison reads each card's resolved cost (the cost hook walks every
 # listener): inside a sort CardSortKeys answers, the walk's output after the postfix is kept at the sort's first walk and reused
-# for its later walks, KeptOnly's memo over it (foreignpatch require sortwalks on: sort scopes, outputs kept, walks reused, reuses
-# compared with fresh walks, no difference, the part on). Sorts: the combat start's, a reshuffle (the draw pile moved to the
+# for its later walks, KeptOnly's memo over it (foreignpatch require sortwalks on: sort scopes, outputs kept, walks reused, each
+# key's first reuse checked and each reused key walked again at the sort's end, no difference, the part on). Sorts: the combat start's, a reshuffle (the draw pile moved to the
 # discard pile but two cards, then the turn's draw), then bdperf sortkeys (the game's order with the whole mod off against the
 # part's, the walks reused: identical). The kept note names the walk. CHECKSUM and STATE identical with foreign-sortwalks-1k-off;
 requiregame v0.113
 expect FOREIGN kept ListenerCache\.SortWalks: other mods' code on the listener walks \(.*CombatState\.IterateHookListeners.*\) runs once per card sort before a shuffle
-expect FOREIGN sortwalks scopes [1-9]\d*, kept [1-9]\d*, reused [1-9]\d*, checked [1-9]\d*, mismatches 0, on True, faulted False
+expect FOREIGN sortwalks scopes [1-9]\d*, kept [1-9]\d*, reused [1-9]\d*, checked [1-9]\d*, end walks [1-9]\d*, end skipped \d+, mismatches 0 \(at the end 0\), on True, faulted False
 expect SORTKEYS \d+ cards, .*OK: identical orders
 expect COUNTERS end:.*CardSortKeys sorts [1-9]\d*, answered [1-9]\d*, refused \d+ \(last: [^)]*\), checks \d+, mismatches 0
 timeout 1200

@@ -1,20 +1,21 @@
-# The sort walk reuse's control (mod on; game v0.113+; DESIGN "Sort walk reuse", 2026-11-20): a postfix of "another mod" on
-# CombatState.IterateHookListeners whose output differs from call to call at one state (every third call without its last
-# listener). Inside an answered card sort (the combat start's, a reshuffle's), the sort's own checks (its first reuse of the walk,
-# then one in 16) must find a reused output different: the sort's walk reuse turned off for the session, logged, the part faulted
-# (foreignpatch require sortwalks off). The display refreshes' own reuse finds it too (its line expected as well). ~945 cards.
+# The sort walk reuse's control at its checked reuse (mod on; game v0.113+; DESIGN "Card sorts and stacked enchantments next to
+# walk-wrapping mods", the net schedule of 2026-11-20): a postfix of "another mod" on CombatState.IterateHookListeners whose
+# output differs only inside an answered card sort: its second walk there (the sort's first reuse of the walk, checked) without its
+# last listener. The combat start's sort must find it at that checked reuse: the sort's walk reuse turned off for the session,
+# logged, the part faulted (foreignpatch require sortwalks off), no difference at a sort's end. The display refreshes' reuse sees
+# nothing (the shape acts only in sorts). The end's net: foreign-sortwalks-endctl. ~945 cards.
 # effects-zero-ok: ListenerCache\.Walks
 requiregame v0.113
-expect ListenerCache: in a card sort, a kept listener walk output differs from a fresh one
-expect ListenerCache: a kept listener walk output \(other mods' postfixes included\) differs from a fresh one
-expect FOREIGN sortwalks scopes [1-9]\d*, kept [1-9]\d*, reused \d+, checked [1-9]\d*, mismatches [1-9]\d*, on False, faulted True
+expect ListenerCache: in a card sort, a kept listener walk output differs from a fresh one at its checked reuse
+expect FOREIGN sortwalks scopes [1-9]\d*, kept [1-9]\d*, reused \d+, checked [1-9]\d*, end walks \d+, end skipped \d+, mismatches 1 \(at the end 0\), on False, faulted True
+expect FOREIGN walk-sort shapes changed walks 1
 timeout 1200
 newrun NECROBINDER 1234
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
 enemyhp 999999
-foreignpatch walk-unstable-postfix MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners
+foreignpatch walk-sortcheck-postfix MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 1

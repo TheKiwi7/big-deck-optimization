@@ -1,0 +1,35 @@
+# The sort walk reuse's control at a sort's end (mod on; game v0.113+; DESIGN "Card sorts and stacked enchantments next to
+# walk-wrapping mods", the net schedule of 2026-11-20): a postfix of "another mod" on CombatState.IterateHookListeners whose output
+# is the same at every walk of an answered card sort (its checked reuse sees nothing) and differs only in the fresh walks of the
+# sort's end (without its last listener). The combat start's sort must find it at its end: the sort's walk reuse turned off for the
+# session, logged, the part faulted (foreignpatch require sortwalks off), the one difference found at the end. The display
+# refreshes' reuse sees nothing. ~945 cards.
+# effects-zero-ok: ListenerCache\.Walks
+requiregame v0.113
+expect ListenerCache: in a card sort, a kept listener walk output differs from a fresh one at the sort's end
+expect FOREIGN sortwalks scopes [1-9]\d*, kept [1-9]\d*, reused [1-9]\d*, checked [1-9]\d*, end walks [1-9]\d*, end skipped \d+, mismatches 1 \(at the end 1\), on False, faulted True
+expect FOREIGN walk-sort shapes changed walks 1
+timeout 1200
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+enemyhp 999999
+foreignpatch walk-sortend-postfix MegaCrit.Sts2.Core.Combat.CombatState:IterateHookListeners
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+play 3
+waitfor idle 120
+endturn
+waitfor idle 300
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 300
+state reshuffle
+foreignpatch sortwalks status
+foreignpatch require sortwalks off
+cmd bdopt why
+foreignpatch remove
+quit

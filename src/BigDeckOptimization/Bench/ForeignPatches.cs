@@ -203,7 +203,7 @@ public static class ForeignPatches
         "skip-prefix", "skip-and-add-prefix", "display-count-prefix",
         "name-gated-postfix", "fullname-gated-postfix", "name-nearmiss-postfix", "name-othervar-postfix", "walk-unstable-postfix",
         "flash-script-postfix", "energy-cost-postfix", "energy-cost-unstable-postfix", "walk-snapflip-postfix",
-        "walk-snapflip-cost-postfix", "walk-snaprng-postfix",
+        "walk-snapflip-cost-postfix", "walk-snaprng-postfix", "walk-sortcheck-postfix", "walk-sortend-postfix",
     };
 
     /// <summary>
@@ -361,10 +361,11 @@ public static class ForeignPatches
         {
             return new[] { ListenerCache.MemoControl(string.Join(" ", parts.Skip(1))) };
         }
-        // The checksum snapshot's walk reuse: its counters (foreignpatch require snapwalks on|detected for the checks).
+        // The answered sort's walk reuse: its counters (foreignpatch require sortwalks on|exact|off for the checks), and the walks
+        // the sort controls changed.
         if (parts[0] == "sortwalks" && parts.Length > 1 && parts[1] == "status")
         {
-            return new[] { ListenerCache.SortWalksControl("status") };
+            return new[] { ListenerCache.SortWalksControl("status"), $"FOREIGN walk-sort shapes changed walks {_sortChanged}" };
         }
         if (parts[0] == "snapwalks" && parts.Length > 1 && parts[1] == "status")
         {
@@ -614,6 +615,16 @@ public static class ForeignPatches
                 // (every third call without its last listener): a kept output reused must be found to differ (the 1-in-16 check).
                 RequireWalk(target);
                 harmony.Patch(target, postfix: Fix(nameof(WalkUnstablePostfix)));
+                break;
+            case "walk-sortcheck-postfix":
+            case "walk-sortend-postfix":
+                // The sort walk reuse's controls (DESIGN "Card sorts and stacked enchantments next to walk-wrapping mods", the
+                // owner's net schedule of 2026-11-20): a postfix whose output differs only inside an answered card sort, so that the
+                // display refreshes' and the snapshots' reuses see nothing. walk-sortcheck-postfix: the second walk of each sort (its
+                // first reuse, checked) without its last listener: found at the checked reuse. walk-sortend-postfix: every walk of
+                // the sort the same, the fresh walks of the sort's end without the last listener: found only there.
+                RequireWalk(target);
+                harmony.Patch(target, postfix: Fix(shape == "walk-sortcheck-postfix" ? nameof(WalkSortCheckPostfix) : nameof(WalkSortEndPostfix)));
                 break;
             case "walk-filter-repeat":
                 RequireWalk(target);
@@ -1584,6 +1595,36 @@ public static class ForeignPatches
         {
             IEnumerable<AbstractModel> walk = __result;
             __result = DropLast(walk);
+        }
+    }
+
+    /// <summary>The sort controls' calls in the current sort (its serial: <see cref="ListenerCache.SortSerialForTest"/>), and their changes.</summary>
+    private static long _sortSerial = -1, _sortCalls, _sortChanged;
+
+    private static void WalkSortCheckPostfix(ref IEnumerable<AbstractModel> __result)
+    {
+        if (ListenerCache.SortPhaseForTest != 1)
+        {
+            return;
+        }
+        if (ListenerCache.SortSerialForTest != _sortSerial)
+        {
+            _sortSerial = ListenerCache.SortSerialForTest;
+            _sortCalls = 0;
+        }
+        if (++_sortCalls == 2)
+        {
+            _sortChanged++;
+            __result = DropLast(__result);
+        }
+    }
+
+    private static void WalkSortEndPostfix(ref IEnumerable<AbstractModel> __result)
+    {
+        if (ListenerCache.SortPhaseForTest == 2)
+        {
+            _sortChanged++;
+            __result = DropLast(__result);
         }
     }
 
