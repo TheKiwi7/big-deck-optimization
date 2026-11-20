@@ -722,6 +722,47 @@ internal static class TranspilerJudge
     internal static bool SameInstructions(IReadOnlyList<Ins> a, IReadOnlyList<Ins> b) =>
         a.Count == b.Count && Enumerable.Range(0, a.Count).All(i => Same(a[i], b[i]));
 
+    /// <summary>
+    /// Null when <paramref name="result"/> is <paramref name="original"/> exactly (<see cref="UnchangedTranspilers"/>' rule): as many
+    /// instructions, each with the same opcode and operand (<see cref="Same"/>), every branch, <c>leave</c> and switch target at the
+    /// same instruction, the same exception blocks on each, no label on two instructions; else why not. Labels no branch reaches
+    /// may differ (nothing jumps there). Never throws.
+    /// </summary>
+    internal static string? Unchanged(IReadOnlyList<Ins> original, IReadOnlyList<Ins> result)
+    {
+        try
+        {
+            if (original.Count != result.Count)
+            {
+                return $"{result.Count} instructions where the game has {original.Count}";
+            }
+            for (int i = 0; i < original.Count; i++)
+            {
+                if (!Same(original[i], result[i]))
+                {
+                    return $"instruction {i} changed ({original[i].Op} {original[i].Operand} -> {result[i].Op} {result[i].Operand})";
+                }
+            }
+            return CheckStructure(original, result, Enumerable.Range(0, original.Count).ToArray());
+        }
+        catch (Exception e)
+        {
+            return "not judged: " + e.Message;
+        }
+    }
+
+    /// <summary>The confirmed capture of <paramref name="body"/>'s transpiled code (the last rebuild that ended well), if any.</summary>
+    internal static bool TryCaptured(MethodBase body, out Ins[] code)
+    {
+        if (_captured.TryGetValue(Key(body), out var captured))
+        {
+            code = captured.Code;
+            return true;
+        }
+        code = Array.Empty<Ins>();
+        return false;
+    }
+
     private static Dictionary<int, int> LabelPositions(IReadOnlyList<Ins> code)
     {
         var positions = new Dictionary<int, int>();

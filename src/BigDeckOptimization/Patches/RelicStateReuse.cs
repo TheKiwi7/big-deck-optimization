@@ -60,14 +60,6 @@ public static class RelicStateReuse
     private const string BaseLibWrite = "BaseLib.Patches.Saves.ExtendedSavePatches+SerializeExtendedRelicData:WriteExtended";
     private const string BaseLibWriteFingerprint = "2932D9B1B34FDBBC";
     private const string HandlersWriteFingerprint = "D1DE163AF605BE38";
-    /// <summary>
-    /// "Unlimited: No Player Limit" transpiles every <c>Serialize</c> (the relic's, its properties', its combat state's): a list's
-    /// count written on more bits (none in the relic's). The bits stay a function of the object's fields alone.
-    /// </summary>
-    private const string UnlimitedAssembly = "sts2unlimited";
-    private const string UnlimitedTranspiler = "Sts2Unlimited.PacketSizePatch:Transpile_SerializeDeserialize";
-    private const string UnlimitedTranspilerFingerprint = "908CDF014E4F04CF";
-    private const string UnlimitedConstantFingerprint = "CB9DCCF74112728F";
 
     private static MethodInfo? _toSerializable, _serialize;
     /// <summary>
@@ -78,7 +70,6 @@ public static class RelicStateReuse
     private static readonly MethodInfo _savedPropertiesFrom = Reflect.Method(typeof(SavedProperties), nameof(SavedProperties.From));
     private static MethodInfo[] _allowedOnToSerializable = Array.Empty<MethodInfo>();
     private static MethodInfo[] _allowedOnSerialize = Array.Empty<MethodInfo>();
-    private static MethodInfo[] _allowedUnlimitedOnly = Array.Empty<MethodInfo>();
     private static MethodInfo? _baseLibWrite;
     private static Action<RelicModel, SerializableRelic>? _baseLibPostfix;
     private static Func<IList>? _registeredSaves;
@@ -107,16 +98,10 @@ public static class RelicStateReuse
         {
             ResolveBaseLib();
         }
-        if (UnlimitedCompat.Error is { } unlimitedError)
-        {
-            // Unlimited is there and its transpiler isn't the known one: it patches SerializableRelic.Serialize, this would back off at every relic.
-            throw new PatchSkippedException("Unlimited's transpiler not understood: " + unlimitedError.Message);
-        }
         AllowOnSerialize();
         if (!loaded.Contains(BaseLibAssembly))
         {
             // Mod load order isn't guaranteed. Until then its patches, if any, count as another mod's: the game's call.
-            // (Unlimited, loaded later, is resolved by UnlimitedCompat.)
             AppDomain.CurrentDomain.AssemblyLoad += OnAssemblyLoad;
         }
         _replaced = 0;
@@ -134,20 +119,23 @@ public static class RelicStateReuse
         {
             Log.Info($"[{ModEntry.Id}] {ScalarName} left vanilla, relics' saved properties read by the game each time: {e.Message}");
         }
+        // Their other mods' transpilers judged by the code they produce (a mod transpiling every Serialize that changes nothing here).
+        UnchangedTranspilers.Register(new MethodBase?[] { _serialize, _propertiesSerialize, _relicStateSerialize });
         WatchForPreflight();
     }
 
     /// <summary>
-    /// What GuardsPass asks about (display only, never throws): the allowed lists are read at each preflight (BaseLib or
-    /// Unlimited loading later changes them), and BaseLib's relic saves, which turn the whole reuse off, as a note.
+    /// What GuardsPass asks about (display only, never throws): the allowed lists are read at each preflight (BaseLib loading
+    /// later, other mods' transpilers judged by their result: <see cref="UnchangedTranspilers"/>), and BaseLib's relic saves, which
+    /// turn the whole reuse off, as a note.
     /// </summary>
     private static void WatchForPreflight()
     {
         PatchSafety.Watch(Name, _toSerializable, () => _allowedOnToSerializable);
-        PatchSafety.Watch(Name, _serialize, () => _allowedOnSerialize);
+        PatchSafety.Watch(Name, _serialize, () => UnchangedTranspilers.With(_allowedOnSerialize, _serialize));
         PatchSafety.Watch(Name, _savedPropertiesFrom);
-        PatchSafety.Watch(Name, _propertiesSerialize, () => _allowedUnlimitedOnly);
-        PatchSafety.Watch(Name, _relicStateSerialize, () => _allowedUnlimitedOnly);
+        PatchSafety.Watch(Name, _propertiesSerialize, () => UnchangedTranspilers.Allowed(_propertiesSerialize));
+        PatchSafety.Watch(Name, _relicStateSerialize, () => UnchangedTranspilers.Allowed(_relicStateSerialize));
         if (ScalarApplied)
         {
             PatchSafety.Watch(Name, _fromInternal, () => AllowedOnFromInternal);
@@ -417,78 +405,9 @@ public static class RelicStateReuse
         }
     }
 
-    /// <summary>
-    /// Unlimited's list-width transpiler, resolved on its own whatever <see cref="Apply"/> does (a fingerprint of this patch changed,
-    /// BaseLib's relic patches not understood): SnapshotCardReuse allows it on the card and pile serializers too, and loses nothing
-    /// that doesn't depend on relic serialization. Read at first use when Unlimited is already loaded, or when it loads later.
-    /// </summary>
-    private static class UnlimitedCompat
-    {
-        internal static MethodInfo? Transpiler;
-        /// <summary>Unlimited loaded and its transpiler not the known one: why.</summary>
-        internal static Exception? Error;
-        private static int _resolved;
-
-        static UnlimitedCompat()
-        {
-            try
-            {
-                AppDomain.CurrentDomain.AssemblyLoad += OnLoad;
-                if (AppDomain.CurrentDomain.GetAssemblies().Any(a => a.GetName().Name == UnlimitedAssembly))
-                {
-                    Resolve(late: false);
-                }
-            }
-            catch (Exception e)
-            {
-                Error ??= e;
-            }
-        }
-
-        private static void OnLoad(object? sender, AssemblyLoadEventArgs args)
-        {
-            if (args.LoadedAssembly.GetName().Name == UnlimitedAssembly)
-            {
-                Resolve(late: true);
-            }
-        }
-
-        private static void Resolve(bool late)
-        {
-            if (System.Threading.Interlocked.Exchange(ref _resolved, 1) != 0)
-            {
-                return;
-            }
-            try
-            {
-                AppDomain.CurrentDomain.AssemblyLoad -= OnLoad;
-                MethodInfo transpiler = Reflect.Method(UnlimitedTranspiler) ?? throw new PatchSkippedException("Unlimited has no " + UnlimitedTranspiler);
-                PatchSafety.RequireFingerprint(transpiler, UnlimitedTranspilerFingerprint);
-                PatchSafety.RequireFingerprint(Reflect.Method(transpiler.DeclaringType, "IsVanillaListBitsConstant")
-                    ?? throw new MissingMethodException("PacketSizePatch", "IsVanillaListBitsConstant"), UnlimitedConstantFingerprint);
-                Transpiler = transpiler;
-                AllowOnSerialize();
-            }
-            catch (Exception e)
-            {
-                Error = e;
-                if (late)
-                {
-                    // Loaded after this mod's patches: its transpiler counts as another mod's patch where it runs (relics, cards, piles).
-                    Log.Info($"[{ModEntry.Id}] {Name}: Unlimited's transpiler not understood, left vanilla where it patches: {e.Message}");
-                }
-            }
-        }
-    }
-
-    /// <summary>Unlimited's list-width transpiler once its code is the known one (SnapshotCardReuse's upgrade bits allow it too).</summary>
-    internal static MethodInfo? UnlimitedTranspilerMethod => UnlimitedCompat.Transpiler;
-
     private static void AllowOnSerialize()
     {
-        MethodInfo? unlimited = UnlimitedCompat.Transpiler;
-        _allowedOnSerialize = new[] { _baseLibWrite, unlimited }.Where(m => m != null).ToArray()!;
-        _allowedUnlimitedOnly = unlimited != null ? new[] { unlimited } : Array.Empty<MethodInfo>();
+        _allowedOnSerialize = _baseLibWrite != null ? new[] { _baseLibWrite } : Array.Empty<MethodInfo>();
     }
 
     /// <summary>BaseLib's relic postfixes, accepted only with their known code; its relic saves, read at each use.</summary>
@@ -706,9 +625,12 @@ public static class RelicStateReuse
         {
             _guardsPass = !(_registeredSaves != null && _registeredSaves().Count != 0)
                 // No tolerance: the previous object is given again instead of a new ToSerializable.
-                && !PatchSafety.IsPatchedByOthers(_toSerializable, _allowedOnToSerializable) && !PatchSafety.IsPatchedByOthers(_serialize, _allowedOnSerialize)
+                && !PatchSafety.IsPatchedByOthers(_toSerializable, _allowedOnToSerializable)
+                && !PatchSafety.IsPatchedByOthers(_serialize, UnchangedTranspilers.With(_allowedOnSerialize, _serialize))
                 && !PatchSafety.IsPatchedByOthers(_savedPropertiesFrom)
-                && !PatchSafety.IsPatchedByOthers(_propertiesSerialize, _allowedUnlimitedOnly) && !PatchSafety.IsPatchedByOthers(_relicStateSerialize, _allowedUnlimitedOnly);
+                // Other mods' transpilers there let stand only when the code they produce is the game's (UnchangedTranspilers).
+                && !PatchSafety.IsPatchedByOthers(_propertiesSerialize, UnchangedTranspilers.Allowed(_propertiesSerialize))
+                && !PatchSafety.IsPatchedByOthers(_relicStateSerialize, UnchangedTranspilers.Allowed(_relicStateSerialize));
             _scalarGuardsPass = ScalarApplied && !PatchSafety.IsPatchedByOthers(_fromInternal!, AllowedOnFromInternal) && !PatchSafety.IsPatchedByOthers(_shouldSerialize!);
             _guardsAt = now;
         }

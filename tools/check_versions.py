@@ -70,7 +70,7 @@ MODS = ("BaseLib", "Limitless")
 # Other mods some patches are pinned to (fingerprints or allowed patches: ExtraScopes' BetterSpire2 scope, SpeedX's soul
 # postfix): an update there leaves that part vanilla, so it is watched the same way. Unlike BaseLib and Limitless, one that
 # isn't installed is not a change. Unlimited (sts2unlimited) is no longer watched (owner, 2026-11-20): no part relies on its
-# code by name any more, its transpiler being judged by a generic rule like any other mod's patch.
+# code by name any more, its transpilers being judged by the code they produce (UnchangedTranspilers), like any other mod's.
 EXTRA_MODS = ("BetterSpire2", "SpeedX")
 WATCHED = MODS + EXTRA_MODS
 APP_ID = "2868840"
