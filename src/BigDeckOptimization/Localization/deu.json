@@ -27,6 +27,7 @@
   "kept_bridges": "Bleibt aktiv mit {mods}. Ihr Code zur Schadensberechnung ändert nichts für die Karten, Relikte und Kräfte, die er nicht betrifft: Diese bleiben beschleunigt.",
   "kept_walks": "Bleibt aktiv mit {mods}. Ihre Ergänzungen der Listen dessen, was auf einen Effekt reagiert, werden einmal pro Bildschirmaktualisierung statt bei jeder Prüfung ermittelt. Das Ergebnis ist dasselbe.",
   "kept_snapwalks": "Bleibt aktiv mit {mods}. Bei der Zustandsprüfung nach jeder Aktion werden ihre Ergänzungen der Listen dessen, was auf einen Effekt reagiert, einmal pro Prüfung statt für jede Karte ermittelt und vor der Verwendung mit denen des Spiels verglichen. Das Spiel selbst wird nicht verändert.",
+  "kept_sortwalks": "Bleibt aktiv mit {mods}. Beim Sortieren der Karten vor dem Mischen werden ihre Ergänzungen der Listen dessen, was auf einen Effekt reagiert, einmal pro Sortierung statt für jede Karte ermittelt und dabei mit denen des Spiels abgeglichen. Die Reihenfolge bleibt gleich.",
   "coop_checksum.title": "Koop-Zustandsprüfung",
   "coop_checksum.desc": "Schnellere Zustandsprüfung nach jeder Aktion im Koop, in neueren Spielversionen auch solo (der größte Koop-Lag bei riesigen Decks). Mit Mods, die die Listen dessen ergänzen, was auf Effekte reagiert, können Koop-Spieler einander nur beitreten, wenn diese Option bei allen gleich eingestellt ist.",
   "combat_refresh.title": "Kampf-Aktualisierung",

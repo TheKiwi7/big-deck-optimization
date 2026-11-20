@@ -1,0 +1,52 @@
+# Stacked enchantments judged by their type's verdict while the Limitless hook skip is held inactive in a combat (A/B, mod on;
+# DESIGN "Limitless hook skip: held inactive", 2026-11-20). The option "Limitless enchantment copies" off before the fight leaves
+# LimitlessHookSkip inactive and not armed during it (as next to another mod's patches on Limitless's clone chain: RitsuLib), so
+# every filtered walk meeting one of the reference deck's stacked enchantments takes its type's verdict without evaluating the
+# part's conditions (FastListeners.PileFilter.Keeps' short path; foreignpatch require multiheld: verdicts taken that way, and the
+# conditions evaluated on 1 held answer in 256 never contradicting it). Plays, turns, a reshuffle; bdperf checksum (the whole
+# mod off against the optimized rows: identical checksums). CHECKSUM and STATE identical with multiheld-2k-off. ~1,900 cards.
+# uncompared: ^cache row: nothing served \(HookSkip's filtered walks answered every hook\)
+expect FOREIGN multiheld verdicts [1-9]\d*, held answers [1-9]\d*, contradicted 0
+expect OK: identical checksums
+timeout 1500
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdopt limitless_saves off
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+state start
+play 3
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+pilemove draw discard 2
+wait 1
+checksum moved
+endturn
+waitfor idle 300
+checksum reshuffle
+state reshuffle
+play 3
+waitfor idle 120
+checksum t2 plays
+state t2
+cmd bdperf checksum 2
+foreignpatch require multiheld
+cmd kill all
+waitfor nocombat 300
+wait 2
+checksum after combat
+state after combat
+counters end
+cmd bdopt limitless_saves on
+quit

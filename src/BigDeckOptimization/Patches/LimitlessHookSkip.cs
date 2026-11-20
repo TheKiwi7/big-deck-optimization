@@ -76,20 +76,47 @@ public static class LimitlessHookSkip
     {
         get
         {
-            // The game's clone chain too: a dropped clone's inner cards are never built, as the game would on its first call.
-            // And no assembly loaded since the load check may change the inner list (a type no note would see).
-            if (!Applied || !_enabled || !LimitlessReserialize.Applied || !LimitlessReserialize.Enabled || !LimitlessCloneMemo.GameChainKnown()
-                || !InnerListWritersKnown || PatchedByOthers() || LimitlessReserialize.PatchedByOthers())
+            // Not armed during a combat: false whatever the conditions below say (arming needs no combat under way, and a failing
+            // condition only clears _armed again), so they aren't evaluated (HeldInactive: the same answer, cheaper). Not applied:
+            // the first condition below answers at once.
+            if (Applied && HeldInactive)
             {
-                _armed = false;
+#if BENCH
+                // Test builds: one held answer in 256 against the conditions evaluated (they can't arm in a combat).
+                if ((++HeldAnswers & 255) == 1 && Evaluate())
+                {
+                    HeldMismatches++;
+                    Log.Error($"[{ModEntry.Id}] {Name}: held inactive in a combat, but its conditions evaluated answer active");
+                }
+#endif
                 return false;
             }
-            if (!_armed && !CombatUnderWay())
-            {
-                _armed = true;
-            }
-            return _armed;
+            return Evaluate();
         }
+    }
+
+#if BENCH
+    /// <summary>Answers of <see cref="Active"/> held inactive (<see cref="HeldInactive"/>), and those the evaluated conditions contradicted (0 expected).</summary>
+    public static long HeldAnswers;
+    public static long HeldMismatches;
+#endif
+
+    /// <summary><see cref="Active"/>'s conditions evaluated (arming outside a combat).</summary>
+    private static bool Evaluate()
+    {
+        // The game's clone chain too: a dropped clone's inner cards are never built, as the game would on its first call.
+        // And no assembly loaded since the load check may change the inner list (a type no note would see).
+        if (!Applied || !_enabled || !LimitlessReserialize.Applied || !LimitlessReserialize.Enabled || !LimitlessCloneMemo.GameChainKnown()
+            || !InnerListWritersKnown || PatchedByOthers() || LimitlessReserialize.PatchedByOthers())
+        {
+            _armed = false;
+            return false;
+        }
+        if (!_armed && !CombatUnderWay())
+        {
+            _armed = true;
+        }
+        return _armed;
     }
 
     /// <summary>
@@ -102,6 +129,15 @@ public static class LimitlessHookSkip
         MegaCrit.Sts2.Core.Combat.CombatManager.Instance is { } combat && (combat.IsInProgress || combat.IsStarting || combat.DebugOnlyGetState() != null);
 
     private static bool _armed;
+
+    /// <summary>
+    /// <see cref="Active"/> is false now, known without evaluating its conditions: not armed, and a combat under way. Exact: a
+    /// failing condition only clears <c>_armed</c> (already clear), and arming needs no combat under way, so an evaluation now
+    /// answers false too and changes nothing but the conditions' lazy caches (a late assembly's scan, the 2-s patch recheck),
+    /// which the next evaluation outside a combat runs before it can arm. <see cref="Stamp"/> is then -1, and a stacked
+    /// enchantment's verdict in a filter is its type's (FastListeners.PileFilter.Keeps: nothing noted, nothing dropped).
+    /// </summary>
+    internal static bool HeldInactive => !_armed && CombatUnderWay();
 
     private static MethodBase[] _watched = Array.Empty<MethodBase>();
     /// <summary>Limitless's EnchantmentStorageCard, the type of every inner card AddEnchantment makes.</summary>

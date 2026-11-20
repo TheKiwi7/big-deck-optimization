@@ -273,6 +273,7 @@ public static class ListenerCache
             "listener lists are rebuilt in each refresh instead of reused: other mods define BaseLib card modifiers", whole: true));
         PatchSafety.WatchNote(WalkReuseName, NoteAugmentedWalks);
         PatchSafety.WatchNote(SnapshotWalksName, NoteSnapshotWalks);
+        PatchSafety.WatchNote(SortWalksName, NoteSortWalks);
     }
 
     // ---- The augmented-walk premise (Walks Tier 2, owner-approved 2026-11-17; DESIGN "Owner-approved premises") ----
@@ -295,6 +296,8 @@ public static class ListenerCache
         public bool Checked;
         /// <summary>Reused in the current checksum snapshot: compared with a fresh walk at its end (<see cref="EndSnapshotWalks"/>).</summary>
         public bool InNet;
+        /// <summary>Its reuses in the answered card sort it was kept in (the sort's own check schedule, <see cref="EnterSort"/>).</summary>
+        public int SortUses;
 
         public KeptOutput(int version, LazyOutput output)
         {
@@ -374,10 +377,14 @@ public static class ListenerCache
 
     /// <summary>
     /// The part this scope's reuse belongs to is on: in a checksum snapshot (<see cref="_snapshotReuse"/>) its own part, at the
-    /// state version the snapshot started at; elsewhere the display refreshes' part. The display part's switch and session faults
-    /// never decide anything in a snapshot (peer determinism, DESIGN "Snapshot walk reuse").
+    /// state version the snapshot started at; in an answered card sort (<see cref="_sortReuse"/>) its own part, at the state version
+    /// the sort started at and not while CardSortKeys checks an answer against the game's comparison (<see cref="PauseSort"/>);
+    /// elsewhere the display refreshes' part. The display part's switch and session faults never decide anything in a snapshot or
+    /// a sort (peer determinism, DESIGN "Snapshot walk reuse").
     /// </summary>
-    private static bool PartOn => _snapshotReuse ? SnapshotWalksEnabled && _version == _snapshotVersion : WalkReuseEnabled;
+    private static bool PartOn => _snapshotReuse ? SnapshotWalksEnabled && _version == _snapshotVersion
+        : _sortReuse ? SortWalksEnabled && !_sortPaused && _version == _sortVersion
+        : WalkReuseEnabled;
 
     /// <summary>
     /// This class's postfix runs after every other mod's on the walk (Harmony's sort, asked again when Harmony's epoch moves, each
@@ -470,8 +477,13 @@ public static class ListenerCache
                 // D1 (re-audit of c2f613b): Checked is set by a check that covered everything its caller read (CheckedOutput), not
                 // when a check is handed out. D2: the per-key sample's position moves with the scope (display only). In a checksum
                 // snapshot the schedule is the snapshot's own (its first reuse of each key until one covered what its caller read,
-                // none after it): no count kept across scopes, so every peer checks the same walks for the same state (R3-3).
-                bool check = _snapshotReuse ? !entry.Checked : !entry.Checked || CountReuse(key) % WalkVerifyEvery == 0;
+                // none after it): no count kept across scopes, so every peer checks the same walks for the same state (R3-3). In an
+                // answered card sort, the sort's own count: its first reuse of each key until one covered what its caller read, then
+                // one in WalkVerifyEvery of that key's reuses in the sort (a synchronized game action: every peer answering it checks
+                // the same walks, as CardSortKeys' own schedule, A2).
+                bool check = _snapshotReuse ? !entry.Checked
+                    : _sortReuse ? !entry.Checked || ++entry.SortUses % WalkVerifyEvery == 0
+                    : !entry.Checked || CountReuse(key) % WalkVerifyEvery == 0;
                 if (_snapshotReuse && !entry.InNet)
                 {
                     // Compared with a fresh walk at the snapshot's end, before the snapshot is used (EndSnapshotWalks).
@@ -484,6 +496,10 @@ public static class ListenerCache
                     if (_snapshotReuse)
                     {
                         SnapshotWalkReuses++;
+                    }
+                    else if (_sortReuse)
+                    {
+                        SortWalkReuses++;
                     }
                     else
                     {
@@ -500,6 +516,10 @@ public static class ListenerCache
                 if (_snapshotReuse)
                 {
                     SnapshotWalkChecks++;
+                }
+                else if (_sortReuse)
+                {
+                    SortWalkChecks++;
                 }
                 else
                 {
@@ -524,6 +544,10 @@ public static class ListenerCache
             if (_snapshotReuse)
             {
                 SnapshotWalksKept++;
+            }
+            else if (_sortReuse)
+            {
+                SortWalksKept++;
             }
             else
             {
@@ -596,6 +620,11 @@ public static class ListenerCache
             SnapshotTaint("this class's error: " + e.Message);
             return;
         }
+        if (_sortReuse)
+        {
+            SortWalksFailed("this class's error: " + e);
+            return;
+        }
         WalkReuseEnabled = false;
         ClearAugmented();
         PatchSafety.Fault(WalkReuseName);
@@ -609,6 +638,22 @@ public static class ListenerCache
             // A checked reuse in a checksum snapshot (CheckedOutput compares only in the scope it was made for): that snapshot is
             // built again the game's way before it is used; the display part and its session state are not touched.
             SnapshotTaint($"a checked reuse differs ({what})");
+            return;
+        }
+        if (_sortReuse)
+        {
+            // A checked reuse in an answered card sort (compared only in the scope it was made for): the sort's part off for the
+            // session, nothing reused in the rest of this sort; the display part is not touched.
+#if BENCH
+            if (_selfTesting)
+            {
+                _selfTestMismatches++;
+                ExactFromHere();
+                return;
+            }
+#endif
+            SortWalkMismatches++;
+            SortWalksFailed($"a kept listener walk output differs from a fresh one ({key.Item1.GetType().Name}{(key.Item2 == null ? "" : " with a child combat")}: {what})");
             return;
         }
 #if BENCH
@@ -1392,6 +1437,196 @@ public static class ListenerCache
     {
         _exactScope = true;
         ClearAugmented();
+    }
+
+    // ---- The answered card sort's walk reuse (owner-approved 2026-11-20 under Walks Tier 2's premise, DESIGN "Sort walk reuse") ----
+
+    /// <summary>
+    /// The listener walks inside one answered card sort (CardSortKeys: a <c>StableShuffle</c>'s <c>List.Sort</c> whose comparisons
+    /// it answers). v0.113's comparison reads each card's resolved cost, whose hook walks every listener: one walk per card read.
+    /// The sort is a scope of this class, a game-value one (<see cref="EnterSort"/>): the unpatched lists served by state version
+    /// (exact, as every scope's), HookFilter's lists with them while no other mod patches the walks. With other mods' postfixes on a
+    /// walk, its output after them is kept at the sort's first walk and reused for the sort's later walks (<see cref="Augmented"/>,
+    /// KeptOnly's memo over it), on Walks Tier 2's premise, narrower scope: within one synchronous sort, at one state version, the
+    /// walk's output after other mods' postfixes is the same at every call. Its own part and switch: a difference found, or an error
+    /// here, turns it off for the session (the display part is not touched).
+    /// </summary>
+    public const string SortWalksName = Name + ".SortWalks";
+
+    public static bool SortWalksEnabled { get; set; } = true;
+
+    /// <summary>The current outermost scope is an answered card sort (<see cref="EnterSort"/>): its part decides the augmented reuse.</summary>
+    [ThreadStatic] private static bool _sortReuse;
+    /// <summary>The state version the sort started at: no reuse at another one (a version change ends it for the rest of the sort).</summary>
+    [ThreadStatic] private static int _sortVersion;
+    /// <summary>CardSortKeys checks an answer against the game's comparison (<see cref="PauseSort"/>): its walks get their own outputs.</summary>
+    [ThreadStatic] private static bool _sortPaused;
+
+    /// <summary>Checked reuses in sorts that differed from a fresh walk (each turned the part off).</summary>
+    public static long SortWalkMismatches { get; private set; }
+#if BENCH
+    /// <summary>Sort scopes opened, walks answered from a kept output, outputs kept, reuses compared with a fresh walk (the effects check).</summary>
+    public static long SortScopes { get; private set; }
+    public static long SortWalkReuses { get; private set; }
+    public static long SortWalksKept { get; private set; }
+    public static long SortWalkChecks { get; private set; }
+#endif
+
+    /// <summary>
+    /// CardSortKeys opened a sort it answers (<c>StableShuffleInScope</c>): its scope, when nothing else of this class is open on this
+    /// thread (no display refresh, snapshot, suspension, vanilla reference or another mod's handler around it: else the sort runs as
+    /// before, inside what is open). Returns the state <see cref="ExitSort"/> takes (0: nothing opened). Never throws.
+    /// </summary>
+    internal static int EnterSort()
+    {
+        try
+        {
+            if (!SortWalksEnabled || !_applied || _snapshotDepth + _refreshDepth != 0 || _vanillaRef != 0 || _suspended || _enclosing != null
+                || _foreignDepth != 0 || _materializingAugmented || _materializingCombat || _materializingRun)
+            {
+                return 0;
+            }
+            EnterAny();
+            // A game-value pass: no list kept from an earlier display scope is used in it (and none handed on from it).
+            BlockReuse();
+            _sortVersion = _version;
+            _sortPaused = false;
+            // The augmented reuse only with the shape rules on (AugmentedReuse asks the rest per walk: other mods' postfixes on it,
+            // this class's postfix last); without, no output is kept (exact mode, as a game-value refresh).
+            if (PatchSafety.ShapeRules)
+            {
+                _sortReuse = true;
+            }
+            else
+            {
+                ExactFromHere();
+            }
+#if BENCH
+            SortScopes++;
+#endif
+            _refreshDepth++;
+            return 1;
+        }
+        catch (Exception e)
+        {
+            _sortReuse = false;
+            SortWalksFailed("opening a sort's scope failed: " + e);
+            return 0;
+        }
+    }
+
+    /// <summary>The sort's end (its <c>finally</c>): the scope closed, every kept output with it. Never throws.</summary>
+    internal static void ExitSort(int state)
+    {
+        if (state == 0)
+        {
+            return;
+        }
+        _sortReuse = false;
+        _sortPaused = false;
+        ExitRefresh(null, state);
+    }
+
+    /// <summary>
+    /// CardSortKeys' check of an answer against the game's comparison: while paused, the walks get their own outputs (other mods'
+    /// postfixes run on the unpatched list as at every scope's exact tier), so the check stays independent of the reuse; a kept
+    /// output is neither reused nor kept then. Returns the previous state, to restore.
+    /// </summary>
+    internal static bool PauseSort(bool pause)
+    {
+        bool was = _sortPaused;
+        _sortPaused = pause;
+        return was;
+    }
+
+    /// <summary>A checked reuse differed in a sort, or this class's error there: no more reuse in it, the part off for the session, logged. Never throws.</summary>
+    private static void SortWalksFailed(string what)
+    {
+        try
+        {
+            ExactFromHere();
+        }
+        catch
+        {
+            _exactScope = true;
+        }
+        if (!SortWalksEnabled)
+        {
+            return;
+        }
+        SortWalksEnabled = false;
+        PatchSafety.Fault(SortWalksName);
+        Log.Error($"[{ModEntry.Id}] {Name}: in a card sort, {what}: the listener walks' reuse in sorts turned off for this session. Please report this log.");
+    }
+
+#if BENCH
+    /// <summary>
+    /// <c>foreignpatch sortwalks status</c>, <c>foreignpatch require sortwalks on|exact|off</c>: the sort's walk reuse's counters and
+    /// checks. on: sort scopes opened, outputs kept and reused in them, reuses compared with a fresh walk, no difference, the part on.
+    /// exact: sort scopes opened, nothing kept (no other mod's postfix on the walks: the lists served by version only), the part on.
+    /// off (the control): a difference found, the part off and faulted.
+    /// </summary>
+    internal static string SortWalksControl(string what)
+    {
+        string status = $"FOREIGN sortwalks scopes {SortScopes}, kept {SortWalksKept}, reused {SortWalkReuses}, checked {SortWalkChecks}, "
+            + $"mismatches {SortWalkMismatches}, on {SortWalksEnabled}, faulted {PatchSafety.IsFaulted(SortWalksName)}, served {Served}, "
+            + $"memo hits {MemoHits}, live verdicts {FastListeners.MemoLiveJudged}, held verdicts {FastListeners.MultiHeldVerdicts}";
+        bool fail = what switch
+        {
+            "status" => false,
+            "require on" => SortScopes == 0 || SortWalksKept == 0 || SortWalkReuses == 0 || SortWalkChecks == 0 || SortWalkMismatches > 0
+                || !SortWalksEnabled || PatchSafety.IsFaulted(SortWalksName),
+            "require exact" => SortScopes == 0 || SortWalksKept > 0 || SortWalkMismatches > 0 || !SortWalksEnabled,
+            "require off" => SortWalkMismatches == 0 || SortWalksEnabled || !PatchSafety.IsFaulted(SortWalksName),
+            _ => throw new ArgumentException("foreignpatch sortwalks status | foreignpatch require sortwalks on|exact|off"),
+        };
+        if (fail)
+        {
+            throw new InvalidOperationException(status);
+        }
+        return status;
+    }
+#endif
+
+    /// <summary>The kept note of the sort's walk reuse: which other mods' postfixes on the walks run once per answered sort instead of per card.</summary>
+    private static void NoteSortWalks()
+    {
+        try
+        {
+            var walks = new List<MethodBase>();
+            if (PatchSafety.ShapeRules && SortWalksEnabled && RefreshEnabled && _applied && CardSortKeys.Applied && CardSortKeys.Enabled
+                && _combatWalkPostfix != null && _runWalkPostfix != null)
+            {
+                if (PatchSafety.HasOtherPatches(_combatIterate) && PostfixLast(_combatIterate, _combatWalkPostfix, ref _combatLast))
+                {
+                    walks.Add(_combatIterate!);
+                }
+                if (PatchSafety.HasOtherPatches(_runIterate) && PostfixLast(_runIterate, _runWalkPostfix, ref _runLast))
+                {
+                    walks.Add(_runIterate!);
+                }
+            }
+            if (walks.Count == 0)
+            {
+                PatchSafety.ClearKept(SortWalksName, "sort_walks");
+                return;
+            }
+            var mods = new List<string>(PatchSafety.OtherModsPatching(walks));
+            foreach (MethodBase walk in walks)
+            {
+                mods.AddRange(HarmonyWatch.HiddenOwners(walk));
+            }
+            string names = string.Join(", ", walks.Select(m => $"{m.DeclaringType?.Name}.{m.Name}"));
+            PatchSafety.Kept(SortWalksName, "sort_walks", $"other mods' code on the listener walks ({names}) runs once per card sort before "
+                + "a shuffle instead of once per card's cost read: its output, enumerated only as far as the game goes, is reused for that "
+                + "sort's walks (a stated premise: within one sort, at one state, it gives the same listeners; each sort's first reuse of a "
+                + $"walk and one in {WalkVerifyEvery} after it are compared with a fresh call, a difference turns this off; the sort's own "
+                + "checks against the game's comparison take fresh walks)", mods.ToArray());
+        }
+        catch
+        {
+            // Display only.
+        }
     }
 
     // ---- The checksum snapshot's walk reuse (owner-approved 2026-11-17, DESIGN "Snapshot walk reuse") ----
@@ -2586,6 +2821,12 @@ public static class ListenerCache
             Expect(d6, "the first walk's output is guarded by its scope (D6)");
             Expect(d3, "at the scope's end a kept source no caller finished is disposed (D3)");
 
+            // 7b. An answered card sort (EnterSort, DESIGN "Sort walk reuse"): opened only with nothing else open; the first walk
+            // kept, the next reuse checked, then one in WalkVerifyEvery of the key's reuses counted from the sort's start (the same in
+            // every sort); a pause (CardSortKeys' check) and a state version change give the call's own output; a nested game-value
+            // refresh ends the reuse; a difference ends it and leaves the display part alone; the scope's end closes everything.
+            SortSelfTest(Expect, models);
+
             // 8. KeptOnly's memo over a kept output (Walks Tier 2): the same result, the same pulls, every way it falls back.
             MemoSelfTest(Expect);
 
@@ -2625,6 +2866,120 @@ public static class ListenerCache
         }
         lines.Add($"FOREIGN walkreuse selftest: {lines.Count} cases as expected");
         return lines;
+    }
+
+    /// <summary>The answered card sort's scope and walk reuse (no game state: the walks are the test's arrays).</summary>
+    private static void SortSelfTest(Action<bool, string> expect, AbstractModel[] models)
+    {
+        bool wasExact = _exactScope, wasSafeHere = _safe, wasSuspended = _suspended, wasPart = SortWalksEnabled, wasDisplay = WalkReuseEnabled;
+        bool wasRefreshEnabled = RefreshEnabled;
+        int wasSnapshot = _snapshotDepth, wasRefresh = _refreshDepth, wasSerial = _scopeSerial, wasVersion = _version;
+        long wasScopes = SortScopes, wasKept = SortWalksKept, wasReuses = SortWalkReuses, wasChecks = SortWalkChecks;
+        var key = ((object)models[2], (object?)null);
+        AbstractModel[] kept = models.Take(3).ToArray(), other = models.Skip(3).ToArray();
+        // One sort: EnterSort, then body inside it (the scope's _safe forced: no game state here), then ExitSort.
+        bool Sort(Func<bool> body)
+        {
+            _snapshotDepth = 0;
+            _refreshDepth = 0;
+            _suspended = false;
+            RefreshEnabled = true;
+            SortWalksEnabled = true;
+            int state = EnterSort();
+            if (state == 0)
+            {
+                return false;
+            }
+            _safe = true;
+            bool ok = _sortReuse && _refreshDepth == 1 && body();
+            ExitSort(state);
+            return ok && !_sortReuse && _refreshDepth == 0 && (_augmented == null || _augmented.Count == 0);
+        }
+        // The kinds of output 40 walks of one key get in a sort: k kept, c checked, r reused.
+        string Pattern()
+        {
+            var kinds = new System.Text.StringBuilder();
+            for (int i = 0; i < 40; i++)
+            {
+                IEnumerable<AbstractModel> output = Augmented(key, kept);
+                kinds.Append(output is CheckedOutput ? 'c' : i == 0 ? 'k' : 'r');
+                output.ToList();
+            }
+            return kinds.ToString();
+        }
+        try
+        {
+            string first = "", second = "";
+            bool scheduled = Sort(() => (first = Pattern()).Length == 40) && Sort(() => (second = Pattern()).Length == 40);
+            string expected = "kc" + new string('r', WalkVerifyEvery - 1) + "c" + new string('r', WalkVerifyEvery - 1) + "c" + new string('r', 40 - 2 * WalkVerifyEvery - 2);
+            expect(scheduled && first == expected && second == expected, $"a sort keeps, checks its first reuse, then one in {WalkVerifyEvery} from its own start ({first})");
+
+            bool paused = Sort(() =>
+            {
+                Augmented(key, kept).ToList();
+                Augmented(key, kept).ToList(); // Checked.
+                IEnumerable<AbstractModel> held = Augmented(key, other);
+                bool wasPaused = PauseSort(true);
+                bool own = !ReuseOpen && held.SequenceEqual(other);
+                PauseSort(wasPaused);
+                return own && ReuseOpen && held.SequenceEqual(kept);
+            });
+            expect(paused, "a pause (CardSortKeys' check) gives the call's own output, the reuse back after it");
+
+            bool versioned = Sort(() =>
+            {
+                Augmented(key, kept).ToList();
+                Augmented(key, kept).ToList();
+                IEnumerable<AbstractModel> held = Augmented(key, other);
+                _version++;
+                return !ReuseOpen && held.SequenceEqual(other);
+            });
+            expect(versioned, "a state version change ends a sort's reuse");
+
+            bool nested = Sort(() =>
+            {
+                Augmented(key, kept).ToList();
+                Augmented(key, kept).ToList();
+                IEnumerable<AbstractModel> held = Augmented(key, other);
+                EnterRefresh();
+                ExitRefresh(null);
+                return _exactScope && !ReuseOpen && held.SequenceEqual(other);
+            });
+            expect(nested, "a game-value refresh nested in a sort ends its reuse");
+
+            int before = _selfTestMismatches;
+            bool differs = Sort(() =>
+            {
+                Augmented(key, kept).ToList();
+                Augmented(key, other).ToList(); // The first reuse is checked: another output.
+                return _exactScope && !ReuseOpen;
+            });
+            expect(differs && _selfTestMismatches == before + 1 && WalkReuseEnabled == wasDisplay, "a difference in a sort ends its reuse, the display part untouched");
+
+            _refreshDepth = 1;
+            int refused = EnterSort();
+            _refreshDepth = 0;
+            expect(refused == 0, "no sort scope inside another scope");
+        }
+        finally
+        {
+            _exactScope = wasExact;
+            _safe = wasSafeHere;
+            _suspended = wasSuspended;
+            SortWalksEnabled = wasPart;
+            WalkReuseEnabled = wasDisplay;
+            RefreshEnabled = wasRefreshEnabled;
+            _snapshotDepth = wasSnapshot;
+            _refreshDepth = wasRefresh;
+            _scopeSerial = wasSerial;
+            _version = wasVersion;
+            _sortReuse = false;
+            _sortPaused = false;
+            SortScopes = wasScopes;
+            SortWalksKept = wasKept;
+            SortWalkReuses = wasReuses;
+            SortWalkChecks = wasChecks;
+        }
     }
 
     /// <summary>
@@ -4084,6 +4439,8 @@ public static class ListenerCache
         public int RefreshDepth, ForeignDepth;
         public bool Suspended, ExactScope, ReuseBlocked, Safe, CombatAugmented, RunAugmented, MirrorDeclined, ReleaseAtExit;
         public bool MaterializingCombat, MaterializingRun, MaterializingAugmented;
+        public bool SortReuse, SortPaused;
+        public int SortVersion;
 #if BENCH
         public bool InGameHandler;
 #endif
@@ -4107,8 +4464,11 @@ public static class ListenerCache
             ReuseBlocked = _reuseBlocked, Safe = _safe, CombatAugmented = _combatAugmented, RunAugmented = _runAugmented,
             MirrorDeclined = _mirrorDeclined, ReleaseAtExit = _releaseAtExit, MaterializingCombat = _materializingCombat,
             MaterializingRun = _materializingRun, MaterializingAugmented = _materializingAugmented,
+            SortReuse = _sortReuse, SortPaused = _sortPaused, SortVersion = _sortVersion,
             Augmented = _augmented, Cache = _cache, FromKept = _fromKept,
         };
+        _sortReuse = false;
+        _sortPaused = false;
         _refreshDepth = 0;
         _foreignDepth = 0;
         _suspended = false;
@@ -4151,6 +4511,9 @@ public static class ListenerCache
         _materializingCombat = outer.MaterializingCombat;
         _materializingRun = outer.MaterializingRun;
         _materializingAugmented = outer.MaterializingAugmented;
+        _sortReuse = outer.SortReuse;
+        _sortPaused = outer.SortPaused;
+        _sortVersion = outer.SortVersion;
 #if BENCH
         _inGameHandler = outer.InGameHandler;
 #endif

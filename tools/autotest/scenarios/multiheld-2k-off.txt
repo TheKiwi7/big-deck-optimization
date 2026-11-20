@@ -1,0 +1,42 @@
+# Stacked enchantments while the Limitless hook skip is held inactive (A/B, mod off): see multiheld-2k-on; CHECKSUM and STATE lines
+# must match line for line.
+timeout 1500
+cmd bdopt off
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+enemyhp 999999
+immortal
+cmd bdperf checks off
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+state start
+play 3
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+pilemove draw discard 2
+wait 1
+checksum moved
+endturn
+waitfor idle 300
+checksum reshuffle
+state reshuffle
+play 3
+waitfor idle 120
+checksum t2 plays
+state t2
+cmd kill all
+waitfor nocombat 300
+wait 2
+checksum after combat
+state after combat
+cmd bdopt on
+quit

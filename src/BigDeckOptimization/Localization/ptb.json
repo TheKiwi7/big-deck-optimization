@@ -27,6 +27,7 @@
   "kept_bridges": "Continua ativa com {mods}. O código deles sobre o cálculo de dano não muda nada para as cartas, relíquias e poderes que não são alvo dele: esses continuam acelerados.",
   "kept_walks": "Continua ativa com {mods}. As adições deles às listas do que reage a um efeito são calculadas uma vez por atualização de tela, em vez de a cada verificação. O resultado é o mesmo.",
   "kept_snapwalks": "Continua ativa com {mods}. Na verificação de estado após cada ação, as adições deles às listas do que reage a um efeito são calculadas uma vez por verificação em vez de para cada carta, e comparadas com as do jogo antes de ela ser usada. O jogo em si não muda.",
+  "kept_sortwalks": "Continua ativa com {mods}. Para ordenar as cartas antes de embaralhar, as adições deles às listas do que reage a um efeito são calculadas uma vez por ordenação, em vez de para cada carta, e comparadas no caminho com as do jogo. A ordem é a mesma.",
   "coop_checksum.title": "Verificação de estado no co-op",
   "coop_checksum.desc": "Verificação de estado mais rápida após cada ação no co-op, e também no solo nas versões mais recentes do jogo (o maior lag do co-op com decks enormes). Com mods que adicionam às listas do que reage a efeitos, os jogadores do co-op só podem entrar no jogo uns dos outros se todos tiverem esta opção igual.",
   "combat_refresh.title": "Atualização em combate",
