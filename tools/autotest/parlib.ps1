@@ -439,6 +439,8 @@ $script:CoopProfilesSalt = $null
 # 'autoslayfirst' (the same Command() at the auto player's first room). A new script command goes in a part file as a
 # [ScriptCommand] method (AutoTest.PartCommand), with its name added to that file's pattern here (check_scenarios.py checks
 # both): a new case in AutoTest.cs's switch changes AutoTest.cs, which every key counts, and so invalidates every baseline.
+# A file without a command of its own (the foreign shapes) is keyed by the lines that reach its callers: check_scenarios.py's
+# CALLER_KEYED lists the only places allowed to name its types and the lines each is reached by, and fails on any other.
 $BaselineBenchParts = [ordered]@{
     'AutoTestRooms.cs'      = '^\s*(autoroom|automap|barrier|continuerun|runstate|restsite|selector|eventoption)\b'
     'AutoTestMouse.cs'      = '^\s*(hover|checktips|mouseplay|mousesweep|movehovered|buttoninput|controllermap|forcefocus|tipsrebuilt|targethover)\b'
@@ -459,16 +461,34 @@ $BaselineBenchParts = [ordered]@{
     'AutoTestStartup.cs'    = '^\s*(startsets|launchearly)\b'
     # Only the launch argument --bdstartprof turns it on, never a script line: no scripted session depends on it.
     'StartupProfile.cs'     = '(?!)'
+    # The synthetic foreign patches, no [ScriptCommand]: reached only through the call sites check_scenarios.py's CALLER_KEYED
+    # allows (it fails on any other reference to their types). ForeignPatches.cs runs from 'foreignpatch' (AutoTest.cs), 'bdperf
+    # foreign' (PerfConsoleCmd.cs), 'launchforeign' (the launch scripts' --bdforeign: ForeignLaunch.Install) and 'faultprobe'
+    # (FaultProbe.cs compiles its IdPrefix constant in); the others only from ForeignPatches.cs and each other. One pattern for all.
+    'ForeignPatches.cs'              = '^\s*(foreignpatch|launchforeign|faultprobe)\b|^\s*(cmd|autoslayfirst)\s+bdperf\s+foreign\b'
+    'ForeignShapesGates.cs'          = '^\s*(foreignpatch|launchforeign|faultprobe)\b|^\s*(cmd|autoslayfirst)\s+bdperf\s+foreign\b'
+    'ForeignShapesHookFilter.cs'     = '^\s*(foreignpatch|launchforeign|faultprobe)\b|^\s*(cmd|autoslayfirst)\s+bdperf\s+foreign\b'
+    'ForeignShapesLimitless.cs'      = '^\s*(foreignpatch|launchforeign|faultprobe)\b|^\s*(cmd|autoslayfirst)\s+bdperf\s+foreign\b'
+    'ForeignShapesLimitlessTwins.cs' = '^\s*(foreignpatch|launchforeign|faultprobe)\b|^\s*(cmd|autoslayfirst)\s+bdperf\s+foreign\b'
+    'ForeignShapesParts.cs'          = '^\s*(foreignpatch|launchforeign|faultprobe)\b|^\s*(cmd|autoslayfirst)\s+bdperf\s+foreign\b'
+    'ForeignShapesUnchanged.cs'      = '^\s*(foreignpatch|launchforeign|faultprobe)\b|^\s*(cmd|autoslayfirst)\s+bdperf\s+foreign\b'
+    'IlJudgeShapes.cs'               = '^\s*(foreignpatch|launchforeign|faultprobe)\b|^\s*(cmd|autoslayfirst)\s+bdperf\s+foreign\b'
+    # Only 'bdperf joinmsg' (PerfConsoleCmd.cs) runs it.
+    'JoinMismatchBench.cs'           = '^\s*(cmd|autoslayfirst)\s+bdperf\s+joinmsg\b'
 }
+# 'leakcheck' (AutoTestLeak.cs) reads the static fields of every type of this assembly (their initializers run then): a script
+# with it counts every Bench file, whatever its pattern.
+$BaselineBenchAll = '^\s*leakcheck\b'
 function Get-BaselineBenchFiles([string]$scriptText) {
     $bench = Join-Path $PSScriptRoot "..\..\src\BigDeckOptimization\Bench"
+    $all = [regex]::IsMatch($scriptText, $BaselineBenchAll, 'Multiline, IgnoreCase')
     foreach ($file in Get-ChildItem $bench -Filter *.cs) {
         if ($file.Name -eq 'AutoTestVideo.cs') { continue }  # local only: video scenarios, never cached
         $pattern = $BaselineBenchParts[$file.Name]
         # A file not in the table (the engine, its helpers, a new file) always counts: unknown is never left out.
         # Case-insensitive, as the dispatcher (AutoTest.cs's switch on the lower-cased command, PartCommand's OrdinalIgnoreCase):
         # 'Hover' runs AutoTestMouse.cs as 'hover' does.
-        if (-not $pattern -or [regex]::IsMatch($scriptText, $pattern, 'Multiline, IgnoreCase')) { $file }
+        if ($all -or -not $pattern -or [regex]::IsMatch($scriptText, $pattern, 'Multiline, IgnoreCase')) { $file }
     }
 }
 

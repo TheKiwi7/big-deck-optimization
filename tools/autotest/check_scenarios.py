@@ -13,6 +13,10 @@ a regex Python compiles, an `effects` line for effects-ran, a scenario that exis
 both compile and name their target in a line of several parts: one a COUNTERS line (or any line of 'Part ..., mismatches n;'
 parts) matches through another part's field than its own passes when its own part saw nothing. And the two sides of every
 comparison the runners make (<x>-off/<x>-on, '# compare-with:', co-op <x>off/<x>-off/<x>van) import the same deck.
+The files `$BaselineBenchParts` keys by their callers' lines (CALLER_KEYED: the foreign shapes, JoinMismatchBench): their types
+named nowhere else in src/ (comments and plain string literals aside) than the call sites listed there, every line listed for a
+call site matched by each file's pattern, and no way in that runs without a call (a module initializer, a Harmony attribute, a
+partial type of another file, a base type the game or Godot instantiates by reflection).
 
     python -I tools/autotest/check_scenarios.py --against <log> [scenario]
         tests each `expect` regex of the scenario (default: the one the log ran) against that log's session lines: which match
@@ -80,6 +84,261 @@ def part_command_problems():
             elif not re.search(parts[name], f'{command} 0', re.M | re.I):  # as parlib.ps1 matches them (IgnoreCase)
                 problems.append(f'{name}: [ScriptCommand("{command}")] not matched by its pattern in parlib.ps1\'s '
                                 f'$BaselineBenchParts: a scenario using it would reuse a baseline made without that code')
+    return problems
+
+
+# Bench files parlib.ps1's $BaselineBenchParts keys by the script lines that reach their callers (they have no command of their
+# own), by group: the group's files, and the only places outside the group where their types may be named, each as (file, its
+# enclosing 'case "x"' label or method) with script lines that reach it, which every file's pattern of the group must match. A
+# reference anywhere else (an always-run file calling in, a static initializer...) would leave the mod-off baselines of scripts
+# without those lines valid while that code changed: this check fails on it. 'leakcheck' reaches every Bench file
+# ($BaselineBenchAll). How each call site is reached is its own file's business (AutoTest.cs's case, FaultProbe.cs's pattern...):
+#   ForeignLaunch.Install runs only for a --bdforeign launch argument, which the launch scripts add for a 'launchforeign' line.
+SRC = os.path.join(ROOT, '..', '..', 'src')
+CALLER_KEYED = [
+    {
+        'files': ['ForeignPatches.cs', 'ForeignShapesGates.cs', 'ForeignShapesHookFilter.cs', 'ForeignShapesLimitless.cs',
+                  'ForeignShapesLimitlessTwins.cs', 'ForeignShapesParts.cs', 'ForeignShapesUnchanged.cs', 'IlJudgeShapes.cs'],
+        'callers': {
+            ('AutoTest.cs', 'case foreignpatch'): ['foreignpatch x', 'ForeignPatch x'],
+            ('PerfConsoleCmd.cs', 'case foreign'): ['cmd bdperf foreign x', 'autoslayfirst bdperf foreign x', 'cmd  BdPerf  Foreign'],
+            ('ForeignLaunch.cs', 'Install'): ['launchforeign x'],
+            ('FaultProbe.cs', 'Arm'): ['faultprobe x'],
+        },
+    },
+    {
+        'files': ['JoinMismatchBench.cs'],
+        'callers': {
+            ('PerfConsoleCmd.cs', 'case joinmsg'): ['cmd bdperf joinmsg', 'autoslayfirst bdperf joinmsg backoff'],
+        },
+    },
+]
+# A base type whose subclasses the game or Godot may find and create by reflection (console commands, models, nodes).
+REFLECTED_BASE = re.compile(r'(ConsoleCmd|Model|Node|Node2D|Node3D|Control|GodotObject|RefCounted|Resource)$')
+METHOD = re.compile(r'^\s*(?:(?:public|private|internal|protected|static|async|override|virtual|sealed|new|extern|unsafe|partial)\s+)+'
+                    r'[\w<>\[\],.?() ]+?\s+(\w+)\s*(?:<[^>]*>)?\s*\(')
+CASE_LABEL = re.compile(r'^\s*case "(\w+)"')
+
+
+def csharp_code(text):
+    """C# source with its comments and the contents of its plain string and char literals blanked (line breaks kept, so line
+    numbers hold); interpolated strings kept whole (their holes are code). None when unsure (an unclosed literal or comment)."""
+    out, i, n = [], 0, len(text)
+
+    def blank(s):
+        return ''.join('\n' if c == '\n' else ' ' for c in s)
+
+    def plain_end(j, verbatim):
+        """Index past the plain string starting with its quote at j."""
+        j += 1
+        while j < n:
+            c = text[j]
+            if verbatim and c == '"':
+                if j + 1 < n and text[j + 1] == '"':
+                    j += 2
+                    continue
+                return j + 1
+            if not verbatim and c == '\\':
+                j += 2
+                continue
+            if not verbatim and c == '\n':
+                return None
+            if c == '"':
+                return j + 1
+            j += 1
+        return None
+
+    def interpolated_end(j, verbatim):
+        """Index past the interpolated string whose quote is at j (holes may hold strings of their own)."""
+        j += 1
+        depth = 0
+        while j < n:
+            c = text[j]
+            if depth == 0:
+                if c == '"':
+                    if verbatim and j + 1 < n and text[j + 1] == '"':
+                        j += 2
+                        continue
+                    return j + 1
+                if c == '\\' and not verbatim:
+                    j += 2
+                    continue
+                if c in '{}' and j + 1 < n and text[j + 1] == c:
+                    j += 2
+                    continue
+                if c == '{':
+                    depth = 1
+                j += 1
+                continue
+            if c == '"':
+                end = plain_end(j, False)
+                if end is None:
+                    return None
+                j = end
+                continue
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+            j += 1
+        return None
+
+    while i < n:
+        c = text[i]
+        two = text[i:i + 2]
+        if two == '//':
+            end = text.find('\n', i)
+            end = n if end < 0 else end
+            out.append(blank(text[i:end]))
+            i = end
+        elif two == '/*':
+            end = text.find('*/', i + 2)
+            if end < 0:
+                return None
+            out.append(blank(text[i:end + 2]))
+            i = end + 2
+        elif text.startswith('"""', i):
+            return None  # a raw string literal: not read here
+        elif c == '$' or (c == '@' and text[i + 1:i + 2] == '$'):
+            prefix = 2 if text[i:i + 2] in ('$@', '@$') else 1
+            if text[i + prefix:i + prefix + 1] != '"':
+                out.append(c)
+                i += 1
+                continue
+            end = interpolated_end(i + prefix, '@' in text[i:i + prefix])
+            if end is None:
+                return None
+            out.append(text[i:end])
+            i = end
+        elif c == '"' or two == '@"':
+            start = i + (1 if c == '@' else 0)
+            end = plain_end(start, c == '@')
+            if end is None:
+                return None
+            out.append(text[i:start + 1] + blank(text[start + 1:end - 1]) + '"')
+            i = end
+        elif c == "'":
+            end = i + 1
+            while end < n and text[end] != "'":
+                end += 2 if text[end] == '\\' else 1
+            if end >= n:
+                return None
+            out.append("'" + blank(text[i + 1:end]) + "'")
+            i = end + 1
+        else:
+            out.append(c)
+            i += 1
+    return ''.join(out)
+
+
+def top_level_types(code):
+    """The names of the types a file declares at namespace level (file-scoped or block namespaces), and those it declares
+    partial or with a base type: [(name, partial, bases)]."""
+    file_scoped = re.search(r'^\s*namespace\s+[\w.]+\s*;', code, re.M) is not None
+    found, depth, i = [], 0, 0
+    declaration = re.compile(r'\b((?:(?:public|internal|private|protected|static|sealed|abstract|partial|readonly|ref|unsafe|file)\s+)*)'
+                             r'(class|struct|enum|record|interface)\s+(\w+)([^{;]*)')
+    for m in re.finditer(r'[{}]|\b(?:class|struct|enum|record|interface)\b', code):
+        if m.group() == '{':
+            depth += 1
+        elif m.group() == '}':
+            depth -= 1
+        elif depth == (0 if file_scoped else 1):
+            line_start = code.rfind('\n', 0, m.start()) + 1
+            d = declaration.match(code, line_start + len(code[line_start:m.start()]) - len(code[line_start:m.start()].lstrip()))
+            if d and d.start(2) == m.start():
+                bases = [b.strip().split('<')[0].split('.')[-1] for b in d.group(4).split(':', 1)[1].split(',')] if ':' in d.group(4) else []
+                found.append((d.group(3), 'partial' in d.group(1).split(), bases))
+    return found
+
+
+def enclosing(lines, raw, index):
+    """The 'case "x"' label or the method a line of code is in: the nearest one above it (lines: the code, its literals
+    blanked; raw: the source's lines, for the label's text)."""
+    for k in range(index, -1, -1):
+        if re.match(r'^\s*case\s+"', lines[k]) and (m := CASE_LABEL.match(raw[k])):
+            return 'case ' + m.group(1)
+        if (m := METHOD.match(lines[k])) and m.group(1) not in ('if', 'while', 'for', 'foreach', 'switch', 'using', 'lock', 'catch', 'return'):
+            return m.group(1)
+    return None
+
+
+def caller_keyed_problems():
+    """CALLER_KEYED, held: the group's types named only at the listed call sites, every listed line matched by each file's
+    pattern, no way into the group that runs without a call."""
+    parts = bench_parts() or {}
+    sources = {}
+    for path in glob.glob(os.path.join(SRC, '**', '*.cs'), recursive=True):
+        if os.sep + 'obj' + os.sep in path or os.sep + 'bin' + os.sep in path:
+            continue
+        with open(path, encoding='utf-8-sig') as f:
+            sources[path] = f.read()
+    by_name = {}
+    for path in sources:
+        by_name.setdefault(os.path.basename(path), []).append(path)
+    problems = []
+    declared_elsewhere = {}
+    raws = dict(sources)
+    for path, text in raws.items():
+        code = csharp_code(text)
+        if code is None:
+            problems.append(f'{os.path.basename(path)}: a raw string literal or an unclosed literal or comment: check_scenarios.py '
+                            'cannot read it for CALLER_KEYED (update csharp_code)')
+            continue  # Its text as it is: comments and strings count as references (more found, never fewer).
+        sources[path] = code
+        for name, _, _ in top_level_types(code):
+            declared_elsewhere.setdefault(name, set()).add(os.path.basename(path))
+    for group in CALLER_KEYED:
+        files = set(group['files'])
+        names = set()
+        for file in sorted(files):
+            if file not in by_name:
+                problems.append(f'CALLER_KEYED: {file} not found in src/')
+                continue
+            pattern = parts.get(file)
+            if pattern is None:
+                problems.append(f'{file}: in CALLER_KEYED but not in parlib.ps1\'s $BaselineBenchParts')
+            code = sources[by_name[file][0]]
+            if re.search(r'\b(ModuleInitializer|HarmonyPatch|HarmonyPatchAll|HarmonyPrefix|HarmonyPostfix|HarmonyTranspiler|HarmonyFinalizer)(Attribute)?\b', code):
+                problems.append(f'{file}: a [ModuleInitializer] or [HarmonyPatch] attribute runs its code without a call: it can\'t be '
+                                'keyed by its callers (take it out of CALLER_KEYED and $BaselineBenchParts)')
+            for name, partial, bases in top_level_types(code):
+                if partial and declared_elsewhere.get(name, set()) - files:
+                    problems.append(f'{file}: partial {name}, a type of {", ".join(sorted(declared_elsewhere[name]))}: its code runs '
+                                    'with that file\'s; it can\'t be keyed by its callers')
+                for base in bases:
+                    if REFLECTED_BASE.search(base):
+                        problems.append(f'{file}: {name} derives from {base}, which the game or Godot may create by reflection: it '
+                                        'can\'t be keyed by its callers')
+                names.add(name)
+            for (caller, site), samples in group['callers'].items():
+                for sample in samples:
+                    if pattern is not None and not re.search(pattern, sample, re.M | re.I):
+                        problems.append(f'{file}: its $BaselineBenchParts pattern misses "{sample}", a line reaching {caller} '
+                                        f'({site}), which calls into it')
+        if not names:
+            continue
+        word = re.compile(r'\b(' + '|'.join(sorted(names)) + r')\b')
+        seen = set()
+        for path, code in sources.items():
+            base = os.path.basename(path)
+            if base in files:
+                continue
+            lines, raw = code.split('\n'), raws[path].split('\n')
+            for number_, line in enumerate(lines):
+                if not (m := word.search(line)):
+                    continue
+                site = enclosing(lines, raw, number_)
+                if (base, site) in group['callers']:
+                    seen.add((base, site))
+                    continue
+                problems.append(f'{base}:{number_ + 1}: names {m.group(1)} ({", ".join(sorted(files)) if len(files) < 3 else "CALLER_KEYED group of " + group["files"][0]}) '
+                                f'in {site or "no case or method"}, not a call site CALLER_KEYED lists: add it there with the script lines '
+                                'that reach it (and to the files\' patterns in parlib.ps1), or the mod-off baselines of scripts without '
+                                'them stay valid when that code changes')
+        for caller, site in group['callers']:
+            if (caller, site) not in seen:
+                problems.append(f'CALLER_KEYED: {caller} ({site}) no longer names a type of {group["files"][0]}\'s group: remove it')
     return problems
 
 
@@ -337,7 +596,7 @@ def main():
     if template is None:
         print("AutoTest.cs: the 'counters' command's COUNTERS line not found: loose expects not checked (update check_scenarios.py)")
         bad += 1
-    for problem in part_command_problems():
+    for problem in part_command_problems() + caller_keyed_problems():
         print(problem)
         bad += 1
     for path in scenarios:
