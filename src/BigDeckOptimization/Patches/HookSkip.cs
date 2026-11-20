@@ -947,7 +947,13 @@ public static partial class HookSkip
     /// <summary>Hooks checked at load, patched by <see cref="PatchOverFrames"/>.</summary>
     private static readonly Queue<(string Hook, MethodBase Body)> _toPatch = new();
     private static int _absent;
-    private const int HooksPerFrame = 8;
+    /// <summary>
+    /// Main-menu time a frame's batch may take (P5 of 2026-11-20): hooks are patched until it is spent, at least one a frame (a
+    /// hook takes ~1.5 ms, some more). Eight a frame made 19-20 frames of 14-33 ms during the logo or an early menu; at 4 ms (as
+    /// the start's other per-frame work, ModEntry.ApplyBudgetMs) each frame stays well under a 60 fps frame: more frames, none
+    /// long, no new pause.
+    /// </summary>
+    private const double BatchBudgetMs = 4;
 
     /// <summary>
     /// Hooks still queued for <see cref="PatchOverFrames"/> (main thread): InlineGuard's rebuilds wait for them, so every
@@ -956,7 +962,8 @@ public static partial class HookSkip
     internal static bool HooksPending => _toPatch.Count > 0;
 
     /// <summary>
-    /// Transpiles the checked hooks a few per frame (~1.5 ms each: ~140 of them took ~200 ms of the game's start). Hooks only
+    /// Transpiles the checked hooks a few per frame, <see cref="BatchBudgetMs"/> of each (~1.5 ms a hook: ~140 of them took ~200 ms of
+    /// the game's start). Hooks only
     /// run in a run, seconds later; one not patched yet just runs vanilla. Main thread, like every patch of this mod.
     /// Falls back to patching them all now when frames can't be awaited.
     /// </summary>
@@ -972,7 +979,7 @@ public static partial class HookSkip
             while (_toPatch.Count > 0)
             {
                 await tree.ToSignal(tree, Godot.SceneTree.SignalName.ProcessFrame);
-                PatchBatch(harmony, HooksPerFrame);
+                PatchBatch(harmony, int.MaxValue, BatchBudgetMs);
             }
         }
         catch (Exception e)
@@ -1052,9 +1059,11 @@ public static partial class HookSkip
         }
     }
 
-    private static void PatchBatch(Harmony harmony, int count)
+    /// <summary>Patches up to <paramref name="count"/> queued hooks, and stops once <paramref name="budgetMs"/> is spent (one at least).</summary>
+    private static void PatchBatch(Harmony harmony, int count, double budgetMs = double.MaxValue)
     {
-        for (int n = 0; n < count && _toPatch.Count > 0; n++)
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        for (int n = 0; n < count && _toPatch.Count > 0 && (n == 0 || System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds < budgetMs); n++)
         {
             (string hookName, MethodBase body) = _toPatch.Dequeue();
             if (PatchSafety.IsFaulted(Name))
