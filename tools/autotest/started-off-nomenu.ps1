@@ -5,6 +5,8 @@
 param([string]$GameDir = "")
 $copy = $GameDir
 . (Join-Path $PSScriptRoot "parlib.ps1")
+# An error nothing catches ends this script with exit code 1 (common.ps1's Write-RunnerError), never with its work half done.
+trap { Write-RunnerError $_; exit 1 }
 $GameDir = Resolve-GameCopy $copy
 Assert-GameNotRunning
 $menuDll = Join-Path $GameDir "mods\BigDeckOptimization\BigDeckOptimization.Menu.dll"
@@ -33,6 +35,8 @@ try {
     Test-SessionLog "started-off-nomenu" "Patch (ListenerCache|HookSkip|FastListeners|PileIndex) applied" $true "the patches applied"
     Test-SessionLog "started-off-nomenu" "BaseLibSettings: registered" $false "the menu did not register (the case tested)"
     Test-SessionLog "started-off-nomenu" "CHECKSUM started-off-nomenu" $true "a fight played"
+    # The closing line battery.ps1 requires (parlib.ps1's Write-SessionLogSummary): printed only when every check above ran.
+    Write-SessionLogSummary $runProblems
 }
 finally { Unlock-Slot $KeptSlot; $asideLock.Dispose() }
 # Exit code 1 on any PROBLEM line above or a session run.ps1 judged with a problem.

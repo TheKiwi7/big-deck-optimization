@@ -20,6 +20,8 @@
 param([Parameter(Mandatory)][ValidateSet("cards", "relics", "potions", "encounters", "powers")][string]$Kind, [string]$GameDir = "", [int]$Jobs = 0, [int]$ChunkItems = 0, [int]$ItemTimeout = 45, [ValidateSet("instant", "fast")][string]$Speed = "instant", [int]$TimeoutSec = 1800, [int]$StallSec = 300, [switch]$UseBaselines, [string]$OnExtra = "", [int[]]$Chunks = @(), [int]$Imports = 0, [switch]$PatchedOff)
 $copy = $GameDir
 . (Join-Path $PSScriptRoot "parlib.ps1")
+# An error nothing catches ends this script with exit code 1 (common.ps1's Write-RunnerError), never with its work half done.
+trap { Write-RunnerError $_; exit 1 }
 $GameDir = Resolve-GameCopy $copy
 $out = Get-VersionDir $GameDir
 if ($Jobs -le 0) { $Jobs = $SlotPool }
@@ -105,7 +107,7 @@ if ($countFile -and (Test-Path $countFile) -and ([IO.File]::ReadAllText($countFi
 }
 else {
     Invoke-Sessions -Jobs @([pscustomobject]@{ Name = "count"; Script = $countScript; Log = $countLog }) -GameDir $GameDir -MaxJobs $Jobs -TimeoutSec 180 -StallSec 120 -Label "$Kind count" -StatusFile $statusFile | Out-Null
-    $match = Select-String -Path $countLog -Pattern "SWEEP $Kind`: (\d+) items" | Select-Object -First 1
+    $match = if (Test-Path $countLog) { Select-String -Path $countLog -Pattern "SWEEP $Kind`: (\d+) items" | Select-Object -First 1 }
     if (-not $match) { throw "No item count in $countLog" }
     $items = [int]$match.Matches[0].Groups[1].Value
     if ($countFile) {
@@ -133,7 +135,9 @@ $onPartEnd = {
     # What sweepreport.py doesn't see in the parts' logs: an earlier session of this part that ended early or froze in this mod's code (not the known
     # renderer crash), a test mod the game didn't find, a session not launched as its side says (Get-LaunchProblem).
     $result.Failed | Where-Object { $_ -match '^(ended early|froze|test mod |launched with|its log has the BDVANILLA|a patched-off session)' } | ForEach-Object { $sessionProblems.Add("$($part.Name): $_") }
-    $abort = Select-String -Path $part.Log -Pattern "SWEEP ABORT next=(\d+)" -ErrorAction SilentlyContinue | Select-Object -Last 1
+    # A part without its log (it never wrote one) has no continuation: its result says why. (Select-String throws on a missing
+    # file whatever -ErrorAction says: inside Invoke-Sessions, it would end the whole sweep.)
+    $abort = if (Test-Path $part.Log) { Select-String -Path $part.Log -Pattern "SWEEP ABORT next=(\d+)" -ErrorAction SilentlyContinue | Select-Object -Last 1 }
     if ($abort) {
         $from = [int]$abort.Matches[0].Groups[1].Value
         if ($from -lt $part.End) { New-PartJob $part.Side $part.Chunk ($part.Part + 1) $from ($part.End - $from) }
@@ -141,6 +145,8 @@ $onPartEnd = {
 }
 $outcome = @(Invoke-Sessions -Jobs $parts -GameDir $GameDir -MaxJobs $Jobs -TimeoutSec $TimeoutSec -StallSec $StallSec -UseBaselines:$UseBaselines -Label "$Kind $(Get-GameTag $GameDir)" -OnFinish $onPartEnd -StatusFile $statusFile)
 $count = $outcome.Count
+# Every part has its result: one that never ran has no log of this run (Invoke-Sessions deletes a queued job's old log).
+Get-MissingResults $parts $outcome | ForEach-Object { $sessionProblems.Add(($_ -replace '^PROBLEM ', '')) }
 # The count every part saw: a cached count that no longer holds is dropped (the next run counts again) and said here.
 $seen = @(Get-ChildItem $work -Filter "$Kind-*-c*-p*.log" -File | ForEach-Object { Select-String -Path $_.FullName -Pattern "SWEEP $Kind`: (\d+) items" | Select-Object -First 1 } | Where-Object { $_ } | ForEach-Object { [int]$_.Matches[0].Groups[1].Value } | Sort-Object -Unique)
 if (@($seen | Where-Object { $_ -ne $items }).Count) {
@@ -152,7 +158,7 @@ Remove-TestMods $GameDir
 if ($Imports) {
     $sessionProblems | ForEach-Object { Write-Output "session problem: $_" }
     Write-Output ("{0} at {1} imports: {2} sessions in {3:F1} min" -f $Kind, $Imports, $count, ((Get-Date) - $started).TotalMinutes)
-    exit 0
+    exit $(if ($sessionProblems.Count) { 1 } else { 0 })
 }
 $reportOutput = python -I (Join-Path $PSScriptRoot "sweepreport.py") $reportDir $Kind
 $bad = $LASTEXITCODE

@@ -17,6 +17,8 @@ $Names = @($Names | ForEach-Object { $_ -split "," } | Where-Object { $_ })  # "
 $PrefixNames = @($PrefixNames | ForEach-Object { $_ -split "," } | Where-Object { $_ })
 $copy = $GameDir
 . (Join-Path $PSScriptRoot "parlib.ps1")
+# An error nothing catches ends this script with exit code 1 (common.ps1's Write-RunnerError), never with its work half done.
+trap { Write-RunnerError $_; exit 1 }
 $GameDir = Resolve-GameCopy $copy
 if ($Jobs -le 0) { $Jobs = $SlotPool }
 $out = Join-Path (Get-VersionDir $GameDir) "vanillacheck"
@@ -35,6 +37,10 @@ $list = foreach ($name in $Names) {
 # A fresh vanilla log is kept as a baseline as any other (Invoke-Sessions); none is read.
 $runs = Invoke-Sessions -Jobs $list -GameDir $GameDir -MaxJobs $Jobs -TimeoutSec $TimeoutSec -StallSec $StallSec -Label "vanillacheck $(Get-GameTag $GameDir)"
 Remove-TestMods $GameDir
+# Every job has its result: one that never ran left no log to compare (Invoke-Sessions deletes a queued job's old log).
+$missing = @(Get-MissingResults $list $runs)
+$missing | ForEach-Object { Write-Output $_ }
+$bad += $missing.Count
 foreach ($r in $runs) {
     $prefix = $PrefixNames -contains ($r.Name -replace '-patched$', '')
     # How it ran: not ended, not launched as its side says (Get-LaunchProblem), a test mod missing, an earlier session that ended

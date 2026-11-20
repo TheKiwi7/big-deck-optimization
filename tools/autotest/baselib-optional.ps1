@@ -6,6 +6,8 @@
 param([string]$GameDir = "")
 $copy = $GameDir
 . (Join-Path $PSScriptRoot "parlib.ps1")
+# An error nothing catches ends this script with exit code 1 (common.ps1's Write-RunnerError), never with its work half done.
+trap { Write-RunnerError $_; exit 1 }
 $GameDir = Resolve-GameCopy $copy
 # Other games may run (par, the sweeps, the same script on the other copy): this one's sessions have their own kept slot and
 # results\<version>\ logs, and time nothing.
@@ -34,6 +36,8 @@ try {
     # HookSkip filters every hook of each supported version ("N hooks filtered, 0 left vanilla"): a count above 0 or a hook whose
     # code changed is a problem here, as any other part left vanilla or not applied.
     Test-SessionLog "baselib-absent" "[1-9]\d* left vanilla|Patch \w+ could not|HookSkip: \w+ code changed" $false "every patch that needs no other mod applied"
+    # The closing line battery.ps1 requires (parlib.ps1's Write-SessionLogSummary): printed only when every check above ran.
+    Write-SessionLogSummary $runProblems
 }
 finally { Unlock-Slot $KeptSlot }
 # Exit code 1 on any PROBLEM line above or a session run.ps1 judged with a problem.

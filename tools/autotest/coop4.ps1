@@ -11,6 +11,8 @@
 param([Parameter(Mandatory)][string]$Name, [string]$GameDir = "", [int]$Peers = 4, [int]$TimeoutSec = 1200, [int]$StallSec = 240, [switch]$Rendered, [switch]$RenderedClient)
 $copy = $GameDir
 . (Join-Path $PSScriptRoot "parlib.ps1")
+# An error nothing catches ends this script with exit code 1 (common.ps1's Write-RunnerError), never with its work half done.
+trap { Write-RunnerError $_; exit 1 }
 $GameDir = Resolve-GameCopy $copy
 $out = Get-VersionDir $GameDir
 $exe = Join-Path $GameDir "SlayTheSpire2.exe"
@@ -78,12 +80,17 @@ finally {
 }
 $problems = @()
 if ($state -ne "done") { $problems += $state }
+# Every peer started (its log path is known from its start on): fewer would compare fewer peers and could agree.
+if ($logs.Count -ne $Peers) { $problems += "only $($logs.Count) of $Peers peers started" }
 $turnStates = @(); $roles = @(); $runs = @()
 foreach ($log in $logs) {
     $role = [IO.Path]::GetFileNameWithoutExtension($log)
     $roles += $role
     # judge.py: not ended, a failed line, an error or a difference this mod found itself, a positive control that saw nothing...
     Invoke-Judge @($log) | Select-Object -First 3 | ForEach-Object { $problems += "$role`: " + ($_ -replace '^PROBLEM [^:]+: ', '') }
+    # A peer without its log is judge.py's "no log" problem above; nothing more to read (Select-String throws on a missing file,
+    # whatever -ErrorAction says), its empty turn starts make the comparison below differ.
+    if (-not (Test-Path $log)) { $turnStates += ,(Get-TurnStates $log); $runs += ,@(); continue }
     Select-String -Path $log -CaseSensitive -Pattern "State divergence" -ErrorAction SilentlyContinue | Select-Object -First 1 | ForEach-Object { $problems += "$role`: $($_.Line.Trim())" }
     # The Workshop mods its game must have found (a mods_STEAMTEST emptied by another series would go unseen).
     Get-MissingTestMods $log $GameDir | Select-Object -First 2 | ForEach-Object { $problems += "$role`: $_" }

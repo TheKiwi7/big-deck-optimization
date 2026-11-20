@@ -14,12 +14,17 @@
 #         folder, {jobs} the pool, {version} the copy's game version, {copies} the folders of every copy of the block, comma-joined.
 #         STS2_GAME_DIR is the copy's folder for every step. Once = $true (Parallel and Both blocks): the step runs once for the
 #         whole block, not once per copy (parsweep-all.ps1 -GameDir {copies}: the sweeps of both copies in one pool beside the solo
-#         par lists), reported as copy "all".
+#         par lists), reported as copy "all". Closing = '<regex>': the step's closing line, for a script $ClosingLines doesn't know.
 # Checks before the start (-SkipChecks leaves them out): each copy holds the DLLs of the build folder (hash), no game of a copy is
 # running, no test slot is locked by another series. A failed check ends with "BATTERY ABORT <why>" and exit code 2.
 # Output (stdout and the -Log file, default results\battery\<name>.log; the steps' full output next to it, one file per step):
 #   STEP <name> <copy> exit N problems K        one per finished step
 #   FAIL <name> <copy> exit N problems K | <first line of triage.py>      only for a failed step
+# A step passes on exit code 0, no problem counted and its runner's closing line ($ClosingLines: the summary each runner prints as
+# the last line of its work, which a runner cut short by an error never reaches; K is read from it when it counts problems). A
+# step whose script has no known closing line stops the battery before it starts (BATTERY ABORT). A step past its timeout is
+# stopped with every process it started (its process tree: the runner, its games, its child runners); games of its copy outside
+# that tree (started through WMI: rendered ones) are closed too only when no other step is running.
 #   BATTERY DONE <name> steps S failed F        the last line
 # Exit code: 0 all steps passed, 1 a step failed, 2 a check failed.
 param([Parameter(Mandatory)][string]$File, [switch]$DryRun, [switch]$SkipChecks, [string]$Only = "", [string]$Build = "", [string]$Log = "")
@@ -96,19 +101,91 @@ function Expand-Step($step, $copy, $blockCopies) {
     $label = $label -replace "\s+", "_"
     if ($label.Length -gt 60) { $label = $label.Substring(0, 57) + "..." }
     $timeout = if ($step.TimeoutSec) { [int]$step.TimeoutSec } elseif ($bat.TimeoutSec) { [int]$bat.TimeoutSec } else { 7200 }
-    [pscustomobject]@{ Label = $label; Script = $script; Args = $argList; Env = (@(Get-Pairs $bat.Env) + @(Get-Pairs $step.Env)); Timeout = $timeout; Copy = $copy }
+    [pscustomobject]@{ Label = $label; Script = $script; Args = $argList; Env = (@(Get-Pairs $bat.Env) + @(Get-Pairs $step.Env)); Timeout = $timeout; Copy = $copy; Closing = $(if ($step.Closing) { "$($step.Closing)" } else { "" }) }
 }
 
 $jobBody = {
-    param($auto, $script, $argList, $copyDir, $envPairs)
+    param($auto, $script, $argList, $copyDir, $envPairs, $pidFile)
+    # This job's process: the root of every process the step starts (Stop-StepTree at its timeout).
+    [IO.File]::WriteAllText($pidFile, "$PID")
     $env:STS2_GAME_DIR = $copyDir
     foreach ($p in $envPairs) { Set-Item -Path "Env:$($p.Name)" -Value $p.Value }
     $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $(if ([IO.Path]::IsPathRooted($script)) { $script } else { Join-Path $auto $script }) @argList 2>&1 | ForEach-Object { "$_" }
     [pscustomobject]@{ Exit = $LASTEXITCODE; Out = @($out) }
 }
 
+# Each runner's closing line: the summary it prints as the last line of its work (a runner cut short by an error, or one that
+# reached its exit code with its work half done, has none); (?<k>...) its problem count when it gives one.
+$ClosingLines = @{
+    'par.ps1'                = '^done in \d+ s, (?<k>\d+) problem\(s\), logs in '
+    'vanillacheck.ps1'       = '^vanillacheck done in \d+ s, (?<k>\d+) problem\(s\), logs in '
+    'mutations.ps1'          = '^\d+/\d+ as expected in [\d.,]+ min'
+    'parcoop.ps1'            = '^done in [\d.,]+ min, (?<k>\d+) with problems, logs in '
+    'parsweep.ps1'           = '^\w+( at \d+ imports)?: \d+ sessions in [\d.,]+ min'
+    'parsweep-all.ps1'       = '^\d+ kind\(s\) in [\d.,]+ min, (?<k>\d+) with a problem; outputs in '
+    'coop4.ps1'              = '^\S+: \d+ peers, '
+    'run.ps1'                = '^done in \d+ s: '
+    'coop.ps1'               = '^done in \d+ s: '
+    'coop-modetag.ps1'       = '^coop-modetag done: (?<k>\d+) problem\(s\)'
+    'settings.ps1'           = '^settings\.ps1 done: \d+ session log check\(s\), (?<k>\d+) problem\(s\)'
+    'baselib-optional.ps1'   = '^baselib-optional\.ps1 done: \d+ session log check\(s\), (?<k>\d+) problem\(s\)'
+    'limitless-switches.ps1' = '^limitless-switches\.ps1 done: \d+ session log check\(s\), (?<k>\d+) problem\(s\)'
+    'started-off.ps1'        = '^started-off\.ps1 done: \d+ session log check\(s\), (?<k>\d+) problem\(s\)'
+    'started-off-nomenu.ps1' = '^started-off-nomenu\.ps1 done: \d+ session log check\(s\), (?<k>\d+) problem\(s\)'
+    'continue-check.ps1'     = '^continue-check\.ps1 done: \d+ session log check\(s\), (?<k>\d+) problem\(s\)'
+}
+# A step's closing-line pattern: its own Closing, else its script's in $ClosingLines, else nothing (Test-Closings stops the battery).
+function Get-ClosingPattern($s) {
+    if ($s.Closing) { return $s.Closing }
+    $ClosingLines[[IO.Path]::GetFileName($s.Script)]
+}
+
+# Every process descending from $rootId (the job's own process first), parents before children; a child counts only when created
+# after its parent (a reused process id is not a descendant).
+function Get-ProcessTree([int]$rootId) {
+    $all = @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, CreationDate, Name, ExecutablePath -ErrorAction SilentlyContinue)
+    $byParent = @{}
+    foreach ($p in $all) { $key = [int]$p.ParentProcessId; if (-not $byParent.ContainsKey($key)) { $byParent[$key] = [Collections.Generic.List[object]]::new() }; $byParent[$key].Add($p) }
+    $root = @($all | Where-Object { $_.ProcessId -eq $rootId })
+    if (-not $root.Count) { return @() }
+    $tree = [Collections.Generic.List[object]]::new()
+    $queue = [Collections.Generic.Queue[object]]::new()
+    $queue.Enqueue($root[0]); $tree.Add($root[0])
+    while ($queue.Count) {
+        $parent = $queue.Dequeue()
+        if (-not $byParent.ContainsKey([int]$parent.ProcessId)) { continue }
+        foreach ($child in $byParent[[int]$parent.ProcessId]) {
+            if ($child.ProcessId -eq $parent.ProcessId -or ($child.CreationDate -and $parent.CreationDate -and $child.CreationDate -lt $parent.CreationDate)) { continue }
+            $tree.Add($child); $queue.Enqueue($child)
+        }
+    }
+    $tree
+}
+
+# A timed-out step's processes: its whole tree, the job's own process last (Stop-Job would leave its grandchildren running: the
+# runner and its games), twice (a runner may start a game between the listing and its end). Returns the games it closed.
+function Stop-StepTree($s) {
+    $closed = 0
+    $pidText = if (Test-Path $s.PidFile) { [IO.File]::ReadAllText($s.PidFile).Trim() } else { "" }
+    if ($pidText -match '^\d+$') {
+        foreach ($pass in 1, 2) {
+            $tree = @(Get-ProcessTree ([int]$pidText))
+            [array]::Reverse($tree)
+            foreach ($p in $tree) {
+                if ($p.Name -like "SlayTheSpire2*") { $closed++ }
+                Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+            }
+            Start-Sleep 1
+        }
+    }
+    $closed
+}
+
 function Start-Step($s) {
-    $job = Start-Job -ScriptBlock $jobBody -ArgumentList $auto, $s.Script, $s.Args, $s.Copy.Dir, $s.Env
+    $pidFile = Join-Path $outDir "$($s.Label)-$($s.Copy.Name).pid"
+    Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+    $s | Add-Member PidFile $pidFile -Force
+    $job = Start-Job -ScriptBlock $jobBody -ArgumentList $auto, $s.Script, $s.Args, $s.Copy.Dir, $s.Env, $pidFile
     $s | Add-Member Job $job -Force
     $s | Add-Member Started (Get-Date) -Force
     $s
@@ -117,29 +194,42 @@ function Start-Step($s) {
 $script:failed = 0
 $script:stepCount = 0
 # A finished (or timed out) step: its output file, the STEP line, and for a failure the FAIL line with triage.py's first label.
-function Complete-Step($s, [bool]$timedOut) {
+function Complete-Step($s, [bool]$timedOut, [int]$othersRunning = 0) {
     $exit, $lines = 1, @()
     if ($timedOut) {
-        Stop-Job $s.Job; $lines = @("battery.ps1: step timed out after $($s.Timeout) s")
+        # Its own processes only: another step running on the same copy keeps its games.
+        $closed = Stop-StepTree $s
+        Stop-Job $s.Job
+        $lines = @("battery.ps1: step timed out after $($s.Timeout) s: its process tree stopped ($closed game(s))")
         $dirs = if ($s.Copy.Dirs) { @($s.Copy.Dirs) } else { @($s.Copy.Dir) }
-        Get-Process -Name "SlayTheSpire2*" -ErrorAction SilentlyContinue | Where-Object { $p = $_.Path; $p -and @($dirs | Where-Object { $p.StartsWith($_, "OrdinalIgnoreCase") }).Count } | Stop-Process -Force -ErrorAction SilentlyContinue
+        $left = @(Get-Process -Name "SlayTheSpire2*" -ErrorAction SilentlyContinue | Where-Object { $p = $_.Path; $p -and @($dirs | Where-Object { $p.StartsWith($_, "OrdinalIgnoreCase") }).Count })
+        # Games of its copy outside the tree (started through WMI, rendered): its own when nothing else runs, closed; else said.
+        if ($left.Count -and $othersRunning -eq 0) { $left | Stop-Process -Force -ErrorAction SilentlyContinue; $lines += "battery.ps1: $($left.Count) other game(s) of the copy closed (no other step running)" }
+        elseif ($left.Count) { $lines += "battery.ps1: $($left.Count) game(s) of the copy outside the step's process tree left running ($othersRunning other step(s) running): close them if they are this step's (pid $(@($left | ForEach-Object { $_.Id }) -join ', '))" }
     } else {
         $got = @(Receive-Job $s.Job -ErrorAction Continue 2>&1)
         $res = $got | Where-Object { $_ -is [pscustomobject] -and $null -ne $_.Exit } | Select-Object -Last 1
         if ($res) { $exit, $lines = [int]$res.Exit, @($res.Out) } else { $lines = @($got | ForEach-Object { "$_" }) }
     }
     Remove-Job $s.Job -Force
+    Remove-Item $s.PidFile -Force -ErrorAction SilentlyContinue
+    # Its closing line (Get-ClosingPattern): the runner reached the end of its work.
+    $closingPattern = Get-ClosingPattern $s
+    $closingLine = @($lines | Where-Object { $_ -match $closingPattern }) | Select-Object -Last 1
+    if (-not $closingLine) { $lines += "battery.ps1: no closing line matching '$closingPattern': the runner did not reach the end of its work" }
     [IO.File]::WriteAllLines((Join-Path $outDir "$($s.Label)-$($s.Copy.Name).out"), [string[]]$lines, (New-Object Text.UTF8Encoding $false))
     $text = $lines -join "`n"
-    # Problems: the runner's own count ("N problem(s)", "N with problems"), else its PROBLEM lines.
+    # Problems: the closing line's count when it gives one, else the runner's own count ("N problem(s)", "N with problems"), else
+    # its PROBLEM lines.
     $k = 0
-    if ($text -match "(\d+) problem\(s\)") { $k = [int]$Matches[1] }
+    if ($closingLine -and $closingLine -match $closingPattern -and $Matches['k']) { $k = [int]$Matches['k'] }
+    elseif ($text -match "(\d+) problem\(s\)") { $k = [int]$Matches[1] }
     elseif ($text -match "(\d+) with problems") { $k = [int]$Matches[1] }
     else { $k = @($lines | Where-Object { $_ -cmatch "^\s*PROBLEM|\bPROBLEMS\b|^problem" }).Count }
     if ($timedOut) { $exit = 124 }
     $script:stepCount++
-    Say "STEP $($s.Label) $($s.Copy.Name) exit $exit problems $k"
-    if ($exit -ne 0 -or $k -gt 0) {
+    Say "STEP $($s.Label) $($s.Copy.Name) exit $exit problems $k$(if (-not $closingLine) { ' no-closing-line' })"
+    if ($exit -ne 0 -or $k -gt 0 -or -not $closingLine) {
         $script:failed++
         $since = $s.Started.AddMinutes(-1).ToString("HH:mm")
         $dirs = @(@(if ($s.Copy.Versions) { $s.Copy.Versions } else { $s.Copy.Version }) | ForEach-Object { Join-Path $Results $_ })
@@ -148,7 +238,7 @@ function Complete-Step($s, [bool]$timedOut) {
             $tri = @(& python -I (Join-Path $auto "triage.py") @dirs --since $since --lines 8 2>&1 | ForEach-Object { "$_" })
             $first = ($tri | Where-Object { $_ -match "^(LOOK|ALARM)" } | Select-Object -First 1)
         } catch { $first = "triage.py failed: $($_.Exception.Message)" }
-        if (-not $first) { $first = ($lines | Where-Object { $_ -match "PROBLEM|FAILED|TIMEOUT|DIFFERENT|timed out" } | Select-Object -First 1) }
+        if (-not $first) { $first = ($lines | Where-Object { $_ -match "RUNNER ERROR|PROBLEM|FAILED|TIMEOUT|DIFFERENT|timed out|no closing line" } | Select-Object -First 1) }
         if ($first -and $first.Length -gt 200) { $first = $first.Substring(0, 200) }
         Say "FAIL $($s.Label) $($s.Copy.Name) exit $exit problems $k | $first"
     }
@@ -161,7 +251,7 @@ function Wait-Steps($running) {
         $still = @()
         foreach ($s in $pending) {
             if ($s.Job.State -ne "Running") { Complete-Step $s $false }
-            elseif (((Get-Date) - $s.Started).TotalSeconds -gt $s.Timeout) { Complete-Step $s $true }
+            elseif (((Get-Date) - $s.Started).TotalSeconds -gt $s.Timeout) { Complete-Step $s $true @($pending | Where-Object { $_ -ne $s -and $_.Job.State -eq "Running" }).Count }
             else { $still += $s }
         }
         $pending = $still
@@ -191,6 +281,9 @@ foreach ($b in $blocks) {
     if ($mode -notin "Parallel", "Exclusive", "Both") { Say "BATTERY ABORT block $($b.Name): unknown Mode $mode"; exit 2 }
     $plan += [pscustomobject]@{ Name = "$($b.Name)"; Mode = $mode; Copies = $bc; Steps = @($b.Steps) }
 }
+# Every step's closing line is known before anything starts: a step without one could never pass.
+$unknownClosing = @(foreach ($b in $plan) { foreach ($step in $b.Steps) { $s = Expand-Step $step $b.Copies[0] $b.Copies; if (-not (Get-ClosingPattern $s)) { "$($b.Name)/$($s.Label) ($($s.Script))" } } })
+if ($unknownClosing.Count) { Say "BATTERY ABORT no closing line known for $($unknownClosing -join ', '): add the script's to battery.ps1's `$ClosingLines or give the step Closing = '<regex>'"; exit 2 }
 if ($DryRun) {
     foreach ($b in $plan) {
         Say "BLOCK $($b.Name) $($b.Mode) on $(($b.Copies | ForEach-Object { $_.Name }) -join ',')"

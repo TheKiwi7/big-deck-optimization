@@ -404,7 +404,24 @@ function Test-SessionLog([string]$name, [string]$pattern, [bool]$expected, [stri
         if ($ok -and -not $expected -and -not (Select-String -Path $log -Pattern $SessionEnd -Quiet)) { $ok = $false; $meaning += " (the session did not reach its end: a missing line proves nothing)" }
     }
     if (-not $ok) { $script:SessionLogProblems = 1 + [int]$script:SessionLogProblems }
+    $script:SessionLogChecks = 1 + [int]$script:SessionLogChecks
     Write-Output ("{0} {1}: {2}" -f $(if ($ok) { "ok     " } else { "PROBLEM" }), $name, $meaning)
+}
+
+# The closing line of a script built on Test-SessionLog (settings.ps1, started-off.ps1...), the last line of its work: how many
+# checks ran and its problems (theirs, plus $runProblems, the run.ps1 sessions it judged with one; no check at all is one). A
+# script cut short never prints it, and battery.ps1 fails a step without its runner's closing line. Returns the problem count.
+function Write-SessionLogSummary([int]$runProblems) {
+    $checks = [int]$script:SessionLogChecks
+    $problems = [int]$script:SessionLogProblems + $runProblems + $(if ($checks -eq 0) { 1 } else { 0 })
+    Write-Output ("{0} done: {1} session log check(s), {2} problem(s){3}" -f (Split-Path $MyInvocation.PSCommandPath -Leaf), $checks, $problems, $(if ($checks -eq 0) { " (no check ran)" } else { "" }))
+}
+
+# The runner's check that Invoke-Sessions gave a result for every job it was handed (by name): a job without one never ran, and
+# its log, if any, is not this run's. One line per missing job, nothing when all are there.
+function Get-MissingResults($jobs, $runs) {
+    $have = [Collections.Generic.HashSet[string]]::new([string[]]@($runs | Where-Object { $_ } | ForEach-Object { "$($_.Name)" }))
+    foreach ($job in $jobs) { if (-not $have.Contains("$($job.Name)")) { "PROBLEM $($job.Name): no result, the session never ran (Invoke-Sessions stopped before it)" } }
 }
 
 # Everything a mod-off log depends on: a baseline stays valid until the game, a test mod's files, which mods are loaded
@@ -444,7 +461,9 @@ function Get-BaselineBenchFiles([string]$scriptText) {
         if ($file.Name -eq 'AutoTestVideo.cs') { continue }  # local only: video scenarios, never cached
         $pattern = $BaselineBenchParts[$file.Name]
         # A file not in the table (the engine, its helpers, a new file) always counts: unknown is never left out.
-        if (-not $pattern -or [regex]::IsMatch($scriptText, $pattern, 'Multiline')) { $file }
+        # Case-insensitive, as the dispatcher (AutoTest.cs's switch on the lower-cased command, PartCommand's OrdinalIgnoreCase):
+        # 'Hover' runs AutoTestMouse.cs as 'hover' does.
+        if (-not $pattern -or [regex]::IsMatch($scriptText, $pattern, 'Multiline, IgnoreCase')) { $file }
     }
 }
 
@@ -453,7 +472,8 @@ function Get-BaselineBenchFiles([string]$scriptText) {
 # valid; the hash of the file as it is when the lexer is unsure of anything (an unclosed literal, a raw string literal). Checked
 # exact on every Bench file (2026-11-18): a Debug build of the normalized sources decompiles (ilspycmd) to the same C# as the
 # original's. Only line numbers move, which no compared line holds (compare.py replaces numbers in the game errors it counts).
-# -Legacy: the whole file's hash, the key before this (Invoke-Sessions still reads baselines kept under it).
+# The whole file's hash before this (9ca14ff) is no longer read: those baselines were all kept before 191480e, whose keys were
+# taken when the session ended, from the tree as it was then (a log filed under a key it never ran).
 if (-not ("BdCodeText" -as [type])) {
     Add-Type -TypeDefinition @'
 using System; using System.Text;
@@ -582,8 +602,7 @@ public static class BdCodeText {
 '@
 }
 $script:BenchCodeHashes = @{}
-function Get-BenchFileHash($file, [bool]$legacy) {
-    if ($legacy) { return (Get-FileHash $file.FullName -Algorithm SHA256).Hash }
+function Get-BenchFileHash($file) {
     $id = "$($file.FullName)|$($file.Length)|$($file.LastWriteTimeUtc.Ticks)"
     if (-not $script:BenchCodeHashes.ContainsKey($id)) {
         $code = [BdCodeText]::Normalize([IO.File]::ReadAllText($file.FullName))
@@ -615,14 +634,14 @@ function Get-BaselineSalt([string]$gameDir, [switch]$Plain) {
 }
 
 # The Bench part of a key: the files the script text runs (Get-BaselineBenchFiles), each with its hash.
-function Get-BaselineBench([string]$scriptText, [bool]$legacy) {
-    (@(Get-BaselineBenchFiles $scriptText) | Sort-Object Name | ForEach-Object { "$($_.Name)=" + (Get-BenchFileHash $_ $legacy) }) -join ""
+function Get-BaselineBench([string]$scriptText) {
+    (@(Get-BaselineBenchFiles $scriptText) | Sort-Object Name | ForEach-Object { "$($_.Name)=" + (Get-BenchFileHash $_) }) -join ""
 }
 
-function Get-BaselineKey([string]$gameDir, [string]$scriptPath, [switch]$Legacy) {
+function Get-BaselineKey([string]$gameDir, [string]$scriptPath) {
     $salt = Get-BaselineSalt $gameDir
     $scriptText = [IO.File]::ReadAllText($scriptPath)
-    $bench = Get-BaselineBench $scriptText $Legacy.IsPresent
+    $bench = Get-BaselineBench $scriptText
     $sha = [Security.Cryptography.SHA256]::Create()
     $bytes = [Text.Encoding]::UTF8.GetBytes($salt + "|bench=" + $bench + "|" + $scriptText)
     ([BitConverter]::ToString($sha.ComputeHash($bytes)) -replace "-", "").Substring(0, 16)
@@ -645,9 +664,9 @@ function Get-CoopBaselineKey([string]$gameDir, [string]$hostScript, [string]$cli
     $hostText = [IO.File]::ReadAllText($hostScript)
     $clientText = [IO.File]::ReadAllText($clientScript)
     $tag = Get-Item (Join-Path $PSScriptRoot "..\..\src\BigDeckOptimization\Patches\CoopModeTag.cs")
-    $bench = Get-BaselineBench ($hostText + "`n" + $clientText) $false
+    $bench = Get-BaselineBench ($hostText + "`n" + $clientText)
     $sha = [Security.Cryptography.SHA256]::Create()
-    $bytes = [Text.Encoding]::UTF8.GetBytes((Get-BaselineSalt $gameDir -Plain:$plain) + "|coop-vanilla1|profiles=" + $script:CoopProfilesSalt + "|tag=" + (Get-BenchFileHash $tag $false) + "|bench=" + $bench + "|host=" + $hostText + "|client=" + $clientText)
+    $bytes = [Text.Encoding]::UTF8.GetBytes((Get-BaselineSalt $gameDir -Plain:$plain) + "|coop-vanilla1|profiles=" + $script:CoopProfilesSalt + "|tag=" + (Get-BenchFileHash $tag) + "|bench=" + $bench + "|host=" + $hostText + "|client=" + $clientText)
     ([BitConverter]::ToString($sha.ComputeHash($bytes)) -replace "-", "").Substring(0, 16)
 }
 
@@ -692,7 +711,7 @@ function Get-LaunchProblem($job, [string]$log) {
 # the start, a leak check finding a path or blind, a positive control ("expect") that saw nothing.
 # -Mutated: a job on a game mutations.ps1 modified (Test-MutatedJob).
 function Get-FailedLines([string]$log, [switch]$Mutated) {
-    if (-not (Test-Path $log)) { return @("no log") }
+    if (-not (Test-Path $log)) { return @("no log: $log was never written") }
     @(Invoke-Judge @($log) -Mutated:$Mutated | ForEach-Object { $_ -replace '^PROBLEM [^:]+: ', '' })
 }
 
@@ -739,11 +758,14 @@ function Get-TurnStates([string]$log) {
 # the same order on every peer, and in each block the lines $keep selects equal on every peer, a player-side block on the peers
 # that took it Synced only (at least two, otherwise it is not compared). A real divergence still shows: in the enemy-side blocks,
 # in the player-side ones of the synced peers, and in the game's own checksums ("State divergence", which the runners check).
+# Player-side blocks there and none compared (each one taken after another player's action on every peer but one at most): the
+# player side was never checked, a problem, not a note. No co-op log of either supported version has it (2026-11-20: every pair
+# and coop4 run compares at least one), so it says a scenario or a change of pace made that half of the check blind.
 # Returns [pscustomobject]@{ Problems; Compared; Skipped (player-side blocks with fewer than two synced peers); Lines (the
-# reference's selected lines) }.
+# reference's selected lines); PlayerBlocks, PlayerCompared (the player-side ones among the blocks every peer has) }.
 function Compare-PeerTurnStates([object[]]$states, [string[]]$names, [scriptblock]$keep) {
     $problems = [Collections.Generic.List[string]]::new()
-    $compared = 0; $skipped = 0; $lines = 0
+    $compared = 0; $skipped = 0; $lines = 0; $playerBlocks = 0; $playerCompared = 0
     # Indexed loops only: Windows PowerShell 5.1 throws "argument types do not match" on @() around these lists.
     $labels = for ($p = 0; $p -lt $states.Count; $p++) { $list = $states[$p]; $text = for ($i = 0; $i -lt $list.Count; $i++) { $list[$i].Label }; $text -join "|" }
     for ($p = 1; $p -lt $states.Count; $p++) {
@@ -754,10 +776,13 @@ function Compare-PeerTurnStates([object[]]$states, [string[]]$names, [scriptbloc
     for ($p = 0; $p -lt $states.Count; $p++) { $count = [Math]::Min($count, $states[$p].Count) }
     for ($i = 0; $i -lt $states[0].Count; $i++) { $lines += ($states[0][$i].Lines | Where-Object $keep | Measure-Object).Count }
     for ($i = 0; $i -lt $count; $i++) {
+        $player = $states[0][$i].Label -cmatch ' Player$'
+        if ($player) { $playerBlocks++ }
         $peers = for ($p = 0; $p -lt $states.Count; $p++) { if ($states[$p][$i].Synced) { $p } }
         $peers = @($peers)
         if ($peers.Count -lt 2) { $skipped++; continue }
         $compared++
+        if ($player) { $playerCompared++ }
         $first = $peers[0]
         $expected = & $selected $states[$first][$i]
         foreach ($p in $peers[1..($peers.Count - 1)]) {
@@ -767,27 +792,33 @@ function Compare-PeerTurnStates([object[]]$states, [string[]]$names, [scriptbloc
             }
         }
     }
-    [pscustomobject]@{ Problems = $problems; Compared = $compared; Skipped = $skipped; Lines = $lines }
+    if ($playerBlocks -gt 0 -and $playerCompared -eq 0) {
+        $problems.Add("player side never compared: all $playerBlocks player turn starts taken after another player's action on every peer but one at most")
+    }
+    [pscustomobject]@{ Problems = $problems; Compared = $compared; Skipped = $skipped; Lines = $lines; PlayerBlocks = $playerBlocks; PlayerCompared = $playerCompared }
 }
 
 # The log line numbers of the player-side turn-start blocks to leave out of a comparison of two sessions (mod on vs off, peer by
 # peer): those either side took after another player's action ran (Get-TurnStates' Synced), block by block in order. Returns
-# @{ First = line numbers in the first log; Second = in the second; Blocks = how many }.
+# @{ First = line numbers in the first log; Second = in the second; Blocks = how many; PlayerBlocks = the player-side blocks both
+# logs have (up to where they part); Blind = some there and every one left out, which the callers count as a problem (as
+# Compare-PeerTurnStates does: the player side was never compared) }.
 function Get-UnsyncedTurnLines([string]$first, [string]$second) {
     $a = Get-TurnStates $first
     $b = Get-TurnStates $second
     $left = [Collections.Generic.HashSet[int]]::new()
     $right = [Collections.Generic.HashSet[int]]::new()
-    $blocks = 0
+    $blocks = 0; $playerBlocks = 0
     for ($i = 0; $i -lt [Math]::Min($a.Count, $b.Count); $i++) {
         # Sessions gone different ways: nothing after is left out, the comparison shows where.
         if ($a[$i].Label -cne $b[$i].Label) { break }
+        if ($a[$i].Label -cmatch ' Player$') { $playerBlocks++ }
         if ($a[$i].Synced -and $b[$i].Synced) { continue }
         $blocks++
         foreach ($n in $a[$i].LineNumbers) { [void]$left.Add($n) }
         foreach ($n in $b[$i].LineNumbers) { [void]$right.Add($n) }
     }
-    [pscustomobject]@{ First = $left; Second = $right; Blocks = $blocks }
+    [pscustomobject]@{ First = $left; Second = $right; Blocks = $blocks; PlayerBlocks = $playerBlocks; Blind = ($playerBlocks -gt 0 -and $blocks -ge $playerBlocks) }
 }
 
 # results/status.txt: progress and time left (from the items done when jobs have an Items count, else the sessions done),
@@ -1009,18 +1040,21 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
     }
     # Queues a job (-First: ahead of the others), unless a cached mod-off log replaces its session. These two are child scopes: they
     # change the lists, never assign a variable of this function.
+    # A queued job's log from an earlier series is deleted now, not at its launch: a series cut short (a session it could not start,
+    # this function stopped by an error) would leave the runner comparing those old logs as this run's (its length, for the order,
+    # is read first).
     $enqueue = {
         param($newJob, [bool]$first)
         if ($UseBaselines -and (Test-BaselineJob $newJob)) {
             $cached = Join-Path $baselineDir "$($newJob.Name)-$(Get-BaselineKey $GameDir $newJob.Script).log"
-            # Kept before the Bench files' code hash (Get-BenchFileHash): its key hashed them whole, a stricter key.
-            if (-not (Test-Path $cached)) { $cached = Join-Path $baselineDir "$($newJob.Name)-$(Get-BaselineKey $GameDir $newJob.Script -Legacy).log" }
             if (Test-Path $cached) {
                 Copy-Item $cached $newJob.Log -Force
                 & $finish $newJob ([pscustomobject]@{ Name = $newJob.Name; State = "cached"; Seconds = 0; Failed = @(Get-FailedLines $newJob.Log -Mutated:(Test-MutatedJob $newJob)) + @(Get-LaunchProblem $newJob $newJob.Log) })
                 return
             }
         }
+        [void](& $lengthOf $newJob)
+        Remove-Item $newJob.Log -Force -ErrorAction SilentlyContinue
         if ($first) { $pending.Insert(0, $newJob) } else { $pending.Add($newJob) }
     }
     # A job's final result: kept, then handed to OnFinish, whose jobs are queued first, in the order it returns them.
@@ -1092,7 +1126,9 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                 # A solo mod-off session is a vanilla one: the game as a player who started with the mod off has it.
                 if (Test-BaselineJob $job) { $launch += $VanillaArg }
                 $jobExe = Join-Path $jobDir "SlayTheSpire2.exe"
-                $p = if ($Rendered) { Start-HiddenGame $jobExe $jobDir $launch } else { Start-Process -FilePath $jobExe -WorkingDirectory $jobDir -PassThru -WindowStyle Hidden -ArgumentList $launch }
+                # A launch that fails stops the series (-ErrorAction Stop: the runner's trap, exit code 1): left non-terminating, it
+                # gave a session with no process, which failed only at its timeout, on a binding error that ended the series too.
+                $p = if ($Rendered) { Start-HiddenGame $jobExe $jobDir $launch } else { Start-Process -FilePath $jobExe -WorkingDirectory $jobDir -PassThru -WindowStyle Hidden -ArgumentList $launch -ErrorAction Stop }
                 $env:APPDATA = $realAppData
                 [void]$p.Handle # or its exit code is lost
                 $limit = if ($ScenarioTimeouts) { [Math]::Max($TimeoutSec, (Get-ScenarioTimeout $job.Script) + 120) } else { $TimeoutSec }
@@ -1148,17 +1184,26 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
                     # load outside the cache). Its log compares as a shorter session: it starts over, the first log kept beside it.
                     # Also gone before its script's first line: the session ran nothing (seen once at a launch, 8 s in, an 8,400-card A/B then compared nothing).
                     # Any other early end (this mod's code crashing the game, one time in three) is a problem even if a new session passes.
-                    if (-not (Select-String -Path $run.Job.Log -Pattern "AutoTest\s+[\d.]+s (> quit|script finished|quitting)|ABORT|TIMEOUT: script|\[AutoSlay\] Action: Quitting" -Quiet -ErrorAction SilentlyContinue)) {
+                    # No log at all: the game ended before its first line (a launch that failed, a log path it could not create; the game
+                    # writes it before any mod loads): it ran nothing, started over the same way, and its reason said if it stays so.
+                    # (Select-String on a missing file throws whatever -ErrorAction says: it once ended the whole series.)
+                    $hasLog = Test-Path $run.Job.Log
+                    if (-not $hasLog -or -not (Select-String -Path $run.Job.Log -Pattern "AutoTest\s+[\d.]+s (> quit|script finished|quitting)|ABORT|TIMEOUT: script|\[AutoSlay\] Action: Quitting" -Quiet -ErrorAction SilentlyContinue)) {
                         $name = $run.Job.Name
                         $retries[$name] = 1 + [int]$retries[$name]
-                        $early = "$($run.Job.Log).early$(if ($retries[$name] -gt 1) { $retries[$name] })"
-                        Copy-Item $run.Job.Log $early -Force -ErrorAction SilentlyContinue
-                        $why = Get-EarlyExitProblem $early $run.Process.ExitCode -Mutated:(Test-MutatedJob $run.Job)
-                        if ($why) { $earlyProblems[$name] = @($earlyProblems[$name]) + @($why) }
+                        if ($hasLog) {
+                            $early = "$($run.Job.Log).early$(if ($retries[$name] -gt 1) { $retries[$name] })"
+                            Copy-Item $run.Job.Log $early -Force -ErrorAction SilentlyContinue
+                            $why = Get-EarlyExitProblem $early $run.Process.ExitCode -Mutated:(Test-MutatedJob $run.Job)
+                            if ($why) { $earlyProblems[$name] = @($earlyProblems[$name]) + @($why) }
+                        }
                         Start-Sleep 1
                         $running.Remove($slot)
                         if ($retries[$name] -le 2) { $pending.Insert(0, $run.Job) }
-                        else { & $finish $run.Job ([pscustomobject]@{ Name = $name; State = "CRASHED"; Seconds = [int]$age; Failed = @("stopped early 3 times, exit code $($run.Process.ExitCode)") + @($earlyProblems[$name] | Where-Object { $_ }); Restarts = $retries[$name] }) }
+                        else {
+                            $noLog = if (-not $hasLog) { "no log: the game ended (exit code $($run.Process.ExitCode)) without writing $($run.Job.Log)" }
+                            & $finish $run.Job ([pscustomobject]@{ Name = $name; State = "CRASHED"; Seconds = [int]$age; Failed = @("stopped early 3 times, exit code $($run.Process.ExitCode)") + @($noLog | Where-Object { $_ }) + @($earlyProblems[$name] | Where-Object { $_ }); Restarts = $retries[$name] })
+                        }
                         continue
                     }
                 }

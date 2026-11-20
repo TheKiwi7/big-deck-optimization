@@ -19,6 +19,8 @@ if ($unknown.Count) { throw "-Kinds: no such kind $($unknown -join ', ') (known:
 $copies = @($GameDir | ForEach-Object { $_ -split "," } | Where-Object { $_ })  # "-GameDir a,b" through powershell -File is one string
 if (-not $copies.Count) { $copies = @("") }
 . (Join-Path $PSScriptRoot "parlib.ps1")
+# An error nothing catches ends this script with exit code 1 (common.ps1's Write-RunnerError), never with its work half done.
+trap { Write-RunnerError $_; exit 1 }
 if ($Jobs -le 0) { $Jobs = $SlotPool }
 $copies = @($copies | ForEach-Object { Resolve-GameCopy $_ })
 if (@($copies | Select-Object -Unique).Count -ne $copies.Count) { throw "-GameDir names a copy twice" }
@@ -49,9 +51,11 @@ foreach ($child in $children) {
     Write-Output ("== {0}: exit code {1}" -f $child.Kind, $code)
     # Its summary: the report's head (verdict, items not compared or stopping a session) and its last lines.
     $text = @(Get-Content $child.Out -ErrorAction SilentlyContinue)
-    $text | Where-Object { $_ -match '^(\d+ items|IDENTICAL|\d+ DIFFERENT|items stopping|  (NEVER COMPARED|compared before)|chunk \d+|mod (off|on):|session problem|game error|mod problem|\w+: \d+ sessions in)' } | ForEach-Object { Write-Output "  $($_.Substring(0, [Math]::Min(220, $_.Length)))" }
+    $text | Where-Object { $_ -match '^(\d+ items|IDENTICAL|\d+ DIFFERENT|items stopping|  (NEVER COMPARED|compared before)|chunk \d+|mod (off|on):|session problem|game error|mod problem|\w+: \d+ sessions in|RUNNER ERROR)' } | ForEach-Object { Write-Output "  $($_.Substring(0, [Math]::Min(220, $_.Length)))" }
     $errors = @(Get-Content $child.Err -ErrorAction SilentlyContinue | Where-Object { $_.Trim() })
     if ($errors.Count) { Write-Output "  stderr: $($errors[0])"; if ($code -eq 0) { $bad++ } }
+    # Its closing line (parsweep.ps1's last: '<kind>: N sessions in M min'): a sweep that stopped before its report has none.
+    elseif ($code -eq 0 -and -not @($text | Where-Object { $_ -match '^\w+( at \d+ imports)?: \d+ sessions in [\d.,]+ min' }).Count) { Write-Output "  PROBLEM: exit code 0 but no closing line: it stopped before its report"; $bad++ }
 }
 Write-Output ("{0} kind(s) in {1:F1} min, {2} with a problem; outputs in {3}" -f $children.Count, ((Get-Date) - $started).TotalMinutes, $bad, $(if ($copies.Count -gt 1) { "results\<version>\" } else { $out }))
 exit $(if ($bad) { 1 } else { 0 })

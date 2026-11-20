@@ -4,6 +4,8 @@
 param([string]$GameDir = "")
 $copy = $GameDir
 . (Join-Path $PSScriptRoot "parlib.ps1")
+# An error nothing catches ends this script with exit code 1 (common.ps1's Write-RunnerError), never with its work half done.
+trap { Write-RunnerError $_; exit 1 }
 $GameDir = Resolve-GameCopy $copy
 # Other games may run (par, the sweeps, the same script on the other copy): this one's sessions have their own kept slot and
 # results\<version>\ logs, and time nothing.
@@ -25,6 +27,8 @@ try {
     Test-SessionLog "started-off" "inactive this session" $true "bdopt said inactive"
     Test-SessionLog "started-off" "CHECKSUM started-off" $true "a fight played"
     Test-SessionLog "started-off" "takes effect when you restart" $true "turning it on said: at the next start"
+    # The closing line battery.ps1 requires (parlib.ps1's Write-SessionLogSummary): printed only when every check above ran.
+    Write-SessionLogSummary $runProblems
 }
 finally { Unlock-Slot $KeptSlot }
 # Exit code 1 on any PROBLEM line above or a session run.ps1 judged with a problem.

@@ -6,7 +6,8 @@ Known commands: the labels of AutoTest.cs's dispatcher switch only (a nested swi
 not commands), the `[ScriptCommand("name")]` methods of the Bench part files, plus the top-level labels of a local
 LocalCommand implementation when one exists (untracked tooling). Each `[ScriptCommand]` must be matched by its file's pattern
 in parlib.ps1's `$BaselineBenchParts` (a file missing there counts in every baseline key, so adding it would invalidate every
-mod-off baseline) and must not also be a switch label (the switch would take it first). Also checked: the kinds `waitfor` knows (WaitFor's own labels) and the numbers `wait`, `timeout`, `play` and `waitfor` parse;
+mod-off baseline; matched case-insensitively, as the dispatcher and parlib.ps1 do), must not also be a switch label (the switch
+would take it first) and must be the only one of its name, case aside (a duplicate makes AutoTest.PartCommand throw). Also checked: the kinds `waitfor` knows (WaitFor's own labels) and the numbers `wait`, `timeout`, `play` and `waitfor` parse;
 the directive comments judge.py and par.ps1 read (`# effects-ran:`, `# effects-zero-ok:`, `# uncompared:`, `# compare-with:`:
 a regex Python compiles, an `effects` line for effects-ran, a scenario that exists for compare-with), and every `expect` regex
 both compile and name their target in a line of several parts: one a COUNTERS line (or any line of 'Part ..., mismatches n;'
@@ -56,11 +57,19 @@ def part_command_problems():
         main = f.read()
     labels = switch_labels(main, main.find('switch (parts[0].ToLowerInvariant())'))
     problems = []
+    # Every name once over all files, case aside (AutoTest.PartCommand's dictionary ignores case): a second one makes its Add throw
+    # the first time any part command is looked up, so every unknown command of every scenario fails.
+    seen = {}
     for path in sorted(glob.glob(os.path.join(BENCH, '*.cs'))):
         name = os.path.basename(path)
         with open(path, encoding='utf-8') as f:
             commands = SCRIPT_COMMAND.findall(f.read())
         for command in commands:
+            if command.lower() in seen:
+                problems.append(f'{name}: [ScriptCommand("{command}")] is already defined in {seen[command.lower()]} (names ignore case): '
+                                'AutoTest.PartCommand would throw on every part command')
+            else:
+                seen[command.lower()] = name
             if command.lower() in labels:
                 problems.append(f'{name}: [ScriptCommand("{command}")] is also a case of AutoTest.cs\'s switch, which takes it first')
             if name == 'AutoTest.cs':
@@ -68,7 +77,7 @@ def part_command_problems():
             if name not in parts:
                 problems.append(f'{name}: [ScriptCommand("{command}")] in a file parlib.ps1\'s $BaselineBenchParts doesn\'t list: '
                                 'every mod-off baseline key counts that file; add it with a pattern of its commands')
-            elif not re.search(parts[name], f'{command} 0', re.M):
+            elif not re.search(parts[name], f'{command} 0', re.M | re.I):  # as parlib.ps1 matches them (IgnoreCase)
                 problems.append(f'{name}: [ScriptCommand("{command}")] not matched by its pattern in parlib.ps1\'s '
                                 f'$BaselineBenchParts: a scenario using it would reuse a baseline made without that code')
     return problems
