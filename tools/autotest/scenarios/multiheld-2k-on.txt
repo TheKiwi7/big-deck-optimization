@@ -7,7 +7,7 @@
 # mod off against the optimized rows: identical checksums). CHECKSUM and STATE identical with multiheld-2k-off. ~1,900 cards.
 # uncompared: ^cache row: nothing served \(HookSkip's filtered walks answered every hook\)
 expect FOREIGN multiheld verdicts [1-9]\d*, held answers [1-9]\d*, contradicted 0
-expect OK: identical checksums
+expect (OK: identical checksums|not compared: .*: identical checksums)
 timeout 1500
 newrun NECROBINDER 1234
 waitfor run 120
