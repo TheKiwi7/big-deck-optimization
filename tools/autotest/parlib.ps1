@@ -630,9 +630,10 @@ function Get-BaselineKey([string]$gameDir, [string]$scriptPath, [switch]$Legacy)
 
 # A co-op vanilla pair's key (parcoop.ps1 -OnOff's -autooff twins, both peers launched with --bdvanilla): the solo key's parts
 # (the game, the test mods unless -Plain, run files, profile 3, mod_configs, mod_data), the co-op profiles the peers play
-# (default\1 and default\1001: their saves and mod data, which Sync-Slot -Coop mirrors), CoopModeTag.cs's code (the one patch a
+# (default\1 and default\1001: their saves and mod data, which Sync-Slot -Coop mirrors), CoopModeTag.cs's code (a patch a
 # vanilla peer installs: its "+off" join entry, which the twin's 'coopmodetag off' checks), the Bench files both scripts run
-# and both scripts' text.
+# and both scripts' text. JoinMismatchNote, the other patch a vanilla peer installs, only rewrites the text of the joining
+# player's mod mismatch popup, which a twin's peers (both vanilla, the same mods) never show: not in the key.
 function Get-CoopBaselineKey([string]$gameDir, [string]$hostScript, [string]$clientScript, [bool]$plain) {
     if ($null -eq $script:CoopProfilesSalt) {
         $files = foreach ($id in "1", "1001") {
