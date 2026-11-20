@@ -12,7 +12,9 @@
 # every scenario also runs as its own mod-off twin (<x>-autooff: launched with the mod off, 'launchoff', so the co-op join lists
 # and the run's creation are the game's own too, without its bdperf, bdopt, counters, effects and expect lines), compared the same
 # way. No twin for a scenario that is a mod-off side itself (its host launched off, 'launchoff'; a name ending off or van), nor for
-# one whose own mod-off pair (<x>off, <x>-off, <x>van) is in -Names: it is compared with that one. The pairs start longest first
+# one whose own mod-off pair (<x>off, <x>-off, <x>van) is in -Names: it is compared with that one, nor, with -OnOffNames, for
+# one it doesn't list (coop and coopclone play the full reference deck: their vanilla twins' combat start outlasts the network
+# timeout, they could never pass; the release battery gives -OnOffNames coopfast). The pairs start longest first
 # (results/<version>/durations.tsv, else the host's last log of that script; unknown ones first, the mod-off sides first among
 # them: the longest by far at these deck sizes).
 # The -autooff twins are vanilla pairs: both peers launched with --bdvanilla too (no patch of this mod installed but the test
@@ -27,13 +29,17 @@
 # freezes) and the host's highest ping (NetQualityTracker, every 20 s) are printed per pair, and one at or above it is a problem
 # (NETWORK MARGIN): the game drops a peer silent for 20 s (ENet's timeout), half of it by default. A pair cut short by a
 # disconnect fails anyway; this says when one came near, or which pair may not run beside others.
-param([Parameter(Mandatory)][string[]]$Names, [string]$GameDir = "", [int]$Jobs = 6, [int]$OffJobs = 0, [int]$TimeoutSec = 900, [int]$StallSec = 240, [switch]$Plain, [switch]$Instant, [switch]$OnOff, [switch]$UseBaselines, [switch]$PatchedOff, [int]$FrameLimitMs = 10000)
+param([Parameter(Mandatory)][string[]]$Names, [string]$GameDir = "", [int]$Jobs = 6, [int]$OffJobs = 0, [int]$TimeoutSec = 900, [int]$StallSec = 240, [switch]$Plain, [switch]$Instant, [switch]$OnOff, [string[]]$OnOffNames = @(), [switch]$UseBaselines, [switch]$PatchedOff, [int]$FrameLimitMs = 10000)
 if ($OffJobs -le 0) { $OffJobs = $Jobs }
 $Names = @($Names | ForEach-Object { $_ -split "," } | Where-Object { $_ })
+$OnOffNames = @($OnOffNames | ForEach-Object { $_ -split "," } | Where-Object { $_ })
 $copy = $GameDir
 . (Join-Path $PSScriptRoot "parlib.ps1")
 # An error nothing catches ends this script with exit code 1 (common.ps1's Write-RunnerError), never with its work half done.
 trap { Write-RunnerError $_; exit 1 }
+# A name -OnOffNames lists that -Names doesn't would make no twin and say nothing: a typo, refused.
+foreach ($n in $OnOffNames) { if ($Names -notcontains $n) { throw "-OnOffNames ${n}: not in -Names" } }
+if ($OnOffNames.Count -and -not $OnOff) { throw "-OnOffNames without -OnOff: no twin would run" }
 $GameDir = Resolve-GameCopy $copy
 $out = Get-VersionDir $GameDir
 $exe = Join-Path $GameDir "SlayTheSpire2.exe"
@@ -72,8 +78,10 @@ function New-OffTwin([string]$source, [string]$target) {
     if (-not $placed) { throw "$source has no 'mplobby' line: no place for its mod-off twin's 'launchoff'" }
     [IO.File]::WriteAllText($target, ($lines -join "`n") + "`n")
 }
-# Whether -OnOff makes this scenario's -autooff twin: not for a mod-off side, nor when its explicit mod-off pair runs too.
+# Whether -OnOff makes this scenario's -autooff twin: not for a mod-off side, nor when its explicit mod-off pair runs too, nor
+# for one -OnOffNames (when given) leaves out.
 function Test-NeedsTwin([string]$name) {
+    if ($OnOffNames.Count -and $OnOffNames -notcontains $name) { return $false }
     if ($name -match '(off|van|vanilla)$') { return $false }
     $hostScript = Join-Path $Scenarios "$name-host.txt"
     if ((Test-Path $hostScript) -and (Select-String -Path $hostScript -Pattern '^\s*launchoff\s*$' -Quiet)) { return $false }
@@ -82,7 +90,7 @@ function Test-NeedsTwin([string]$name) {
 }
 $groups = @(foreach ($name in $Names) {
     $makeTwin = $OnOff -and (Test-NeedsTwin $name)
-    if ($OnOff -and -not $makeTwin) { Write-Host "-OnOff: no $name-autooff twin ($name is a mod-off side, or its own mod-off pair is in -Names)" }
+    if ($OnOff -and -not $makeTwin) { Write-Host "-OnOff: no $name-autooff twin ($(if ($OnOffNames.Count -and $OnOffNames -notcontains $name) { 'not in -OnOffNames: its peers compared only' } else { "$name is a mod-off side, or its own mod-off pair is in -Names" }))" }
     foreach ($twin in $(if ($makeTwin) { @($false, $true) } else { @($false) })) {
         $scripts = @{}
         $groupName = if ($twin) { "$name-autooff" } else { $name }

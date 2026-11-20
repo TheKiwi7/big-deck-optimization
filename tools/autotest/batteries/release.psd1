@@ -32,7 +32,9 @@
         ) }
         # Co-op: one pair of mod-off sessions at a time (-OffJobs 1), the mod-on pairs beside it (-Jobs 3), mod-off sides from the baselines.
         @{ Name = 'coop'; Mode = 'Exclusive'; Steps = @(
-            @{ Name = 'coop'; Script = 'parcoop.ps1'; Args = @('-Names', 'coop,coopclone,coopfast', '-GameDir', '{copy}', '-OnOff', '-UseBaselines', '-OffJobs', '1', '-Jobs', '3') }
+            # Only coopfast has a mod-off twin: coop and coopclone play the full reference deck, whose vanilla combat start outlasts
+            # the network timeout (their twins could never pass): their peers are compared only.
+            @{ Name = 'coop'; Script = 'parcoop.ps1'; Args = @('-Names', 'coop,coopclone,coopfast', '-GameDir', '{copy}', '-OnOff', '-OnOffNames', 'coopfast', '-UseBaselines', '-OffJobs', '1', '-Jobs', '3') }
             @{ Name = 'coop-misc'; Script = 'parcoop.ps1'; Args = @('-Names', 'audit-cooptoggle,coopinstant,effects-coop', '-GameDir', '{copy}') }
             @{ Script = 'coop-modetag.ps1'; Args = @('-GameDir', '{copy}') }
             @{ Script = 'started-off-nomenu.ps1'; Args = @('-GameDir', '{copy}') }
