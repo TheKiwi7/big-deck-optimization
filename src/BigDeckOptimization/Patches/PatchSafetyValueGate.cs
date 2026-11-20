@@ -94,7 +94,9 @@ public static partial class PatchSafety
     /// derives from, the patched type assignable to it), and from its first instruction (nops aside) <c>ldarg __instance;
     /// call|callvirt getter; ldc.i4 K</c> then <c>bne.un L</c> with only nops, unconditional branches and <c>ret</c> from L, or
     /// <c>beq L</c> with only those next. Its type initializer isn't judged: the caller still calls the method (one event for
-    /// several cards), so the postfix still runs at least once, at the same first moment as before. Returns K, or null.
+    /// several cards), so the postfix still runs at least once and its initializer with it, though not always at the same moment
+    /// (full audit A-L3: CardFlightLimit's merged pile event runs at its deferred flush, the end of the frame, where the game's
+    /// first one ran when that card's flight landed; an initializer depending on that moment would see another one). Returns K, or null.
     /// </summary>
     private static int? ValueGateShape(MethodInfo postfix, MethodInfo getter, Type instanceType) =>
         _valueGateShapes.GetOrAdd((postfix.MethodHandle, getter.MethodHandle, instanceType.TypeHandle), _ =>

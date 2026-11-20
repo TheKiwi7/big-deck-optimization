@@ -176,7 +176,8 @@ public static partial class PatchSafety
     private static readonly ConcurrentDictionary<RuntimeMethodHandle, bool> _fillShapes = new();
 
     /// <summary>
-    /// Rule null-fill (2026-11-18, CardFusion's <c>FusedCard_CombatState_Patch</c>): whether every patch on the getter
+    /// Rule null-fill (2026-11-18, made for CardFusion's <c>FusedCard_CombatState_Patch</c>, which it refuses since the review of
+    /// 2026-11-19, C4: that fill calls <c>FusedCard.ChildToParentMap.TryGetValue</c> and another card's getter): whether every patch on the getter
     /// <paramref name="method"/> is another mod's postfix that does nothing when the getter's result isn't null (it may only
     /// replace a null result: <see cref="NullFillShape"/>) and whose every path, the fill's included, only reads and sets its
     /// result (rule RO's analysis, <see cref="ReadOnlyShape"/>: the methods it calls unpatched too), its own method unpatched, no
