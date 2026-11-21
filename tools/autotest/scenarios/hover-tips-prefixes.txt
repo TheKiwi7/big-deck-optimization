@@ -1,0 +1,48 @@
+# HoverTipReuse decided inside NCreature.ShowHoverTips' body (PrefixesOnly, 2026-11-21), mod on: two prefixes of "another mod"
+# on ShowHoverTips, HonkaiLib's shape (tips-append-prefix: a tip appended to an enemy's by reference, lazily, its text holding the
+# combat's round) and St2bs' (tips-false-prefix: a bool prefix returning false while tips-block is on, the body skipped), must be
+# let stand (the kept line, no back-off), the panels still reused (effectcheck HoverTipReuse grew) and the hovered enemy's panel
+# must always show exactly the tips the body got (foreignpatch tips-check after each phase: its own tips and the appended one;
+# checktips expects the creature's own tips only). The round in the appended tip changes at the end of turn: the panel must be
+# rebuilt there (t2). While blocked the body doesn't run (the panel stays as it was, as in the game): checked again only after a
+# play with the block off. ~945 cards.
+timeout 900
+expect HoverTipReuse: NCreature\.ShowHoverTips is also patched by .*bdtest\.foreign\.tips-append-prefix.*\(prefixes before the transpiled body: run before this mod's code as without it\): kept
+expect FOREIGN classify NCreature\.ShowHoverTips: bdtest\.foreign\.tips-append-prefix Prefix .*PrefixesOnly tolerated
+expect FOREIGN classify NCreature\.ShowHoverTips: bdtest\.foreign\.tips-false-prefix Prefix .*PrefixesOnly tolerated
+expect FOREIGN TIPS OK t2:
+expect FOREIGN TIPS OK after block:
+expect EFFECTCHECK HoverTipReuse grew since 'start': [0-9]+ -> [1-9]
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+foreignpatch tips-append-prefix
+foreignpatch tips-false-prefix
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+hover 0
+foreignpatch tips-check hovered
+effects start
+play 3
+waitfor idle 300
+foreignpatch tips-check plays
+endturn
+waitfor idle 300
+foreignpatch tips-check t2
+foreignpatch tips-block on
+play 2
+waitfor idle 300
+foreignpatch tips-block off
+play 1
+waitfor idle 300
+foreignpatch tips-check after block
+effects end
+effectcheck HoverTipReuse grew start
+foreignpatch tips-report end
+cmd bdopt why
+foreignpatch remove
+quit

@@ -125,6 +125,18 @@ public enum PatchTolerance
     /// parameters and postfix sorted after this mod's backs off.
     /// </summary>
     PostfixesBefore,
+
+    /// <summary>
+    /// For a method whose only code of this mod is a transpiler deciding inside the body, on the arguments it got, whether a call
+    /// it makes may be left out because its effect is already there (HoverTipReuse's <c>NCreature.ShowHoverTips</c>: the panel
+    /// registered for the hitbox kept when the tips it shows are the ones the body would build, 2026-11-21): every prefix stands,
+    /// whatever its shape (bool, arguments rewritten by reference, <c>__args</c>, <c>__runOriginal</c>, factories, renamed
+    /// parameters): Harmony runs it before the body as without this mod, and the body then decides on what it left. Finalizers
+    /// that provably hand the exception on unchanged stand too (F1's PassThroughRefusal). Postfixes back off (one runs after a body
+    /// that may have kept what the game would rebuild: what it reads or changes there is not what it meets without this mod),
+    /// as do other finalizers, transpilers and inner patches.
+    /// </summary>
+    PrefixesOnly,
 }
 
 /// <summary>
@@ -193,6 +205,7 @@ public static partial class PatchSafety
         PatchTolerance.PostfixesBefore => "postfixes running before this mod's",
         PatchTolerance.NullSkipped => "postfixes doing nothing for a null result",
         PatchTolerance.TranspiledOnly => "prefixes and postfixes around the transpiled body",
+        PatchTolerance.PrefixesOnly => "prefixes before the transpiled body",
         _ => "nothing",
     };
 
@@ -745,8 +758,9 @@ public static partial class PatchSafety
             {
                 return "no tolerance at this call site";
             }
-            // F1 (2026-11-18): under TranspiledOnly a finalizer that provably hands the exception on unchanged stands (PassThroughRefusal).
-            if (kind == PatchKind.Finalizer && tolerance == PatchTolerance.TranspiledOnly)
+            // F1 (2026-11-18): under TranspiledOnly (and PrefixesOnly) a finalizer that provably hands the exception on unchanged
+            // stands (PassThroughRefusal).
+            if (kind == PatchKind.Finalizer && tolerance is PatchTolerance.TranspiledOnly or PatchTolerance.PrefixesOnly)
             {
                 if (_shapes.GetOrAdd((method.MethodHandle, kind, tolerance), static (_, m) => PassThroughRefusal(m), method) is { } notPassing)
                 {
@@ -773,6 +787,13 @@ public static partial class PatchSafety
             if (tolerance == PatchTolerance.TranspiledOnly)
             {
                 return null;
+            }
+            // PrefixesOnly: a prefix runs before the transpiled body exactly as without this mod (any shape, as under TranspiledOnly);
+            // a postfix runs after a body that may have kept what the game rebuilds.
+            if (tolerance == PatchTolerance.PrefixesOnly)
+            {
+                return kind == PatchKind.Prefix ? null
+                    : "postfix (this mod's code in the body may keep what the game would build again: it would run after another state)";
             }
             // What the patch method's own shape refuses can't change while it is loaded: worked out once per method, kind and
             // tolerance (attributes read as data: no other mod's attribute constructor runs). Only the order of the prefixes and
@@ -1241,6 +1262,7 @@ public static partial class PatchSafety
         Log.Info($"[{ModEntry.Id}] {patch}: {method.DeclaringType?.Name}.{method.Name} is also patched by {string.Join(", ", mods)} ({ToleranceText(tolerance)}"
             + (gates.Length > 0 ? $": {string.Join(", ", gates.Select(g => g.Name))} treated as overriding it" + GateDetail(method)
                 : tolerance == PatchTolerance.NullSkipped ? ": no-ops on the calls this mod skips"
+                : tolerance == PatchTolerance.PrefixesOnly ? ": run before this mod's code as without it"
                 : ": run around this mod's code as without it") + "): kept");
     }
 
@@ -1337,7 +1359,8 @@ public static partial class PatchSafety
             lines.Add($"{patch.owner} {kind} {patchMethod?.DeclaringType?.Name}.{patchMethod?.Name} priority {patch.priority}: SurroundingOnly {Verdict(PatchTolerance.SurroundingOnly)}; "
                 + $"TypeGated {gated}; BeforeReplace {Verdict(PatchTolerance.BeforeReplace)}; "
                 + $"NullSkipped {Verdict(PatchTolerance.NullSkipped)}; TranspiledOnly {Verdict(PatchTolerance.TranspiledOnly)}; "
-                + $"BeforeSkip {Verdict(PatchTolerance.BeforeSkip)}; PostfixesBefore {Verdict(PatchTolerance.PostfixesBefore)}");
+                + $"BeforeSkip {Verdict(PatchTolerance.BeforeSkip)}; PostfixesBefore {Verdict(PatchTolerance.PostfixesBefore)}; "
+                + $"PrefixesOnly {Verdict(PatchTolerance.PrefixesOnly)}");
         }
         return lines;
     }

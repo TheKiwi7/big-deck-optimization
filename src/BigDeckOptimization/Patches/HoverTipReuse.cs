@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
 using Godot;
 using HarmonyLib;
@@ -10,7 +11,6 @@ using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.HoverTips;
-using MegaCrit.Sts2.Core.Nodes.Rooms;
 
 namespace BigDeckOptimization.Patches;
 
@@ -19,10 +19,17 @@ namespace BigDeckOptimization.Patches;
 /// effects) after every combat state change: with huge decks, actions change the state many times per second, and the
 /// rebuilds were ~half of the post-action UI refresh at 8,400 cards.
 ///
-/// Tips stay live: on each state change the creature's tips are computed as usual and compared with the ones on
-/// screen (every field of each tip: title, description with its numbers, icon, debuff look...). Only when they are all
-/// identical, the panel shown is still the one built for them and everything the game places it from is unchanged
-/// (see <see cref="Placement"/>) is the rebuild skipped; any difference rebuilds it like the game does. UI only.
+/// Decided inside <c>NCreature.ShowHoverTips</c>' body (2026-11-21): a transpiler replaces its
+/// <c>HideHoverTips(); NHoverTipSet.CreateAndShow(Hitbox, hoverTips, alignment)</c> with <see cref="Show"/>, which gets the
+/// final argument (what every other mod's prefix left: they all run before the body as in the game) and the alignment the
+/// game computed. The tips are read once (the list passed on to CreateAndShow: its Init reads them once too) and compared with
+/// the ones of the panel registered for the hitbox right now (every field of each tip: title, description with its numbers,
+/// icon, debuff look...). Only when they are all identical, that panel is still the one built for them and everything the
+/// game places it from is unchanged (see <see cref="Placement"/>) is the rebuild left out; any difference rebuilds it with the
+/// game's two calls. Every caller goes through it (the state-change handler, focus, NIntent, NPower, NCreatureStateDisplay):
+/// the comparison is with the panel actually registered, so a panel another caller built or removed is never kept. UI only.
+/// The game's order changes in one place: its <c>HideHoverTips()</c> now runs after the hitbox and alignment reads (the node's
+/// own position and viewport; neither reads the panels).
 ///
 /// The hover-tip display premise (owner-approved 2026-11-17; DESIGN "Owner-approved premises"): other mods' patches on the
 /// panel's own methods a reuse doesn't run (<see cref="SkippedNames"/>, <c>NHoverTipSet</c> only: building, placing, registering
@@ -30,17 +37,18 @@ namespace BigDeckOptimization.Patches;
 /// that depends on state outside the tips may stay as it was until the tips change: taken as display). What a reuse also leaves
 /// out, under the same premise (re-audit of the premises, D1): what building the panel runs besides those methods, the panel's
 /// constructor and <c>_Ready</c>, the scripts of the tip scenes it instantiates (<c>hover_tip.tscn</c>), <c>AddChildSafely</c> and the
-/// labels' <c>SetTextAutoSize</c>. Strict still: the handler <c>NCreature.ShowCreatureHoverTips</c>,
-/// <c>NCreature.ShowHoverTips</c>/<c>HideHoverTips</c>, the fingerprints, the comparison, the "seen" marks the build makes for a tip
-/// of a card, relic or potion (<see cref="_marks"/>: the game's are idempotent, another mod's patch on them is a save write a
-/// reuse would leave out: such a panel is rebuilt), and every one of these methods with <see cref="PatchSafety.ShapeRules"/> off.
+/// labels' <c>SetTextAutoSize</c>. <c>NCreature.ShowHoverTips</c> itself: <see cref="PatchTolerance.PrefixesOnly"/> (every prefix
+/// stands, HonkaiLib's and TH_Patchouli's tips rewritten by reference, St2bs' false-returning one; postfixes, transpilers,
+/// finalizers not passing the exception on and inner patches back off). Strict still: <c>NCreature.HideHoverTips</c>, the
+/// fingerprints, the comparison, the "seen" marks the build makes for a tip of a card, relic or potion (<see cref="_marks"/>:
+/// the game's are idempotent, another mod's patch on them is a save write a reuse would leave out: such a panel is rebuilt),
+/// and every one of these methods with <see cref="PatchSafety.ShapeRules"/> off.
 /// </summary>
 public static class HoverTipReuse
 {
     public const string Name = "HoverTipReuse";
 
-    /// <summary>v0.107.1 code mirrored: the state-change handler and the show/hide it calls, and the panel build.</summary>
-    private const string HandlerFingerprint = "17A5EAD081E993CC";
+    /// <summary>v0.107.1 to v0.113.1 code mirrored or relied on: the show transpiled, the hide it calls, and the panel build.</summary>
     private const string ShowFingerprint = "52AF78E3A3104784";
     private const string HideFingerprint = "3EF252278767F901";
     private const string InitFingerprint = "CF7925571216B6E1";
@@ -95,8 +103,12 @@ public static class HoverTipReuse
 
     private static readonly ConditionalWeakTable<NCreature, Shown> _shown = new();
     private static Func<Dictionary<Control, NHoverTipSet>>? _activeHoverTips;
-    private static MethodInfo? _handler;
-    /// <summary>What a reuse skips calling, strict whatever the premise: the creature's own show and hide.</summary>
+    /// <summary><c>NCreature.ShowHoverTips</c>, transpiled: judged with <see cref="PatchTolerance.PrefixesOnly"/>.</summary>
+    private static MethodInfo? _show;
+    private static MethodInfo? _hide;
+    private static MethodInfo? _createAndShow;
+    private static int _replaced;
+    /// <summary>What a reuse skips calling, strict whatever the premise: the creature's own hide.</summary>
     private static MethodBase[] _skipped = Array.Empty<MethodBase>();
     /// <summary>The panel's methods a reuse skips (<see cref="SkippedNames"/>): under the display premise with the shape rules on.</summary>
     private static MethodBase[] _panel = Array.Empty<MethodBase>();
@@ -140,14 +152,14 @@ public static class HoverTipReuse
         return false;
     }
 
-    /// <summary>The methods checked strictly now: the creature's show and hide, and the panel's with the shape rules off.</summary>
+    /// <summary>The methods checked strictly now: the creature's hide, and the panel's with the shape rules off.</summary>
     private static MethodBase[] Strict() => PatchSafety.ShapeRules ? _skipped : _skipped.Concat(_panel).ToArray();
 
     private static bool SkippedPatched()
     {
         foreach (MethodBase method in _skipped)
         {
-            // No tolerance: the rebuild these methods do is skipped.
+            // No tolerance: the hide a reuse leaves out.
             if (PatchSafety.IsPatchedByOthers(method))
             {
                 return true;
@@ -167,13 +179,17 @@ public static class HoverTipReuse
         return false;
     }
 
+    /// <summary>Another mod's patch keeps the game's two calls (asked at each call: a mod loading later may patch them too).</summary>
+    private static bool BackedOff() => PatchSafety.IsPatchedByOthers(_show, PatchTolerance.PrefixesOnly) || SkippedPatched();
+
     public static void Apply(Harmony harmony)
     {
-        var handler = Reflect.Method(typeof(NCreature), "ShowCreatureHoverTips")
-            ?? throw new MissingMethodException("NCreature.ShowCreatureHoverTips");
-        PatchSafety.RequireFingerprint(handler, HandlerFingerprint);
-        PatchSafety.RequireFingerprint(Reflect.Method(typeof(NCreature), nameof(NCreature.ShowHoverTips)), ShowFingerprint);
-        PatchSafety.RequireFingerprint(Reflect.Method(typeof(NCreature), nameof(NCreature.HideHoverTips)), HideFingerprint);
+        MethodInfo show = Reflect.Method(typeof(NCreature), nameof(NCreature.ShowHoverTips))
+            ?? throw new MissingMethodException("NCreature.ShowHoverTips");
+        MethodInfo hide = Reflect.Method(typeof(NCreature), nameof(NCreature.HideHoverTips))
+            ?? throw new MissingMethodException("NCreature.HideHoverTips");
+        PatchSafety.RequireFingerprint(show, ShowFingerprint);
+        PatchSafety.RequireFingerprint(hide, HideFingerprint);
         PatchSafety.RequireFingerprint(Reflect.Method(typeof(NHoverTipSet), "Init"), InitFingerprint);
         foreach ((string name, Type[] parameters, bool onlySome, string[] fingerprints) in Pinned)
         {
@@ -192,14 +208,14 @@ public static class HoverTipReuse
                 throw new PatchSkippedException($"NHoverTipSet.{name} changed (fingerprint {actual}, expected one of {string.Join(", ", fingerprints)}): left vanilla");
             }
         }
-        _handler = handler;
-        // What a reuse skips calling: another mod's patch on the creature's show or hide keeps the rebuilds; on the panel's own
-        // methods (adding content to the tips, or placing them) too with the shape rules off, under the display premise with them.
-        _skipped = new MethodBase[]
-            {
-                Reflect.Method(typeof(NCreature), nameof(NCreature.ShowHoverTips))!,
-                Reflect.Method(typeof(NCreature), nameof(NCreature.HideHoverTips))!,
-            };
+        _createAndShow = Reflect.DeclaredMethod(typeof(NHoverTipSet), nameof(NHoverTipSet.CreateAndShow),
+                new[] { typeof(Control), typeof(IEnumerable<IHoverTip>), typeof(HoverTipAlignment) })
+            ?? throw new MissingMethodException(nameof(NHoverTipSet), nameof(NHoverTipSet.CreateAndShow));
+        _show = show;
+        _hide = hide;
+        // What a reuse skips calling: another mod's patch on the creature's hide keeps the rebuilds; on the panel's own methods
+        // (adding content to the tips, or placing them) too with the shape rules off, under the display premise with them.
+        _skipped = new MethodBase[] { hide };
         _panel = typeof(NHoverTipSet).GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly)
             .Where(m => SkippedNames.Contains(m.Name)).Cast<MethodBase>().ToArray();
         // All of them found, or none trusted (MarksPatched answers true for a marked tip then).
@@ -223,10 +239,16 @@ public static class HoverTipReuse
         var field = Reflect.Field(typeof(NHoverTipSet), "_activeHoverTips") ?? throw new MissingFieldException("NHoverTipSet._activeHoverTips");
         var active = (Dictionary<Control, NHoverTipSet>)field.GetValue(null)!;
         _activeHoverTips = () => active;
-        PatchGuard.Patch(harmony, handler, prefix: new HarmonyMethod(typeof(HoverTipReuse), nameof(Prefix)));
+        _replaced = 0;
+        PatchGuard.Patch(harmony, show, transpiler: new HarmonyMethod(typeof(HoverTipReuse), nameof(Transpiler)));
+        if (_replaced != 1)
+        {
+            // ModEntry.TryApply removes the transpiler that replaced nothing.
+            throw new PatchSkippedException($"NCreature.ShowHoverTips: {_replaced} hide-then-show sequences found where 1 was expected, left vanilla");
+        }
         Applied = true;
-        // What Prefix asks about (display only).
-        PatchSafety.Watch(Name, handler);
+        // The body transpiled: every prefix of another mod runs before it as in the game (PrefixesOnly); the rest backs off.
+        PatchSafety.Watch(Name, show, PatchTolerance.PrefixesOnly);
         PatchSafety.Watch(Name, Strict());
         // Display only: one gate in front of all it does, any of these back-offs keeps the whole patch vanilla (the menu's red title).
         PatchSafety.WholePatch(Name);
@@ -235,15 +257,56 @@ public static class HoverTipReuse
     }
 
     /// <summary>
+    /// <c>ldarg.0; call HideHoverTips; ...; call NHoverTipSet.CreateAndShow(Control, IEnumerable, HoverTipAlignment)</c> becomes
+    /// <c>nop; nop; ...; ldarg.0; call Show(Control, IEnumerable, HoverTipAlignment, NCreature)</c>: the hide moves into the helper,
+    /// which gets CreateAndShow's own three arguments and the creature, and returns what CreateAndShow returns (popped as before).
+    /// Only when the game's code has exactly that shape (one hide on the instance, one CreateAndShow after it, no branch landing
+    /// between them); otherwise nothing changes and the patch is left off.
+    /// </summary>
+    private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+    {
+        List<CodeInstruction> code = instructions.ToList();
+        int hide = -1, create = -1, hides = 0, creates = 0;
+        for (int i = 0; i < code.Count; i++)
+        {
+            if (code[i].Calls(_hide))
+            {
+                hides++;
+                hide = i;
+            }
+            else if (code[i].Calls(_createAndShow))
+            {
+                creates++;
+                create = i;
+            }
+        }
+        if (hides != 1 || creates != 1 || hide < 1 || create < hide || code[hide - 1].opcode != OpCodes.Ldarg_0
+            || code[hide].labels.Count > 0 || code.Skip(hide + 1).Take(create - hide).Any(c => c.labels.Count > 0 || c.blocks.Count > 0)
+            || code[hide - 1].blocks.Count > 0 || code[hide].blocks.Count > 0)
+        {
+            return code;
+        }
+        MethodInfo helper = Reflect.Method(typeof(HoverTipReuse), nameof(Show));
+        // The branch over the card play lands on the ldarg.0: its labels stay on the nop.
+        code[hide - 1] = new CodeInstruction(OpCodes.Nop).WithLabels(code[hide - 1].labels);
+        code[hide] = new CodeInstruction(OpCodes.Nop);
+        code[create] = new CodeInstruction(OpCodes.Call, helper);
+        code.Insert(create, new CodeInstruction(OpCodes.Ldarg_0));
+        _replaced++;
+        return code;
+    }
+
+    /// <summary>
     /// The kept note of the display premise: which other mods' patches (or hidden IL hooks) on the panel's methods don't run
     /// when a creature's unchanged tips are kept on screen. Cleared with the shape rules off, when there is none, and while the
-    /// handler or a strict method backs off (no reuse then: the back-off shows instead).
+    /// show or the hide backs off (no reuse then: the back-off shows instead).
     /// </summary>
     private static void NoteDisplay()
     {
         var patched = new List<MethodBase>();
         // Only while panels can be reused (G, re-audit of the premises): not once faulted (with the mod off: what would run once on).
-        if (PatchSafety.ShapeRules && Applied && !PatchSafety.IsFaulted(Name) && _handler != null && !PatchSafety.HasOtherPatches(_handler) && !_skipped.Any(PatchSafety.HasOtherPatches))
+        if (PatchSafety.ShapeRules && Applied && !PatchSafety.IsFaulted(Name) && _show != null && !PatchSafety.IsPatchedByOthers(_show, PatchTolerance.PrefixesOnly)
+            && !_skipped.Any(PatchSafety.HasOtherPatches))
         {
             patched.AddRange(_panel.Where(PatchSafety.HasOtherPatches));
         }
@@ -269,61 +332,100 @@ public static class HoverTipReuse
         ? new Placement(hitbox.GlobalPosition, hitbox.Size, hitbox.Scale, game.GetViewportRect().Size)
         : null;
 
-    /// <summary>Does what ShowCreatureHoverTips does, skipping the rebuild when nothing shown would change.</summary>
-    private static bool Prefix(NCreature __instance)
+    /// <summary>The game's two calls, as its body makes them.</summary>
+    private static NHoverTipSet? GameShow(NCreature creature, Control hitbox, IEnumerable<IHoverTip> hoverTips, HoverTipAlignment alignment)
     {
-        // Asked at each call: a mod loading later may patch it too.
-        // No tolerance on the handler and the creature's show and hide (the panel's methods: the display premise).
-        if (!Enabled || PatchSafety.IsPatchedByOthers(_handler) || SkippedPatched())
+        creature.HideHoverTips();
+        return NHoverTipSet.CreateAndShow(hitbox, hoverTips, alignment);
+    }
+
+    /// <summary>
+    /// What <c>ShowHoverTips</c> does once the game found no card play in progress: <c>HideHoverTips()</c> then
+    /// <c>NHoverTipSet.CreateAndShow(hitbox, hoverTips, alignment)</c>, both left out when the panel registered for the hitbox shows
+    /// exactly these tips, placed from the same values.
+    /// </summary>
+    internal static NHoverTipSet? Show(Control hitbox, IEnumerable<IHoverTip> hoverTips, HoverTipAlignment alignment, NCreature creature)
+    {
+        if (!Enabled || hoverTips == null || creature == null)
         {
-            return true;
+            return GameShow(creature!, hitbox, hoverTips!, alignment);
         }
+        List<IHoverTip> tips = new();
         try
         {
-            // Cases where the game shows nothing new: let it run as is. Tips blocked (a potion popup open, targeting) or hidden
-            // (the debug toggle): the game removes the panel and builds none or a hidden one, which a reuse would keep on screen.
-            // The entry left in _shown is never matched again: the panel it names is no longer the one registered.
-            if (__instance.Entity.CombatState == null || NCombatRoom.Instance is not { } room || room.Ui.Hand.InCardPlay
-                || NHoverTipSet.shouldBlockHoverTips || NGame.IsDebugHidingHoverTips)
+            // Read once, as CreateAndShow's Init reads its argument (one foreach through RemoveDupes): that list goes on to it.
+            foreach (IHoverTip tip in hoverTips)
             {
-                return true;
+                tips.Add(tip);
             }
-            List<IHoverTip> tips = __instance.Entity.HoverTips.ToList();
-            List<IHoverTip> unique = IHoverTip.RemoveDupes(tips).ToList();
-            List<HoverTip>? text = unique.All(t => t is HoverTip)
-                ? unique.Cast<HoverTip>().ToList()
-                : null; // Card previews: no field-by-field comparison, always rebuilt.
-            HoverTipAlignment alignment = HoverTip.GetHoverTipAlignment(__instance, 0.5f);
-            Control hitbox = __instance.Hitbox;
-            // Exact values (Vector2 equality): a creature moved (enemies laid out again for a summon, pets placed again) or resized (Osty
-            // growing) has its panel placed again by the game, so it is rebuilt.
-            Placement? placement = PlacementOf(hitbox);
-            if (text != null && placement is { } now && _shown.TryGetValue(__instance, out Shown? shown) && shown.Alignment == alignment
-                && shown.Placement == now
-                && _activeHoverTips!().TryGetValue(hitbox, out NHoverTipSet? panel) && panel == shown.Panel
-                && GodotObject.IsInstanceValid(panel) && shown.Tips.SequenceEqual(text) && !MarksPatched(text))
+        }
+        catch (Exception)
+        {
+            // What reading the tips throws, the game's own read throws in Init: its two calls, on the argument it got.
+            return GameShow(creature, hitbox, hoverTips, alignment);
+        }
+        List<HoverTip>? text = null;
+        Placement? placement = null;
+        try
+        {
+            // Asked at each call: a mod loading later may patch them too.
+            if (BackedOff())
             {
-                Reused++;
-                return false;
+                text = null;
             }
-            __instance.ShowHoverTips(tips);
-            Rebuilt++;
-            if (text != null && placement is { } built && _activeHoverTips!().TryGetValue(hitbox, out NHoverTipSet? panelBuilt))
+            // Cases where the game shows nothing new or nothing at all: its two calls, and nothing kept. Tips blocked (a potion popup
+            // open, targeting) or hidden (the debug toggle): the game removes the panel and builds none or a hidden one, which a
+            // reuse would keep on screen. Out of combat the creature's tips are empty and the panel isn't refreshed by state changes.
+            else if (creature.Entity?.CombatState != null && !NHoverTipSet.shouldBlockHoverTips && !NGame.IsDebugHidingHoverTips)
             {
-                _shown.AddOrUpdate(__instance, new Shown { Tips = text, Alignment = alignment, Placement = built, Panel = panelBuilt });
+                List<IHoverTip> unique = IHoverTip.RemoveDupes(tips).ToList();
+                text = unique.All(t => t is HoverTip)
+                    ? unique.Cast<HoverTip>().ToList()
+                    : null; // Card previews: no field-by-field comparison, always rebuilt.
+                // Exact values (Vector2 equality): a creature moved (enemies laid out again for a summon, pets placed again) or resized
+                // (Osty growing) has its panel placed again by the game, so it is rebuilt.
+                placement = PlacementOf(hitbox);
+                if (text != null && placement is { } now && _shown.TryGetValue(creature, out Shown? shown) && shown.Alignment == alignment
+                    && shown.Placement == now
+                    && _activeHoverTips!().TryGetValue(hitbox, out NHoverTipSet? panel) && panel == shown.Panel
+                    && GodotObject.IsInstanceValid(panel) && shown.Tips.SequenceEqual(text) && !MarksPatched(text))
+                {
+                    Reused++;
+                    return panel;
+                }
             }
-            else
-            {
-                _shown.Remove(__instance);
-            }
-            return false;
         }
         catch (Exception e)
         {
-            Enabled = false;
-            PatchSafety.Fault(Name);
-            Log.Warn($"[{ModEntry.Id}] {Name} disabled after exception (vanilla rebuilds from now on): {e}");
-            return true;
+            Fault(e);
+            text = null;
         }
+        // The game's two calls, outside any try of this mod: what they throw reaches the game's code unchanged.
+        NHoverTipSet? built = GameShow(creature, hitbox, tips, alignment);
+        Rebuilt++;
+        try
+        {
+            if (text != null && placement is { } at && _activeHoverTips!().TryGetValue(hitbox, out NHoverTipSet? panelBuilt))
+            {
+                _shown.AddOrUpdate(creature, new Shown { Tips = text, Alignment = alignment, Placement = at, Panel = panelBuilt });
+            }
+            else
+            {
+                // Never matched again anyway once the panel registered is another: let it go.
+                _shown.Remove(creature);
+            }
+        }
+        catch (Exception e)
+        {
+            Fault(e);
+        }
+        return built;
+    }
+
+    private static void Fault(Exception e)
+    {
+        Enabled = false;
+        PatchSafety.Fault(Name);
+        Log.Warn($"[{ModEntry.Id}] {Name} disabled after exception (vanilla rebuilds from now on): {e}");
     }
 }

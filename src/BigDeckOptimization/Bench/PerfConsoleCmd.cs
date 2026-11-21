@@ -29,7 +29,8 @@ namespace BigDeckOptimization.Bench;
 ///   Comparisons, vanilla (the whole mod off, <see cref="Vanilla{T}"/>) vs optimized, same result required, and the times:
 ///   checksum [n] (the post-action co-op checksum: snapshot + serialize + hash), refresh [n] (the combat refresh), listeners [n],
 ///   scan, pile, text, plaque [n], grid [n], sortkeys, relics [n], upgradebench [n], shufflebench [n], savecheck [file] (the
-///   game's check of the previous save before its backup, SaveCheckBench). Each puts back the switches
+///   game's check of the previous save before its backup, SaveCheckBench), saveread [file] (the game's read of a save file as
+///   text, SaveReadBench). Each puts back the switches
 ///   it forces (a part that faulted meanwhile stays off; one that faulted earlier isn't forced back on: nothing to compare) and
 ///   the effect counters (<see cref="EffectCounters"/>). checksum and refresh freeze the game for seconds and refresh writes the
 ///   hand's values (then puts them back): singleplayer only.
@@ -62,7 +63,7 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
 
     public override string CmdName => "bdperf";
 
-    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | costcolors [iterations:int] | verify [off|sample|all] | snapnet | combatstart | grid [cards:int] | probe [reset|log|on|off|nodes|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | sortkeys [wrong|deck|partonly [cards] [passes]] | savecheck [<file>|wrong|verify <n>|counters] | checks on|off | opt on|off [yes] | listeners [iterations:int] | costwrites | fault piles|walk | badges [clear|guard off|on] | snapgameerror <n> | reserialize [verify <n>] | clonememo [verify <n>] | conflicts | states | roomleft | modorder [none|<owner>] | firstturn status|selftest|imbue <n> | foreign remove|report|classify <Type:Method> | foreign remove|report|classify <Type:Method> | combatcards [passes:int]";
+    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | costcolors [iterations:int] | verify [off|sample|all] | snapnet | combatstart | grid [cards:int] | probe [reset|log|on|off|nodes|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | sortkeys [wrong|deck|partonly [cards] [passes]] | savecheck [<file>|wrong|verify <n>|counters] | checks on|off | opt on|off [yes] | listeners [iterations:int] | costwrites | fault piles|walk | badges [clear|guard off|on] | snapgameerror <n> | reserialize [verify <n>] | clonememo [verify <n>] | conflicts | states | roomleft | modorder [none|<owner>] | firstturn inner | foreign remove|report|classify <Type:Method> | foreign remove|report|classify <Type:Method> | combatcards [passes:int] | saveread [<file>|wrong|verify <n>|counters] |checks on|off";
 
     public override string Description => "[BigDeckOptimization] Measures the multiplayer post-action checksum cost, vanilla vs optimized, or shows/sets live snapshot verification.";
 
@@ -229,7 +230,7 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
         // Effect counters as the game's own calls left them (see EffectCounters); the benches read their own deltas inside.
         using IDisposable? frozen = sub is "checksum" or "refresh" or "listeners" or "pile" or "text" or "scan" or "plaque" or "grid" or "sortkeys"
             or "relics" or "upgradebench" or "shufflebench" or "costhooks" or "snapnet" or "joinmsg" or "combatcards"
-            || (sub == "savecheck" && !(args.Length > 1 && args[1] is "wrong" or "verify" or "counters"))
+            || (sub is "savecheck" or "saveread" && !(args.Length > 1 && args[1] is "wrong" or "verify" or "counters"))
             || (sub == "firstturn" && args.Length > 1 && args[1] == "selftest")
             ? EffectCounters.Freeze() : null;
         // Positive controls and limits of the safety nets (Bench/PerfInjections.cs).
@@ -572,6 +573,8 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                 return SortKeysBench.Run(args.Length >= 2 && args[1] == "wrong");
             case "savecheck":
                 return SaveCheckBench.Run(args);
+            case "saveread":
+                return SaveReadBench.Run(args);
             case "plaque":
                 int plaqueCards = args.Length >= 2 && int.TryParse(args[1], out int pc) && pc > 0 ? pc : 200;
                 return CompareTypePlaque(plaqueCards);

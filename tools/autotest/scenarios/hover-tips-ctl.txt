@@ -1,14 +1,16 @@
-# HoverTipReuse's control under the hover-tip display premise (mod on; DESIGN "Owner-approved premises", 2026-11-17): a no-op
-# prefix of "another mod" on NCreature.ShowHoverTips (the creature's own show, outside the premise) must still keep every
-# rebuild (effectcheck HoverTipReuse same), the back-off shown and no kept note for HoverTipReuse. ~945 cards.
+# HoverTipReuse's control (mod on): a no-op postfix of "another mod" on NCreature.ShowHoverTips (the body HoverTipReuse decides
+# in: a postfix would run after a kept panel where the game rebuilt one; PrefixesOnly lets only prefixes stand, 2026-11-21) must
+# still keep every rebuild (effectcheck HoverTipReuse same), the back-off shown and no kept note for HoverTipReuse. Prefixes there
+# stand: hover-tips-prefixes. ~945 cards.
 timeout 900
-expect HoverTipReuse: NCreature\.ShowHoverTips is also patched by bdtest\.foreign\.noop-prefix.*: normal game for that part
+expect HoverTipReuse: NCreature\.ShowHoverTips is also patched by bdtest\.foreign\.noop-postfix.*: normal game for that part
+expect FOREIGN classify NCreature\.ShowHoverTips: bdtest\.foreign\.noop-postfix Postfix .*PrefixesOnly backs off \(postfix
 expect EFFECTCHECK HoverTipReuse same since 'start'
 newrun NECROBINDER 1234
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
-foreignpatch noop-prefix MegaCrit.Sts2.Core.Nodes.Combat.NCreature:ShowHoverTips
+foreignpatch noop-postfix MegaCrit.Sts2.Core.Nodes.Combat.NCreature:ShowHoverTips
 enemyhp 999999
 immortal
 cmd fight CULTISTS_NORMAL

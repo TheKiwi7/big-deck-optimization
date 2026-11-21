@@ -1,0 +1,46 @@
+# SaveReadDecode A/B (on; with saveread-off): a solo run at ~1,900 cards (the reference run's cards twice, its relics once): a
+# fight, a map room (the game saves the run there), back to the main menu (it loads the run save to show it: GodotFileIo.ReadFile),
+# the run continued (read again), then another room. Every STATE line must match saveread-off, where only this option is off:
+# the runstate lines and the savefiles lines (the run save and its .backup present or not, whole or not, their content with the
+# times left out). The run save must have been decoded by the part (effectcheck SaveReadDecode.RunSave grew), each decoded read
+# also compared with the game's GetAsText by the part's own net in test builds (a difference turns it off with an error line, and
+# the counters line fails). Both game versions.
+timeout 1800
+savefiles before the run
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 1
+selector ui
+runstate start
+wait 2
+savefiles start
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+runstate after fight
+automap
+wait 3
+runstate before save
+wait 2
+savefiles before menu
+effects before menu
+tomenu
+wait 3
+continuerun 600
+wait 3
+runstate after load
+savefiles after load
+effects loaded
+autoroom 900
+runstate room done
+wait 2
+savefiles room done
+effects end
+effectcheck SaveReadDecode.RunSave grew before menu
+effectcheck SaveReadDecode.Checks grew before menu
+cmd bdperf saveread counters
+quit

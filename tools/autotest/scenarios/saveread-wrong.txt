@@ -1,0 +1,28 @@
+# Positive control of SaveReadDecode: the decoded text made different on the reads its net compares (bdperf saveread wrong;
+# every decoded read compared in test builds), then the run save read by the main menu (tomenu): the net must catch it, turn the
+# part off with an error line and hand the game's own text back (the run still continues), and the counters line fails. Both
+# game versions.
+expect SaveReadDecode disabled, save files are read as the game reads them: MISMATCH
+expect SAVEREAD counters .*mismatches [1-9]
+timeout 900
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bdperf checks off
+enemyhp 1
+selector ui
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+automap
+wait 3
+cmd bdperf saveread verify 1
+cmd bdperf saveread wrong
+tomenu
+wait 3
+continuerun 600
+wait 3
+runstate after load
+onfail continue
+cmd bdperf saveread counters
+quit
