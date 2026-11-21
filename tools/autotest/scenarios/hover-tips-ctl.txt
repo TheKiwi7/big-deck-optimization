@@ -1,16 +1,22 @@
-# HoverTipReuse's control (mod on): a no-op postfix of "another mod" on NCreature.ShowHoverTips (the body HoverTipReuse decides
-# in: a postfix would run after a kept panel where the game rebuilt one; PrefixesOnly lets only prefixes stand, 2026-11-21) must
-# still keep every rebuild (effectcheck HoverTipReuse same), the back-off shown and no kept note for HoverTipReuse. Prefixes there
-# stand: hover-tips-prefixes. ~945 cards.
+# HoverTipReuse's control (mod on): a no-op postfix and a void pass-through finalizer of "another mod" on NCreature.ShowHoverTips
+# (the body HoverTipReuse decides in: either would run after a kept panel where the game rebuilt one; AnyPrefix lets only
+# prefixes stand, F1's pass-through finalizers included in the refusal, 2026-11-21) must still keep every rebuild (effectcheck
+# HoverTipReuse same), the back-off shown and no kept note for HoverTipReuse. On that back-off path the game's sequence runs on
+# the body's own argument: tips-identity (a last prefix on ShowHoverTips and one on NHoverTipSet.CreateAndShow) must see the very
+# object reach CreateAndShow at every call. Prefixes there stand: hover-tips-prefixes. ~945 cards.
 timeout 900
-expect HoverTipReuse: NCreature\.ShowHoverTips is also patched by bdtest\.foreign\.noop-postfix.*: normal game for that part
-expect FOREIGN classify NCreature\.ShowHoverTips: bdtest\.foreign\.noop-postfix Postfix .*PrefixesOnly backs off \(postfix
+expect HoverTipReuse: NCreature\.ShowHoverTips is also patched by .*bdtest\.foreign\.noop-postfix.*: normal game for that part
+expect FOREIGN classify NCreature\.ShowHoverTips: bdtest\.foreign\.noop-postfix Postfix .*AnyPrefix backs off \(postfix
+expect FOREIGN classify NCreature\.ShowHoverTips: bdtest\.foreign\.noop-finalizer Finalizer .*TranspiledOnly tolerated.*AnyPrefix backs off \(finalizer
+expect FOREIGN tips identity: [1-9][0-9]* calls got the body's own argument, 0 another object
 expect EFFECTCHECK HoverTipReuse same since 'start'
 newrun NECROBINDER 1234
 waitfor run 120
 wait 2
 cmd bigdeck import ref all all
 foreignpatch noop-postfix MegaCrit.Sts2.Core.Nodes.Combat.NCreature:ShowHoverTips
+foreignpatch noop-finalizer MegaCrit.Sts2.Core.Nodes.Combat.NCreature:ShowHoverTips
+foreignpatch tips-identity
 enemyhp 999999
 immortal
 cmd fight CULTISTS_NORMAL
@@ -31,8 +37,10 @@ play 2
 waitfor idle 300
 checksum t2plays
 state t2plays
+checktips t2plays
 effects end
 effectcheck HoverTipReuse same start
+foreignpatch tips-identity-check
 foreignpatch report end
 cmd bdopt why
 foreignpatch remove

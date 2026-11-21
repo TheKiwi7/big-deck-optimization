@@ -131,12 +131,18 @@ public enum PatchTolerance
     /// it makes may be left out because its effect is already there (HoverTipReuse's <c>NCreature.ShowHoverTips</c>: the panel
     /// registered for the hitbox kept when the tips it shows are the ones the body would build, 2026-11-21): every prefix stands,
     /// whatever its shape (bool, arguments rewritten by reference, <c>__args</c>, <c>__runOriginal</c>, factories, renamed
-    /// parameters): Harmony runs it before the body as without this mod, and the body then decides on what it left. Finalizers
-    /// that provably hand the exception on unchanged stand too (F1's PassThroughRefusal). Postfixes back off (one runs after a body
-    /// that may have kept what the game would rebuild: what it reads or changes there is not what it meets without this mod),
-    /// as do other finalizers, transpilers and inner patches.
+    /// parameters): Harmony runs it before the body as without this mod, and the body then decides on what it left. Postfixes and
+    /// finalizers back off, pass-through ones included (F1's acceptance is TranspiledOnly's only): either runs after a body that
+    /// may have kept what the game would rebuild, so what it reads or changes there (a child added to the registered panel) is
+    /// not what it meets without this mod. Transpilers and inner patches back off too (the caller registers its own transpiler at
+    /// <see cref="Priority.Last"/>, so it judges another mod's output and leaves code it doesn't recognise as it is).
+    /// Sound only when every callee the body may leave out is judged by the caller itself, strictly or under a stated premise: a
+    /// prefix may leave state (a static) that a tolerated patch on a skipped callee would consume, which a reuse then leaves for
+    /// another call to consume. HoverTipReuse: <c>HideHoverTips</c> strict; <c>NHoverTipSet</c>'s methods a reuse skips under the
+    /// hover-tip display premise (what other mods' code there adds is display), strict with <c>ShapeRules</c> off.
+    /// Named AnyPrefix (2026-11-21): HookFilter's removed "PrefixesOnly" tolerance was another rule.
     /// </summary>
-    PrefixesOnly,
+    AnyPrefix,
 }
 
 /// <summary>
@@ -205,7 +211,7 @@ public static partial class PatchSafety
         PatchTolerance.PostfixesBefore => "postfixes running before this mod's",
         PatchTolerance.NullSkipped => "postfixes doing nothing for a null result",
         PatchTolerance.TranspiledOnly => "prefixes and postfixes around the transpiled body",
-        PatchTolerance.PrefixesOnly => "prefixes before the transpiled body",
+        PatchTolerance.AnyPrefix => "prefixes before the transpiled body",
         _ => "nothing",
     };
 
@@ -758,9 +764,13 @@ public static partial class PatchSafety
             {
                 return "no tolerance at this call site";
             }
-            // F1 (2026-11-18): under TranspiledOnly (and PrefixesOnly) a finalizer that provably hands the exception on unchanged
-            // stands (PassThroughRefusal).
-            if (kind == PatchKind.Finalizer && tolerance is PatchTolerance.TranspiledOnly or PatchTolerance.PrefixesOnly)
+            // AnyPrefix: a finalizer, pass-through or not, runs after a body that may have kept what the game rebuilds (as a postfix).
+            if (kind == PatchKind.Finalizer && tolerance == PatchTolerance.AnyPrefix)
+            {
+                return "finalizer (this mod's code in the body may keep what the game would build again: it would run after another state)";
+            }
+            // F1 (2026-11-18): under TranspiledOnly a finalizer that provably hands the exception on unchanged stands (PassThroughRefusal).
+            if (kind == PatchKind.Finalizer && tolerance == PatchTolerance.TranspiledOnly)
             {
                 if (_shapes.GetOrAdd((method.MethodHandle, kind, tolerance), static (_, m) => PassThroughRefusal(m), method) is { } notPassing)
                 {
@@ -788,9 +798,9 @@ public static partial class PatchSafety
             {
                 return null;
             }
-            // PrefixesOnly: a prefix runs before the transpiled body exactly as without this mod (any shape, as under TranspiledOnly);
+            // AnyPrefix: a prefix runs before the transpiled body exactly as without this mod (any shape, as under TranspiledOnly);
             // a postfix runs after a body that may have kept what the game rebuilds.
-            if (tolerance == PatchTolerance.PrefixesOnly)
+            if (tolerance == PatchTolerance.AnyPrefix)
             {
                 return kind == PatchKind.Prefix ? null
                     : "postfix (this mod's code in the body may keep what the game would build again: it would run after another state)";
@@ -1262,7 +1272,7 @@ public static partial class PatchSafety
         Log.Info($"[{ModEntry.Id}] {patch}: {method.DeclaringType?.Name}.{method.Name} is also patched by {string.Join(", ", mods)} ({ToleranceText(tolerance)}"
             + (gates.Length > 0 ? $": {string.Join(", ", gates.Select(g => g.Name))} treated as overriding it" + GateDetail(method)
                 : tolerance == PatchTolerance.NullSkipped ? ": no-ops on the calls this mod skips"
-                : tolerance == PatchTolerance.PrefixesOnly ? ": run before this mod's code as without it"
+                : tolerance == PatchTolerance.AnyPrefix ? ": run before this mod's code as without it"
                 : ": run around this mod's code as without it") + "): kept");
     }
 
@@ -1360,7 +1370,7 @@ public static partial class PatchSafety
                 + $"TypeGated {gated}; BeforeReplace {Verdict(PatchTolerance.BeforeReplace)}; "
                 + $"NullSkipped {Verdict(PatchTolerance.NullSkipped)}; TranspiledOnly {Verdict(PatchTolerance.TranspiledOnly)}; "
                 + $"BeforeSkip {Verdict(PatchTolerance.BeforeSkip)}; PostfixesBefore {Verdict(PatchTolerance.PostfixesBefore)}; "
-                + $"PrefixesOnly {Verdict(PatchTolerance.PrefixesOnly)}");
+                + $"AnyPrefix {Verdict(PatchTolerance.AnyPrefix)}");
         }
         return lines;
     }

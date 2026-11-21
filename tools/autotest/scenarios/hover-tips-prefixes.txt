@@ -1,17 +1,21 @@
-# HoverTipReuse decided inside NCreature.ShowHoverTips' body (PrefixesOnly, 2026-11-21), mod on: two prefixes of "another mod"
+# HoverTipReuse decided inside NCreature.ShowHoverTips' body (AnyPrefix, 2026-11-21), mod on: two prefixes of "another mod"
 # on ShowHoverTips, HonkaiLib's shape (tips-append-prefix: a tip appended to an enemy's by reference, lazily, its text holding the
 # combat's round) and St2bs' (tips-false-prefix: a bool prefix returning false while tips-block is on, the body skipped), must be
 # let stand (the kept line, no back-off), the panels still reused (effectcheck HoverTipReuse grew) and the hovered enemy's panel
 # must always show exactly the tips the body got (foreignpatch tips-check after each phase: its own tips and the appended one;
 # checktips expects the creature's own tips only). The round in the appended tip changes at the end of turn: the panel must be
 # rebuilt there (t2). While blocked the body doesn't run (the panel stays as it was, as in the game): checked again only after a
-# play with the block off. ~945 cards.
+# play with the block off. Then the game's own block (tips-uiblock: NHoverTipSet.shouldBlockHoverTips, as a potion popup sets
+# it): the game reads no tip then (its CreateAndRegister returns first), so HoverTipReuse mustn't either (tips-count-prefix counts
+# every read of the argument: tips-reads zero), and the panel comes back right after. ~945 cards.
 timeout 900
 expect HoverTipReuse: NCreature\.ShowHoverTips is also patched by .*bdtest\.foreign\.tips-append-prefix.*\(prefixes before the transpiled body: run before this mod's code as without it\): kept
-expect FOREIGN classify NCreature\.ShowHoverTips: bdtest\.foreign\.tips-append-prefix Prefix .*PrefixesOnly tolerated
-expect FOREIGN classify NCreature\.ShowHoverTips: bdtest\.foreign\.tips-false-prefix Prefix .*PrefixesOnly tolerated
+expect FOREIGN classify NCreature\.ShowHoverTips: bdtest\.foreign\.tips-append-prefix Prefix .*AnyPrefix tolerated
+expect FOREIGN classify NCreature\.ShowHoverTips: bdtest\.foreign\.tips-false-prefix Prefix .*AnyPrefix tolerated
 expect FOREIGN TIPS OK t2:
 expect FOREIGN TIPS OK after block:
+expect FOREIGN tips reads since the mark: 0
+expect FOREIGN TIPS OK after ui block:
 expect EFFECTCHECK HoverTipReuse grew since 'start': [0-9]+ -> [1-9]
 newrun NECROBINDER 1234
 waitfor run 120
@@ -40,6 +44,16 @@ foreignpatch tips-block off
 play 1
 waitfor idle 300
 foreignpatch tips-check after block
+foreignpatch tips-count-prefix
+foreignpatch tips-reads mark
+foreignpatch tips-uiblock on
+play 1
+waitfor idle 300
+foreignpatch tips-uiblock off
+foreignpatch tips-reads zero
+play 1
+waitfor idle 300
+foreignpatch tips-check after ui block
 effects end
 effectcheck HoverTipReuse grew start
 foreignpatch tips-report end

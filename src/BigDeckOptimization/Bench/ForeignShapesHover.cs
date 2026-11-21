@@ -11,11 +11,12 @@ using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.HoverTips;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
+using MegaCrit.Sts2.Core.Saves;
 
 namespace BigDeckOptimization.Bench;
 
 /// <summary>
-/// Synthetic prefixes of "another mod" on <c>NCreature.ShowHoverTips</c>, for HoverTipReuse's <see cref="PatchTolerance.PrefixesOnly"/>
+/// Synthetic prefixes of "another mod" on <c>NCreature.ShowHoverTips</c>, for HoverTipReuse's <see cref="PatchTolerance.AnyPrefix"/>
 /// (2026-11-21): installed through <c>foreignpatch &lt;shape&gt; [priority N]</c> as ForeignPatches' own shapes (removed by
 /// <c>foreignpatch remove</c>). Both must be let stand (a kept log line, no back-off) and the panels still reused.
 /// <list type="bullet">
@@ -29,12 +30,28 @@ namespace BigDeckOptimization.Bench;
 /// gets (its own tips and the appended one while tips-append-prefix is installed, duplicates removed as the panel's build removes
 /// them), else the line fails (TIPS MISMATCH); a panel the game hid is reported, not compared. <c>foreignpatch tips-report</c>:
 /// the counts (FOREIGN lines, display only: not compared).
+///
+/// Controls of the off and back-off paths and of transpilers (fix round of 2026-11-21):
+/// <list type="bullet">
+/// <item><c>tips-identity</c>: a void prefix on ShowHoverTips (<see cref="Priority.Last"/>: the final argument) and one on
+/// <c>NHoverTipSet.CreateAndShow</c> comparing the argument it gets for that hitbox by reference; <c>foreignpatch tips-identity-check</c>
+/// fails unless every compared call got the very object (the game's sequence on the body's own argument: off or backed off) and
+/// one at least was compared.</item>
+/// <item><c>tips-count-prefix</c>: a void prefix wrapping the argument in an enumerable counting its reads (<c>GetEnumerator</c>);
+/// <c>foreignpatch tips-uiblock on|off</c> sets the game's <c>NHoverTipSet.shouldBlockHoverTips</c> (as a potion popup does);
+/// <c>foreignpatch tips-reads mark|zero</c>: no read since the mark (the game's CreateAndRegister returns before reading them).</item>
+/// <item><c>hide-transpiler</c> on ShowHoverTips and <c>readfile-transpiler</c> on <c>GodotFileIo.ReadFile</c>: a transpiler of
+/// "another mod" (default priority, so before this mod's Priority.Last one) replacing the call this mod looks for
+/// (<c>HideHoverTips</c>, <c>GetAsText</c>) with its own counting wrapper of it; <c>foreignpatch transpiled mark|grew hide|readfile</c>:
+/// that wrapper ran since the mark (its change kept, not dropped by this mod's transpiler).</item>
+/// </list>
 /// </summary>
 public static class ForeignShapesHover
 {
-    public static readonly string[] Shapes = { "tips-append-prefix", "tips-false-prefix" };
+    public static readonly string[] Shapes = { "tips-append-prefix", "tips-false-prefix", "tips-identity", "tips-count-prefix", "hide-transpiler", "readfile-transpiler" };
 
-    public static bool Handles(string[] parts) => parts.Length >= 1 && (Shapes.Contains(parts[0]) || parts[0] is "tips-block" or "tips-check" or "tips-report");
+    public static bool Handles(string[] parts) => parts.Length >= 1 && (Shapes.Contains(parts[0])
+        || parts[0] is "tips-block" or "tips-check" or "tips-report" or "tips-identity-check" or "tips-uiblock" or "tips-reads" or "transpiled");
 
     /// <summary>Whether tips-append-prefix is on ShowHoverTips now (asked of Harmony: <c>foreignpatch remove</c> takes it away).</summary>
     private static bool AppendInstalled() =>
@@ -54,27 +71,200 @@ public static class ForeignShapesHover
             case "tips-report":
                 return new[] { $"FOREIGN tips appended {_appended}, false returns {_falseReturns}, panels checked {_checked}; HoverTipReuse reused {HoverTipReuse.Reused}, rebuilt {HoverTipReuse.Rebuilt}" };
             case "tips-check":
-                return Check(parts.Length > 1 ? parts[1] : "now", parts.Length > 2 ? int.Parse(parts[2]) : 0);
+            {
+                // tips-check <label words> [enemy index]: a last word that is a number is the index.
+                bool indexed = parts.Length > 2 && int.TryParse(parts[^1], out _);
+                string label = string.Join(' ', parts.Skip(1).Take(parts.Length - 1 - (indexed ? 1 : 0)));
+                return Check(label.Length > 0 ? label : "now", indexed ? int.Parse(parts[^1]) : 0);
+            }
+            case "tips-identity-check":
+            {
+                string line = $"FOREIGN tips identity: {_sameArgument} calls got the body's own argument, {_otherArgument} another object";
+                if (_otherArgument > 0 || _sameArgument == 0)
+                {
+                    throw new InvalidOperationException(line + " (MISMATCH: the game's sequence gets the body's own argument)");
+                }
+                return new[] { line };
+            }
+            case "tips-uiblock" when parts.Length > 1 && parts[1] is "on" or "off":
+                NHoverTipSet.shouldBlockHoverTips = parts[1] == "on";
+                return new[] { $"FOREIGN tips-uiblock {parts[1]}: NHoverTipSet.shouldBlockHoverTips {NHoverTipSet.shouldBlockHoverTips}" };
+            case "tips-reads" when parts.Length > 1 && parts[1] is "mark" or "zero":
+            {
+                if (parts[1] == "mark")
+                {
+                    _readsMark = _reads;
+                    return new[] { $"FOREIGN tips reads mark: {_reads}" };
+                }
+                string line = $"FOREIGN tips reads since the mark: {_reads - _readsMark}";
+                if (_reads != _readsMark)
+                {
+                    throw new InvalidOperationException(line + " (MISMATCH: the game reads no tip while they are blocked)");
+                }
+                return new[] { line };
+            }
+            case "transpiled" when parts.Length > 2 && parts[1] is "mark" or "grew" && parts[2] is "hide" or "readfile":
+            {
+                long now = parts[2] == "hide" ? _foreignHides : _foreignReads;
+                if (parts[1] == "mark")
+                {
+                    _transpiledMarks[parts[2]] = now;
+                    return new[] { $"FOREIGN transpiled {parts[2]} mark: {now}" };
+                }
+                long then = _transpiledMarks.TryGetValue(parts[2], out long saved) ? saved : throw new InvalidOperationException($"transpiled grew {parts[2]}: no mark");
+                string line = $"FOREIGN transpiled {parts[2]} since the mark: {then} -> {now}";
+                if (now <= then)
+                {
+                    throw new InvalidOperationException(line + " (the other mod's transpiler never ran: its change was dropped)");
+                }
+                return new[] { line };
+            }
         }
         if (!Shapes.Contains(parts[0]))
         {
-            throw new ArgumentException("foreignpatch tips-append-prefix|tips-false-prefix [priority N] | tips-block on|off | tips-check <label> [enemy] | tips-report");
+            throw new ArgumentException("foreignpatch " + string.Join("|", Shapes) + " [priority N] | tips-block on|off | tips-check <label> [enemy] | tips-report"
+                + " | tips-identity-check | tips-uiblock on|off | tips-reads mark|zero | transpiled mark|grew hide|readfile");
         }
-        MethodBase target = AccessTools.Method(typeof(NCreature), nameof(NCreature.ShowHoverTips))
-            ?? throw new MissingMethodException(nameof(NCreature), nameof(NCreature.ShowHoverTips));
-        int priority = Priority.Normal;
+        string shape = parts[0];
+        MethodBase target = shape == "readfile-transpiler"
+            ? AccessTools.Method(typeof(GodotFileIo), nameof(GodotFileIo.ReadFile), new[] { typeof(string) }) ?? throw new MissingMethodException(nameof(GodotFileIo), nameof(GodotFileIo.ReadFile))
+            : AccessTools.Method(typeof(NCreature), nameof(NCreature.ShowHoverTips)) ?? throw new MissingMethodException(nameof(NCreature), nameof(NCreature.ShowHoverTips));
+        int priority = shape == "tips-identity" ? Priority.Last : Priority.Normal;
         int at = Array.IndexOf(parts, "priority");
         if (at >= 0 && at + 1 < parts.Length)
         {
             priority = int.Parse(parts[at + 1]);
         }
-        string shape = parts[0];
         string id = ForeignPatches.IdPrefix + shape;
-        new Harmony(id).Patch(target, prefix: new HarmonyMethod(typeof(ForeignShapesHover), shape == "tips-append-prefix" ? nameof(AppendPrefix) : nameof(FalsePrefix)) { priority = priority });
+        var harmony = new Harmony(id);
+        HarmonyMethod Fix(string name) => new(typeof(ForeignShapesHover), name) { priority = priority };
+        switch (shape)
+        {
+            case "tips-append-prefix":
+                harmony.Patch(target, prefix: Fix(nameof(AppendPrefix)));
+                break;
+            case "tips-false-prefix":
+                harmony.Patch(target, prefix: Fix(nameof(FalsePrefix)));
+                break;
+            case "tips-count-prefix":
+                harmony.Patch(target, prefix: Fix(nameof(CountReadsPrefix)));
+                break;
+            case "tips-identity":
+            {
+                harmony.Patch(target, prefix: Fix(nameof(IdentityShowPrefix)));
+                MethodBase create = AccessTools.Method(typeof(NHoverTipSet), nameof(NHoverTipSet.CreateAndShow), new[] { typeof(Control), typeof(IEnumerable<IHoverTip>), typeof(HoverTipAlignment) })
+                    ?? throw new MissingMethodException(nameof(NHoverTipSet), nameof(NHoverTipSet.CreateAndShow));
+                harmony.Patch(create, prefix: Fix(nameof(IdentityCreatePrefix)));
+                installed(id, create);
+                break;
+            }
+            case "hide-transpiler":
+                harmony.Patch(target, transpiler: Fix(nameof(HideTranspiler)));
+                break;
+            case "readfile-transpiler":
+                harmony.Patch(target, transpiler: Fix(nameof(ReadFileTranspiler)));
+                break;
+        }
         installed(id, target);
-        var lines = new List<string> { $"FOREIGN installed {shape} on NCreature.ShowHoverTips as {id} (priority {priority})" };
-        lines.AddRange(PatchSafety.Describe(target).Select(line => "FOREIGN classify NCreature.ShowHoverTips: " + line));
+        string name = $"{target.DeclaringType?.Name}.{target.Name}";
+        var lines = new List<string> { $"FOREIGN installed {shape} on {name} as {id} (priority {priority})" };
+        lines.AddRange(PatchSafety.Describe(target).Select(line => $"FOREIGN classify {name}: " + line));
         return lines;
+    }
+
+    // ---- The controls of the fix round ----
+
+    private static Control? _identityHitbox;
+    private static IEnumerable<IHoverTip>? _identityArgument;
+    private static long _sameArgument, _otherArgument;
+
+    /// <summary>The body's final argument and the hitbox it goes with (sorted last among the prefixes).</summary>
+    public static void IdentityShowPrefix(NCreature __instance, IEnumerable<IHoverTip> hoverTips)
+    {
+        _identityHitbox = __instance?.Hitbox;
+        _identityArgument = hoverTips;
+    }
+
+    /// <summary>CreateAndShow for that hitbox: the very argument the body got, or another object.</summary>
+    public static void IdentityCreatePrefix(Control owner, IEnumerable<IHoverTip> hoverTips)
+    {
+        if (_identityHitbox == null || !ReferenceEquals(owner, _identityHitbox))
+        {
+            return;
+        }
+        if (ReferenceEquals(hoverTips, _identityArgument))
+        {
+            _sameArgument++;
+        }
+        else
+        {
+            _otherArgument++;
+        }
+        _identityHitbox = null;
+        _identityArgument = null;
+    }
+
+    private static long _reads, _readsMark;
+
+    /// <summary>The argument wrapped in an enumerable counting its reads (each <c>GetEnumerator</c>).</summary>
+    public static void CountReadsPrefix(ref IEnumerable<IHoverTip> hoverTips)
+    {
+        if (hoverTips != null)
+        {
+            hoverTips = new CountingTips(hoverTips);
+        }
+    }
+
+    private sealed class CountingTips(IEnumerable<IHoverTip> inner) : IEnumerable<IHoverTip>
+    {
+        public IEnumerator<IHoverTip> GetEnumerator()
+        {
+            _reads++;
+            return inner.GetEnumerator();
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    private static long _foreignHides, _foreignReads;
+    private static readonly Dictionary<string, long> _transpiledMarks = new();
+
+    /// <summary>"Another mod's" own hide: the game's, counted.</summary>
+    public static void ForeignHide(NCreature creature)
+    {
+        _foreignHides++;
+        creature.HideHoverTips();
+    }
+
+    /// <summary>"Another mod's" own read as text: the game's, counted.</summary>
+    public static string ForeignGetAsText(Godot.FileAccess file, bool skipCr)
+    {
+        _foreignReads++;
+        return file.GetAsText(skipCr);
+    }
+
+    /// <summary>Every <c>call HideHoverTips</c> replaced with <see cref="ForeignHide"/> (same stack).</summary>
+    public static IEnumerable<CodeInstruction> HideTranspiler(IEnumerable<CodeInstruction> instructions)
+    {
+        MethodInfo hide = AccessTools.Method(typeof(NCreature), nameof(NCreature.HideHoverTips));
+        foreach (CodeInstruction instruction in instructions)
+        {
+            yield return instruction.Calls(hide)
+                ? new CodeInstruction(System.Reflection.Emit.OpCodes.Call, AccessTools.Method(typeof(ForeignShapesHover), nameof(ForeignHide))).WithLabels(instruction.labels).WithBlocks(instruction.blocks)
+                : instruction;
+        }
+    }
+
+    /// <summary>Every <c>callvirt GetAsText(bool)</c> replaced with <see cref="ForeignGetAsText"/> (same stack).</summary>
+    public static IEnumerable<CodeInstruction> ReadFileTranspiler(IEnumerable<CodeInstruction> instructions)
+    {
+        MethodInfo getAsText = AccessTools.Method(typeof(Godot.FileAccess), nameof(Godot.FileAccess.GetAsText), new[] { typeof(bool) });
+        foreach (CodeInstruction instruction in instructions)
+        {
+            yield return instruction.Calls(getAsText)
+                ? new CodeInstruction(System.Reflection.Emit.OpCodes.Call, AccessTools.Method(typeof(ForeignShapesHover), nameof(ForeignGetAsText))).WithLabels(instruction.labels).WithBlocks(instruction.blocks)
+                : instruction;
+        }
     }
 
     /// <summary>The tip appended to an enemy's tips: its text holds the combat's round (the same object never: a fresh one per call).</summary>

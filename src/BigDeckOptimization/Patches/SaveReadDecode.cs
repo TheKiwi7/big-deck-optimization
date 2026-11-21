@@ -29,6 +29,12 @@ namespace BigDeckOptimization.Patches;
 /// on. A net: the session's first decoded read and one in <see cref="VerifyEvery"/> after it (every read in test builds) also run
 /// the game's <c>GetAsText</c> and compare the two strings; a difference turns this part off (the game's string is returned).
 /// Both game versions (v0.111.1 and v0.113.1 share the method).
+///
+/// The transpiler runs at <see cref="Priority.Last"/>: it reads what other mods' transpilers left, so one that changed the
+/// GetAsText call keeps its change (nothing of this mod there then), and any transpiler backs the part off at run time
+/// (<see cref="PatchTolerance.TranspiledOnly"/> refuses them). Residual: another mod's transpiler also at Priority.Last and
+/// registered after this mod's runs after it and sees the helper call; it backs the part off all the same (the helper then calls
+/// the game's GetAsText), as inner patches do.
 /// </summary>
 public static class SaveReadDecode
 {
@@ -104,7 +110,9 @@ public static class SaveReadDecode
         _fileReads = reads.Cast<MethodInfo>().ToArray();
         _readFile = readFile;
         _replaced = 0;
-        PatchGuard.Patch(harmony, readFile, transpiler: new HarmonyMethod(typeof(SaveReadDecode), nameof(Transpiler)));
+        // Priority.Last: other mods' transpilers run first. One that replaced or moved the GetAsText call keeps its change (this
+        // one finds no such call and leaves the code as it is), and the part backs off from it at run time (a transpiler).
+        PatchGuard.Patch(harmony, readFile, transpiler: new HarmonyMethod(typeof(SaveReadDecode), nameof(Transpiler)) { priority = Priority.Last });
         if (_replaced != 1)
         {
             // ModEntry.TryApply removes the transpiler that replaced nothing.

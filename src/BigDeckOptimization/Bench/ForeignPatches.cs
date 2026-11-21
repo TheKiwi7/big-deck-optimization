@@ -397,7 +397,7 @@ public static class ForeignPatches
         if (ForeignShapesHookFilter.Handles(parts)) return ForeignShapesHookFilter.Run(parts, (id, target) => { lock (_installed) { _installed.Add((id, target)); } });
         if (ForeignShapesUnchanged.Handles(parts)) return ForeignShapesUnchanged.Run(parts, (id, method) => { lock (_installed) _installed.Add((id, method)); });
         if (ForeignShapesGates.Handles(parts)) return ForeignShapesGates.Run(parts, (id, method) => { lock (_installed) _installed.Add((id, method)); }, Classification);
-        if (ForeignShapesHover.Handles(parts)) return ForeignShapesHover.Run(parts, (id, method) => { lock (_installed) _installed.Add((id, method)); }); // HoverTipReuse's PrefixesOnly.
+        if (ForeignShapesHover.Handles(parts)) return ForeignShapesHover.Run(parts, (id, method) => { lock (_installed) _installed.Add((id, method)); }); // HoverTipReuse's AnyPrefix.
         if (!Shapes.Contains(parts[0]) || parts.Length < 2)
         {
             throw new ArgumentException($"unknown foreignpatch shape '{parts[0]}' (or no target): {string.Join(", ", Shapes)}");
