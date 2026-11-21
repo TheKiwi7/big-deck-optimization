@@ -884,7 +884,9 @@ function Write-SessionStatus([string]$label, [int]$total, [int]$finished, [int]$
     }
     $left = if ($share -gt 0.02) { "about {0:F0} min left" -f (($elapsed * (1 - $share) / $share) / 60) } else { "time left: not known yet" }
     $header = "{0}  {1}: {2}, {3} running, {4} waiting, {5:F0} min so far, {6}, {7:F1} GB free" -f (Get-Date -Format "HH:mm:ss"), $label, $progress, $running.Count, $waiting, ($elapsed / 60), $left, ((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB)
-    Set-Content (Join-Path $Results $file) (@($header) + @($rows)) -Encoding utf8 -ErrorAction SilentlyContinue
+    # Two series on one version write the same status file: a write refused because the other holds it is skipped (progress
+    # display only), never an error that ends the runner (it did, "RUNNER ERROR (parlib.ps1)", in a battery with more steps).
+    try { Set-Content (Join-Path $Results $file) (@($header) + @($rows)) -Encoding utf8 -ErrorAction Stop } catch { }
 }
 
 # A game copy that costs nothing: hard links to every file of $source. Replacing a file: delete its link, then write a new
