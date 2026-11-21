@@ -199,12 +199,14 @@ public static class SaveBackupCheck
         {
             ulong position = 0;
             bool moved = false;
+            bool answered = false, answer = false, verify = false;
             try
             {
                 int verdict = Shortcut(file, fullPath, ref position, ref moved);
                 if (verdict is Whole or Broken)
                 {
-                    bool answer = verdict == Whole;
+                    answered = true;
+                    answer = verdict == Whole;
 #if BENCH
                     if (WrongForTest)
                     {
@@ -213,18 +215,7 @@ public static class SaveBackupCheck
 #endif
                     long n = Interlocked.Increment(ref Shortcuts);
                     // The first answer of the session and one in VerifyEvery after it: the game's check too.
-                    if ((n - 1) % Math.Max(1, VerifyEvery) == 0)
-                    {
-                        Interlocked.Increment(ref Checks);
-                        bool game = _isWhole!(file.GetAsText(skipCr));
-                        if (game != answer)
-                        {
-                            Interlocked.Increment(ref Mismatches);
-                            Disable($"MISMATCH on {fullPath}: answered {(answer ? "whole" : "not whole")}, the game's check {(game ? "whole" : "not whole")}");
-                            return game;
-                        }
-                    }
-                    return answer;
+                    verify = (n - 1) % Math.Max(1, VerifyEvery) == 0;
                 }
             }
             catch (Exception e)
@@ -241,6 +232,24 @@ public static class SaveBackupCheck
                     }
                 }
                 Disable(e.ToString());
+                answered = false;
+            }
+            if (answered && !verify)
+            {
+                return answer;
+            }
+            if (answered)
+            {
+                // The game's two calls, once, outside any try of this mod: whatever they throw (an OutOfMemoryException on a huge
+                // save) reaches CopyBackup unchanged, as without this mod. Their answer is the one returned.
+                Interlocked.Increment(ref Checks);
+                bool game = _isWhole!(file.GetAsText(skipCr));
+                if (game != answer)
+                {
+                    Interlocked.Increment(ref Mismatches);
+                    Disable($"MISMATCH on {fullPath}: answered {(answer ? "whole" : "not whole")}, the game's check {(game ? "whole" : "not whole")}");
+                }
+                return game;
             }
         }
         // The game's two calls (a null file throws there as it would have).
