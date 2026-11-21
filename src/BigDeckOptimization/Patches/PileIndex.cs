@@ -212,6 +212,7 @@ public static class PileIndex
             if (!PatchSafety.FingerprintMatches(actual, fingerprint))
             {
                 _selfCheck = true;
+                _removeChanged |= method == nameof(CardPile.RemoveInternal);
                 Log.Info($"[{ModEntry.Id}] {Name}: CardPile.{method} changed (fingerprint {actual}, expected {fingerprint}): every call checked by its effect");
             }
         }
@@ -276,6 +277,25 @@ public static class PileIndex
         catch (Exception e)
         {
             Log.Info($"[{ModEntry.Id}] {Name}: AddInternal duplicate check left vanilla: {e.Message}");
+        }
+        if (_removeChanged)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: CardPile.RemoveInternal changed: its single scan left vanilla");
+        }
+        else
+        {
+            try
+            {
+                PatchGuard.Patch(harmony, _removeMethod!, transpiler: Method(nameof(RemoveInternalTranspiler)));
+                if (!_singleScanPatched)
+                {
+                    Log.Info($"[{ModEntry.Id}] {Name}: RemoveInternal single scan left vanilla (calls not found)");
+                }
+            }
+            catch (Exception e)
+            {
+                Log.Info($"[{ModEntry.Id}] {Name}: RemoveInternal single scan left vanilla: {e.Message}");
+            }
         }
         try
         {
@@ -393,6 +413,184 @@ public static class PileIndex
     }
 
     public static long SlowDuplicateChecks { get; private set; }
+
+    /// <summary>
+    /// <c>RemoveInternal</c>'s single scan (<see cref="RemoveInternalTranspiler"/>): its own switch, set with the pile_lookup switch by
+    /// <c>Settings</c>. It reads no index: only <see cref="_failed"/> (a pile changed in a way the index's checks didn't expect) and
+    /// <see cref="_equalsSeen"/> stop it.
+    /// </summary>
+    public static bool SingleScanEnabled { get; set; } = true;
+    /// <summary>Removes made with the duplicate check's own search (the effects check).</summary>
+    public static long SingleScans { get; private set; }
+
+    private static bool _removeChanged;
+    private static bool _singleScanPatched;
+    private static long _scanChecks;
+
+    /// <summary>
+    /// A card whose type overrides <c>Equals(object)</c> was added to a pile this session (seen by <see cref="BeforeAdd"/>, through
+    /// which every card enters a pile's list: <c>RequireFieldWriters</c>): <c>List.IndexOf</c> calls each element's <c>Equals</c>,
+    /// which then might not answer by reference, nor twice the same. The single scan stays off for the session (none of the
+    /// Workshop mods checked has such a card).
+    /// </summary>
+    private static bool _equalsSeen;
+    private static Type? _lastAddedType;
+    private static readonly Dictionary<Type, bool> _overridesEquals = new();
+
+    private static void NoteAddedType(CardModel? card)
+    {
+        Type? type = card?.GetType();
+        if (type == null || type == _lastAddedType)
+        {
+            return;
+        }
+        bool overrides;
+        lock (_overridesEquals)
+        {
+            if (!_overridesEquals.TryGetValue(type, out overrides))
+            {
+                MethodInfo? equals = type.GetMethod(nameof(Equals), BindingFlags.Public | BindingFlags.Instance, null, new[] { typeof(object) }, null);
+                overrides = equals == null || equals.DeclaringType != typeof(object);
+                _overridesEquals[type] = overrides;
+            }
+        }
+        _equalsSeen |= overrides;
+        _lastAddedType = type;
+    }
+
+    /// <summary>List&lt;T&gt;._version: bumped by every change of a list.</summary>
+    private static AccessTools.FieldRef<List<CardModel>, int>? _listVersion;
+
+    /// <summary>
+    /// The search <see cref="ContainsBeingRemoved"/> made on this thread: the list, the card, where it was found and the list's
+    /// version then. <see cref="RemoveFound"/> uses it when it is still that list's state.
+    /// </summary>
+    [ThreadStatic] private static List<CardModel>? _foundList;
+    [ThreadStatic] private static CardModel? _foundCard;
+    [ThreadStatic] private static int _foundAt;
+    [ThreadStatic] private static int _foundVersion;
+
+    /// <summary>
+    /// <c>RemoveInternal</c> is <c>if (!Cards.Contains(card)) throw ...; _cards.Remove(card);</c>: two searches of the pile for the
+    /// same card (a reshuffle moving a whole pile: the cards are searched twice each). Its <c>Enumerable.Contains</c> call goes
+    /// through <see cref="ContainsBeingRemoved"/> and its <c>List.Remove</c> through <see cref="RemoveFound"/>, which removes at the
+    /// index the first search found when the list is still as it was then: what <c>List.Remove</c> does (its own <c>IndexOf</c>, then
+    /// <c>RemoveAt</c> there). Only when both calls are found, once each.
+    /// </summary>
+    private static IEnumerable<CodeInstruction> RemoveInternalTranspiler(IEnumerable<CodeInstruction> instructions)
+    {
+        MethodInfo contains = typeof(Enumerable).GetMethods()
+            .Single(m => m.Name == nameof(Enumerable.Contains) && m.GetParameters().Length == 2)
+            .MakeGenericMethod(typeof(CardModel));
+        MethodInfo remove = typeof(List<CardModel>).GetMethod(nameof(List<CardModel>.Remove), new[] { typeof(CardModel) })!;
+        List<CodeInstruction> code = instructions.ToList();
+        int containsAt = code.FindIndex(i => i.Calls(contains));
+        int removeAt = code.FindIndex(i => i.Calls(remove));
+        // Harmony runs transpilers again each time the method is re-patched: each run decides on its own input.
+        if (containsAt < 0 || removeAt < containsAt || code.FindLastIndex(i => i.Calls(contains)) != containsAt
+            || code.FindLastIndex(i => i.Calls(remove)) != removeAt)
+        {
+            return code;
+        }
+        _listVersion ??= Reflect.FieldRefAccess<List<CardModel>, int>("_version");
+        code[containsAt] = new CodeInstruction(OpCodes.Call, Reflect.Method(typeof(PileIndex), nameof(ContainsBeingRemoved)))
+            .WithLabels(code[containsAt].labels).WithBlocks(code[containsAt].blocks);
+        code[removeAt] = new CodeInstruction(OpCodes.Call, Reflect.Method(typeof(PileIndex), nameof(RemoveFound)))
+            .WithLabels(code[removeAt].labels).WithBlocks(code[removeAt].blocks);
+        _singleScanPatched = true;
+        return code;
+    }
+
+    /// <summary>
+    /// <c>Cards.Contains(card)</c> in <c>RemoveInternal</c>: on the pile's own list (<c>List&lt;CardModel&gt;</c> itself, whose
+    /// <c>Contains</c> is <c>IndexOf(card) &gt;= 0</c>, what <c>Enumerable.Contains</c> calls for it), a search by reference (each
+    /// element's <c>Equals</c>, none overriding it: <see cref="_equalsSeen"/>) that remembers where it found the card. Anything
+    /// else (another collection returned by a patched <c>CardPile.Cards</c>, switched off, inside ListenerCache.RunVanilla): the
+    /// game's call.
+    /// </summary>
+    private static bool ContainsBeingRemoved(IEnumerable<CardModel> cards, CardModel card)
+    {
+        _foundList = null;
+        _foundCard = null;
+        // A null card: the game's call (List.IndexOf finds a null element, a search by reference would too, but nothing to gain).
+        if (SingleScanEnabled && !_failed && !_equalsSeen && !ListenerCache.IsSuspended && card != null && cards != null
+            && cards.GetType() == typeof(List<CardModel>))
+        {
+            var list = (List<CardModel>)cards;
+            Span<CardModel> items = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(list);
+            int at = -1;
+            for (int i = 0; i < items.Length; i++)
+            {
+                if (ReferenceEquals(items[i], card))
+                {
+                    at = i;
+                    break;
+                }
+            }
+#if BENCH
+            // Test: a search made wrong (the next element, or not found), checked against the game's own now.
+            bool wrong = TestWrong.Take("singlescan");
+            if (wrong)
+            {
+                at = at >= 0 && at + 1 < items.Length ? at + 1 : -1;
+            }
+            if (++_scanChecks % VerifyEvery == 0 || wrong)
+#else
+            if (++_scanChecks % VerifyEvery == 0)
+#endif
+            {
+                // One search in VerifyEvery against the game's own (List.IndexOf, what Contains and Remove call).
+                int game = list.IndexOf(card);
+                if (game != at)
+                {
+                    Fail($"RemoveInternal's single scan found {card} at {at}, List.IndexOf at {game}");
+                    return game >= 0;
+                }
+            }
+            if (at >= 0)
+            {
+                _foundList = list;
+                _foundCard = card;
+                _foundAt = at;
+                _foundVersion = _listVersion!(list);
+            }
+            return at >= 0;
+        }
+        return cards!.Contains(card); // The game's call, its own exception for a null collection included.
+    }
+
+    /// <summary>
+    /// <c>_cards.Remove(card)</c> in <c>RemoveInternal</c>: <c>RemoveAt</c> where <see cref="ContainsBeingRemoved"/> found the card,
+    /// when it is the same list and card and the list's version is still the one it searched (no change since, so its own
+    /// <c>IndexOf</c> would find the same index). Else the game's <c>Remove</c>.
+    /// </summary>
+    private static bool RemoveFound(List<CardModel> list, CardModel card)
+    {
+        List<CardModel>? found = _foundList;
+        CardModel? foundCard = _foundCard;
+        _foundList = null;
+        _foundCard = null;
+        if (found != null && ReferenceEquals(found, list) && ReferenceEquals(foundCard, card) && _foundVersion == _listVersion!(list)
+            && (uint)_foundAt < (uint)list.Count && ReferenceEquals(list[_foundAt], card))
+        {
+            list.RemoveAt(_foundAt);
+            SingleScans++;
+            return true;
+        }
+        return list.Remove(card);
+    }
+
+#if BENCH
+    /// <summary>Bench (<c>bdperf combatcards</c>): what the transpiled <c>RemoveInternal</c> does to its list, on any list.</summary>
+    internal static void RemoveForTest(List<CardModel> list, CardModel card)
+    {
+        if (!ContainsBeingRemoved(list, card))
+        {
+            throw new InvalidOperationException($"bench: {card} is not in the list");
+        }
+        RemoveFound(list, card);
+    }
+#endif
 
     /// <summary>
     /// The <c>RunState.ContainsCard</c> shortcut doesn't read the index, so a stale index (<see cref="Fail"/>) needn't stop it:
@@ -563,6 +761,8 @@ public static class PileIndex
     /// <summary>Only called while the original is still to run (Harmony skips it after another prefix returned false).</summary>
     private static void BeforeAdd(CardPile __instance, CardModel card, bool __runOriginal, ref Saved __state)
     {
+        // Before the skip test: a card's type is noted even for an add that may not happen (conservative).
+        NoteAddedType(card);
         if (!__runOriginal)
         {
             return;

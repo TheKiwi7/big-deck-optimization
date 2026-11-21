@@ -25,6 +25,8 @@ internal static class TestWrong
         ("reuse.card", "SnapshotCardReuse: a reused card snapshot (its sampled serialization compare)"),
         ("pilebits", "SnapshotCardReuse: a pile's kept header bits (PileSerializePostfix)"),
         ("pile", "PileIndex: a fast CardModel.Pile answer (its sampled vanilla scan)"),
+        ("singlescan", "PileIndex: RemoveInternal's single scan (its sampled List.IndexOf)"),
+        ("combatcards", "CombatCardSet: a CombatState.ContainsCard answer (its sampled scan of the combat's cards)"),
         ("clonememo", "LimitlessCloneMemo: a kept inner card (its verify compare)"),
         ("reserialize", "LimitlessReserialize: a kept stored list (Verify)"),
         ("recalc", "LimitlessRecalcSkip: a skipped recalculation's memo (its sampled WouldKeep)"),

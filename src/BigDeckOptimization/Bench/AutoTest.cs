@@ -583,7 +583,7 @@ public static partial class AutoTest
         // once its Apply ran: with the mod off at game start (StartedOff) Apply never runs, so no line there.
         (ListenerCache.Name, ListenerCache.Served), (ListenerCache.Name + ".Creatures", ListenerCache.CreatureInvalidations), (HookFilter.Name, HookFilter.ListenersDropped), (ExtraScopes.Name, ExtraScopes.FirstTurnPasses),
         (IdleButtonInput.Name, IdleButtonInput.Muted), (GridSortCache.Name, GridSortCache.Sorts), (EnchantmentTabReuse.Name, EnchantmentTabReuse.Reused),
-        (PoolSignalScan.Name, PoolSignalScan.Nodes), (CardDbScan.Name, CardDbScan.Skipped), (PileIndex.Name, PileIndex.Fast), (PileIndex.Name + ".Duplicates", PileIndex.FastDuplicateChecks),
+        (PoolSignalScan.Name, PoolSignalScan.Nodes), (CardDbScan.Name, CardDbScan.Skipped), (PileIndex.Name, PileIndex.Fast), (PileIndex.Name + ".Duplicates", PileIndex.FastDuplicateChecks), (PileIndex.Name + ".Removes", PileIndex.SingleScans), (CombatCardSet.Name, CombatCardSet.Answered),
         (PileCounterBatch.Name, PileCounterBatch.Batched), (FastCombatStart.Name, FastCombatStart.SkippedWaits), (HoverTipReuse.Name, HoverTipReuse.Reused),
         (FastListeners.Name + ".CombatWalk", FastListeners.CombatWalks), (FastListeners.Name + ".RunWalk", FastListeners.RunWalks),
         (FastListeners.Name + ".Cache", FastListeners.SegmentHits + FastListeners.SegmentMoveHits), (FastListeners.Name + ".Moves", FastListeners.SegmentMoveHits + FastListeners.SnapshotCatchUps),

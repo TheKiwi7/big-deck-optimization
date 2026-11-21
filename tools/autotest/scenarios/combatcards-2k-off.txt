@@ -1,0 +1,38 @@
+# CombatCardSet and PileIndex's RemoveInternal single scan (off): see combatcards-2k-on.txt (the same session with the mod off,
+# no bench).
+timeout 1200
+cmd bdopt off
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+enemyhp 999999
+speed fast
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+state start
+pilemove draw discard 2
+wait 1
+checksum moved
+endturn
+waitfor idle 500
+checksum after shuffle
+state after shuffle
+play 3
+waitfor idle 300
+checksum plays
+state plays
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 500
+checksum after shuffle 2
+state after shuffle 2
+counters end
+wait 2
+cmd bdopt on
+quit

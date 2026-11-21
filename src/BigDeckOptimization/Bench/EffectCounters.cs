@@ -23,6 +23,7 @@ internal static class EffectCounters
         (typeof(GridSortCache), nameof(GridSortCache.Sorts)), (typeof(EnchantmentTabReuse), nameof(EnchantmentTabReuse.Reused)),
         (typeof(PoolSignalScan), nameof(PoolSignalScan.Nodes)), (typeof(CardDbScan), nameof(CardDbScan.Skipped)),
         (typeof(PileIndex), nameof(PileIndex.Fast)), (typeof(PileIndex), nameof(PileIndex.FastDuplicateChecks)),
+        (typeof(PileIndex), nameof(PileIndex.SingleScans)), (typeof(CombatCardSet), nameof(CombatCardSet.Answered)),
         (typeof(PileCounterBatch), nameof(PileCounterBatch.Batched)), (typeof(FastCombatStart), nameof(FastCombatStart.SkippedWaits)),
         (typeof(HoverTipReuse), nameof(HoverTipReuse.Reused)),
         (typeof(FastListeners), nameof(FastListeners.CombatWalks)), (typeof(FastListeners), nameof(FastListeners.RunWalks)),

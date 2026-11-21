@@ -34,6 +34,7 @@ public static class ModEntry
         (PoolSignalScan.Name, PoolSignalScan.Apply),
         (CardDbScan.Name, CardDbScan.Apply),
         (PileIndex.Name, PileIndex.Apply),
+        (CombatCardSet.Name, CombatCardSet.Apply),
         (PileCounterBatch.Name, PileCounterBatch.Apply),
         (FastCombatStart.Name, FastCombatStart.Apply),
         (ModImage.Name, ModImage.Apply),
