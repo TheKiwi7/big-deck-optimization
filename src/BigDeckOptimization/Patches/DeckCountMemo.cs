@@ -50,14 +50,19 @@ namespace BigDeckOptimization.Patches;
 /// Display premise, the residue: a mod reading inside an action the <c>PreviewValue</c> the last redraw left on one of these
 /// cards (none found in the top 500 Workshop mods: their <c>PreviewValue</c> reads are each of its own card's variable), or a
 /// transpiler or inner patch on <c>UpdateVisuals</c> acting on such a value (the 76 mods of the top 500 patching it do so for
-/// visuals by name). Other mods' prefixes and postfixes on <c>UpdateVisuals</c> run outside the scope (it opens in the last
-/// prefix and closes in the first postfix): they get the game's count, as without this. Inside it, the memo's answer is the
-/// game's except when the premise fails.
+/// visuals by name). Other mods' prefixes and postfixes on <c>UpdateVisuals</c> run outside the scope (it opens in a prefix at
+/// <c>int.MinValue</c> and closes in a postfix at <c>int.MaxValue</c>): they get the game's count, as without this. Harmony
+/// orders equal priorities by registration, so two run inside it: a prefix at <c>int.MinValue</c> registered after this mod's,
+/// and a postfix at <c>int.MaxValue</c> registered before it. Other mods' patches on what the body calls run inside it too
+/// (<c>CardModel.UpdateDynamicVarPreview</c>, <c>DynamicVar.UpdateCardPreview</c> and its overrides,
+/// <c>CardModel.GetDescriptionForPile</c>, the formatters): they get the memo's answer. Inside the scope, the memo's answer is
+/// the game's except when the premise fails.
 ///
-/// Cost given up: every calculation outside the redraw counts as the game does. SpeedX's targeting preview (its
-/// <c>LiteralAuditor</c>'s <c>UpdateDynamicVarPreview</c> call, from <c>TurboOverlay._Process</c>) calculates these cards per
-/// hittable enemy per frame outside the scope: the game's count each time (~0.35 ms at 10,000 cards), where the memo answered
-/// before.
+/// Cost given up: every calculation outside the redraw counts as the game does (~0.35 ms per counting card at 10,000 cards),
+/// where the memo answered before. Measured callers outside it: SpeedX's targeting preview (its <c>LiteralAuditor</c>'s
+/// <c>UpdateDynamicVarPreview</c> call, from <c>TurboOverlay._Process</c>), per hittable enemy per frame; BetterSpire2's
+/// teammate hand panel (<c>ShowTeammateHand</c>, on by default in co-op: <c>DeckTracker</c> calls <c>UpdateDynamicVarPreview</c>
+/// for each card of the shown hand).
 /// </summary>
 public static class DeckCountMemo
 {
@@ -144,6 +149,11 @@ public static class DeckCountMemo
 
     public static bool Enabled { get; set; } = true;
     public static bool Applied { get; private set; }
+    /// <summary>
+    /// Counts inside the redraw the memo held as they were (<see cref="Kept"/>) or brought along from the moves
+    /// (<see cref="Updated"/>), whatever came of them (an answer, a check, or the game's count when a card of a changing type is
+    /// in the piles): not the effect, which is <see cref="Answered"/>.
+    /// </summary>
     public static long Kept { get; private set; }
     public static long Updated { get; private set; }
     public static long Walks { get; private set; }

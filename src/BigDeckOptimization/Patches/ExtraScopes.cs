@@ -63,8 +63,12 @@ public static class ExtraScopes
 #if BENCH
     /// <summary>Test builds: re-run checked passes the vanilla way and compare (costly: off to measure real timings).</summary>
     public static bool BenchChecks { get; set; } = true;
-    /// <summary>First-turn filters run inside a scope (the effects check).</summary>
+    /// <summary>First-turn filters run inside a scope where ListenerCache answers the walks (the effects check).</summary>
     public static long FirstTurnPasses { get; private set; }
+    /// <summary>
+    /// First-turn filters run inside a scope ListenerCache doesn't answer in (it is off or backs off): the game's walks, no effect.
+    /// </summary>
+    public static long NotServed { get; private set; }
     /// <summary>First-turn <c>Where</c> calls left as the game's: a source that isn't exactly a <c>List&lt;CardModel&gt;</c>.</summary>
     public static long RefusedSource { get; private set; }
     /// <summary>The same for a predicate that isn't that filter's game lambda (single target, of its own class or none).</summary>
@@ -81,7 +85,7 @@ public static class ExtraScopes
     /// <summary><c>bdperf firstturn status</c>.</summary>
     internal static string BenchStatus() =>
         $"FIRSTTURN scopes {FirstTurnPasses}, refused source {RefusedSource}, predicate {RefusedPredicate}, except {RefusedExcept}, "
-        + $"plain ToList {PlainToLists}, backed off {BackedOff}, scope failed {ScopeFailed}, on {FirstTurnOn}, faulted {PatchSafety.IsFaulted(Name)}";
+        + $"plain ToList {PlainToLists}, backed off {BackedOff}, scope failed {ScopeFailed}, on {FirstTurnOn}, faulted {PatchSafety.IsFaulted(Name)}, not served {NotServed}";
 
     /// <summary>The game's two first-turn predicates (the bench builds delegates of them), empty before the part applied.</summary>
     internal static IReadOnlyList<MethodInfo> BenchGamePredicates => _gamePredicates;
@@ -316,10 +320,17 @@ public static class ExtraScopes
                     }
                 }
             }
-            if (redirects.Count != 5)
+            if (redirects.Count < 5)
             {
                 Log.Info($"[{ModEntry.Id}] {Name}: {redirects.Count} of SetupPlayerTurn's 5 first-turn card filter calls found (other mods' transpilers): "
                     + "the others run as the game's, without a scope (normal game for that part)");
+            }
+            else if (redirects.Count > 5)
+            {
+                // Another mod's transpiler repeating the game's filters: each stand-in still returns the game's result, and a
+                // scope opens only for a query proved to be the game's (from its source, predicate and list).
+                Log.Info($"[{ModEntry.Id}] {Name}: {redirects.Count} first-turn card filter calls found in SetupPlayerTurn where the game has 5 "
+                    + "(other mods' transpilers): each is redirected, a scope opens only for the game's own queries");
             }
             foreach ((CodeInstruction call, MethodInfo to) in redirects)
             {
@@ -330,7 +341,8 @@ public static class ExtraScopes
         catch (Exception e)
         {
             Log.Error($"[{ModEntry.Id}] {Name}: the first-turn transpiler failed, SetupPlayerTurn left vanilla: {e.Message}");
-            return code; // Nothing redirected: the operands are set only once every call was found.
+            // Nothing redirected: the operands are set only after the search ended (whatever it found, partial included).
+            return code;
         }
     }
 
@@ -470,6 +482,9 @@ public static class ExtraScopes
     {
         int scope = NoScope;
         Mark? mark = null;
+#if BENCH
+        bool served = false;
+#endif
         if (source != null && _marks.TryGetValue(source, out mark))
         {
             // The query itself is the game's: its exceptions reach the game as they would. Only the scope's are caught.
@@ -485,9 +500,15 @@ public static class ExtraScopes
             }
             scope = open ? Enter(display: false, Name) : NoScope;
 #if BENCH
-            if (scope != NoScope)
+            // Right after entering: whether ListenerCache answers the walks in this scope (off, or its own back-off: not).
+            served = scope != NoScope && ListenerCache.IsServing;
+            if (served)
             {
-                FirstTurnPasses++; // Only passes really run inside a scope prove the effect.
+                FirstTurnPasses++; // Only passes whose walks are really answered inside the scope prove the effect.
+            }
+            else if (scope != NoScope)
+            {
+                NotServed++;
             }
             else if (open)
             {
@@ -541,7 +562,7 @@ public static class ExtraScopes
         start = System.Diagnostics.Stopwatch.GetTimestamp();
         List<CardModel> vanilla = ListenerCache.RunVanilla(() => Enumerable.ToList(source!));
         double vanillaMs = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
-        Log.Info($"[{ModEntry.Id}] {Name} first-turn filter ({(scope != NoScope ? "in a scope" : "without a scope")}): {result.Count} cards, optimized {optimizedMs:F0} ms, vanilla {vanillaMs:F0} ms, "
+        Log.Info($"[{ModEntry.Id}] {Name} first-turn filter ({(served ? "in a scope" : scope != NoScope ? "in a scope not served" : "without a scope")}): {result.Count} cards, optimized {optimizedMs:F0} ms, vanilla {vanillaMs:F0} ms, "
             + (vanilla.SequenceEqual(result) ? "OK: identical to vanilla" : $"MISMATCH: vanilla has {vanilla.Count}"));
 #endif
         return result;
