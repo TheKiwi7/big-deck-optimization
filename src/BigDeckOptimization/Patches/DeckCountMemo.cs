@@ -191,6 +191,8 @@ public static class DeckCountMemo
     /// <summary>Callers looked at (a stack walk each) outside the redraw, and those left to the game's count.</summary>
     public static long DisplayLooks { get; private set; }
     public static long DisplayRefused { get; private set; }
+    /// <summary>Display callers left to the game's count without a look, the deck being small (<see cref="DisplayMinCards"/>).</summary>
+    public static long DisplaySmallDecks { get; private set; }
     /// <summary>Per kind, counts of its own computed inside the redraw or for a display caller (answered or compared): <c>bdperf deckcount answered</c>.</summary>
     internal static readonly long[] KindCounted = new long[Kinds];
 
@@ -462,7 +464,7 @@ public static class DeckCountMemo
 #endif
             // Outside the redraw, a display caller (a Godot frame or deferred callback reaching the preview through other mods'
             // code only) is answered as the redraw is; the stack is looked at only here, with a count held at no walk's cost.
-            bool display = !inRedraw && DisplayCaller(kind);
+            bool display = !inRedraw && DisplayCaller(kind, state);
             if (!inRedraw && !display)
             {
 #if BENCH
@@ -722,10 +724,21 @@ public static class DeckCountMemo
     /// (<c>pressed</c>, <c>mouse_entered</c>) is called by the engine with no game frame above it, so it passes as a display caller
     /// (no such caller of the four cards in the catalogue).
     /// </summary>
-    private static bool DisplayCaller(int kind)
+    private static bool DisplayCaller(int kind, PlayerCombatState state)
     {
         if (!DisplayEnabled || !_displayReady || Environment.CurrentManagedThreadId != _mainThread)
         {
+            return false;
+        }
+        // Cost guard: below DisplayMinCards the game's count (about 21 ns a card) costs about what the walk does (3-10 us).
+        int cards = 0;
+        foreach (CardPile pile in state.AllPiles)
+        {
+            cards += pile.Cards.Count;
+        }
+        if (cards < DisplayMinCards)
+        {
+            DisplaySmallDecks++;
             return false;
         }
         DisplayLooks++;
@@ -746,6 +759,12 @@ public static class DeckCountMemo
             return false;
         }
     }
+
+    /// <summary>
+    /// The combat's card count (all piles of the asking player) under which a display caller is left to the game's count without a
+    /// look at the stack: the count costs about 21 ns a card (190-280 us at 11,247 cards), the walk 3-10 us, i.e. 150-500 cards.
+    /// </summary>
+    internal const int DisplayMinCards = 512;
 
     private const byte FrameChain = 1;
     private const byte FrameOther = 2;

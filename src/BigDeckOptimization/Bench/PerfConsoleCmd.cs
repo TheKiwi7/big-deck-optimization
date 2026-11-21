@@ -480,7 +480,7 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                     + $"unsure {DeckCountMemo.Unsure}, checks {DeckCountMemo.Checks}, mismatches {DeckCountMemo.Mismatches}, answered {DeckCountMemo.Answered}, "
                     + $"in redraw {DeckCountMemo.InRedrawCalls}, outside {DeckCountMemo.OutsideCalls}, free checks {DeckCountMemo.FreeChecks}, "
                     + $"free mismatches {DeckCountMemo.FreeMismatches}, display answered {DeckCountMemo.AnsweredDisplay}, display looks {DeckCountMemo.DisplayLooks}, "
-                    + $"display refused {DeckCountMemo.DisplayRefused}{deckCountCheck}");
+                    + $"display refused {DeckCountMemo.DisplayRefused}, display small decks {DeckCountMemo.DisplaySmallDecks}{deckCountCheck}");
             case "combatcards":
                 // bdperf combatcards [passes]: CombatCardSet and RemoveInternal's single scan against the game's code (Bench/CombatCardsBench.cs).
                 return CombatCardsBench.Run(args.Length >= 2 && int.TryParse(args[1], out int containsPasses) && containsPasses > 0 ? containsPasses : 3);
