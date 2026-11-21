@@ -7,6 +7,11 @@
 - The card sort before a reshuffle or combat start (game beta v0.113) is a bit faster with a huge deck (about 9-18 ms a sort at 10,000 cards instead of 12-22).
 - Sorting the deck view by cost or title is faster with a huge deck.
 - More of the speed-up stays on next to other Workshop mods: SynergyMod keeps most of it (its back-offs went from 46 to 19 in my tests), YutaMod, Infinite Upgrades, newsanguo and BetterExperience keep more of it, and the settings page and `bdopt why` no longer show conflicts the mod doesn't actually take.
+- The first turn of a huge-deck combat is faster next to RitsuLib and other mods that rewrite it: the mod's speed-up there used to be left off whenever such a mod changed the game's turn start (about 4 seconds less on the first turn at 10,300 cards in my tests).
+- Loading a run is faster with a huge deck, on both game versions: the main menu (which reads the run save when it opens, up to three times with BaseLib) and Continue no longer spend about 45 ms per read converting the 10 MB save to text the slow way. It's part of the "Faster run saves" option, which now has something to do on the public version (v0.111) too.
+- Creature tooltips stay fast next to more mods (HonkaiLib, TH_Patchouli, St2bs): mods that only add to or hide some tooltips no longer turn the tooltip speed-up off, and the tooltips those mods add still show.
+- Squeeze and Perfected Strike (and Crescent Spear) damage is now always counted by the game itself; the mod only keeps the count for the cards' displayed numbers. On the beta, Wah Symphony's number on its cards is now fast too. Mods that read those numbers during attacks (BetterSpire2's teammate hand panel, SpeedX's targeting preview) now pay the game's normal count.
+- More mods compatible: GensokyoSpire and Infinite Upgrades keep more of the speed-up (the skipping of cards that don't react, the relic flash merge and the stacked-enchantment shortcuts no longer turn off because of their small, read-only changes).
 
 ## v1.2.0
 
