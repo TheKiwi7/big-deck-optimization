@@ -1,0 +1,23 @@
+# bdperf saveread (SaveReadDecode against the game's GetAsText): after a fight and a map room at ~1,900 cards, the current run
+# save (the game's text and time, the part's text and time, best of 3), the synthetic set (inside the gate the part's text must be
+# Godot's, outside it the part must decline) and the game's own GodotFileIo.ReadFile on a scratch file with the part on and off.
+# Must say OK: identical texts. Not a compared pair: the synthetic set's invalid UTF-8 makes Godot log its own decoding errors.
+# Both game versions.
+expect SAVEREAD OK: identical texts
+timeout 900
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 1
+selector ui
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+automap
+wait 3
+cmd bdperf saveread
+cmd bdperf saveread counters
+quit

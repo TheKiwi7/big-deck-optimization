@@ -71,6 +71,8 @@ internal static class EffectCounters
         (typeof(JoinMismatchNote), nameof(JoinMismatchNote.Explained)),
         (typeof(SaveBackupCheck), nameof(SaveBackupCheck.Shortcuts)), (typeof(SaveBackupCheck), nameof(SaveBackupCheck.Checks)),
         (typeof(SaveBackupCheck), nameof(SaveBackupCheck.MissDifferent)),
+        (typeof(SaveReadDecode), nameof(SaveReadDecode.Decoded)), (typeof(SaveReadDecode), nameof(SaveReadDecode.Checks)),
+        (typeof(SaveReadDecode), nameof(SaveReadDecode.RunSaveReads)),
     };
 
     /// <summary>Each counter's getter and setter (private setters included), resolved once.</summary>

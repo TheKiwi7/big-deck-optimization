@@ -459,6 +459,7 @@ $BaselineBenchParts = [ordered]@{
     'UpgradeBench.cs'       = '^\s*(cmd|autoslayfirst)\s+bdperf\s+upgradebench\b'
     'SortKeysBench.cs'      = '^\s*(cmd|autoslayfirst)\s+bdperf\s+sortkeys\b'
     'SaveCheckBench.cs'     = '^\s*(cmd|autoslayfirst)\s+bdperf\s+savecheck\b'
+    'SaveReadBench.cs'      = '^\s*(cmd|autoslayfirst)\s+bdperf\s+saveread\b'
     'CombatCardsBench.cs'   = '^\s*(cmd|autoslayfirst)\s+bdperf\s+combatcards\b'
     'AutoTestSaves.cs'      = '^\s*savefiles\b'
     'AutoTestStartup.cs'    = '^\s*(startsets|launchearly)\b'

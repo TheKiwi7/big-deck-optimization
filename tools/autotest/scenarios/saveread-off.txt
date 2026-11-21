@@ -1,0 +1,42 @@
+# SaveReadDecode A/B (off; with saveread-on): the same run with only this option off (save_check), the rest of the mod on. The
+# game's GetAsText reads every save file from the switch on: the part's effect counter must not move (effectcheck ... same). The
+# runstate and savefiles lines must match saveread-on.
+timeout 1800
+cmd bdopt save_check off
+savefiles before the run
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 1
+selector ui
+runstate start
+wait 2
+savefiles start
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+runstate after fight
+automap
+wait 3
+runstate before save
+wait 2
+savefiles before menu
+effects before menu
+tomenu
+wait 3
+continuerun 600
+wait 3
+runstate after load
+savefiles after load
+effects loaded
+autoroom 900
+runstate room done
+wait 2
+savefiles room done
+effects end
+effectcheck SaveReadDecode same before menu
+effectcheck SaveReadDecode.RunSave same before menu
+quit

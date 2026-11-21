@@ -566,6 +566,10 @@ public static partial class AutoTest
             (JoinMismatchNote.Name, JoinMismatchNote.Explained),
             // Game v0.113+ only (v0.111's saves have no check to answer), and only where a run travels: savecheck-on/off.
             (SaveBackupCheck.Name, SaveBackupCheck.Shortcuts), (SaveBackupCheck.Name + ".Checks", SaveBackupCheck.Checks),
+            // Every game version, every session reads its settings and profile through it; the run save only where a run is saved
+            // and loaded again (saveread-on/off: the main menu after tomenu, continuerun).
+            (SaveReadDecode.Name, SaveReadDecode.Decoded), (SaveReadDecode.Name + ".Checks", SaveReadDecode.Checks),
+            (SaveReadDecode.Name + ".RunSave", SaveReadDecode.RunSaveReads),
         };
         for (int i = 0; i < HookFilter.MirrorNames.Length; i++)
         {
