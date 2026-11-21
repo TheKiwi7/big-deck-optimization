@@ -1,11 +1,13 @@
 # SaveBackupCheck A/B (on; with savecheck-off): a solo run at ~1,900 cards (the reference run's cards twice, its relics once)
 # travelling through the game's own auto player (a fight, then map rooms), so the game saves the run at each room and its
-# CopyBackup checks the previous save each time. Every STATE line (runstate) must match savecheck-off, where only this option is
-# off. The shortcut must have answered (effectcheck ... ran), its first answer and one in 4 after it (test builds) also checked
+# CopyBackup checks the previous save each time. Every STATE line must match savecheck-off, where only this option is off: the
+# runstate lines, and what this part could change, the savefiles lines (the run save and its .backup present or not, whole or
+# not, their content with the times left out, and the game's "not a whole save" warnings so far). The shortcut must have answered (effectcheck ... ran), its first answer and one in 4 after it (test builds) also checked
 # against the game's own check by the part itself (a difference turns it off with an error line, and the counters line fails).
 # Game v0.113+ only (v0.111's CopyBackup copies without the check: the part is not applied): requiregame ends both sides there.
 timeout 1800
 requiregame v0.113
+savefiles before the run
 newrun NECROBINDER 1234
 waitfor run 120
 wait 2
@@ -15,23 +17,35 @@ cmd bdperf checks off
 enemyhp 1
 selector ui
 runstate start
+wait 2
+savefiles start
 effects start
 cmd fight CULTISTS_NORMAL
 waitfor combat 300
 autoroom 900
 runstate after fight
+wait 2
+savefiles after fight
 automap
 autoroom 900
 runstate map 1
+wait 2
+savefiles map 1
 automap
 autoroom 900
 runstate map 2
+wait 2
+savefiles map 2
 automap
 autoroom 900
 runstate map 3
+wait 2
+savefiles map 3
 automap
 wait 3
 runstate map 4
+wait 2
+savefiles map 4
 effects end
 effectcheck SaveBackupCheck ran
 effectcheck SaveBackupCheck.Checks ran

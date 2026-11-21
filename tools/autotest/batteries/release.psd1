@@ -18,6 +18,9 @@
         @{ Name = 'solo'; Mode = 'Parallel'; Steps = @(
             @{ Name = 'solo-ab'; Par = 'ab-2k-off,ab-2k-on,audit-toggles-2k,audit-conflict-ab,audit-listeners-ab,combats3-2k-off,combats3-2k-on,outside-2k-off,outside-2k-on,shuffle-off,shuffle-on'; Args = @('-UseBaselines', '-TimeoutSec', '1800') }
             @{ Name = 'solo-snapcheck'; Par = 'snapcheck-5k-a-off,snapcheck-5k-a,snapcheck-5k-b-off,snapcheck-5k-b'; Args = @('-UseBaselines', '-TimeoutSec', '1800') }
+            # SaveBackupCheck (v0.113+; on v0.111 the pair and the control end at requiregame, the bench says "not needed"): its off
+            # side turns only save_check off, so no baseline.
+            @{ Name = 'solo-savecheck'; Par = 'savecheck-off,savecheck-on,savecheck-wrong,savecheck-bench'; Args = @('-TimeoutSec', '1800') }
             @{ Name = 'solo-pace'; Par = 'pace-vanilla,pace-off,pace-on,pace-instant,effects-check,release-checks'; Args = @('-TimeoutSec', '1800') }
             @{ Script = 'vanillacheck.ps1'; Args = @('-GameDir', '{copy}', '-Jobs', '{jobs}') }
             @{ Name = 'parsweep-all'; Once = $true; Script = 'parsweep-all.ps1'; Args = @('-GameDir', '{copies}', '-Jobs', '{jobs}', '-UseBaselines') }

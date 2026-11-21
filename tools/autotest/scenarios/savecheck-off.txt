@@ -1,8 +1,10 @@
 # SaveBackupCheck A/B (off; with savecheck-on): the same run with only this option off (save_check), the rest of the mod on.
-# The game's own check of the previous save runs at every save: the part's effect counter must stay at 0.
+# The game's own check of the previous save runs at every save: the part's effect counter must stay at 0. The runstate and
+# savefiles lines (the run save and its .backup) must match savecheck-on.
 timeout 1800
 requiregame v0.113
 cmd bdopt save_check off
+savefiles before the run
 newrun NECROBINDER 1234
 waitfor run 120
 wait 2
@@ -12,23 +14,35 @@ cmd bdperf checks off
 enemyhp 1
 selector ui
 runstate start
+wait 2
+savefiles start
 effects start
 cmd fight CULTISTS_NORMAL
 waitfor combat 300
 autoroom 900
 runstate after fight
+wait 2
+savefiles after fight
 automap
 autoroom 900
 runstate map 1
+wait 2
+savefiles map 1
 automap
 autoroom 900
 runstate map 2
+wait 2
+savefiles map 2
 automap
 autoroom 900
 runstate map 3
+wait 2
+savefiles map 3
 automap
 wait 3
 runstate map 4
+wait 2
+savefiles map 4
 effects end
 effectcheck SaveBackupCheck zero
 quit
