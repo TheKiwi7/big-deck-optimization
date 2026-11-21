@@ -471,6 +471,7 @@ $BaselineBenchParts = [ordered]@{
     # (FaultProbe.cs compiles its IdPrefix constant in); the others only from ForeignPatches.cs and each other. One pattern for all.
     'ForeignPatches.cs'              = '^\s*(foreignpatch|launchforeign|faultprobe)\b|^\s*(cmd|autoslayfirst)\s+bdperf\s+foreign\b'
     'ForeignShapesGates.cs'          = '^\s*(foreignpatch|launchforeign|faultprobe)\b|^\s*(cmd|autoslayfirst)\s+bdperf\s+foreign\b'
+    'ForeignShapesHover.cs'          = '^\s*(foreignpatch|launchforeign|faultprobe)\b|^\s*(cmd|autoslayfirst)\s+bdperf\s+foreign\b'
     'ForeignShapesHookFilter.cs'     = '^\s*(foreignpatch|launchforeign|faultprobe)\b|^\s*(cmd|autoslayfirst)\s+bdperf\s+foreign\b'
     'ForeignShapesLimitless.cs'      = '^\s*(foreignpatch|launchforeign|faultprobe)\b|^\s*(cmd|autoslayfirst)\s+bdperf\s+foreign\b'
     'ForeignShapesLimitlessTwins.cs' = '^\s*(foreignpatch|launchforeign|faultprobe)\b|^\s*(cmd|autoslayfirst)\s+bdperf\s+foreign\b'

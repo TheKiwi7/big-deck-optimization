@@ -2413,8 +2413,9 @@ public static partial class AutoTest
         // Two checks instead:
         // 1. Input: the shown panel was placed for the hitbox where it was at the last state change that re-placed it in the
         //    game (a panel reused at the old place after the creature moved fails here: hover-tips-move).
-        // 2. Layout: the game's own full rebuild (ShowHoverTips: HoverTipReuse only patches ShowCreatureHoverTips), the hitbox
-        //    put back for that rebuild where the shown panel was placed for, gives the same panel, overflow corrections included.
+        // 2. Layout: the game's own full rebuild (ShowHoverTips with the panel removed first, see RebuildTips: HoverTipReuse decides
+        //    inside ShowHoverTips and keeps only the panel registered for the hitbox), the hitbox put back for that rebuild where
+        //    the shown panel was placed for, gives the same panel, overflow corrections included.
         // HoverTipReuse then rebuilds once at its next state change (the panel is no longer its own).
         Control hitbox = _hovered.Hitbox;
         TipsInput? shownInput = _placedAt.TryGetValue(panel, out TipsInput? placedFor) ? placedFor : null;
@@ -2439,7 +2440,7 @@ public static partial class AutoTest
             try
             {
                 hitbox.GlobalPosition = shownInput!.Position;
-                _hovered.ShowHoverTips(_hovered.Entity.HoverTips);
+                RebuildTips(_hovered);
                 if (!active.TryGetValue(hitbox, out var rebuilt) || ReferenceEquals(rebuilt, panel))
                 {
                     // ShowHoverTips does nothing during a card play: the same panel would be compared with itself.
@@ -2455,7 +2456,7 @@ public static partial class AutoTest
                 hitbox.Position = hitboxLocal;
             }
             // The panel on screen as the game places it for the hitbox now, the reference of the next check's input.
-            _hovered.ShowHoverTips(_hovered.Entity.HoverTips);
+            RebuildTips(_hovered);
             if (active.TryGetValue(hitbox, out var current) && _placedAt.TryGetValue(current, out TipsInput? currentInput))
             {
                 _hitboxAtLastChange = currentInput.Position;
@@ -2468,6 +2469,20 @@ public static partial class AutoTest
         }
         bool placed = before.Matches(rebuiltLayout);
         Say($"  TIPS PLACEMENT {(placed ? "OK" : "MISMATCH")} {label}: shown {before}" + (placed ? "" : $" | rebuilt for the same hitbox place {rebuiltLayout}"));
+    }
+
+    /// <summary>
+    /// The game's own rebuild of a creature's panel: <c>ShowHoverTips</c> after the panel is removed (what its body does first
+    /// itself), so HoverTipReuse, which only keeps the panel registered for the hitbox, rebuilds. Nothing removed during a card
+    /// play, where ShowHoverTips does nothing (the panel stays, as without this line).
+    /// </summary>
+    private static void RebuildTips(MegaCrit.Sts2.Core.Nodes.Combat.NCreature creature)
+    {
+        if (MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom.Instance?.Ui.Hand.InCardPlay == false)
+        {
+            creature.HideHoverTips();
+        }
+        creature.ShowHoverTips(creature.Entity.HoverTips);
     }
 
     /// <summary>What a session must have done by its end (a normal end or <c>quit</c>), or it fails.</summary>
@@ -2496,8 +2511,9 @@ public static partial class AutoTest
 
     /// <summary>
     /// Records each panel's placement input and the hovered hitbox at each state change that re-places it in the game
-    /// (<c>ShowCreatureHoverTips</c> with a combat and no card play, as <c>ShowHoverTips</c> decides). Postfixes run even when
-    /// HoverTipReuse's prefix skips the original. Under this mod's Harmony id: no back-off sees them as another mod's.
+    /// (<c>ShowCreatureHoverTips</c> with a combat and no card play, as <c>ShowHoverTips</c> decides). HoverTipReuse decides
+    /// inside ShowHoverTips' body: these postfixes run whether it kept the panel or not. Under this mod's Harmony id: no back-off
+    /// sees them as another mod's.
     /// </summary>
     private static void WatchTips()
     {

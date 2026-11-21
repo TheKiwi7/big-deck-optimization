@@ -97,8 +97,9 @@ def part_command_problems():
 SRC = os.path.join(ROOT, '..', '..', 'src')
 CALLER_KEYED = [
     {
-        'files': ['ForeignPatches.cs', 'ForeignShapesGates.cs', 'ForeignShapesHookFilter.cs', 'ForeignShapesLimitless.cs',
-                  'ForeignShapesLimitlessTwins.cs', 'ForeignShapesParts.cs', 'ForeignShapesUnchanged.cs', 'IlJudgeShapes.cs'],
+        'files': ['ForeignPatches.cs', 'ForeignShapesGates.cs', 'ForeignShapesHookFilter.cs', 'ForeignShapesHover.cs',
+                  'ForeignShapesLimitless.cs', 'ForeignShapesLimitlessTwins.cs', 'ForeignShapesParts.cs', 'ForeignShapesUnchanged.cs',
+                  'IlJudgeShapes.cs'],
         'callers': {
             ('AutoTest.cs', 'case foreignpatch'): ['foreignpatch x', 'ForeignPatch x'],
             ('PerfConsoleCmd.cs', 'case foreign'): ['cmd bdperf foreign x', 'autoslayfirst bdperf foreign x', 'cmd  BdPerf  Foreign'],
