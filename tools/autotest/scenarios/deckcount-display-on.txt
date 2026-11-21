@@ -3,7 +3,8 @@
 # Perfected Strike in hand), and leaves every other one to the game's count (with the free check). ~945 cards, every answer
 # outside the sampled check (verify 1000000).
 # 1. A deferred call (BetterSpire2's panel, SpeedX's overlay) and the same through MethodInfo.Invoke: answered, the count equal
-#    to a fresh count of the piles. An async method's continuation, and a postfix on Perfected Strike's OnPlay run by the game's
+#    to a fresh count of the piles. An async method's continuation, a ContinueWith closure posted to the main thread's
+#    context, and a postfix on Perfected Strike's OnPlay run by the game's
 #    play: refused, the game's count.
 # 2. Positive control: a draw-pile card tagged Strike in place (no pile move: the memo's count is stale). The deferred caller
 #    gets the stale count (a wrong number shown); with the free check off the stale memo stays on and the play's damage is the
@@ -11,6 +12,7 @@
 expect FOREIGN display-check deferred \(deferred\): .*: ok
 expect FOREIGN display-check invoke \(invoke\): .*: ok
 expect FOREIGN display-check async \(async\): .*: ok
+expect FOREIGN display-check continuewith \(continuewith\): .*: ok
 expect FOREIGN display-check hook \(hook\): .*: ok
 expect FOREIGN display-check stale \(deferred\): .*: ok
 expect DECKCOUNT inplace: .* tagged Strike in place
@@ -42,6 +44,9 @@ foreignpatch display-check invoke answered fresh
 foreignpatch display-call async
 wait 0.3
 foreignpatch display-check async refused fresh
+foreignpatch display-call continuewith
+wait 0.3
+foreignpatch display-check continuewith refused fresh
 foreignpatch display-hook-postfix
 playcard PERFECTED_STRIKE 0 free
 waitfor idle 60

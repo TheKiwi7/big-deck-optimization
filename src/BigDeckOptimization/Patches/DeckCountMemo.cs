@@ -712,11 +712,15 @@ public static class DeckCountMemo
     /// (<see cref="ChainMethods"/>), then no game code at all up to the top of the stack: a Godot frame or deferred callback
     /// reaching the preview through other mods' code (SpeedX's damage preview, BetterSpire2's teammate hand panel). Refused, so
     /// counted by the game with the free check as before: any game frame above the chain (an action, a hook, an event, the game's
-    /// own nodes), any async state machine (actions are async, and a continuation can't tell where it came from), any frame of this
-    /// mod's code but this file's at the bottom, a frame without a method, a Harmony replacement not mapped to its original.
-    /// Allowed above the chain: reflection (and its <c>InvokeStub_</c> methods), the runtime, Godot's glue, other mods. Premise
-    /// (display): a mod reaching the preview from a frame or deferred call uses the value to show it (the catalogue of the downloaded
-    /// mods found no other use; DESIGN "DeckCountMemo display callers").
+    /// own nodes), any async state machine (actions are async, and a continuation can't tell where it came from), the runtime's
+    /// task and continuation machinery (a <c>ContinueWith</c> closure, a continuation posted to a synchronization context, Godot's
+    /// included, a thread-pool work item), any frame of this mod's code but this file's at the bottom, a frame without a method, a
+    /// Harmony replacement not mapped to its original. Allowed above the chain: reflection (and its <c>InvokeStub_</c> methods), the
+    /// rest of the runtime, Godot's glue (a deferred <c>Callable</c>, a node's <c>_Process</c>), other mods. Premise (display): a mod
+    /// reaching the preview from a frame or deferred call uses the value to show it (the catalogue of the downloaded mods found no
+    /// other use; DESIGN "DeckCountMemo display callers"). Residue: a mod's lambda connected to a game node's native Godot signal
+    /// (<c>pressed</c>, <c>mouse_entered</c>) is called by the engine with no game frame above it, so it passes as a display caller
+    /// (no such caller of the four cards in the catalogue).
     /// </summary>
     private static bool DisplayCaller(int kind)
     {
@@ -855,9 +859,9 @@ public static class DeckCountMemo
         }
         Type type = method.DeclaringType!;
         byte kind;
-        if (typeof(IAsyncStateMachine).IsAssignableFrom(type))
+        if (typeof(IAsyncStateMachine).IsAssignableFrom(type) || IsContinuationMachinery(type))
         {
-            // An async flow (the game's actions are async): its continuation may run from anywhere.
+            // An async flow (the game's actions are async) or a continuation run by the runtime: it may come from anywhere.
             kind = FrameRefused;
         }
         else if (type.Assembly == _sts2)
@@ -883,6 +887,32 @@ public static class DeckCountMemo
         }
         _frames[method] = kind;
         return kind;
+    }
+
+    /// <summary>
+    /// The runtime's task and continuation machinery: tasks and their continuations (<c>System.Threading.Tasks</c>), the async
+    /// builders and awaiters, execution contexts, thread-pool work items and timers, and any synchronization context (Godot's
+    /// runs posted continuations). A frame of it means the code above was resumed, not called by whoever is below.
+    /// </summary>
+    private static bool IsContinuationMachinery(Type type)
+    {
+        if (typeof(System.Threading.SynchronizationContext).IsAssignableFrom(type))
+        {
+            return true;
+        }
+        string name = type.FullName ?? "";
+        return type.Namespace is { } ns && (ns == "System.Threading.Tasks" || ns.StartsWith("System.Threading.Tasks.", StringComparison.Ordinal))
+            || name.StartsWith("System.Runtime.CompilerServices.Async", StringComparison.Ordinal)
+            || name.StartsWith("System.Runtime.CompilerServices.TaskAwaiter", StringComparison.Ordinal)
+            || name.StartsWith("System.Runtime.CompilerServices.ConfiguredTaskAwaitable", StringComparison.Ordinal)
+            || name.StartsWith("System.Runtime.CompilerServices.ValueTaskAwaiter", StringComparison.Ordinal)
+            || name.StartsWith("System.Runtime.CompilerServices.YieldAwaitable", StringComparison.Ordinal)
+            || name.StartsWith("System.Threading.ExecutionContext", StringComparison.Ordinal)
+            || name.StartsWith("System.Threading.ThreadPool", StringComparison.Ordinal)
+            || name.StartsWith("System.Threading.QueueUserWorkItemCallback", StringComparison.Ordinal)
+            || name.StartsWith("System.Threading.TimerQueue", StringComparison.Ordinal)
+            || name.StartsWith("System.Threading.PortableThreadPool", StringComparison.Ordinal)
+            || name.StartsWith("System.Threading.SynchronizationContext", StringComparison.Ordinal);
     }
 
     // --- Which card types may answer differently over time ---

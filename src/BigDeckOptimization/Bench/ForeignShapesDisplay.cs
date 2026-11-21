@@ -25,6 +25,8 @@ namespace BigDeckOptimization.Bench;
 /// <item><c>display-call invoke</c>: the same through <c>MethodInfo.Invoke</c> (BetterSpire2's own call): answered.</item>
 /// <item><c>display-call async</c>: from an async method's continuation after a Godot frame (an async flow, as the game's actions):
 /// refused, the game counts.</item>
+/// <item><c>display-call continuewith</c>: a plain closure (no async state machine) run by <c>Task.ContinueWith</c> on the main
+/// thread's synchronization context (Godot's): resumed by the runtime's continuation machinery, refused.</item>
 /// <item><c>display-hook-postfix</c> (a shape, removed by <c>foreignpatch remove</c>): a postfix on <c>PerfectedStrike.OnPlay</c>
 /// previewing a Perfected Strike left in hand, called by the game's play (game code above it): refused.</item>
 /// </list>
@@ -70,10 +72,14 @@ public static class ForeignShapesDisplay
                 Reset("async");
                 _ = AfterAFrame();
                 return new[] { "FOREIGN display-call async: an async method previews after the next frame" };
+            case "display-call" when parts.Length >= 2 && parts[1] == "continuewith":
+                Reset("continuewith");
+                _ = Task.Delay(1).ContinueWith(_ => Preview(viaInvoke: false), TaskScheduler.FromCurrentSynchronizationContext());
+                return new[] { "FOREIGN display-call continuewith: a closure previews as a continuation posted to this thread's context" };
             case "display-check" when parts.Length >= 4 && parts[2] is "answered" or "refused" && parts[3] is "fresh" or "stale":
                 return Check(parts[1], parts[2] == "answered", parts[3] == "stale");
         }
-        throw new ArgumentException("foreignpatch display-call deferred|invoke|async | display-hook-postfix | display-check <label> answered|refused fresh|stale");
+        throw new ArgumentException("foreignpatch display-call deferred|invoke|async|continuewith | display-hook-postfix | display-check <label> answered|refused fresh|stale");
     }
 
     private static void Reset(string how)
