@@ -752,10 +752,23 @@ public static partial class HookSkip
     /// the original's place from the instance's own fields, or let it run (<see cref="PatchSafety.ReadOnlyPrefixes"/>: GensokyoSpire's
     /// on <c>Creature.get_IsPlayer</c>, which <c>GetOwner</c> reaches through <c>Players</c> and <c>PlayerCreatures</c>). A dropped
     /// listener's iteration skips its calls to the helper, and the helper's answer only feeds that iteration: such a prefix running
-    /// fewer times changes nothing (its kept calls run as in the game). None with the shape rules off. Never throws.
+    /// fewer times changes nothing (its kept calls run as in the game), provided no answer it can give makes that skipped code
+    /// throw where the game's would (review of 2026-11-21): only on the helpers of <see cref="AnswerOnlyFilters"/>. None with the
+    /// shape rules off. Never throws.
     /// </summary>
     private static MethodInfo[] ReadOnlyAllowed(MethodBase helper) =>
-        PatchSafety.ShapeRules ? PatchSafety.ReadOnlyPrefixes(helper) : Array.Empty<MethodInfo>();
+        PatchSafety.ShapeRules && AnswerOnlyFilters(helper) ? PatchSafety.ReadOnlyPrefixes(helper) : Array.Empty<MethodInfo>();
+
+    /// <summary>
+    /// The helpers whose answer, whatever it is, only filters in the helper sets: <c>Creature.IsPlayer</c>, read only by
+    /// <c>CombatState.PlayerCreatures</c>' <c>Where</c> (its lambda, in the sets and pinned with the profiles), whose list feeds
+    /// <c>Players</c>' <c>Select(c =&gt; c.Player)</c> (a creature, never null) and GetOwner's <c>FirstOrDefault()</c>: no answer can make
+    /// a dropped iteration throw. Not <c>AbstractModel.IsMutable</c>, the sets' other value-type helper (false makes
+    /// <c>AssertMutable</c> throw in <c>CardModel.Owner</c>), nor the reference-type ones (RO's prefixes refuse them anyway).
+    /// </summary>
+    private static bool AnswerOnlyFilters(MethodBase helper) =>
+        helper.DeclaringType == typeof(MegaCrit.Sts2.Core.Entities.Creatures.Creature) && helper.Name == "get_IsPlayer" && !helper.IsStatic
+        && helper.GetParameters().Length == 0;
 
     /// <summary>
     /// The kept note of rule RO for bool prefixes (display only, bdopt why): the helpers without a listener argument whose other

@@ -3514,6 +3514,7 @@ public static class FastListeners
             if (CardModifiersEmpty(id, del))
             {
                 SkippedModifierWalks++;
+                CardModifierGetters(state);
             }
             else if (del(state) is { } models)
             {
@@ -3565,12 +3566,64 @@ public static class FastListeners
         }
     }
 
+    /// <summary>
+    /// The game getters BaseLib's card modifier subscriber calls, in its order, for a walk that skips it (2026-11-21): its
+    /// <c>combatState.Players.Select(p =&gt; p.PlayerCombatState?.AllPiles)</c> (CombatState.Players with PlayerCreatures, Creatures,
+    /// each creature's IsPlayer and each player creature's Player; each player's PlayerCombatState and AllPiles), then each pile's
+    /// Cards. Another mod's patch on one of them (or BaseLib's own on AllPiles) runs as often as with the subscriber called; only
+    /// the per-card table lookups (DirectModifiers, BaseLib's, whose patches back the skip off: <see cref="CardModifierCalleesPatched"/>)
+    /// are left out. A throw comes where the subscriber's would.
+    /// </summary>
+    private static void CardModifierGetters(CombatState state)
+    {
+        foreach (Player player in state.Players)
+        {
+            if (player.PlayerCombatState?.AllPiles is { } piles)
+            {
+                foreach (CardPile pile in piles)
+                {
+                    _ = pile.Cards;
+                }
+            }
+        }
+    }
+
+    private static readonly ConcurrentDictionary<MethodInfo, MethodBase[]> _modifierCallees = new();
+
+    /// <summary>
+    /// Whether another mod patches code of the subscriber's own assembly that its method calls (its lambda, DirectModifiers): a
+    /// skipped walk leaves those calls out. Read once per method from its IL; one that can't be read counts as patched.
+    /// </summary>
+    private static bool CardModifierCalleesPatched(MethodInfo method)
+    {
+        MethodBase[] callees = _modifierCallees.GetOrAdd(method, static m =>
+        {
+            try
+            {
+                return MethodFingerprint.UsedMembers(m).OfType<MethodBase>().Where(c => c.Module == m.Module).Distinct().ToArray();
+            }
+            catch
+            {
+                return new MethodBase[] { null! };
+            }
+        });
+        foreach (MethodBase callee in callees)
+        {
+            // No tolerance: the skipped subscriber leaves these calls out.
+            if (callee == null || PatchSafety.IsPatchedByOthers(callee))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static bool CardModifiersEmpty(string id, Delegate del)
     {
         // Not inside ListenerCache.RunVanilla: the reference calls every subscriber, as the game does.
         // Another mod's patch on the delegate's method must run: the fingerprint reads the original IL, it can't see one.
         // No tolerance: the subscriber is skipped, so a patch on it would miss its calls.
-        if (id != CardModifiersId || !Enabled || ListenerCache.IsSuspended || PatchSafety.IsPatchedByOthers(del.Method))
+        if (id != CardModifiersId || !Enabled || ListenerCache.IsSuspended || PatchSafety.IsPatchedByOthers(del.Method) || CardModifierCalleesPatched(del.Method))
         {
             return false;
         }
@@ -3640,9 +3693,13 @@ public static class FastListeners
     {
         // The game's first step (CombatState.cs:425 v0.113.1, :413 v0.111.1): `new List(Players.Count * 50)`, which runs the
         // getters Players, PlayerCreatures, Creatures, each creature's IsPlayer and each player creature's Player. Called here
-        // too, at the same place: another mod's patch on one of them (a postfix on Players, a prefix on IsPlayer) then runs once
-        // per walk, as in the game, and a throw comes at the same point; the answer only sized the game's list. Cheaper than
-        // watching those getters (a back-off of the whole mirror for a patch that only changes who counts as a player).
+        // too, before anything else: per mirrored walk, another mod's patch on one of them (a postfix on Players, a prefix on
+        // IsPlayer) runs as in the game's walk, and a throw comes before any listener; the answer only sized the game's list.
+        // Not more than that: a filtered walk that throws is followed by the unfiltered one (AddCombatGuarded: these getters run
+        // twice then), the filtered walk reads a monster creature's Monster twice where the game reads it once, and ListenerCache's
+        // replays (its stated premise) make no walk at all. Cheaper than watching those getters (a back-off of the whole mirror
+        // for a patch that only changes who counts as a player). BaseLib's card modifier subscriber's own Players call, when the
+        // walk skips it: CardModifierGetters.
         _ = state.Players.Count;
         List<Creature> allies = _allies!(state);
         List<Creature> enemies = _enemies!(state);
@@ -3731,8 +3788,9 @@ public static class FastListeners
     /// <summary><c>RunState.IterateHookListeners</c>'s list, before its mod subscribers and child combat.</summary>
     private static void AddRun(List<AbstractModel> list, RunState run, ICombatState? childCombatState, PileFilter? filter)
     {
-        // As AddCombat: the game's `new List(Players.Count * 50)` first (RunState.IterateHookListeners, every version), so a patch
-        // on RunState.Players runs as many times per walk as in the game (three with no child combat, two with one).
+        // As AddCombat: the game's `new List(Players.Count * 50)` first (RunState.IterateHookListeners, every version), so per
+        // mirrored walk a patch on RunState.Players runs as in the game's walk (three times with no child combat, two with one),
+        // with AddCombat's limits (a throwing filtered walk followed by the unfiltered one; ListenerCache's replays).
         _ = run.Players.Count;
         foreach (Player player in run.Players)
         {

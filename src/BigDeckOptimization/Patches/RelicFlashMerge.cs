@@ -211,13 +211,22 @@ public static class RelicFlashMerge
     /// Rule RO for bool prefixes (2026-11-21): on a strict member of <see cref="Creature"/> (its getters on a flash's path), other
     /// mods' prefixes that only answer in the original's place from the creature's own fields, or let it run
     /// (<see cref="PatchSafety.ReadOnlyPrefixes"/>: GensokyoSpire's on <c>Creature.get_IsPlayer</c>). A merged flash skips the
-    /// handler's calls, whose answers only fed that flash's visuals: such a prefix running fewer times changes nothing. Empty for
-    /// any other member and with the shape rules off. Never throws.
+    /// handler's calls, whose answers only fed that flash's visuals: such a prefix running fewer times changes nothing. Only
+    /// primitive and enum answers (review of 2026-11-21: a reference answered null would make a kept flash's code throw where a
+    /// merged one doesn't); what the flash code does with another value is under the display premise, as any patch on its
+    /// non-strict members. Empty for any other member and with the shape rules off. Never throws.
     /// </summary>
     private static System.Reflection.MethodInfo[] ReadOnlyAllowed(System.Reflection.MethodBase method) =>
         PatchSafety.ShapeRules && OuterType(method) == typeof(Creature) ? PatchSafety.ReadOnlyPrefixes(method) : Array.Empty<System.Reflection.MethodInfo>();
 
     private static readonly Func<System.Reflection.MethodBase, System.Reflection.MethodInfo[]> _readOnlyAllowed = ReadOnlyAllowed;
+
+#if BENCH
+    /// <summary>The strict sets' Creature members (foreignpatch ro-prefix-flash picks one); empty until the sets are built.</summary>
+    internal static System.Reflection.MethodBase[] StrictCreatureMembersForTest() => Sets() is { } sets
+        ? sets.PlayerStrict.Concat(sets.HolderStrict).Where(m => OuterType(m) == typeof(Creature)).Distinct().ToArray()
+        : Array.Empty<System.Reflection.MethodBase>();
+#endif
 
     /// <summary>The member's outermost declaring type (a lambda's or display class's counts as its outer class's).</summary>
     private static Type? OuterType(System.Reflection.MethodBase method)

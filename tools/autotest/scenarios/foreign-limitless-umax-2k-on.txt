@@ -1,0 +1,90 @@
+# G3 for drops, the type-level verdict (2026-11-21, review): foreign-limitless-u-2k-on with Infinite Upgrades' constant,
+# `__result = int.MaxValue` (Bench/ForeignShapesLimitless.cs lim-constant-postfix max), installed after a first combat start at the
+# default priority (after Limitless's postfix: the last). Every saved upgrade level is at most the cap, so LimitlessHookSkip's
+# type-level verdict no longer counts the upgrade group (anyknown's chain groups False) and every level counts not patched (1 and
+# 100); a kept note under its name, no back-off. 200 inner cards set to level 1 (`foreignpatch limitless upgradeinner 200`), two
+# more combat starts at ~945 cards with plays and a turn end. Compare foreign-limitless-umax-2k-off and foreign-limitless-umax-2k-on:
+# CHECKSUM/STATE identical.
+timeout 1500
+expect FOREIGN clonememo filled: entries [1-9]
+expect FOREIGN clonememo end: entries [0-9]+, patch stamp clears [1-9]
+expect LimitlessCloneMemo: CardModel\.get_MaxUpgradeLevel \(bdtest\.foreign\.lim-constant-postfix-max\): patched only with a constant result
+expect LimitlessHookSkip: other mods' code on CardModel\.get_MaxUpgradeLevel only answers int\.MaxValue \(the last of its patches\).*every stacked enchantment.*: kept
+expect FOREIGN reach end storage Sharp 0: kept True, reaches Spine, Enchant, hookskip patched False
+expect FOREIGN reach end storage Sharp 1: kept True, reaches Spine, Enchant, Upgrade, hookskip patched False
+expect FOREIGN reach end storage Sharp 100: kept True, reaches Spine, Enchant, Upgrade, hookskip patched False
+expect FOREIGN anyknown end: \S+ \(chain groups patched False
+expect FOREIGN clonememo end: .*capped drops [1-9][0-9]*
+expect LimitlessCloneMemo: CardModel\.get_MaxUpgradeLevel \(bdtest\.foreign\.lim-constant-postfix-max\): patched only with a constant result.*drops take them too
+expect FOREIGN upgradeinner: [1-9][0-9]* inner cards at level 1 in [1-9][0-9]* stacked enchantments
+expect FOREIGN clonememo end: .*constant kept [1-9][0-9]*, constant verified [1-9][0-9]*
+expect CLONEMEMO enabled True, reused [1-9]
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bdopt on
+cmd bigdeck import ref all all
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum CULTISTS_NORMAL start
+state CULTISTS_NORMAL start
+cmd kill all
+waitfor nocombat 300
+wait 2
+foreignpatch limitless memo filled
+foreignpatch lim-constant-postfix MegaCrit.Sts2.Core.Models.CardModel:get_MaxUpgradeLevel max
+foreignpatch limitless upgradeinner 200
+cmd bdperf clonememo verify 2
+wait 3
+effects afterpatch
+cmd fight KNIGHTS_ELITE
+waitfor idle 600
+wait 1
+checksum KNIGHTS_ELITE start
+state KNIGHTS_ELITE start
+play 5
+waitfor idle 300
+checksum KNIGHTS_ELITE plays
+state KNIGHTS_ELITE plays
+endturn
+waitfor idle 600
+checksum KNIGHTS_ELITE t1 end
+state KNIGHTS_ELITE t1 end
+cmd kill all
+waitfor nocombat 300
+wait 2
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum CULTISTS_NORMAL start
+state CULTISTS_NORMAL start
+play 5
+waitfor idle 300
+checksum CULTISTS_NORMAL plays
+state CULTISTS_NORMAL plays
+endturn
+waitfor idle 600
+checksum CULTISTS_NORMAL t1 end
+state CULTISTS_NORMAL t1 end
+cmd kill all
+waitfor nocombat 300
+wait 2
+foreignpatch report end
+foreignpatch limitless report end
+foreignpatch limitless reach storage Sharp 0 end
+foreignpatch limitless reach storage Sharp 1 end
+foreignpatch limitless reach storage Sharp 100 end
+foreignpatch limitless anyknown end
+foreignpatch limitless memo end
+cmd bdperf clonememo
+effects end
+effectcheck LimitlessCloneMemo grew afterpatch
+effectcheck LimitlessHookSkip grew afterpatch
+cmd bdopt on
+wait 1
+foreignpatch remove
+foreignpatch limitless remove
+quit

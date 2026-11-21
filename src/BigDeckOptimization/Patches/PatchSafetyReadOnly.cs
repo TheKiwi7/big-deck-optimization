@@ -33,7 +33,9 @@ public static partial class PatchSafety
     /// <summary>
     /// RO for bool prefixes (2026-11-21, GensokyoSpire's <c>CreatureIsPlayerPatch</c> on <c>Creature.get_IsPlayer</c>: <c>if
     /// (__instance.Monster != null) { __result = false; return false; } return true;</c>): the other mods' prefixes on
-    /// <paramref name="method"/> (an instance method returning a value) that return bool and take only <c>__instance</c> (by value)
+    /// <paramref name="method"/> (an instance method returning a primitive or an enum: review of 2026-11-21, a reference result
+    /// answered null would make the skipped code that dereferences it throw where the game's does, e.g. GetOwner's
+    /// <c>enchantmentModel.Card.Owner</c>; a Nullable read through <c>.Value</c> the same) that return bool and take only <c>__instance</c> (by value)
     /// and <c>ref __result</c> (no <c>__runOriginal</c>, no other argument, nothing renamed, no factory, no type initializer, no
     /// exception clause), whose every path either returns true having stored nothing, or stores through <c>__result</c> and then
     /// returns false (a constant answer on each path, followed path by path: Debug builds join both answers in one <c>ret</c>), under
@@ -41,7 +43,9 @@ public static partial class PatchSafety
     /// and pure static helpers of its own class, no write but through <c>__result</c>, no backward branch); the prefix and what it
     /// calls unpatched at each recheck. Such a prefix either lets the original run untouched or answers in its place, reading only
     /// the instance's own fields: it changes what the call returns and nothing else, so leaving a call out leaves out nothing of it
-    /// where that call's answer only fed skipped code (HookSkip's choice-context helpers, RelicFlashMerge's merged flashes). Not a
+    /// where that call's answer only fed skipped code (HookSkip's choice-context helpers, RelicFlashMerge's merged flashes) and
+    /// that code can't throw on any value of the type (the callers' premise for their skipped code: HookSkip's helpers only
+    /// filter, count and pass such answers on, GetOwner's PlayerCreatures filter on IsPlayer included). Not a
     /// tolerance: those callers pass them as allowed patches. Empty when none. Asked again per Harmony epoch and at most every 2 s;
     /// never throws.
     /// </summary>
@@ -86,7 +90,8 @@ public static partial class PatchSafety
     {
         try
         {
-            if (prefix.ReturnType != typeof(bool) || ReadOnlyArguments(prefix, method) is not { } kinds || prefix.DeclaringType is not { } own
+            if (prefix.ReturnType != typeof(bool) || method is not MethodInfo { ReturnType: { } returned } || !(returned.IsPrimitive || returned.IsEnum)
+                || ReadOnlyArguments(prefix, method) is not { } kinds || prefix.DeclaringType is not { } own
                 || method.DeclaringType is not { } instanceType)
             {
                 return null;
