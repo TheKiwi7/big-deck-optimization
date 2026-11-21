@@ -16,7 +16,7 @@
     Blocks = @(
         # Solo sessions: the par lists of both copies and the sweeps of both copies (one parsweep-all -GameDir pub,beta), in one pool.
         @{ Name = 'solo'; Mode = 'Parallel'; Steps = @(
-            @{ Name = 'solo-ab'; Par = 'ab-2k-off,ab-2k-on,audit-toggles-2k,audit-conflict-ab,audit-listeners-ab,combats3-2k-off,combats3-2k-on,outside-2k-off,outside-2k-on,shuffle-off,shuffle-on'; Args = @('-UseBaselines', '-TimeoutSec', '1800') }
+            @{ Name = 'solo-ab'; Par = 'ab-2k-off,ab-2k-on,audit-toggles-2k,audit-conflict-ab,audit-listeners-ab,combats3-2k-off,combats3-2k-on,outside-2k-off,outside-2k-on,shuffle-off,shuffle-on,audit-conflict-saves'; Args = @('-UseBaselines', '-TimeoutSec', '1800') }
             @{ Name = 'solo-snapcheck'; Par = 'snapcheck-5k-a-off,snapcheck-5k-a,snapcheck-5k-b-off,snapcheck-5k-b'; Args = @('-UseBaselines', '-TimeoutSec', '1800') }
             # SaveBackupCheck (v0.113+; on v0.111 the pair and the control end at requiregame, the bench says "not needed"): its off
             # side turns only save_check off, so no baseline.
@@ -24,10 +24,24 @@
             # The scenarios added by the audit rounds since v1.2.0 (SaveReadDecode, CombatCards, FirstTurn, hover tips, the foreign
             # shapes, DeckCountMemo, SortKeys partonly, the G rules). The saveread and savecheck off sides turn only their own
             # option off: no baseline (like solo-savecheck).
-            @{ Name = 'solo-new'; Par = 'saveread-on,saveread-off,saveread-serve-on,saveread-wrong,saveread-bench,saveread-transpiler,combatcards-2k-on,combatcards-2k-off,wrong-combatcards-1k-on,wrong-1k-off,firstturn-2k-on,firstturn-2k-off,foreign-firstturn-1k-on,foreign-firstturn-1k-off,foreign-firstturn-controls,firstturn-selftest,hover-tips-prefixes,hover-tips-transpiler,hover-tips-ctl,foreign-parts-roprefix,foreign-walkgetters,foreign-limitless-u-2k-on,foreign-limitless-u-2k-off,foreign-limitless-umax-2k-on,foreign-limitless-umax-2k-off,foreign-limitless-controls,deckcount-wah-on,deckcount-wah-serve-on,deckcount-wah-off,deckcount-inplace-wrong,deckcount-on,deckcount-off,sortkeys-partonly-10k,foreign-gates-1k-on,foreign-gates-1k-off,foreign-hookfilter,foreign-hookfilter-2k-on,foreign-hookfilter-2k-off,limitless-gated-2k-on,limitless-gated-2k-off,foreign-limitless-l-2k-on,foreign-limitless-l-2k-off,foreign-controls'; Args = @('-TimeoutSec', '1800') }
+            @{ Name = 'solo-new'; Par = 'saveread-on,saveread-off,saveread-serve-on,saveread-wrong,saveread-bench,saveread-transpiler,combatcards-2k-on,combatcards-2k-off,wrong-combatcards-1k-on,wrong-1k-off,firstturn-2k-on,firstturn-2k-off,foreign-firstturn-1k-on,foreign-firstturn-1k-off,foreign-firstturn-controls,firstturn-selftest,hover-tips-prefixes,hover-tips-transpiler,hover-tips-ctl,foreign-parts-roprefix,foreign-walkgetters,foreign-limitless-u-2k-on,foreign-limitless-u-2k-off,foreign-limitless-umax-2k-on,foreign-limitless-umax-2k-off,foreign-limitless-controls,deckcount-wah-on,deckcount-wah-serve-on,deckcount-wah-off,deckcount-inplace-wrong,deckcount-on,deckcount-off,sortkeys-partonly-10k,foreign-gates-1k-on,foreign-gates-1k-off,foreign-hookfilter,foreign-hookfilter-2k-on,foreign-hookfilter-2k-off,limitless-gated-2k-on,limitless-gated-2k-off,foreign-limitless-l-2k-on,foreign-limitless-l-2k-off,foreign-controls,wrong-clonememo-1k-on,wrong-hookfilter-1k-on,wrong-hookskip-1k-on,wrong-listenercache-1k-on,wrong-moved-1k-on,wrong-pile-1k-on,wrong-pilebits-1k-on,wrong-recalc-1k-on,wrong-reserialize-1k-on,wrong-segments-1k-on,wrong-segmoves-1k-on,wrong-segshifts-1k-on,wrong-segsubs-1k-on,wrong-snapcard-1k-on,wrong-trusted-1k-on,audit-conflict-display-1k-on,sortkeys-conflict-1k-on,deckcount-wrong,audit-deckcount-conflict,audit-deckcount-fault,handselect-on,handselect-off'; Args = @('-TimeoutSec', '1800') }
+            # The owner-approved premises and the foreign-shape pairs of docs/RELEASE.md (items "Foreign patches judged by their shape" and
+            # "Owner-approved premises"), the pile-cards pair and the sort-keys controls (v0.113+: v0.111 ends them at requiregame): every
+            # pair compared by name, the controls by their expect lines. Mod-off sides from the baselines (all start with 'cmd bdopt off').
+            @{ Name = 'solo-premises'; Par = 'relicflash-mods-on,relicflash-mods-off,relicflash-display-on,relicflash-display-off,relicflash-ctl-on,relicflash-ctl-off,relicflash-sfx-on,relicflash-sfx-off,relicflash-deep-on,relicflash-deep-off,hover-tips-display-on,hover-tips-display-off,sortkeys-premise-1k-on,sortkeys-premise-1k-off,foreign-shapes-2k-on,foreign-shapes-2k-off,foreign-needless-2k-on,foreign-needless-2k-off,foreign-il-2k-on,foreign-il-2k-off,foreign-helpers-2k-on,foreign-helpers-2k-off,foreign-flights-2k-on,foreign-flights-2k-off,foreign-bodyonly-2k-on,foreign-bodyonly-2k-off,foreign-namegate-1k-on,foreign-namegate-1k-off,foreign-dmgbridge-1k-on,foreign-dmgbridge-1k-off,foreign-walkreuse-1k-on,foreign-walkreuse-1k-off,pile-cards-2k-on,pile-cards-2k-off,relicflash-lazy-on,relicflash-scene-ctl,hover-tips-move,sortkeys-wrong,sortkeys-violate-1k-on,sortkeys-postcombat,foreign-walkreuse-ctl,foreign-needless-controls,foreign-helpers-controls,foreign-flights-controls,foreign-keptmemo-ctl,foreign-keptmemo-fault-ctl,spirefield-interfaces'; Args = @('-UseBaselines', '-TimeoutSec', '1800') }
+            # The positive controls, checks and audits of RELEASE.md that run headless on one copy (no pair: each judged by its own
+            # expect lines and judge.py). guard-async-on compares with guard-async-ref (same list). No baselines: nothing here is a
+            # mod-off twin. Added 2026-11-21 (audit of the checklist), not yet run as part of the battery.
+            @{ Name = 'solo-controls'; Par = 'snapcheck-purehooks,snapcheck-purehooks-wrong,snapcheck-apotheosis,snapcheck-apotheosis-wrong,relics-scalarblind,relics-scalarblind-verifier,pileindex-nested-limit,rebuild-control,rebuild-check,guard-checks,guard-async-ref,guard-async-on,walkcode-check,audit-idlebuttons,audit-parts-visible,movecap-1k-off,movecap-1k-on,clonememo-cap,clonememo-check,snapcheck-hooks,modelstack-badges,audit-finished-room-on,audit-verifier-relics,audit-gc-latency,audit-languages,conflict-check,audit-walk-conflict,preflight-check'; Args = @('-TimeoutSec', '1800') }
             @{ Name = 'solo-pace'; Par = 'pace-vanilla,pace-off,pace-on,pace-instant,effects-check,release-checks'; Args = @('-TimeoutSec', '1800') }
             @{ Script = 'vanillacheck.ps1'; Args = @('-GameDir', '{copy}', '-Jobs', '{jobs}') }
             @{ Name = 'parsweep-all'; Once = $true; Script = 'parsweep-all.ps1'; Args = @('-GameDir', '{copies}', '-Jobs', '{jobs}', '-UseBaselines') }
+        ) }
+        # The 8,400-card ones (RELEASE.md, "Deck size"): once per release, on one version (the public one: turns-off measured there,
+        # ~25 min the first time, then from the baselines), a few paths only run at large sizes. A small pool (-Jobs 3): four 8,400-card
+        # sessions are memory-heavy. turns-off with hookskip-on (compare-with), pile-cards-off with -on and -verify, the hover tips at 8k.
+        @{ Name = 'big-ab'; Mode = 'Parallel'; Copies = @('pub'); Steps = @(
+            @{ Name = 'ab-8k'; Script = 'par.ps1'; Args = @('-Names', 'turns-off,hookskip-on,pile-cards-off,pile-cards-on,pile-cards-verify,hover-tips-8k', '-GameDir', '{copy}', '-Jobs', '3', '-UseBaselines', '-TimeoutSec', '3000') }
         ) }
         # Both copies at once: the pace-independent steps (each takes its own kept slot of 80-89; mutations' sessions use the pool).
         @{ Name = 'both-at-once'; Mode = 'Parallel'; Steps = @(
@@ -42,7 +56,10 @@
             # Only coopfast has a mod-off twin: coop and coopclone play the full reference deck, whose vanilla combat start outlasts
             # the network timeout (their twins could never pass): their peers are compared only.
             @{ Name = 'coop'; Script = 'parcoop.ps1'; Args = @('-Names', 'coop,coopclone,coopfast', '-GameDir', '{copy}', '-OnOff', '-OnOffNames', 'coopfast', '-UseBaselines', '-OffJobs', '1', '-Jobs', '3') }
-            @{ Name = 'coop-misc'; Script = 'parcoop.ps1'; Args = @('-Names', 'audit-cooptoggle,coopinstant,effects-coop', '-GameDir', '{copy}') }
+            # The foreign patches in co-op: the STATE foreign lines of each peer identical to the mod-off twin's.
+            @{ Name = 'coop-foreign'; Script = 'parcoop.ps1'; Args = @('-Names', 'coop-foreign', '-GameDir', '{copy}', '-OnOff', '-OnOffNames', 'coop-foreign', '-UseBaselines', '-OffJobs', '1', '-Jobs', '3') }
+            # audit-coopdeath: peers only (its players' actions interleave, RELEASE.md), added 2026-11-21.
+            @{ Name = 'coop-misc'; Script = 'parcoop.ps1'; Args = @('-Names', 'audit-cooptoggle,coopinstant,effects-coop,audit-coopdeath', '-GameDir', '{copy}') }
             @{ Script = 'coop-modetag.ps1'; Args = @('-GameDir', '{copy}') }
             @{ Script = 'started-off-nomenu.ps1'; Args = @('-GameDir', '{copy}') }
         ) }
