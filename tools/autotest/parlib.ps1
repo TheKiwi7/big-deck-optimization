@@ -443,9 +443,8 @@ $script:CoopProfilesSalt = $null
 # CALLER_KEYED lists the only places allowed to name its types and the lines each is reached by, and fails on any other.
 $BaselineBenchParts = [ordered]@{
     'AutoTestRooms.cs'      = '^\s*(autoroom|automap|barrier|continuerun|runstate|restsite|selector|eventoption)\b'
-    'AutoTestMouse.cs'      = '^\s*(hover|checktips|mouseplay|mousesweep|movehovered|buttoninput|controllermap|forcefocus|tipsrebuilt|targethover|mousehold)\b'
+    'AutoTestMouse.cs'      = '^\s*(hover|checktips|mouseplay|mousesweep|movehovered|buttoninput|controllermap|forcefocus|tipsrebuilt|targethover)\b'
     'AutoTestSweep.cs'      = '^\s*(sweep|sweeptimeout)\b'
-    'AutoTestBetterSpire.cs' = '^\s*bs2panel\b'
     'AutoTestLeak.cs'       = '^\s*leakcheck\b'
     'AutoTestTrace.cs'      = '^\s*eventtrace\b'
     # Also through 'autoslayfirst', 'barrier' (a networked 'bigdeck mark') and '{hash:NAME}' (BigDeckConsoleCmd.SharedHash, any line).
@@ -474,7 +473,6 @@ $BaselineBenchParts = [ordered]@{
     'ForeignPatches.cs'              = '^\s*(foreignpatch|launchforeign|faultprobe)\b|^\s*(cmd|autoslayfirst)\s+bdperf\s+foreign\b'
     'ForeignShapesGates.cs'          = '^\s*(foreignpatch|launchforeign|faultprobe)\b|^\s*(cmd|autoslayfirst)\s+bdperf\s+foreign\b'
     'ForeignShapesHover.cs'          = '^\s*(foreignpatch|launchforeign|faultprobe)\b|^\s*(cmd|autoslayfirst)\s+bdperf\s+foreign\b'
-    'ForeignShapesDisplay.cs'        = '^\s*(foreignpatch|launchforeign|faultprobe)\b|^\s*(cmd|autoslayfirst)\s+bdperf\s+foreign\b'
     'ForeignShapesHookFilter.cs'     = '^\s*(foreignpatch|launchforeign|faultprobe)\b|^\s*(cmd|autoslayfirst)\s+bdperf\s+foreign\b'
     'ForeignShapesLimitless.cs'      = '^\s*(foreignpatch|launchforeign|faultprobe)\b|^\s*(cmd|autoslayfirst)\s+bdperf\s+foreign\b'
     'ForeignShapesLimitlessTwins.cs' = '^\s*(foreignpatch|launchforeign|faultprobe)\b|^\s*(cmd|autoslayfirst)\s+bdperf\s+foreign\b'

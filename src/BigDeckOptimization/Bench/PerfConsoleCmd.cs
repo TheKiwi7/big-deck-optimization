@@ -406,35 +406,6 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                     DeckCountMemo.FreeCheckOffForTest = args[2] == "off";
                     return new CmdResult(success: true, $"DECKCOUNT free check {args[2]} (test).");
                 }
-                else if (args.Length >= 3 && args[1] == "display" && args[2] is "off" or "on")
-                {
-                    // Test switch: display callers outside the redraw answered (on, the part's default) or counted by the game (off).
-                    // A faulted part stays off, as the settings' Part() leaves it.
-                    bool displayFaulted = PatchSafety.IsFaulted(DeckCountMemo.DisplayName);
-                    DeckCountMemo.DisplayEnabled = args[2] == "on" && !displayFaulted;
-                    return new CmdResult(success: !(args[2] == "on" && displayFaulted),
-                        $"DECKCOUNT display callers {(DeckCountMemo.DisplayEnabled ? "on" : "off")} (test){(args[2] == "on" && displayFaulted ? ": faulted, left off" : "")}.");
-                }
-                else if (args.Length >= 4 && args[1] == "display" && args[2] == "root" && args[3] is "off" or "on")
-                {
-                    // Test switch: the engine entry rule (DeckCountMemo.RootAllowed) off: signal handlers pass again (negative control).
-                    DeckCountMemo.RootCheckOffForTest = args[3] == "off";
-                    return new CmdResult(success: true, $"DECKCOUNT display engine entry rule {args[3]} (test).");
-                }
-                else if (args.Length >= 4 && args[1] == "display" && args[2] == "checkms" && (args[3] == "never" || long.TryParse(args[3], out long checkMs) && checkMs >= 0))
-                {
-                    // Test switch: the display callers' scheduled check (DeckCountMemo.DisplayCheckMs by default), or never.
-                    DeckCountMemo.SetDisplayCheckForTest(args[3] == "never" ? long.MaxValue : long.Parse(args[3]));
-                    return new CmdResult(success: true, $"DECKCOUNT display check every {args[3]}{(args[3] == "never" ? "" : " ms")} per card and player (test).");
-                }
-                else if (args.Length >= 2 && args[1] == "stackcost")
-                {
-                    if (args.Length >= 3 && args[2] == "deferred")
-                    {
-                        return DeckCountBench.StackCostDeferred();
-                    }
-                    return DeckCountBench.StackCost(args.Length >= 3 && int.TryParse(args[2], out int stackPasses) && stackPasses > 0 ? stackPasses : 200);
-                }
                 else if (args.Length >= 2 && args[1] == "hpmark")
                 {
                     return DeckCountBench.HpMark();
@@ -452,7 +423,7 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                 bool deckCountOk = ownCheckOnly || DeckCountMemo.Mismatches == 0;
                 string deckCountCheck = "";
                 if (!setCountVerify && !ownCheckOnly && args.Length >= 1 && !(args.Length >= 2 && args[1] is "wrong" or "mark") && _deckCountVerifySet
-                    && DeckCountMemo.Checks + DeckCountMemo.FreeChecks + DeckCountMemo.DisplayChecks == 0 && !ModEntry.NotApplied(DeckCountMemo.Name))
+                    && DeckCountMemo.Checks + DeckCountMemo.FreeChecks == 0 && !ModEntry.NotApplied(DeckCountMemo.Name))
                 {
                     // Verify was set and no answer was ever compared: the part never answered, the report would pass on nothing.
                     deckCountOk = false;
@@ -491,9 +462,7 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                 return new CmdResult(success: deckCountOk, $"DECKCOUNT enabled {DeckCountMemo.Enabled}, kept {DeckCountMemo.Kept}, updated {DeckCountMemo.Updated}, walks {DeckCountMemo.Walks}, "
                     + $"unsure {DeckCountMemo.Unsure}, checks {DeckCountMemo.Checks}, mismatches {DeckCountMemo.Mismatches}, answered {DeckCountMemo.Answered}, "
                     + $"in redraw {DeckCountMemo.InRedrawCalls}, outside {DeckCountMemo.OutsideCalls}, free checks {DeckCountMemo.FreeChecks}, "
-                    + $"free mismatches {DeckCountMemo.FreeMismatches}, display answered {DeckCountMemo.AnsweredDisplay}, display looks {DeckCountMemo.DisplayLooks}, "
-                    + $"display refused {DeckCountMemo.DisplayRefused}, display small decks {DeckCountMemo.DisplaySmallDecks}, display checks {DeckCountMemo.DisplayChecks}, "
-                    + $"display mismatches {DeckCountMemo.DisplayMismatches}, display walks {DeckCountMemo.DisplayWalks}, display skipped moving {DeckCountMemo.DisplaySkippedMoving}{deckCountCheck}");
+                    + $"free mismatches {DeckCountMemo.FreeMismatches}{deckCountCheck}");
             case "combatcards":
                 // bdperf combatcards [passes]: CombatCardSet and RemoveInternal's single scan against the game's code (Bench/CombatCardsBench.cs).
                 return CombatCardsBench.Run(args.Length >= 2 && int.TryParse(args[1], out int containsPasses) && containsPasses > 0 ? containsPasses : 3);
@@ -1691,173 +1660,6 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                 + $"memo enabled {DeckCountMemo.Enabled}, holds {held?.ToString() ?? "nothing"} (stale: {stale}), answers in redraws during plays since the mark "
                 + $"{DeckCountMemo.AnsweredInPlay - _answeredInPlayBefore}: {(ok ? "ok, the damage came from the game's count" : "MISMATCH")}");
         }
-
-        /// <summary>
-        /// <c>stackcost [passes]</c> (measure, singleplayer): the counting cards in hand previewed outside the redraw (the game counts:
-        /// today's cost of a display caller), the stack such a count sees (logged frame by frame, with Harmony's original of each
-        /// replacement), and a stack walk with each frame's method and assembly at this depth and deeper. Also queues the same from a
-        /// Godot deferred call (as BetterSpire2's panel): <c>stackcost deferred</c> prints it.
-        /// </summary>
-        internal static CmdResult StackCost(int passes)
-        {
-            if (RunManager.Instance.DebugOnlyGetState() is not { } run || LocalContext.GetMe(run) is not { } me || me.PlayerCombatState is not { } state)
-            {
-                return new CmdResult(success: false, "Start a combat first.");
-            }
-            List<CardModel> counting = PileType.Hand.GetPile(me).Cards.Where(c => c is MegaCrit.Sts2.Core.Models.Cards.PerfectedStrike
-                or MegaCrit.Sts2.Core.Models.Cards.Squeeze or MegaCrit.Sts2.Core.Models.Cards.CrescentSpear).ToList();
-            if (counting.Count == 0)
-            {
-                return new CmdResult(success: false, "No Perfected Strike, Squeeze or Crescent Spear in hand.");
-            }
-            int deck = state.AllCards.Count();
-            string text = Measure(counting, passes, "console");
-            _deferred = "(deferred measure not run yet)";
-            Godot.Callable.From(() => _deferred = Measure(counting, passes, "deferred")).CallDeferred();
-            return new CmdResult(success: true, $"DECKCOUNT stackcost: {deck} combat cards, {counting.Count} counting cards in hand; {text}");
-        }
-
-        private static string _deferred = "(no stackcost yet)";
-
-        internal static CmdResult StackCostDeferred() => new CmdResult(success: true, "DECKCOUNT stackcost deferred: " + _deferred);
-
-        private static string Measure(List<CardModel> counting, int passes, string label)
-        {
-            bool displayWas = DeckCountMemo.DisplayEnabled;
-            long outsideBefore = DeckCountMemo.OutsideCalls;
-            double previewUs, displayUs, noHeldOffUs, noHeldOnUs;
-            long answered, refused, noHeldWalks;
-            try
-            {
-                // The display callers part off (the game counts), then on (this caller answered or refused, after a stack walk).
-                DeckCountMemo.DisplayEnabled = false;
-                previewUs = Previews(counting, passes);
-                // A faulted part is never turned back on: its "on" pass is then the game's count too (answered 0, refused 0).
-                DeckCountMemo.DisplayEnabled = !PatchSafety.IsFaulted(DeckCountMemo.DisplayName);
-                long answeredBefore = DeckCountMemo.AnsweredDisplay, refusedBefore = DeckCountMemo.DisplayRefused;
-                displayUs = Previews(counting, passes);
-                answered = DeckCountMemo.AnsweredDisplay - answeredBefore;
-                refused = DeckCountMemo.DisplayRefused - refusedBefore;
-                // No count held (as at a new pile version the moves can't bring a count to): off, the game counts; on, the stack is
-                // looked at first (an action's calculation: refused, then the game's count; a display caller: the display walk).
-                DeckCountMemo.DisplayEnabled = false;
-                noHeldOffUs = Previews(counting, passes, forget: true);
-                DeckCountMemo.DisplayEnabled = !PatchSafety.IsFaulted(DeckCountMemo.DisplayName);
-                long walksBefore = DeckCountMemo.DisplayWalks;
-                noHeldOnUs = Previews(counting, passes, forget: true);
-                noHeldWalks = DeckCountMemo.DisplayWalks - walksBefore;
-            }
-            finally
-            {
-                DeckCountMemo.DisplayEnabled = displayWas;
-            }
-            long calcs = DeckCountMemo.OutsideCalls - outsideBefore;
-            CardModel first = counting[0];
-            (int probeFrames, int nulls) = Probe(label + " direct", () => first.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, first.DynamicVars));
-            MethodInfo update = first.GetType().GetMethod(nameof(CardModel.UpdateDynamicVarPreview))!;
-            for (int i = 0; i < 4; i++)
-            {
-                update.Invoke(first, new object?[] { CardPreviewMode.Normal, null, first.DynamicVars });
-            }
-            Probe(label + " invoke", () => update.Invoke(first, new object?[] { CardPreviewMode.Normal, null, first.DynamicVars }));
-            Probe(label + " description", () => first.GetDescriptionForPile(PileType.Hand));
-            (int frames0, double us0) = Walk(passes, 0);
-            (int frames20, double us20) = Walk(passes, 20);
-            (int frames60, double us60) = Walk(passes, 60);
-            return $"[{label}] preview outside the redraw {previewUs:F1} us per card with display callers off, {displayUs:F1} us on (answered {answered}, refused {refused}; "
-                + $"{calcs} calculations in {4 * passes * counting.Count} previews); no count held: {noHeldOffUs:F1} us off, {noHeldOnUs:F1} us on "
-                + $"(display walks {noHeldWalks}); "
-                + $"the count's stack {probeFrames} frames ({nulls} without a method); walk + classify {us0:F1} us at {frames0} frames, {us20:F1} us at {frames20}, {us60:F1} us at {frames60}";
-        }
-
-        /// <summary>The counting cards previewed <paramref name="passes"/> times: microseconds per card.</summary>
-        private static double Previews(List<CardModel> counting, int passes, bool forget = false)
-        {
-            MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState? piles = counting[0].Owner.PlayerCombatState;
-            TimeSpan spent = TimeSpan.Zero;
-            for (int p = 0; p < passes; p++)
-            {
-                foreach (CardModel card in counting)
-                {
-                    if (forget && piles != null)
-                    {
-                        DeckCountMemo.ForgetForTest(piles);
-                    }
-                    long start = Stopwatch.GetTimestamp();
-                    card.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, card.DynamicVars);
-                    spent += Stopwatch.GetElapsedTime(start);
-                }
-            }
-            return spent.TotalMilliseconds * 1000 / (passes * counting.Count);
-        }
-
-        /// <summary>Logs the stack of the count's next calculation outside the redraw (STACKPROBE lines): frames and those without a method.</summary>
-        private static (int Frames, int Nulls) Probe(string label, Action call)
-        {
-            DeckCountMemo.StackProbeForTest = true;
-            DeckCountMemo.LastProbe = null;
-            try
-            {
-                call();
-            }
-            finally
-            {
-                DeckCountMemo.StackProbeForTest = false;
-            }
-            if (DeckCountMemo.LastProbe is not { } probe)
-            {
-                Log.Info($"[{ModEntry.Id}] STACKPROBE {label}: no calculation outside the redraw");
-                return (0, 0);
-            }
-            int nulls = 0;
-            for (int i = 0; i < probe.FrameCount; i++)
-            {
-                StackFrame? frame = probe.GetFrame(i);
-                MethodBase? method = frame?.GetMethod();
-                nulls += method == null ? 1 : 0;
-                MethodBase? original = null;
-                try
-                {
-                    original = frame == null ? null : Harmony.GetOriginalMethodFromStackframe(frame);
-                }
-                catch (Exception)
-                {
-                }
-                Log.Info($"[{ModEntry.Id}] STACKPROBE {label} {i}: {(method == null ? "<null>" : $"{method.DeclaringType?.FullName}::{method.Name} [{method.DeclaringType?.Assembly.GetName().Name}] {method.GetType().Name} module {method.Module.Name}")}"
-                    + (original != null && original != method ? $" -> original {original.DeclaringType?.FullName}::{original.Name}" : ""));
-            }
-            return (probe.FrameCount, nulls);
-        }
-
-        private static (int Frames, double Us) Walk(int passes, int extra) => extra > 0 ? Deeper(passes, extra) : WalkHere(passes);
-
-        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-        private static (int Frames, double Us) Deeper(int passes, int extra) => extra <= 1 ? WalkHere(passes) : Deeper(passes, extra - 1);
-
-        /// <summary>What a caller check costs: the stack, each frame's method, its type's assembly and whether it is an async state machine.</summary>
-        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-        private static (int Frames, double Us) WalkHere(int passes)
-        {
-            Assembly sts2 = typeof(CardModel).Assembly;
-            int frames = 0;
-            Stopwatch watch = Stopwatch.StartNew();
-            for (int p = 0; p < passes; p++)
-            {
-                StackTrace trace = new StackTrace(0, false);
-                frames = trace.FrameCount;
-                for (int i = 0; i < frames; i++)
-                {
-                    if (trace.GetFrame(i)?.GetMethod() is { DeclaringType: { } type } && (type.Assembly == sts2
-                        || typeof(System.Runtime.CompilerServices.IAsyncStateMachine).IsAssignableFrom(type)))
-                    {
-                        _walkSink++;
-                    }
-                }
-            }
-            return (frames, watch.Elapsed.TotalMilliseconds * 1000 / passes);
-        }
-
-        private static int _walkSink;
 
         /// <summary>The positive control's state change: one draw-pile card of a type with fixed tags gets the Strike tag in place.</summary>
         internal static CmdResult InPlace()

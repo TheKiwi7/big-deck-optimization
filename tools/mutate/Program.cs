@@ -108,8 +108,6 @@ var mutations = new Dictionary<string, (string What, Action<ModuleDefinition> Ap
         Prepend(Method(m, "MegaCrit.Sts2.Core.Localization.DynamicVars.DynamicVarSet", "TryGetValue"), OpCodes.Ldarg_1, OpCodes.Pop)),
     ["card-redraw"] = ("NCard.UpdateVisuals changed (DeckCountMemo answers inside that redraw)", m =>
         Prepend(Method(m, "MegaCrit.Sts2.Core.Nodes.Cards.NCard", "UpdateVisuals"), OpCodes.Ldarg_0, OpCodes.Pop)),
-    ["preview-chain"] = ("CalculatedDamageVar.UpdateCardPreview changed (DeckCountMemo's display callers allow the game's preview chain)", m =>
-        Prepend(Method(m, "MegaCrit.Sts2.Core.Localization.DynamicVars.CalculatedDamageVar", "UpdateCardPreview"), OpCodes.Ldarg_0, OpCodes.Pop)),
     // --- game, v0.9.0 patches: only that part may leave ---
     ["flight-count"] = ("NCombatCardPile.AddCard changed (CardFlightLimit adds to its count)", m =>
         Prepend(Method(m, "MegaCrit.Sts2.Core.Nodes.Combat.NCombatCardPile", "AddCard"), OpCodes.Ldarg_0, OpCodes.Pop)),
