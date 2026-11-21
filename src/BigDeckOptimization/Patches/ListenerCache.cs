@@ -93,6 +93,9 @@ public static class ListenerCache
     /// </summary>
     public static bool IsCaching => Serving && !_combatAugmented && !_runAugmented;
 
+    /// <summary><see cref="Serving"/> for the scopes other parts open (ExtraScopes' effect counter: a scope opened but not served proves nothing).</summary>
+    internal static bool IsServing => Serving;
+
     /// <summary>Inside a scope where the walks' own calls are answered from the cached lists (<see cref="CombatIteratePrefix"/>).</summary>
     private static bool Serving => _safe && !_suspended
         && ((SnapshotEnabled && _snapshotDepth > 0) || (RefreshEnabled && _refreshDepth > 0));
