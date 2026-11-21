@@ -511,6 +511,9 @@ public static class LimitlessHookSkip
         List<SerializableCard>? saved = _saved?.Invoke(multi);
         if (saved != null && _built!(multi) == null && AllSeen(saved))
         {
+#if BENCH
+            bool cappedDrop = false;
+#endif
             for (int i = 0; i < saved.Count; i++)
             {
                 if (saved[i] is { Id: { } cardId, Enchantment.Id: { } enchantmentId } && overrides(_seenPairs[(cardId, enchantmentId)]))
@@ -519,11 +522,21 @@ public static class LimitlessHookSkip
                 }
                 // Rule L: a drop skips this inner card's build; what that build reaches (its groups, its card and enchantment types'
                 // code on the way with what it calls) is judged for this saved card; a constant upgrade cap against its saved level (G3).
-                if (saved[i] == null || LimitlessCloneMemo.ContentPatched(saved[i]))
+                if (saved[i] == null || LimitlessCloneMemo.ContentPatched(saved[i], out bool capped))
                 {
                     return true;
                 }
+#if BENCH
+                cappedDrop |= capped && saved[i].CurrentUpgradeLevel > 0;
+#endif
             }
+#if BENCH
+            // A real drop G3's cap allowed (the bench's own questions to ContentPatched don't count).
+            if (cappedDrop)
+            {
+                System.Threading.Interlocked.Increment(ref LimitlessCloneMemo.CappedDrops);
+            }
+#endif
             return false;
         }
         List<CardModel> inner = _inner!(multi);

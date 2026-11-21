@@ -354,7 +354,7 @@ public static class ForeignShapesLimitless
                 "twin" when parts.Length > 2 => TwinCommand(parts[2], parts.Length > 3 ? parts[3] : null),
                 "reach" when parts.Length > 4 => ReachCommand(parts[2], parts[3], int.Parse(parts[4]), parts.Length > 5 ? parts[5] : "now"),
                 "anyknown" => new[] { $"FOREIGN anyknown {(parts.Length > 2 ? parts[2] : "now")}: {LimitlessHookSkip.AnyKnownForTest()}" },
-                "memo" => new[] { $"FOREIGN clonememo {(parts.Length > 2 ? parts[2] : "now")}: entries {LimitlessCloneMemo.MemoCount}, patch stamp clears {LimitlessCloneMemo.PatchStampClears}, reused {LimitlessCloneMemo.Reused}, constant kept {LimitlessCloneMemo.ConstantKept}, constant verified {LimitlessCloneMemo.ConstantVerified}, verified {LimitlessCloneMemo.Verified}, capped drops {LimitlessCloneMemo.CappedAnswers}" },
+                "memo" => new[] { $"FOREIGN clonememo {(parts.Length > 2 ? parts[2] : "now")}: entries {LimitlessCloneMemo.MemoCount}, patch stamp clears {LimitlessCloneMemo.PatchStampClears}, reused {LimitlessCloneMemo.Reused}, constant kept {LimitlessCloneMemo.ConstantKept}, constant verified {LimitlessCloneMemo.ConstantVerified}, verified {LimitlessCloneMemo.Verified}, capped drops {LimitlessCloneMemo.CappedDrops}" },
                 "upgradeinner" => UpgradeInner(parts.Length > 2 ? int.Parse(parts[2]) : int.MaxValue),
                 "constant" when parts.Length > 2 && parts[2] == "selftest" => ConstantSelfTest(),
                 "display" => ChainDisplay(parts.Length > 2 ? parts[2] : "now"),

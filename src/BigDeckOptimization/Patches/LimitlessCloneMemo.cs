@@ -421,30 +421,40 @@ public static class LimitlessCloneMemo
     /// when K is int.MaxValue). A card type overriding <c>MaxUpgradeLevel</c> stays strict (its override answers, not the patched
     /// getter). The rest as <see cref="ChainPatchedFor"/> (the gated card methods, every other group strict).
     /// </summary>
-    internal static bool DropPatchedFor(Type cardType, Reach reach, int? level)
+    internal static bool DropPatchedFor(Type cardType, Reach reach, int? level) => DropPatchedFor(cardType, reach, level, out _);
+
+    /// <param name="capped">"Not patched" thanks to the capped getter (the strict answer would back off): false otherwise.</param>
+    internal static bool DropPatchedFor(Type cardType, Reach reach, int? level, out bool capped)
     {
+        capped = false;
         ChainAnswer answer = CurrentChainAnswer();
         if ((answer.DropPatched & (reach | Reach.Spine)) != 0)
         {
             return true;
         }
         // The upgrade group patched only by the capped getter: the strict answer would back off here.
+        bool cappedHere = false;
         if ((reach & Reach.Upgrade) != 0 && answer.DropCap is { } cap)
         {
             if ((level is { } saved ? saved > cap : cap != int.MaxValue) || OverridesMaxUpgradeLevel(cardType))
             {
                 return true;
             }
-#if BENCH
-            System.Threading.Interlocked.Increment(ref CappedAnswers);
-#endif
+            cappedHere = true;
         }
-        return GatedPatchedFor(answer, cardType, reach);
+        bool patched = GatedPatchedFor(answer, cardType, reach);
+        capped = cappedHere && !patched;
+        return patched;
     }
 
 #if BENCH
-    /// <summary>LimitlessHookSkip's answers <see cref="DropPatchedFor"/> gave "not patched" thanks to the capped getter (the strict one backs off).</summary>
-    public static long CappedAnswers;
+    /// <summary>
+    /// LimitlessHookSkip's real drops the capped getter allowed (the effect of G3 for drops): a stacked enchantment dropped from a
+    /// walk (<see cref="LimitlessHookSkip.AnyInner"/> answering no) while at least one of its saved inner cards, at an upgrade level
+    /// above 0, was judged not patched only thanks to the cap. The bench's own questions (<c>foreignpatch limitless reach</c>,
+    /// <c>anyknown</c>) don't count.
+    /// </summary>
+    public static long CappedDrops;
 #endif
 
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, bool> _overridesMax = new();
@@ -536,7 +546,8 @@ public static class LimitlessCloneMemo
             bool strict;
             System.Reflection.MethodInfo[] allowedNow = isGated ? allowed : AllowedNow(method, allowed);
             // G3 (2026-11-21): a chain getter whose other mods' patches are all constant-result postfixes stays this memo's; the
-            // strict check's back-off there is LimitlessHookSkip's (its drops), recorded under its name, the memo's cleared (display).
+            // strict check's back-off there is LimitlessHookSkip's (its drops), recorded under its name only while it is applied, the
+            // memo's cleared (display).
             bool constantOnly = ConstantOnlyGetter(method, allowedNow, out string[] constantMods);
             string caller = constantOnly ? HookSkipCaller : OwnCaller;
             // G3 for drops: on get_MaxUpgradeLevel, the last postfix a constant one. The drops still run there (for every inner
@@ -550,6 +561,13 @@ public static class LimitlessCloneMemo
                 capNote = (cap, constantMods);
                 strict = true;
                 PatchSafety.ForgetBackOff(LimitlessHookSkip.Name, method, isGated ? PatchTolerance.TypeGated : PatchTolerance.None);
+            }
+            else if (constantOnly && !LimitlessHookSkip.Applied)
+            {
+                // The strict answer without its check: a constant-only getter holds at least one other mod's postfix, which neither
+                // check lets stand (no tolerance; TypeGated: a constant postfix reads nothing, so is gated on no type). Its back-off
+                // would be LimitlessHookSkip's, which isn't applied (no Limitless storage card, a fault at load): nothing recorded.
+                strict = true;
             }
             else if (isGated)
             {
@@ -719,19 +737,22 @@ public static class LimitlessCloneMemo
             {
                 // G3: under this class's name a getter patched only with constant results isn't listed (the memo keeps its contents;
                 // its back-off is LimitlessHookSkip's, whose own registration lists it), and a back-off recorded before is cleared.
-                // G3 for drops: under LimitlessHookSkip's name, a getter capped at int.MaxValue isn't listed either (its drops don't back off there).
+                // G3 for drops: under LimitlessHookSkip's name, a getter whose last postfix answers any constant cap K isn't listed either
+                // (its drops don't back off there: inner cards saved at most at K are dropped, those saved above K still go to the
+                // game's code, DropPatchedFor; the kept note says which, NoteCap).
                 PatchSafety.WatchPairs(patch, () => ChainPart(index).Where(c => c.Gated && !(patch == Name && ConstantOnlyForDisplay(c.Method, c.Allowed))
-                        && !(patch == LimitlessHookSkip.Name && UncappedForDisplay(c.Method, c.Allowed)))
+                        && !(patch == LimitlessHookSkip.Name && CappedForDisplay(c.Method, c.Allowed)))
                     .Select(c => ((System.Reflection.MethodBase?)c.Method, (System.Reflection.MethodInfo[]?)c.Allowed)), PatchTolerance.TypeGated);
             }
         }
     }
 
     /// <summary>
-    /// G3 for drops, the preflight under LimitlessHookSkip's name: true when its drops take a constant cap on that getter (any
-    /// constant: <see cref="DropPatchedFor"/>; a kept note shows it, NoteCap), and clears its recorded back-off there.
+    /// G3 for drops, the preflight under LimitlessHookSkip's name: true when its drops take a constant cap K on that getter (any
+    /// constant K, so the getter is left off the preflight; drops of inner cards saved above K still go to the game:
+    /// <see cref="DropPatchedFor"/>; a kept note shows it, NoteCap), and clears its recorded back-off there.
     /// </summary>
-    private static bool UncappedForDisplay(System.Reflection.MethodBase method, System.Reflection.MethodInfo[] allowed)
+    private static bool CappedForDisplay(System.Reflection.MethodBase method, System.Reflection.MethodInfo[] allowed)
     {
         if (!IsMaxUpgradeLevel(method) || !PatchSafety.LastConstantResult(method, allowed, out _))
         {
@@ -1461,8 +1482,12 @@ public static class LimitlessCloneMemo
     /// they call (the chain's gates for its card type; the closures strictly). <see cref="KnownTypes"/> asks the same for the memo,
     /// with main-thread caches.
     /// </summary>
-    internal static bool ContentPatched(SerializableCard saved)
+    internal static bool ContentPatched(SerializableCard saved) => ContentPatched(saved, out _);
+
+    /// <param name="capped">Not patched, and only thanks to the capped upgrade getter (G3 for drops, <see cref="DropPatchedFor"/>).</param>
+    internal static bool ContentPatched(SerializableCard saved, out bool capped)
     {
+        capped = false;
         // The spine first (review C7): it holds SaveUtil.CardOrDeprecated, which the type lookup below calls (once per id, maybe off
         // the main thread): with another mod's patch there, that patch would run once more than in the game.
         if (saved.Id is not { } cardId || ChainPatched())
@@ -1477,12 +1502,13 @@ public static class LimitlessCloneMemo
             return true;
         }
         // G3 for drops: a constant upgrade cap at or above the saved level isn't counted (DropPatchedFor).
-        if (DropPatchedFor(cardType, reach, saved.CurrentUpgradeLevel) || OnTheWay(cardType) is not { } overrides || OverridesPatched(overrides))
+        if (DropPatchedFor(cardType, reach, saved.CurrentUpgradeLevel, out bool cappedHere) || OnTheWay(cardType) is not { } overrides || OverridesPatched(overrides))
         {
             return true;
         }
         if (saved.Enchantment == null)
         {
+            capped = cappedHere;
             return false;
         }
         if (saved.Enchantment.Id is not { } enchantmentId)
@@ -1490,7 +1516,9 @@ public static class LimitlessCloneMemo
             return true;
         }
         Type enchantmentType = _enchantmentTypeById.GetOrAdd(enchantmentId, static id => MegaCrit.Sts2.Core.Saves.SaveUtil.EnchantmentOrDeprecated(id).GetType());
-        return OnTheWay(enchantmentType) is not { } enchantment || OverridesPatched(enchantment);
+        bool patched = OnTheWay(enchantmentType) is not { } enchantment || OverridesPatched(enchantment);
+        capped = cappedHere && !patched;
+        return patched;
     }
 
     private static readonly Dictionary<ModelId, System.Reflection.MethodInfo[]?> _cardTypes = new(), _enchantmentTypes = new();
