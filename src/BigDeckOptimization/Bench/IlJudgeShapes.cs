@@ -37,7 +37,11 @@ namespace BigDeckOptimization.Bench;
 /// what they are given): <c>il-firstturn-outside</c> code inserted at the state machine's entry (the filters keep their scope);
 /// <c>il-firstturn-predicate</c> the Innate filter's predicate replaced by an equivalent one of this bench (that filter without a
 /// scope, the same cards); <c>il-firstturn-source</c> the bottom-of-pile filter reading an array copy of the draw pile (that filter
-/// without a scope, the same cards).
+/// without a scope, the same cards); <c>il-firstturn-except</c> the Innate filter's excluded list as an array copy (refused except);
+/// <c>il-firstturn-consumer</c> another mod's code using the bottom-of-pile <c>Where</c> result (a STATE line: the BCL's object);
+/// <c>il-firstturn-undo</c> (priority 0: after this mod's transpiler) the <c>Where</c> stand-ins put back to the game's call (no
+/// scope); <c>il-firstturn-lambda</c> and <c>il-firstturn-standin</c> a no-op postfix on the Innate lambda or on ExtraScopes'
+/// <c>ToListInScope</c> (strict: a back-off).
 /// <c>foreignpatch iljudge sweep</c>: the prewalk observer and the gated observer on every classified hook of this game (how many the
 /// analysis follows).
 /// The identity bridge (the owner-approved premise of 2026-11-17, Downfall's and Watcher's <c>ModifyDamageInternal</c> shape):
@@ -51,7 +55,8 @@ namespace BigDeckOptimization.Bench;
 public static class IlJudgeShapes
 {
     public static readonly string[] Shapes = { "il-gated-observer", "il-prewalk-observer", "il-ungated-observer", "il-store-local", "il-game-call", "il-branch", "il-firstturn-outside",
-        "il-firstturn-predicate", "il-firstturn-source", "il-damage-bridge", "il-damage-bridge-callfirst" };
+        "il-firstturn-predicate", "il-firstturn-source", "il-firstturn-except", "il-firstturn-consumer", "il-firstturn-undo", "il-firstturn-lambda",
+        "il-firstturn-standin", "il-damage-bridge", "il-damage-bridge-callfirst" };
 
     private static readonly ConcurrentDictionary<string, long> _counts = new();
 
@@ -175,11 +180,24 @@ public static class IlJudgeShapes
                 throw new ArgumentException(shape + " goes on MegaCrit.Sts2.Core.Combat.CombatManager:SetupPlayerTurn");
             }
             MethodBase setup = FirstTurnBody();
+            // Patches on what runs inside the scope (strict: a back-off), not on the state machine.
+            if (shape is "il-firstturn-lambda" or "il-firstturn-standin")
+            {
+                MethodBase target = shape == "il-firstturn-lambda"
+                    ? (ExtraScopes.BenchGamePredicates.Count == 2 ? ExtraScopes.BenchGamePredicates[1] : throw new InvalidOperationException(shape + ": ExtraScopes' first turn not applied"))
+                    : AccessTools.Method(typeof(ExtraScopes), nameof(ExtraScopes.ToListInScope));
+                harmony.Patch(target, postfix: new HarmonyMethod(typeof(IlJudgeShapes), nameof(FirstTurnNoOpPostfix)) { priority = priority });
+                return target;
+            }
             string firstTurn = shape switch
             {
                 "il-firstturn-outside" => nameof(FirstTurnOutsideTranspiler),
                 "il-firstturn-predicate" => nameof(FirstTurnPredicateTranspiler),
-                _ => nameof(FirstTurnSourceTranspiler),
+                "il-firstturn-source" => nameof(FirstTurnSourceTranspiler),
+                "il-firstturn-except" => nameof(FirstTurnExceptTranspiler),
+                "il-firstturn-consumer" => nameof(FirstTurnConsumerTranspiler),
+                "il-firstturn-undo" => nameof(FirstTurnUndoTranspiler),
+                _ => throw new ArgumentException("unknown il shape " + shape),
             };
             harmony.Patch(setup, transpiler: new HarmonyMethod(typeof(IlJudgeShapes), firstTurn) { priority = priority });
             return setup;
@@ -222,7 +240,7 @@ public static class IlJudgeShapes
     /// <summary>The judge's verdict on the method (after an install).</summary>
     public static IEnumerable<string> Verdict(MethodBase body)
     {
-        if (body.DeclaringType?.DeclaringType == typeof(CombatManager))
+        if (body.DeclaringType?.DeclaringType == typeof(CombatManager) || body.DeclaringType == typeof(ExtraScopes))
         {
             yield return "FOREIGN iljudge SetupPlayerTurn: not judged (ExtraScopes decides each first-turn filter at run time: bdperf firstturn status)";
             yield break;
@@ -301,6 +319,71 @@ public static class IlJudgeShapes
         return Insert(code, cards + 1, Call(typeof(FirstTurnStandIns), nameof(FirstTurnStandIns.ArrayCopy)))!;
     }
 
+    /// <summary>
+    /// The Innate filter's excluded list (the <c>Except</c> call's second argument) given as an array copy: not the game's list
+    /// (ExtraScopes: that filter without a scope, refused except), the same cards.
+    /// </summary>
+    private static IEnumerable<CodeInstruction> FirstTurnExceptTranspiler(IEnumerable<CodeInstruction> instructions)
+    {
+        List<CodeInstruction> code = instructions.ToList();
+        List<int> excepts = Enumerable.Range(0, code.Count).Where(i => code[i].opcode == OpCodes.Call && code[i].operand is MethodInfo
+        {
+            Name: nameof(Enumerable.Except), IsGenericMethod: true,
+        } m && m.DeclaringType == typeof(Enumerable) && m.GetGenericArguments()[0] == typeof(CardModel)).ToList();
+        if (excepts.Count != 1)
+        {
+            throw new InvalidOperationException($"SetupPlayerTurn: {excepts.Count} Except<CardModel> calls found, 1 expected");
+        }
+        var call = Call(typeof(FirstTurnStandIns), nameof(FirstTurnStandIns.ArrayOf));
+        code[excepts[0]].MoveLabelsTo(call);
+        return Insert(code, excepts[0], call)!;
+    }
+
+    /// <summary>
+    /// Another mod's code using the bottom-of-pile filter's <c>Where</c> result before its <c>ToList</c> (<c>dup</c>, then
+    /// <see cref="FirstTurnStandIns.Consume"/>: its type, <c>Count()</c> and <c>LastOrDefault()</c> counted as a STATE line, the same
+    /// with this mod on or off only if the object it gets is the BCL's own, fast paths included). Its predicate reads no hook.
+    /// </summary>
+    private static IEnumerable<CodeInstruction> FirstTurnConsumerTranspiler(IEnumerable<CodeInstruction> instructions)
+    {
+        List<CodeInstruction> code = instructions.ToList();
+        int first = FirstTurnWheres(code)[0];
+        if (code[first + 1].labels.Count > 0)
+        {
+            throw new InvalidOperationException("SetupPlayerTurn: a jump target right after the first Where");
+        }
+        return Insert(code, first + 1, new CodeInstruction(OpCodes.Dup), Call(typeof(FirstTurnStandIns), nameof(FirstTurnStandIns.Consume)))!;
+    }
+
+    /// <summary>
+    /// Sorted after ExtraScopes' transpiler (install with priority 0): its two <c>Where</c> stand-ins put back to the game's
+    /// <c>Enumerable.Where</c> (another mod's transpiler dropping a stand-in): nothing marked, both filters' <c>ToList</c> stand-ins
+    /// get plain queries (no scope), the same cards.
+    /// </summary>
+    private static IEnumerable<CodeInstruction> FirstTurnUndoTranspiler(IEnumerable<CodeInstruction> instructions)
+    {
+        List<CodeInstruction> code = instructions.ToList();
+        MethodInfo where = typeof(Enumerable).GetMethods(BindingFlags.Public | BindingFlags.Static)
+            .First(m => m.Name == nameof(Enumerable.Where) && m.GetParameters()[1].ParameterType.GetGenericArguments().Length == 2)
+            .MakeGenericMethod(typeof(CardModel));
+        List<CodeInstruction> standIns = code.Where(c => c.opcode == OpCodes.Call && c.operand is MethodInfo m && m.DeclaringType == typeof(ExtraScopes)
+            && m.Name is nameof(ExtraScopes.WhereFirstFilter) or nameof(ExtraScopes.WhereSecondFilter)).ToList();
+        if (standIns.Count != 2)
+        {
+            throw new InvalidOperationException($"SetupPlayerTurn: {standIns.Count} Where stand-ins of ExtraScopes found, 2 expected (install with priority 0: after its transpiler)");
+        }
+        foreach (CodeInstruction call in standIns)
+        {
+            call.operand = where;
+        }
+        return code;
+    }
+
+    /// <summary>A patch of another mod on what runs inside the first turn's scope (a game lambda, a stand-in): does nothing.</summary>
+    private static void FirstTurnNoOpPostfix()
+    {
+    }
+
     /// <summary>What the first-turn shapes give the game's queries instead: the same answers, not the game's objects.</summary>
     public static class FirstTurnStandIns
     {
@@ -309,6 +392,11 @@ public static class IlJudgeShapes
         public static Func<CardModel, bool> InnatePredicate() => Innate;
 
         public static IReadOnlyList<CardModel> ArrayCopy(IReadOnlyList<CardModel> cards) => cards.ToArray();
+
+        public static IEnumerable<CardModel> ArrayOf(IEnumerable<CardModel> cards) => cards.ToArray();
+
+        public static void Consume(IEnumerable<CardModel> query) =>
+            Count($"firstturn consumer {query.GetType().Name} count {query.Count()} last {(query.LastOrDefault() is { } last ? last.Id.Entry : "none")}");
     }
 
     private static IEnumerable<CodeInstruction> UngatedObserverTranspiler(IEnumerable<CodeInstruction> instructions) =>
