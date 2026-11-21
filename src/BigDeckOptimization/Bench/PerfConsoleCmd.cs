@@ -39,7 +39,8 @@ namespace BigDeckOptimization.Bench;
 ///   only, never saved: <see cref="Config.Settings.MasterChoice"/>),
 ///   checks, blocks, upgradebits, envrelease, gcmin, movecap, clonememocap, release, purehooks, dirtyreads, snapmoved, segments, relicreuse, fault,
 ///   sortkeys wrong, deckcount wrong, snapgameerror.
-///   Changes the game's state: costwrites (the first hand card free this turn, on this peer only), and foreign with a shape
+///   Changes the game's state: costwrites (the first hand card free this turn, on this peer only), deckcount inplace (a draw-pile
+///   card tagged Strike, DeckCountBench), and foreign with a shape
 ///   changing it (keyword-prefix, cost-postfix, nested-postfix: <see cref="ForeignPatches.ChangesState"/>): singleplayer only,
 ///   since in co-op it would only make this peer's checksum differ and the host drop it (a co-op script installs them with its
 ///   'foreignpatch' line on every peer, before any combat). <c>bdperf opt on|off</c> in a co-op run warns and asks for
@@ -220,6 +221,11 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
             return new CmdResult(success: false, "bdperf costwrites is singleplayer only: it changes a card's cost on your game only, "
                 + "the other players' games don't see it and the host would disconnect you.");
         }
+        if (sub == "deckcount" && args.Length >= 2 && args[1] == "inplace" && coop)
+        {
+            return new CmdResult(success: false, "bdperf deckcount inplace is singleplayer only: it changes a card's tags on your game only, "
+                + "the other players' games don't see it and the host would disconnect you.");
+        }
         // Effect counters as the game's own calls left them (see EffectCounters); the benches read their own deltas inside.
         using IDisposable? frozen = sub is "checksum" or "refresh" or "listeners" or "pile" or "text" or "scan" or "plaque" or "grid" or "sortkeys"
             or "relics" or "upgradebench" or "shufflebench" or "costhooks" or "snapnet" or "joinmsg" or "combatcards"
@@ -394,12 +400,20 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                 {
                     DeckCountMemo.WrongForTest = 1;
                 }
+                else if (args.Length >= 2 && args[1] == "inplace")
+                {
+                    // Positive control of the free check outside the redraw (DeckCountBench, at the end of this file).
+                    return DeckCountBench.InPlace();
+                }
                 // mark, then unsure-grew (the game counted since: a card of a changing type in the piles), answers-grew (it
                 // counted itself since: on) or answers-same (no count of its own since: off after a fault): self-checking scenarios.
-                bool deckCountOk = DeckCountMemo.Mismatches == 0;
+                // scope, answered <card>, gamecount <card>: DeckCountBench.
+                // answered and gamecount judge only their own check: a positive control's mismatch shouldn't fail them.
+                bool ownCheckOnly = args.Length >= 3 && args[1] is "answered" or "gamecount";
+                bool deckCountOk = ownCheckOnly || DeckCountMemo.Mismatches == 0;
                 string deckCountCheck = "";
-                if (!setCountVerify && args.Length >= 1 && !(args.Length >= 2 && args[1] is "wrong" or "mark") && _deckCountVerifySet
-                    && DeckCountMemo.Checks == 0 && !ModEntry.NotApplied(DeckCountMemo.Name))
+                if (!setCountVerify && !ownCheckOnly && args.Length >= 1 && !(args.Length >= 2 && args[1] is "wrong" or "mark") && _deckCountVerifySet
+                    && DeckCountMemo.Checks + DeckCountMemo.FreeChecks == 0 && !ModEntry.NotApplied(DeckCountMemo.Name))
                 {
                     // Verify was set and no answer was ever compared: the part never answered, the report would pass on nothing.
                     deckCountOk = false;
@@ -423,8 +437,22 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                     deckCountOk &= grew;
                     deckCountCheck += $" ({args[1]} since the mark: {(grew ? "ok" : "MISMATCH")}; answers {_deckCountMark.Answers}, unsure {_deckCountMark.Unsure} at the mark)";
                 }
+                else if (args.Length >= 2 && args[1] == "scope")
+                {
+                    (bool scopeOk, string scopeText) = DeckCountBench.Scope();
+                    deckCountOk &= scopeOk;
+                    deckCountCheck += scopeText;
+                }
+                else if (ownCheckOnly)
+                {
+                    (bool kindOk, string kindText) = args[1] == "answered" ? DeckCountBench.Answered(args[2]) : DeckCountBench.GameCount(args[2]);
+                    deckCountOk &= kindOk;
+                    deckCountCheck += kindText;
+                }
                 return new CmdResult(success: deckCountOk, $"DECKCOUNT enabled {DeckCountMemo.Enabled}, kept {DeckCountMemo.Kept}, updated {DeckCountMemo.Updated}, walks {DeckCountMemo.Walks}, "
-                    + $"unsure {DeckCountMemo.Unsure}, checks {DeckCountMemo.Checks}, mismatches {DeckCountMemo.Mismatches}{deckCountCheck}");
+                    + $"unsure {DeckCountMemo.Unsure}, checks {DeckCountMemo.Checks}, mismatches {DeckCountMemo.Mismatches}, answered {DeckCountMemo.Answered}, "
+                    + $"in redraw {DeckCountMemo.InRedrawCalls}, outside {DeckCountMemo.OutsideCalls}, free checks {DeckCountMemo.FreeChecks}, "
+                    + $"free mismatches {DeckCountMemo.FreeMismatches}{deckCountCheck}");
             case "combatcards":
                 // bdperf combatcards [passes]: CombatCardSet and RemoveInternal's single scan against the game's code (Bench/CombatCardsBench.cs).
                 return CombatCardsBench.Run(args.Length >= 2 && int.TryParse(args[1], out int containsPasses) && containsPasses > 0 ? containsPasses : 3);
@@ -1508,5 +1536,95 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
             AllocatedKb = (GC.GetAllocatedBytesForCurrentThread() - allocatedBefore) / 1024.0 / iterations,
             Checksum = checksum,
         };
+    }
+
+    /// <summary>
+    /// DeckCountMemo's redraw scope, for <c>bdperf deckcount</c> (PerfConsoleCmd):
+    /// <list type="bullet">
+    /// <item><c>scope</c>: calculations inside the card redraw (where the memo answers) and outside it (where the game counts and
+    /// the memo's count, when it holds one, is compared for free). Fails unless both happened and a free check ran: the scope
+    /// is reached and the net outside it works on real plays.</item>
+    /// <item><c>inplace</c> (positive control, changes the game's state: singleplayer only): the Strike tag added in place to the
+    /// <c>Tags</c> set of a draw-pile card (as a content mod adding a tag to a card does), with no pile move, after the memo counted
+    /// Perfected Strike. The next play's damage must be the game's count (outside the redraw), and the free check must see the
+    /// difference and turn the memo off.</item>
+    /// <item><c>gamecount strike|squeeze|spear|wah</c>: the game's last result outside the redraw for that card against a fresh count of
+    /// the local player's piles with the game's own expression (an independent reference): what an action got.</item>
+    /// <item><c>answered squeeze|strike|spear|wah</c>: that card's own count was computed inside the redraw at least once.</item>
+    /// </list>
+    /// </summary>
+    private static class DeckCountBench
+    {
+        private static readonly Func<CardModel, bool>[] _gameCounts =
+        {
+            c => c.Tags.Contains(CardTag.OstyAttack),
+            c => c.Tags.Contains(CardTag.Strike),
+            c => c.CanonicalStarCost >= 0 || c.HasStarCostX,
+            c => c.Tags.Contains((CardTag)6) || c.Tags.Contains((CardTag)7) || c.Tags.Contains((CardTag)8),
+        };
+
+        internal static int Kind(string name) => name switch
+        {
+            "squeeze" => DeckCountMemo.SqueezeKind,
+            "strike" => DeckCountMemo.StrikeKind,
+            "spear" => DeckCountMemo.SpearKind,
+            "wah" => DeckCountMemo.WahKind,
+            _ => -1,
+        };
+
+        /// <summary>The scope's counters, and whether both sides ran and the free check did.</summary>
+        internal static (bool Ok, string Text) Scope()
+        {
+            bool ok = DeckCountMemo.InRedrawCalls > 0 && DeckCountMemo.OutsideCalls > 0 && DeckCountMemo.FreeChecks > 0;
+            return (ok, $" (scope: in redraw {DeckCountMemo.InRedrawCalls}, outside {DeckCountMemo.OutsideCalls}, free checks {DeckCountMemo.FreeChecks}: "
+                + (ok ? "ok" : "MISMATCH, a side or the free check never ran") + ")");
+        }
+
+        internal static (bool Ok, string Text) Answered(string name)
+        {
+            int kind = Kind(name);
+            long counted = kind < 0 ? -1 : DeckCountMemo.KindCounted[kind];
+            return (counted > 0, $" (answered {name}: {(counted > 0 ? "ok, " + counted : "MISMATCH, none")})");
+        }
+
+        internal static (bool Ok, string Text) GameCount(string name)
+        {
+            int kind = Kind(name);
+            if (kind < 0 || RunManager.Instance.DebugOnlyGetState() is not { } run || LocalContext.GetMe(run)?.PlayerCombatState is not { } state)
+            {
+                return (false, $" (gamecount {name}: MISMATCH, no such card or not in combat)");
+            }
+            if (DeckCountMemo.LastOutside[kind] is not { } last)
+            {
+                return (false, $" (gamecount {name}: MISMATCH, no calculation outside the redraw yet)");
+            }
+            int fresh = state.AllCards.Count(_gameCounts[kind]);
+            // Squeeze leaves itself out: its multiplier is the count less the Squeeze asking, which the bench can't tell apart.
+            bool ok = kind == DeckCountMemo.SqueezeKind ? last <= fresh && last >= fresh - 1 : last == fresh;
+            return (ok, $" (gamecount {name}: last outside the redraw {last}, the piles now {fresh}: {(ok ? "ok" : "MISMATCH")})");
+        }
+
+        /// <summary>The positive control's state change: one draw-pile card of a type with fixed tags gets the Strike tag in place.</summary>
+        internal static CmdResult InPlace()
+        {
+            if (!CombatManager.Instance.IsInProgress || RunManager.Instance.DebugOnlyGetState() is not { } run || LocalContext.GetMe(run) is not { } me
+                || me.PlayerCombatState is not { } state)
+            {
+                return new CmdResult(success: false, "Start a combat first.");
+            }
+            if (!DeckCountMemo.HasCount(state, DeckCountMemo.StrikeKind))
+            {
+                return new CmdResult(success: false, "DeckCountMemo holds no Perfected Strike count yet: show one in hand first (nothing to make stale).");
+            }
+            CardModel? card = PileType.Draw.GetPile(me).Cards.FirstOrDefault(c => c.Tags is HashSet<CardTag> tags && !tags.Contains(CardTag.Strike)
+                && !DeckCountMemo.TagsMayChange(c.GetType()));
+            if (card == null || card.Tags is not HashSet<CardTag> set)
+            {
+                return new CmdResult(success: false, "No draw-pile card with fixed tags and no Strike tag.");
+            }
+            int before = state.AllCards.Count(_gameCounts[DeckCountMemo.StrikeKind]);
+            set.Add(CardTag.Strike);
+            return new CmdResult(success: true, $"DECKCOUNT inplace: {card.Id} tagged Strike in place, no pile move; Strike cards {before} -> {before + 1}.");
+        }
     }
 }

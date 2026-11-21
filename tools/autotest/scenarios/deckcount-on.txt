@@ -1,5 +1,7 @@
 # Squeeze, Perfected Strike and Crescent Spear kept in hand through the pile-scanning cards at ~945 cards, then a turn change.
 # The last `bdperf deckcount` fails when no answer was checked (verify 1 set: DeckCountMemo never answered).
+# `bdperf deckcount scope`: calculations inside the card redraw (the memo answers) and outside it (the plays: the game
+# counts, and the memo's count, when it holds one, is compared for free); fails unless both ran and a free check did.
 timeout 2400
 newrun NECROBINDER
 waitfor run 120
@@ -495,5 +497,6 @@ cmd card SQUEEZE hand
 cmd card PERFECTED_STRIKE hand
 cmd card CRESCENT_SPEAR hand
 wait 0.5
+cmd bdperf deckcount scope
 cmd bdperf deckcount
 quit
