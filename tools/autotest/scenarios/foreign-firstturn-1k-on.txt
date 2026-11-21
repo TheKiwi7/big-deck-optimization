@@ -8,8 +8,8 @@
 timeout 1200
 expect FIRSTTURN imbued 4 of 4 deck cards
 expect FIRSTTURN scopes 1, refused source 0, predicate 0, except 1, plain ToList 1, backed off 0, scope failed 0, on True, faulted False
-expect ExtraScopes first-turn filter \(in a scope\): [0-9]+ cards, .*OK: identical to vanilla
-expect ExtraScopes first-turn filter \(without a scope\): [0-9]+ cards, .*OK: identical to vanilla
+expect ExtraScopes first-turn filter \(in a scope\): [1-9][0-9]* cards, .*OK: identical to vanilla
+expect ExtraScopes first-turn filter \(without a scope\): [1-9][0-9]* cards, .*OK: identical to vanilla
 expect ExtraScopes: the first turn's Innate card filter leaves out another collection than the game's list: that filter runs without a scope
 expect STATE foreign end firstturn consumer \S*Where\S*Iterator\S* count [0-9]+ last \S+ 1
 newrun NECROBINDER 1234

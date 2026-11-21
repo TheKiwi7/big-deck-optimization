@@ -211,10 +211,13 @@ public static class SortKeysBench
             CardSortKeys.RestoreCounters(sorts, answered);
         }
         long ownMismatches = CardSortKeys.Mismatches - mismatches;
-        bool ok = !different && ownMismatches == 0 && CardSortKeys.Enabled;
+        // The shared-key arm must have used the shared-key comparison: with none, both arms read the variables as the game does and
+        // their equal orders prove nothing about it.
+        bool noShared = cards.Count > 1 && sharedCompares == 0;
+        bool ok = !different && ownMismatches == 0 && CardSortKeys.Enabled && !noShared;
         return new CmdResult(ok, $"SORTKEYS partonly {cards.Count} cards, {cards.Select(c => c.Id).Distinct().Count()} kinds: median shared keys {Median(sharedMs):F1} ms, "
             + $"variable loop {Median(loopMs):F1} ms per sort ({passes} each); cost reads per sort {sharedReads / passes} / {loopReads / passes}, shared-key comparisons "
-            + $"{sharedCompares / passes} per sort, checks {CardSortKeys.Checks}: {(ok ? "OK: identical orders" : $"MISMATCH: orders {(different ? "differ" : "same")}, own check mismatches {ownMismatches}")}"
+            + $"{sharedCompares / passes} per sort, checks {CardSortKeys.Checks}: {(ok ? "OK: identical orders" : $"MISMATCH: orders {(different ? "differ" : "same")}, own check mismatches {ownMismatches}{(noShared ? ", the shared-key arm made no shared-key comparison" : "")}")}"
             + "\n" + string.Join("\n", lines));
     }
 

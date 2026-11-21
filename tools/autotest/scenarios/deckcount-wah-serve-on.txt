@@ -1,0 +1,65 @@
+# deckcount-wah-on with `bdperf deckcount verify 1000000` (A/B, on; with deckcount-wah-off): the memo's answers are served, not
+# compared (verify 1 compares every answer in the redraw, so the memo never answers there: the path players run was never reached
+# with Wah Symphony). Only the first answer is compared; `bdperf deckcount answered wah` must find the memo's own count served
+# (Answered grew). CHECKSUM lines identical to deckcount-wah-off.
+# compare-with: deckcount-wah-off
+timeout 2400
+# The memo itself answered redraws (the report's `answered` counter), and every answer compared was right.
+expect DECKCOUNT enabled True, .*checks [1-9][0-9]*, mismatches 0, answered [1-9][0-9]*,
+# Wah Symphony exists from game v0.113: both sides stop here on an older game.
+requiregame v0.113
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+cmd bigdeck tank
+wait 1
+cmd power NO_DRAW_POWER 1 0
+cmd bdperf deckcount verify 1000000
+cmd card WAH_CHO draw
+cmd card KI_WHIP discard
+cmd card WAH_KI exhaust
+cmd card CHO_KI draw
+checksum start
+emptyhand
+cmd card WAH_SYMPHONY hand
+cmd card WAH_TOUCH hand
+setenergy 5
+cmd card ALL_FOR_ONE hand
+playcard ALL_FOR_ONE free
+checksum after ALL_FOR_ONE
+emptyhand
+cmd card WAH_SYMPHONY hand
+cmd card WAH_TOUCH hand
+setenergy 5
+cmd card ANOINTED hand
+playcard ANOINTED free
+checksum after ANOINTED
+emptyhand
+cmd card WAH_SYMPHONY hand
+cmd card WAH_TOUCH hand
+setenergy 5
+cmd card ARMAMENTS hand
+playcard ARMAMENTS free
+checksum after ARMAMENTS
+emptyhand
+cmd card WAH_SYMPHONY hand
+cmd card WAH_TOUCH hand
+setenergy 5
+cmd card CALCULATED_GAMBLE hand
+playcard CALCULATED_GAMBLE free
+checksum after CALCULATED_GAMBLE
+emptyhand
+cmd card WAH_SYMPHONY hand
+setenergy 5
+playcard WAH_SYMPHONY free
+checksum after WAH_SYMPHONY
+cmd bdperf deckcount answered wah
+cmd bdperf deckcount scope
+cmd bdperf deckcount
+quit

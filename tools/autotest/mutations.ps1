@@ -74,6 +74,13 @@ $Expected = [ordered]@{
     "replay-record"   = @("game", "ReplayStateSkip|RecordChecksum", "ReplayStateSkip")
     "theme-rename"    = @("game", "ThemeColorSkip|RefreshText", "")
     "upgrade-writer"  = @("game", "_currentUpgradeLevel", "SnapshotCardReuse\.(Trust|Moved|Dirty|Hooks)|LimitlessRecalcSkip\.Passes")
+    # The parts of the audit rounds since v1.2.0 (calibrated on no session yet: the first run may need its patterns widened).
+    "combat-contains" = @("game", "CombatCardSet|ContainsCard", "CombatCardSet")
+    "read-file"       = @("game", "SaveReadDecode|ReadFile", "SaveReadDecode(\.(RunSave|Checks))?")
+    # CardSortKeys is not needed on v0.111.1 (cheap CompareTo): a 4th element, the lowest game version a mutation applies to.
+    # Only the shared-key comparison leaves, the sort keys still answer: nothing may drop.
+    "dynvar-tryget"   = @("game", "CardSortKeys|DynamicVarSet|TryGetValue|dynamic variable reads", "", "0.113")
+    "card-redraw"     = @("game", "DeckCountMemo|UpdateVisuals", "DeckCountMemo(\.Checks)?")
     "write-list"      = @("game", "pile bits not reused", "SnapshotCardReuse\.(PileBits|Blocks)")
     "local-keywords"  = @("game", "read through the game's own calls|get_LocalKeywords", "SnapshotCardReuse\.(Trust|Moved|Dirty|Hooks)")
     "limitless-body"  = @("Limitless", "LimitlessReserialize|LimitlessRecalcSkip|SetSerializableCards", "LimitlessReserialize|LimitlessRecalcSkip\.(Memos|Passes)|SnapshotCardReuse\.Moved|LimitlessCloneMemo|LimitlessHookSkip(\.Saved)?")
@@ -106,6 +113,14 @@ $Expected = [ordered]@{
 $ReferenceBackOffs = "LimitlessCloneMemo: NCard\.UpdateVisuals is also patched by BetterSpire2, Limitless: normal game for that part"
 $unknown = @($Only | Where-Object { -not $Expected.Contains($_) })
 if ($unknown.Count) { throw "-Only: no such mutation in the table: $($unknown -join ', ')" }
+# A mutation's optional 4th element: the lowest game version it applies to (a part it leaves vanilla may not exist below it).
+$gameVersion = [version](Get-GameTag $GameDir).TrimStart('v')
+foreach ($name in @($Expected.Keys)) {
+    if ($Expected[$name].Count -gt 3 -and $gameVersion -lt [version]$Expected[$name][3]) {
+        Write-Output "== $name : not for this game (v$gameVersion < $($Expected[$name][3]))"
+        $Expected.Remove($name)
+    }
+}
 $thinRoot = Join-Path (Split-Path $GameDir) "bdmut-copies-$(Split-Path $GameDir -Leaf)"
 $Reference = Join-Path $out "mutation-reference.log"
 
@@ -248,7 +263,7 @@ try {
     $RuntimeFault = "disabled after exception|turned off and removed|faulted|error inside the game's code"
     $summary = @()
     foreach ($name in $names) {
-        $target, $pattern, $mayLose = $Expected[$name]
+        $target, $pattern, $mayLose, $null = $Expected[$name]
         $log = @($building | Where-Object { $_.Plan.Name -eq $name })[0].Plan.Log
         $text = @(Get-Content $log -ErrorAction SilentlyContinue)
         $problems = @()

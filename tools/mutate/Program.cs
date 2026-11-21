@@ -99,6 +99,15 @@ var mutations = new Dictionary<string, (string What, Action<ModuleDefinition> Ap
         Method(m, "MegaCrit.Sts2.Core.Entities.Cards.CardPile", "RemoveInternal").Name = "RemoveInternalRenamed"),
     ["rename-field"] = ("CombatState._allies renamed (FastListeners reads it by name)", m =>
         Type(m, "MegaCrit.Sts2.Core.Combat.CombatState").Fields.Single(f => f.Name == "_allies").Name = "_alliesRenamed"),
+    // --- game, the parts of the audit rounds since v1.2.0: only that part may leave ---
+    ["combat-contains"] = ("CombatState.ContainsCard changed (CombatCardSet answers for it from a count per card)", m =>
+        Prepend(Method(m, "MegaCrit.Sts2.Core.Combat.CombatState", "ContainsCard"), OpCodes.Ldarg_1, OpCodes.Pop)),
+    ["read-file"] = ("GodotFileIo.ReadFile changed (SaveReadDecode transpiles its read as text)", m =>
+        Prepend(Method(m, "MegaCrit.Sts2.Core.Saves.GodotFileIo", "ReadFile"), OpCodes.Ldarg_1, OpCodes.Pop)),
+    ["dynvar-tryget"] = ("DynamicVarSet.TryGetValue changed (CardSortKeys' shared-key comparison reads variables like it; v0.113+)", m =>
+        Prepend(Method(m, "MegaCrit.Sts2.Core.Localization.DynamicVars.DynamicVarSet", "TryGetValue"), OpCodes.Ldarg_1, OpCodes.Pop)),
+    ["card-redraw"] = ("NCard.UpdateVisuals changed (DeckCountMemo answers inside that redraw)", m =>
+        Prepend(Method(m, "MegaCrit.Sts2.Core.Nodes.Cards.NCard", "UpdateVisuals"), OpCodes.Ldarg_0, OpCodes.Pop)),
     // --- game, v0.9.0 patches: only that part may leave ---
     ["flight-count"] = ("NCombatCardPile.AddCard changed (CardFlightLimit adds to its count)", m =>
         Prepend(Method(m, "MegaCrit.Sts2.Core.Nodes.Combat.NCombatCardPile", "AddCard"), OpCodes.Ldarg_0, OpCodes.Pop)),

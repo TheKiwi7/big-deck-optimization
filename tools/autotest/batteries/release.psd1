@@ -21,6 +21,10 @@
             # SaveBackupCheck (v0.113+; on v0.111 the pair and the control end at requiregame, the bench says "not needed"): its off
             # side turns only save_check off, so no baseline.
             @{ Name = 'solo-savecheck'; Par = 'savecheck-off,savecheck-on,savecheck-wrong,savecheck-bench'; Args = @('-TimeoutSec', '1800') }
+            # The scenarios added by the audit rounds since v1.2.0 (SaveReadDecode, CombatCards, FirstTurn, hover tips, the foreign
+            # shapes, DeckCountMemo, SortKeys partonly, the G rules). The saveread and savecheck off sides turn only their own
+            # option off: no baseline (like solo-savecheck).
+            @{ Name = 'solo-new'; Par = 'saveread-on,saveread-off,saveread-serve-on,saveread-wrong,saveread-bench,saveread-transpiler,combatcards-2k-on,combatcards-2k-off,wrong-combatcards-1k-on,wrong-1k-off,firstturn-2k-on,firstturn-2k-off,foreign-firstturn-1k-on,foreign-firstturn-1k-off,foreign-firstturn-controls,firstturn-selftest,hover-tips-prefixes,hover-tips-transpiler,hover-tips-ctl,foreign-parts-roprefix,foreign-walkgetters,foreign-limitless-u-2k-on,foreign-limitless-u-2k-off,foreign-limitless-umax-2k-on,foreign-limitless-umax-2k-off,foreign-limitless-controls,deckcount-wah-on,deckcount-wah-serve-on,deckcount-wah-off,deckcount-inplace-wrong,deckcount-on,deckcount-off,sortkeys-partonly-10k,foreign-gates-1k-on,foreign-gates-1k-off,foreign-hookfilter,foreign-hookfilter-2k-on,foreign-hookfilter-2k-off,limitless-gated-2k-on,limitless-gated-2k-off,foreign-limitless-l-2k-on,foreign-limitless-l-2k-off,foreign-controls'; Args = @('-TimeoutSec', '1800') }
             @{ Name = 'solo-pace'; Par = 'pace-vanilla,pace-off,pace-on,pace-instant,effects-check,release-checks'; Args = @('-TimeoutSec', '1800') }
             @{ Script = 'vanillacheck.ps1'; Args = @('-GameDir', '{copy}', '-Jobs', '{jobs}') }
             @{ Name = 'parsweep-all'; Once = $true; Script = 'parsweep-all.ps1'; Args = @('-GameDir', '{copies}', '-Jobs', '{jobs}', '-UseBaselines') }
@@ -61,6 +65,8 @@
         # Extra Workshop mods most players combine: same scenarios with the mods enabled.
         @{ Name = 'extra-mods'; Mode = 'Exclusive'; Steps = @(
             @{ Name = 'extra-ab'; Par = 'ab-2k-off,ab-2k-on,outside-2k-off,outside-2k-on,effects-check'; Args = @('-UseBaselines'); Env = @{ BDTEST_EXTRA_MODS = 'SpeedX,ModConfig,sts2unlimited' } }
+            # RitsuLib's hidden IL hooks next to ExtraScopes' first-turn filters.
+            @{ Name = 'extra-ritsu'; Par = 'firstturn-real-2k-on,firstturn-real-2k-off'; Args = @('-UseBaselines'); Env = @{ BDTEST_EXTRA_MODS = 'STS2-RitsuLib' } }
         ) }
     )
 }

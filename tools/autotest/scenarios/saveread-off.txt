@@ -2,6 +2,8 @@
 # game's GetAsText reads every save file from the switch on: the part's effect counter must not move (effectcheck ... same). The
 # runstate and savefiles lines must match saveread-on.
 timeout 1800
+# The run save was written and is a whole file (never "absent": the comparison with the other side would then pass on nothing).
+expect STATE savefiles room done: current_run\.save whole, content [0-9A-F]+;
 cmd bdopt save_check off
 savefiles before the run
 newrun NECROBINDER 1234
