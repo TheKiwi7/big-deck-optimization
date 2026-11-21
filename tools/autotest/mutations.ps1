@@ -83,6 +83,8 @@ $Expected = [ordered]@{
     # Only the shared-key comparison leaves, the sort keys still answer: nothing may drop.
     "dynvar-tryget"   = @("game", "CardSortKeys|DynamicVarSet|TryGetValue|dynamic variable reads", "", "0.113")
     "card-redraw"     = @("game", "DeckCountMemo|UpdateVisuals", "DeckCountMemo(\.Checks)?")
+    # Only the display callers part leaves (its answers are in no effect line): the memo keeps answering in the redraw.
+    "preview-chain"   = @("game", "DeckCountMemo\.Display|UpdateCardPreview", "")
     "write-list"      = @("game", "pile bits not reused", "SnapshotCardReuse\.(PileBits|Blocks)")
     "local-keywords"  = @("game", "read through the game's own calls|get_LocalKeywords", "SnapshotCardReuse\.(Trust|Moved|Dirty|Hooks)")
     "limitless-body"  = @("Limitless", "LimitlessReserialize|LimitlessRecalcSkip|SetSerializableCards", "LimitlessReserialize|LimitlessRecalcSkip\.(Memos|Passes)|SnapshotCardReuse\.Moved|LimitlessCloneMemo|LimitlessHookSkip(\.Saved)?")
