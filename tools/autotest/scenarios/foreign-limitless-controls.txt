@@ -68,6 +68,7 @@ expect FOREIGN reach l3 storage Sharp 1: kept False
 expect FOREIGN reach l3 storage Sharp 0: kept True
 expect FOREIGN limitless constant selftest: \d+ cases as expected
 expect LimitlessCloneMemo: CardModel\.get_MaxUpgradeLevel \(bdtest\.foreign\.lim-constant-postfix-release\): patched only with a constant result
+expect LimitlessHookSkip: CardModel\.get_MaxUpgradeLevel is also patched by bdtest\.foreign\.lim-constant-postfix-release \(patches gated on the listener.s type not enough\)
 expect FOREIGN reach u1 storage Sharp 1: kept True, reaches Spine, Enchant, Upgrade, hookskip patched True
 expect FOREIGN reach u1 storage Sharp 0: kept True, reaches Spine, Enchant, hookskip patched False
 expect FOREIGN reach u2 storage Sharp 1: kept True, reaches Spine, Enchant, Upgrade, hookskip patched True

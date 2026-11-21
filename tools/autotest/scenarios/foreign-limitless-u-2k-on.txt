@@ -9,6 +9,7 @@ timeout 1500
 expect FOREIGN clonememo filled: entries [1-9]
 expect FOREIGN clonememo end: entries [0-9]+, patch stamp clears [1-9]
 expect LimitlessCloneMemo: CardModel\.get_MaxUpgradeLevel \(bdtest\.foreign\.lim-constant-postfix-release\): patched only with a constant result
+expect LimitlessHookSkip: CardModel\.get_MaxUpgradeLevel is also patched by bdtest\.foreign\.lim-constant-postfix-release \(patches gated on the listener.s type not enough\)
 expect FOREIGN reach end storage Sharp 0: kept True, reaches Spine, Enchant, hookskip patched False
 expect FOREIGN reach end storage Sharp 1: kept True, reaches Spine, Enchant, Upgrade, hookskip patched True
 expect FOREIGN clonememo end: .*constant kept [1-9]

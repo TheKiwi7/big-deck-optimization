@@ -496,6 +496,32 @@ public static partial class PatchSafety
         }
     }
 
+    /// <summary>
+    /// Forgets <paramref name="patch"/>'s back-off recorded on <paramref name="method"/> under <paramref name="tolerance"/> (display: a
+    /// call site that learns the answer isn't its own any more, G3's constant-only getters under LimitlessCloneMemo). Never throws.
+    /// </summary>
+    internal static void ForgetBackOff(string patch, MethodBase? method, PatchTolerance tolerance)
+    {
+        try
+        {
+            if (method != null && _conflicts.TryRemove((patch, method, tolerance), out _))
+            {
+                Config.Settings.NotifyStatesChanged();
+            }
+            foreach ((string Caller, MethodBase Method, PatchTolerance Tolerance) key in _recordedFrom.Keys)
+            {
+                if (key.Method == method && key.Tolerance == tolerance && PatchName(key.Caller) == patch)
+                {
+                    _recordedFrom.TryRemove(key, out _);
+                }
+            }
+        }
+        catch
+        {
+            // Display only.
+        }
+    }
+
     /// <param name="detail">Why the tolerance refused each patch (G2, 2026-11-21): appended to the log line only, never to the menu's text.</param>
     private static void Record(string caller, MethodBase method, string[] mods, PatchTolerance tolerance = PatchTolerance.None, string? detail = null)
     {

@@ -454,9 +454,13 @@ public static class LimitlessCloneMemo
             }
             bool strict;
             System.Reflection.MethodInfo[] allowedNow = isGated ? allowed : AllowedNow(method, allowed);
+            // G3 (2026-11-21): a chain getter whose other mods' patches are all constant-result postfixes stays this memo's; the
+            // strict check's back-off there is LimitlessHookSkip's (its drops), recorded under its name, the memo's cleared (display).
+            bool constantOnly = ConstantOnlyGetter(method, allowedNow, out string[] constantMods);
+            string caller = constantOnly ? HookSkipCaller : OwnCaller;
             if (isGated)
             {
-                strict = PatchSafety.IsPatchedByOthers(method, allowed, out Type[] gates);
+                strict = PatchSafety.IsPatchedByOthers(method, allowed, out Type[] gates, caller);
                 if (!strict && gates.Length > 0)
                 {
                     gated.Add((method, allowed, gates, reach));
@@ -465,15 +469,18 @@ public static class LimitlessCloneMemo
             // No tolerance: the clone chain is skipped for a kept content (CardCmd.Enchant<T>: each patched instantiation too).
             else
             {
-                strict = PatchSafety.IsPatchedByOthers(method, allowedNow) || InstancePatched(method, m => PatchSafety.IsPatchedByOthers(m, allowedNow));
+                strict = PatchSafety.IsPatchedByOthers(method, allowedNow, caller) || InstancePatched(method, m => PatchSafety.IsPatchedByOthers(m, allowedNow, caller));
+            }
+            if (constantOnly && isGated)
+            {
+                PatchSafety.ForgetBackOff(Name, method, PatchTolerance.TypeGated);
             }
             if (!strict)
             {
                 continue;
             }
             patched |= reach;
-            // G3 (2026-11-21): a chain getter whose other mods' patches are all constant-result postfixes stays this memo's.
-            if (PatchSafety.ConstantResultPostfixesOnly(method, allowedNow, out string[] constantMods))
+            if (constantOnly)
             {
                 constants.Add($"{method.DeclaringType?.Name}.{method.Name} ({string.Join(", ", constantMods)})");
             }
@@ -488,17 +495,27 @@ public static class LimitlessCloneMemo
         return answer;
     }
 
+    /// <summary>The call site the strict checks record under: this file (the memo), or LimitlessHookSkip's (G3's constant-only getters).</summary>
+    private const string OwnCaller = Name + ".cs", HookSkipCaller = LimitlessHookSkip.Name + ".cs";
+
+    /// <summary>G3: a parameterless getter of the chain whose other mods' patches are all constant-result postfixes.</summary>
+    private static bool ConstantOnlyGetter(System.Reflection.MethodBase method, System.Reflection.MethodInfo[] allowed, out string[] mods)
+    {
+        mods = Array.Empty<string>();
+        return method is System.Reflection.MethodInfo { IsStatic: false } getter && getter.Name.StartsWith("get_", StringComparison.Ordinal)
+            && getter.GetParameters().Length == 0 && PatchSafety.ConstantResultPostfixesOnly(method, allowed, out mods);
+    }
+
     private static string _constantsLogged = "";
 
-    /// <summary>Logs the chain getters G3 lets the memo keep, once per change (display only).</summary>
+    /// <summary>Logs the chain getters G3 lets the memo keep, once per change (display only; any thread).</summary>
     private static void LogConstants(List<string> constants)
     {
         string text = string.Join("; ", constants);
-        if (text == _constantsLogged)
+        if (System.Threading.Interlocked.Exchange(ref _constantsLogged, text) == text)
         {
             return;
         }
-        _constantsLogged = text;
         if (text.Length > 0)
         {
             Log.Info($"[{ModEntry.Id}] {Name}: {text}: patched only with a constant result, kept by this memo for the contents reaching it "
@@ -577,10 +594,23 @@ public static class LimitlessCloneMemo
                 .Select(c => ((System.Reflection.MethodBase?)c.Method, (System.Reflection.MethodInfo[]?)AllowedNow(c.Method, c.Allowed))));
             if (Chain[index].Type == typeof(CardModel) && GatedChain.Contains(Chain[index].Method))
             {
-                PatchSafety.WatchPairs(patch, () => ChainPart(index).Where(c => c.Gated).Select(c => ((System.Reflection.MethodBase?)c.Method, (System.Reflection.MethodInfo[]?)c.Allowed)),
-                    PatchTolerance.TypeGated);
+                // G3: under this class's name a getter patched only with constant results isn't listed (the memo keeps its contents;
+                // its back-off is LimitlessHookSkip's, whose own registration lists it), and a back-off recorded before is cleared.
+                PatchSafety.WatchPairs(patch, () => ChainPart(index).Where(c => c.Gated && !(patch == Name && ConstantOnlyForDisplay(c.Method, c.Allowed)))
+                    .Select(c => ((System.Reflection.MethodBase?)c.Method, (System.Reflection.MethodInfo[]?)c.Allowed)), PatchTolerance.TypeGated);
             }
         }
+    }
+
+    /// <summary>G3 for the preflight under this class's name: true clears the memo's recorded back-off on that getter.</summary>
+    private static bool ConstantOnlyForDisplay(System.Reflection.MethodBase method, System.Reflection.MethodInfo[] allowed)
+    {
+        if (!ConstantOnlyGetter(method, allowed, out _))
+        {
+            return false;
+        }
+        PatchSafety.ForgetBackOff(Name, method, PatchTolerance.TypeGated);
+        return true;
     }
 
 #if BENCH
