@@ -19,7 +19,11 @@ namespace BigDeckOptimization.Patches;
 ///
 /// Inside <c>SetCards</c>, those lambdas are answered from per-card values computed once: index map (same first-match
 /// equality as <c>IndexOf</c>), resolved cost, and culture sort keys (same order as <c>CompareInfo.Compare</c>). Each
-/// comparer is only replaced when its fingerprint matches the vanilla code mirrored here. Display order only.
+/// comparer is only replaced when its fingerprint matches the vanilla code mirrored here. Display order only. The values sit
+/// in arrays at each card's slot (<see cref="Scope.Slot"/>: the last two cards' slots kept, as a comparison asks every order
+/// with the same two cards and the sort compares one pivot with many), one sort key per distinct title (two cards with the same
+/// title compare equal without comparing keys): 10,340 cards took 62 ms of dictionary lookups in <c>List.Sort</c> (2026-11-21).
+/// The sort itself is still the game's <c>List.Sort</c> with the game's comparison: every answer has the sign the game's would.
 /// The index map is built at the first index comparison of a <c>SetCards</c> call and kept for the rest of it: exact while
 /// <c>SetCards</c> only replaces <c>_cards</c> after its sort, which its fingerprint pins (else only the index orders stay vanilla).
 /// </summary>
@@ -55,14 +59,77 @@ public static class GridSortCache
     private static AccessTools.FieldRef<NCardGrid, List<CardModel>>? _cards;
     private static System.Reflection.MethodInfo? _setCards;
 
-    /// <summary>Per-card values for the SetCards call in progress (main thread only).</summary>
+    /// <summary>
+    /// Per-card values for the SetCards call in progress (main thread only). Each card gets a slot (its number in this scope) the
+    /// first time it is compared, and its values live in arrays at that slot, each computed the first time an order needs it. A
+    /// comparison asks every order of the priority list with the same two cards, and the sort compares one pivot with many cards:
+    /// the last two cards' slots are kept (<see cref="Slot"/>), so most comparisons look up no dictionary at all.
+    /// </summary>
     internal sealed class Scope(NCardGrid grid)
     {
         public readonly NCardGrid Grid = grid;
         public Dictionary<CardModel, int>? Index;
-        public readonly Dictionary<CardModel, int> Cost = new(ReferenceEqualityComparer.Instance);
-        public readonly Dictionary<CardModel, SortKey?> Title = new(ReferenceEqualityComparer.Instance);
         public CompareInfo? Culture;
+        /// <summary>Cards given a slot, and the values per slot: not computed yet while <see cref="Unknown"/>.</summary>
+        private readonly Dictionary<CardModel, int> _slots = new(ReferenceEqualityComparer.Instance);
+        public const int Unknown = int.MinValue;
+        public int[] IndexAt = Array.Empty<int>(), CostAt = Array.Empty<int>(), TitleAt = Array.Empty<int>();
+        /// <summary>The distinct titles' sort keys, by title id (<see cref="TitleAt"/>; -1 for a null title), and each title's id.</summary>
+        public readonly List<SortKey> TitleKeys = new();
+        public readonly Dictionary<string, int> TitleIds = new(StringComparer.Ordinal);
+        private CardModel? _cardA, _cardB;
+        private int _slotA, _slotB;
+        /// <summary>Whether A was used last (on a miss, the other one is replaced).</summary>
+        private bool _lastA;
+
+        public int Values => _slots.Count;
+
+        public int Slot(CardModel card)
+        {
+            if (ReferenceEquals(card, _cardA))
+            {
+                _lastA = true;
+                return _slotA;
+            }
+            if (ReferenceEquals(card, _cardB))
+            {
+                _lastA = false;
+                return _slotB;
+            }
+            if (!_slots.TryGetValue(card, out int slot))
+            {
+                slot = _slots.Count;
+                _slots.Add(card, slot);
+                if (slot == IndexAt.Length)
+                {
+                    int size = Math.Max(64, slot * 2);
+                    IndexAt = Grown(IndexAt, size);
+                    CostAt = Grown(CostAt, size);
+                    TitleAt = Grown(TitleAt, size);
+                }
+            }
+            if (_lastA)
+            {
+                _cardB = card;
+                _slotB = slot;
+                _lastA = false;
+            }
+            else
+            {
+                _cardA = card;
+                _slotA = slot;
+                _lastA = true;
+            }
+            return slot;
+        }
+
+        private static int[] Grown(int[] values, int size)
+        {
+            int[] grown = new int[size];
+            Array.Copy(values, grown, values.Length);
+            Array.Fill(grown, Unknown, values.Length, size - values.Length);
+            return grown;
+        }
         /// <summary>The comparers dictionary already checked in this call: the sort reads the getter at every comparison.</summary>
         public Dictionary<SortingOrders, Func<CardModel, CardModel, int>>? Wrapped;
         private Dictionary<System.Reflection.MethodInfo, bool>? _patched;
@@ -173,7 +240,7 @@ public static class GridSortCache
 
     private static void SetCardsPostfix(Scope? __state)
     {
-        if (_scope is { } scope && (scope.Index != null || scope.Cost.Count > 0 || scope.Title.Count > 0))
+        if (_scope is { } scope && scope.Values > 0)
         {
             Sorts++;
         }
@@ -266,19 +333,19 @@ public static class GridSortCache
                     {
                         return original(a, b);
                     }
-                    Dictionary<CardModel, int> index = scope.Index ??= BuildIndex(_cards!(scope.Grid));
-                    result = IndexOf(index, a).CompareTo(IndexOf(index, b));
+                    result = IndexOf(scope, a).CompareTo(IndexOf(scope, b));
                     break;
                 case Kind.Cost:
                     result = GridSortCost.Of(scope, a).CompareTo(GridSortCost.Of(scope, b));
                     break;
                 default:
-                    SortKey? ka = GridSortTitle.Of(scope, a), kb = GridSortTitle.Of(scope, b);
-                    if (ka == null || kb == null)
+                    int ta = GridSortTitle.Of(scope, a), tb = GridSortTitle.Of(scope, b);
+                    if (ta < 0 || tb < 0)
                     {
                         return original(a, b);
                     }
-                    result = SortKey.Compare(ka, kb);
+                    // One title id per distinct string (ordinal): the same title compares equal, as string.Compare does.
+                    result = ta == tb ? 0 : SortKey.Compare(scope.TitleKeys[ta], scope.TitleKeys[tb]);
                     break;
             }
             return mirrored.Negated ? -result : result;
@@ -304,7 +371,19 @@ public static class GridSortCache
         return index;
     }
 
-    private static int IndexOf(Dictionary<CardModel, int> index, CardModel card) => index.TryGetValue(card, out int i) ? i : -1;
+    /// <summary>The card's first index in the grid's previous order (<c>List.IndexOf</c>), from the index map once per card.</summary>
+    private static int IndexOf(Scope scope, CardModel card)
+    {
+        int slot = scope.Slot(card);
+        int i = scope.IndexAt[slot];
+        if (i == Scope.Unknown)
+        {
+            Dictionary<CardModel, int> index = scope.Index ??= BuildIndex(_cards!(scope.Grid));
+            i = index.TryGetValue(card, out int at) ? at : -1;
+            scope.IndexAt[slot] = i;
+        }
+        return i;
+    }
 
     private static void Disable(Exception e)
     {
@@ -319,30 +398,49 @@ internal static class GridSortCost
 {
     internal static int Of(GridSortCache.Scope scope, CardModel card)
     {
-        if (!scope.Cost.TryGetValue(card, out int cost))
+        int slot = scope.Slot(card);
+        int cost = scope.CostAt[slot];
+        if (cost == GridSortCache.Scope.Unknown)
         {
             cost = card.EnergyCost.GetResolved();
-            scope.Cost[card] = cost;
+            if (cost == GridSortCache.Scope.Unknown)
+            {
+                // The marker itself (int.MinValue): not kept, read again (never seen: a cost).
+                return cost;
+            }
+            scope.CostAt[slot] = cost;
         }
         return cost;
     }
 }
 
 /// <summary>
-/// <see cref="GridSortCache"/>'s title sort key per card, with the options vanilla compares with (None); null for a null
-/// title (vanilla handles it). Own class, as <see cref="GridSortCost"/>.
+/// <see cref="GridSortCache"/>'s title per card as a title id (<see cref="GridSortCache.Scope.TitleKeys"/>: one sort key per
+/// distinct title, with the options vanilla compares with, None), -1 for a null title (vanilla handles it). Own class, as
+/// <see cref="GridSortCost"/>.
 /// </summary>
 internal static class GridSortTitle
 {
-    internal static SortKey? Of(GridSortCache.Scope scope, CardModel card)
+    internal static int Of(GridSortCache.Scope scope, CardModel card)
     {
-        if (!scope.Title.TryGetValue(card, out SortKey? key))
+        int slot = scope.Slot(card);
+        int id = scope.TitleAt[slot];
+        if (id == GridSortCache.Scope.Unknown)
         {
             string? title = card.Title;
-            scope.Culture ??= LocManager.Instance.CultureInfo.CompareInfo;
-            key = title == null ? null : scope.Culture.GetSortKey(title, CompareOptions.None);
-            scope.Title[card] = key;
+            if (title == null)
+            {
+                id = -1;
+            }
+            else if (!scope.TitleIds.TryGetValue(title, out id))
+            {
+                scope.Culture ??= LocManager.Instance.CultureInfo.CompareInfo;
+                id = scope.TitleKeys.Count;
+                scope.TitleKeys.Add(scope.Culture.GetSortKey(title, CompareOptions.None));
+                scope.TitleIds.Add(title, id);
+            }
+            scope.TitleAt[slot] = id;
         }
-        return key;
+        return id;
     }
 }
