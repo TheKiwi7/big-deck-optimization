@@ -610,7 +610,6 @@ public static class LimitlessCloneMemo
 
     private static string _constantsLogged = "";
 
-    /// <summary>Logs the chain getters G3 lets the memo keep, once per change (display only; any thread).</summary>
     /// <summary>
     /// G3 for drops, display: LimitlessHookSkip's kept note while the drops take a constant upgrade cap (bdopt why, the menu's hover:
     /// not a back-off), cleared otherwise. Only while LimitlessHookSkip is applied. Never throws.
@@ -628,6 +627,7 @@ public static class LimitlessCloneMemo
             + $"(the last of its patches): skipping a stacked enchantment's rebuild leaves out nothing of it for {which}", known.Mods);
     }
 
+    /// <summary>Logs the chain getters G3 lets the memo keep, once per change (display only; any thread).</summary>
     /// <param name="dropCap">G3 for drops: get_MaxUpgradeLevel's last postfix's constant, when LimitlessHookSkip's drops take it.</param>
     private static void LogConstants(List<string> constants, int? dropCap)
     {

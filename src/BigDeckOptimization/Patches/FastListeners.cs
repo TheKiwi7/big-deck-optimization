@@ -3688,6 +3688,67 @@ public static class FastListeners
         }
     }
 
+    /// <summary>The answer of <see cref="CombatPlayerGettersPatched"/>, for a Harmony epoch and 2 s.</summary>
+    private sealed record GettersAnswer(int Epoch, long CheckedAt, bool Patched);
+
+    private static volatile GettersAnswer? _gettersAnswer;
+    private static MethodBase[]? _combatPlayerGetters;
+
+    /// <summary>
+    /// Whether another mod patches (Harmony, or a hidden IL hook) code the game's <c>CombatState.Players</c> runs: the getters
+    /// <c>Players</c>, <c>PlayerCreatures</c>, <c>Creatures</c>, their lambdas (<c>c =&gt; c.IsPlayer</c>, <c>c =&gt; c.Player</c>), and
+    /// <c>Creature.IsPlayer</c> and <c>Creature.Player</c>. Asked again per Harmony epoch (HarmonyWatch: any Patch or Unpatch) and at
+    /// most every 2 s. True when it can't tell (the getters then run, as before).
+    /// </summary>
+    private static bool CombatPlayerGettersPatched()
+    {
+        int epoch = HarmonyWatch.Epoch;
+        long now = Environment.TickCount64;
+        if (_gettersAnswer is { } known && known.Epoch == epoch && now - known.CheckedAt < 2000)
+        {
+            return known.Patched;
+        }
+        bool patched = true;
+        try
+        {
+            MethodBase[] getters = _combatPlayerGetters ??= CombatPlayerGetters();
+            patched = getters.Length == 0 || getters.Any(m => HarmonyWatch.HiddenOwners(m).Length > 0
+                || (Harmony.GetPatchInfo(m) is { } info && PatchSafety.AllPatches(info).Any(p => !PatchGuard.IsOurs(p.owner))));
+        }
+        catch
+        {
+            patched = true;
+        }
+        _gettersAnswer = new GettersAnswer(epoch, now, patched);
+        return patched;
+    }
+
+    private static MethodBase[] CombatPlayerGetters()
+    {
+        const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
+        MethodBase?[] named =
+        {
+            Reflect.Method(typeof(CombatState), "get_" + nameof(CombatState.Players)),
+            Reflect.Method(typeof(CombatState), "get_" + nameof(CombatState.PlayerCreatures)),
+            Reflect.Method(typeof(CombatState), "get_" + nameof(CombatState.Creatures)),
+            Reflect.Method(typeof(Creature), "get_" + nameof(Creature.IsPlayer)),
+            Reflect.Method(typeof(Creature), "get_" + nameof(Creature.Player)),
+        };
+        if (named.Any(m => m == null))
+        {
+            // A getter not found: empty, so the caller answers patched (the getters run).
+            return Array.Empty<MethodBase>();
+        }
+        var getters = new List<MethodBase>(named.Cast<MethodBase>());
+        // The getters' lambdas (the compiler's closure class: "<get_Players>b__...", "<get_PlayerCreatures>b__...").
+        foreach (Type nested in typeof(CombatState).GetNestedTypes(BindingFlags.NonPublic))
+        {
+            getters.AddRange(nested.GetMethods(all).Where(m => m.Name.StartsWith("<get_Players>", StringComparison.Ordinal)
+                || m.Name.StartsWith("<get_PlayerCreatures>", StringComparison.Ordinal) || m.Name.StartsWith("<get_Creatures>", StringComparison.Ordinal)));
+        }
+        return getters.ToArray();
+    }
+
     /// <summary><c>CombatState.IterateHookListeners</c>'s list: every listener it walks (filtered: those the filter keeps).</summary>
     private static void AddCombat(List<AbstractModel> list, CombatState state, PileFilter? filter)
     {
@@ -3699,8 +3760,12 @@ public static class FastListeners
         // twice then), the filtered walk reads a monster creature's Monster twice where the game reads it once, and ListenerCache's
         // replays (its stated premise) make no walk at all. Cheaper than watching those getters (a back-off of the whole mirror
         // for a patch that only changes who counts as a player). BaseLib's card modifier subscriber's own Players call, when the
-        // walk skips it: CardModifierGetters.
-        _ = state.Players.Count;
+        // walk skips it: CardModifierGetters. Only while another mod patches one of them (audit of 2026-11-21: three LINQ lists,
+        // ~6 objects per walk): unpatched, the game's getters read the combat's lists and allocate, nothing anyone sees.
+        if (CombatPlayerGettersPatched())
+        {
+            _ = state.Players.Count;
+        }
         List<Creature> allies = _allies!(state);
         List<Creature> enemies = _enemies!(state);
         for (int i = 0; i < allies.Count + enemies.Count; i++)
