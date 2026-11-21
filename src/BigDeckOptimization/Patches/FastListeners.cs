@@ -2407,6 +2407,8 @@ public static class FastListeners
             {
                 PatchSafety.Watch(Name, new[] { _subscribersMethod, _subscribersBody, _subscribeMethod });
                 PatchSafety.WatchAll(Name, CardModifierSubscribers);
+                // What CardModifierCalleesPatched asks about: the subscribers' own code reached in their module.
+                PatchSafety.WatchAll(Name, () => CardModifierSubscribers().OfType<MethodInfo>().SelectMany(ModifierCallees));
                 PatchSafety.WatchNote(Name, NoteCardModifiers);
             }
         }
@@ -3514,7 +3516,11 @@ public static class FastListeners
             if (CardModifiersEmpty(id, del))
             {
                 SkippedModifierWalks++;
-                CardModifierGetters(state);
+                // Only while another mod patches one of the getters: unpatched, they read the combat's lists and allocate.
+                if (CardModifierGettersPatched())
+                {
+                    CardModifierGetters(state);
+                }
             }
             else if (del(state) is { } models)
             {
@@ -3570,9 +3576,10 @@ public static class FastListeners
     /// The game getters BaseLib's card modifier subscriber calls, in its order, for a walk that skips it (2026-11-21): its
     /// <c>combatState.Players.Select(p =&gt; p.PlayerCombatState?.AllPiles)</c> (CombatState.Players with PlayerCreatures, Creatures,
     /// each creature's IsPlayer and each player creature's Player; each player's PlayerCombatState and AllPiles), then each pile's
-    /// Cards. Another mod's patch on one of them (or BaseLib's own on AllPiles) runs as often as with the subscriber called; only
+    /// Cards. Another mod's patch on one of them runs as often as with the subscriber called; only
     /// the per-card table lookups (DirectModifiers, BaseLib's, whose patches back the skip off: <see cref="CardModifierCalleesPatched"/>)
-    /// are left out. A throw comes where the subscriber's would.
+    /// are left out. A throw comes where the subscriber's would. Called only while another mod patches one of those getters
+    /// (<see cref="CardModifierGettersPatched"/>, audit of 2026-11-21 evening): unpatched, they only read and allocate.
     /// </summary>
     private static void CardModifierGetters(CombatState state)
     {
@@ -3590,23 +3597,65 @@ public static class FastListeners
 
     private static readonly ConcurrentDictionary<MethodInfo, MethodBase[]> _modifierCallees = new();
 
+    /// <summary>Methods <see cref="ModifierCallees"/> follows at most from one subscriber method (its own code aside).</summary>
+    private const int MaxModifierCallees = 64;
+
     /// <summary>
-    /// Whether another mod patches code of the subscriber's own assembly that its method calls (its lambda, DirectModifiers): a
-    /// skipped walk leaves those calls out. Read once per method from its IL; one that can't be read counts as patched.
+    /// The code of the subscriber's own assembly its method reaches (its lambdas, DirectModifiers, the SpireField indexer and what
+    /// that calls in BaseLib), followed through direct calls within that module up to <see cref="MaxModifierCallees"/> methods: a
+    /// skipped walk leaves those calls out. Read once per method from its IL (registered for the preflight: <c>WatchAll</c>).
+    /// A method that can't be read: a null entry, counted as patched. Residuals: code reached only through a virtual call's
+    /// override or a delegate isn't followed (a call to a base method counts for itself only), nor any past the bound (logged).
+    /// </summary>
+    private static MethodBase[] ModifierCallees(MethodInfo method) => _modifierCallees.GetOrAdd(method, static m =>
+    {
+        try
+        {
+            var found = new List<MethodBase>();
+            var seen = new HashSet<MethodBase> { m };
+            var queue = new Queue<MethodBase>();
+            queue.Enqueue(m);
+            bool bounded = false;
+            while (queue.Count > 0)
+            {
+                foreach (MethodBase callee in MethodFingerprint.UsedMembers(queue.Dequeue()).OfType<MethodBase>())
+                {
+                    if (callee.Module != m.Module || !seen.Add(callee))
+                    {
+                        continue;
+                    }
+                    if (found.Count >= MaxModifierCallees)
+                    {
+                        bounded = true;
+                        break;
+                    }
+                    found.Add(callee);
+                    if (callee.GetMethodBody() != null)
+                    {
+                        queue.Enqueue(callee);
+                    }
+                }
+                if (bounded)
+                {
+                    break;
+                }
+            }
+            Log.Info($"[{ModEntry.Id}] {Name}: BaseLib's card modifier subscriber reaches {found.Count} methods of its module{(bounded ? $" (bound of {MaxModifierCallees} reached: the rest not watched)" : "")}");
+            return found.ToArray();
+        }
+        catch
+        {
+            return new MethodBase[] { null! };
+        }
+    });
+
+    /// <summary>
+    /// Whether another mod patches code of the subscriber's own assembly that its method reaches (<see cref="ModifierCallees"/>):
+    /// a skipped walk leaves those calls out.
     /// </summary>
     private static bool CardModifierCalleesPatched(MethodInfo method)
     {
-        MethodBase[] callees = _modifierCallees.GetOrAdd(method, static m =>
-        {
-            try
-            {
-                return MethodFingerprint.UsedMembers(m).OfType<MethodBase>().Where(c => c.Module == m.Module).Distinct().ToArray();
-            }
-            catch
-            {
-                return new MethodBase[] { null! };
-            }
-        });
+        MethodBase[] callees = ModifierCallees(method);
         foreach (MethodBase callee in callees)
         {
             // No tolerance: the skipped subscriber leaves these calls out.
@@ -3721,6 +3770,93 @@ public static class FastListeners
         }
         _gettersAnswer = new GettersAnswer(epoch, now, patched);
         return patched;
+    }
+
+    private static volatile GettersAnswer? _modifierGettersAnswer;
+    private static MethodBase[]? _modifierGetters;
+    private static MethodInfo? _baseLibAddPile;
+    private static bool _baseLibAddPileRead;
+
+    /// <summary>
+    /// BaseLib's <c>SpecialPileInCombat.AddPile</c> (BaseLib 3.4.7, 3.4.8): its transpiler on <c>PlayerCombatState.AllPiles</c>
+    /// inserts <c>CustomPiles.AddCustomPiles(array, this)</c> before the getter's <c>_piles = new CardPile[5] {...}</c>, inside its
+    /// <c>_piles == null</c> branch only; the game's constructor calls AllPiles (its pile subscriptions), so that branch has run
+    /// before any walk, and later calls only return <c>_piles</c> as the game's getter does.
+    /// </summary>
+    private const string BaseLibAddPileFingerprint = "AFA1EC9C9DE342BF";
+
+    /// <summary>
+    /// <see cref="CardModifierGetters"/>'s question: whether another mod patches (Harmony, or a hidden IL hook) a getter BaseLib's
+    /// card modifier subscriber calls: <see cref="CombatPlayerGettersPatched"/>'s, <c>Player.PlayerCombatState</c>,
+    /// <c>PlayerCombatState.AllPiles</c> (BaseLib's own transpiler there aside, while its code is the one pinned:
+    /// <see cref="BaseLibAddPileFingerprint"/>) and <c>CardPile.Cards</c>. Asked again per Harmony epoch and at most every 2 s
+    /// (so while HarmonyWatch isn't applied too). True when it can't tell (the getters then run, as before).
+    /// </summary>
+    private static bool CardModifierGettersPatched()
+    {
+        if (CombatPlayerGettersPatched())
+        {
+            return true;
+        }
+        int epoch = HarmonyWatch.Epoch;
+        long now = Environment.TickCount64;
+        if (_modifierGettersAnswer is { } known && known.Epoch == epoch && now - known.CheckedAt < 2000)
+        {
+            return known.Patched;
+        }
+        bool patched = true;
+        try
+        {
+            MethodBase[] getters = _modifierGetters ??= ModifierGetters();
+            MethodInfo? addPile = BaseLibAddPile();
+            patched = getters.Length == 0 || getters.Any(m => HarmonyWatch.HiddenOwners(m).Length > 0
+                || (Harmony.GetPatchInfo(m) is { } info && PatchSafety.AllPatches(info).Any(p => !PatchGuard.IsOurs(p.owner)
+                    && !(addPile != null && info.Transpilers.Contains(p) && p.PatchMethod == addPile))));
+        }
+        catch
+        {
+            patched = true;
+        }
+        _modifierGettersAnswer = new GettersAnswer(epoch, now, patched);
+        return patched;
+    }
+
+    private static MethodBase[] ModifierGetters()
+    {
+        MethodBase?[] named =
+        {
+            Reflect.Method(typeof(Player), "get_" + nameof(Player.PlayerCombatState)),
+            Reflect.Method(typeof(PlayerCombatState), "get_" + nameof(PlayerCombatState.AllPiles)),
+            Reflect.Method(typeof(CardPile), "get_" + nameof(CardPile.Cards)),
+        };
+        // A getter not found: empty, so the caller answers patched (the getters run).
+        return named.Any(m => m == null) ? Array.Empty<MethodBase>() : named.Cast<MethodBase>().ToArray();
+    }
+
+    /// <summary>BaseLib's AllPiles transpiler when loaded and its code is the one pinned, else null (then it counts as any patch).</summary>
+    private static MethodInfo? BaseLibAddPile()
+    {
+        if (!_baseLibAddPileRead)
+        {
+            MethodInfo? method = null;
+            try
+            {
+                method = Reflect.TypeByName("BaseLib.Patches.Content.SpecialPileInCombat")
+                    ?.GetMethod("AddPile", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly);
+                if (method != null && MethodFingerprint.Of(method) != BaseLibAddPileFingerprint)
+                {
+                    method = null;
+                }
+            }
+            catch
+            {
+                method = null;
+            }
+            _baseLibAddPile = method;
+            // BaseLib loads before the first walk; read again only while it isn't found (a type lookup per 2 s at most).
+            _baseLibAddPileRead = method != null;
+        }
+        return _baseLibAddPile;
     }
 
     private static MethodBase[] CombatPlayerGetters()

@@ -277,7 +277,21 @@ public static class HoverTipReuse
     /// </summary>
     private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions, ILGenerator generator)
     {
-        List<CodeInstruction> code = instructions.ToList();
+        List<CodeInstruction> original = instructions.ToList();
+        try
+        {
+            return Rewrite(original.ToList(), generator);
+        }
+        catch (Exception e)
+        {
+            // The code it was handed, unchanged (at load: nothing replaced, the patch left off; later: the part backs off).
+            Log.Warn($"[{ModEntry.Id}] {Name}: ShowHoverTips left as it was handed: {e.Message}");
+            return original;
+        }
+    }
+
+    private static List<CodeInstruction> Rewrite(List<CodeInstruction> code, ILGenerator generator)
+    {
         int hide = -1, create = -1, hides = 0, creates = 0;
         for (int i = 0; i < code.Count; i++)
         {
@@ -415,6 +429,23 @@ public static class HoverTipReuse
         {
             // Init throws on it, as in the game.
             return GameShow(creature, hitbox, hoverTips!, alignment);
+        }
+        bool off;
+        try
+        {
+            // Asked again (PatchSafety's cached answers): the body's code between HideFirst and here (its tips argument: another
+            // mod's getter) may have switched the part off or patched what it backs off from.
+            off = !Enabled || BackedOff();
+        }
+        catch (Exception e)
+        {
+            Fault(e);
+            off = true;
+        }
+        if (off)
+        {
+            // The game's two calls on the body's own argument, unread, outside any try of this mod.
+            return GameShow(creature, hitbox, hoverTips, alignment);
         }
         List<IHoverTip> tips = new();
         try

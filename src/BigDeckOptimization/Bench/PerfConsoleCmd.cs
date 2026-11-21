@@ -431,12 +431,12 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                 }
                 if (args.Length >= 2 && args[1] == "mark")
                 {
-                    _deckCountMark = (DeckCountMemo.Kept + DeckCountMemo.Updated, DeckCountMemo.Unsure);
+                    _deckCountMark = (DeckCountMemo.Answered + DeckCountMemo.Checks, DeckCountMemo.Unsure);
                     deckCountCheck = " (marked)";
                 }
                 else if (args.Length >= 2 && args[1] is "unsure-grew" or "answers-grew" or "answers-same")
                 {
-                    long answers = DeckCountMemo.Kept + DeckCountMemo.Updated;
+                    long answers = DeckCountMemo.Answered + DeckCountMemo.Checks;
                     bool grew = args[1] switch
                     {
                         "unsure-grew" => DeckCountMemo.Unsure > _deckCountMark.Unsure,
@@ -1260,7 +1260,7 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
         // Nothing at all: every part backed off, the cached side was the game's code: "not compared", never "OK".
         static (long Cache, long Filter, long Walks, long Others) Served() => (ListenerCache.Served, HookFilter.Served,
             FastListeners.CombatWalks + FastListeners.RunWalks + HookSkip.FilteredWalks,
-            TextPoolReuse.Served + ThemeColorSkip.Skipped + DeckCountMemo.Kept + DeckCountMemo.Updated);
+            TextPoolReuse.Served + ThemeColorSkip.Skipped + DeckCountMemo.Answered + DeckCountMemo.Checks);
         (long Cache, long Filter, long Walks, long Others) served = default;
         try
         {

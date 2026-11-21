@@ -225,22 +225,29 @@ public static class ExtraScopes
     private static MethodInfo[] _gamePredicates = Array.Empty<MethodInfo>();
 
     /// <summary>
-    /// Another mod patches code that runs inside the scope: the lambdas, the closed LINQ methods, the stand-ins (strict). Residual:
-    /// generic LINQ code is shared between reference types (a patch on <c>Enumerable.ToList&lt;object&gt;</c> runs in
-    /// <c>ToList&lt;CardModel&gt;</c> too, and Harmony lists it under the other instantiation), and the BCL's internals (the
-    /// iterators, <c>List</c>, <c>HashSet</c>) aren't watched.
+    /// Another mod patches code that runs inside the scope: the lambdas, the closed LINQ methods, the stand-ins (strict). Generic
+    /// LINQ code is shared between reference types (a patch on <c>Enumerable.ToList&lt;object&gt;</c> runs in
+    /// <c>ToList&lt;CardModel&gt;</c> too, and Harmony lists it under the other instantiation): for a closed generic method, every
+    /// instantiation of its definition Harmony patches counts too (<c>PatchSafety.IsPatchedByOthersWithInstances</c>, as
+    /// RelicFlashMerge asks; a value-type instantiation too, which shares no code: conservative), and Harmony unable to list them
+    /// counts as patched. Residual: the BCL's internals (the iterators, <c>List</c>, <c>HashSet</c>) aren't watched.
     /// </summary>
     private static bool FirstTurnPatched()
     {
         foreach (MethodBase code in _strict)
         {
-            if (PatchSafety.IsPatchedByOthers(code))
+            if (PatchSafety.IsPatchedByOthers(code)
+                || (code is MethodInfo { IsGenericMethod: true, IsGenericMethodDefinition: false } closed
+                    && PatchSafety.IsPatchedByOthersWithInstances(closed.GetGenericMethodDefinition(), Caller)))
             {
                 return true;
             }
         }
         return false;
     }
+
+    /// <summary>The call site this file's checks record under (its patch name, as <c>[CallerFilePath]</c> gives it).</summary>
+    private const string Caller = Name + ".cs";
 
     /// <summary>Which first-turn filter (0 bottom-of-pile, 1 Innate) a lambda is, else -1.</summary>
     private static int FilterOf(object? lambda)
