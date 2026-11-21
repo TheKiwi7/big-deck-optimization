@@ -2514,8 +2514,8 @@ public static partial class PatchSafety
     /// <summary>
     /// The code the runtime may compile with the patch method (the re-audit round 2 of 2026-11-17): the method, and (A2) the methods
     /// of its own assembly it calls directly, transitively to depth 3 (the JIT may inline them into it, and their static accesses
-    /// with them), plus the state machine of any of those (an async or iterator body, started through the runtime's generic
-    /// builder). Lambdas only referenced by a delegate (ldftn) are compiled on their own when first invoked, on the path that
+    /// with them), plus the state machine of any of those (an iterator body; an async body only where the JIT may inline it:
+    /// <see cref="NeverInlinedAsyncBody"/>, G6). Lambdas only referenced by a delegate (ldftn) are compiled on their own when first invoked, on the path that
     /// invokes them (B4: no longer scanned unless called directly). Throws when the IL can't be read (the caller refuses).
     /// </summary>
     private static List<MethodBase> CompiledWith(MethodInfo patch)
@@ -2543,13 +2543,38 @@ public static partial class PatchSafety
         }
         foreach (MethodBase method in found.ToArray())
         {
-            if (method.GetCustomAttribute<StateMachineAttribute>()?.StateMachineType?.GetMethod("MoveNext",
-                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly) is { } moveNext && seen.Add(moveNext))
+            if (method.GetCustomAttribute<StateMachineAttribute>() is { StateMachineType: { } machine } attribute
+                && machine.GetMethod("MoveNext", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly) is { } moveNext
+                && !NeverInlinedAsyncBody(attribute, moveNext) && seen.Add(moveNext))
             {
                 found.Add(moveNext);
             }
         }
         return found;
+    }
+
+    /// <summary>
+    /// G6 (2026-11-21): an async method's <c>MoveNext</c> that the runtime compiles only at its own first call, never with the
+    /// patch: an <see cref="AsyncStateMachineAttribute"/> body with exception handling, under .NET 9 or older (the game ships 9.0.7),
+    /// whose JIT never inlines a method with exception handling; the stub starts it through <c>AsyncMethodBuilderCore.Start</c>, which
+    /// has a try/finally itself. So it compiles (and the beforefieldinit initializers it reaches may run) at its first call, on the
+    /// path that calls the stub, as without this mod. The stub's own accesses stay scanned (it is one of the methods found). Iterators
+    /// (no exception handling, started by the caller's own MoveNext calls), async iterators and any later runtime keep the body scanned.
+    /// An experiment of 2026-11-21 (runtimes 9.0.21 and 10.0.10, tiered, TieredPGO off and TieredCompilation=0) saw no beforefieldinit
+    /// initializer run early even for an AggressiveInlining callee: the hazard CompiledWith models isn't observable today; this only
+    /// drops from that conservative model a method the .NET 9 JIT can't inline at all.
+    /// </summary>
+    private static bool NeverInlinedAsyncBody(StateMachineAttribute attribute, MethodInfo moveNext)
+    {
+        try
+        {
+            return Environment.Version.Major <= 9 && attribute.GetType() == typeof(AsyncStateMachineAttribute)
+                && moveNext.GetMethodBody() is { ExceptionHandlingClauses.Count: > 0 };
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>

@@ -28,6 +28,8 @@ foreignpatch gates-count-prefix BaseLib.Patches.Hooks.ModifyHealAmountPatches:Mo
 foreignpatch gates-button-gated-prefix MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton:_Input
 foreignpatch gates-comparer-postfix MegaCrit.Sts2.Core.Models.AbstractModel:BeforeHandDraw
 foreignpatch gates-modcomparer-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardDiscarded
+foreignpatch gates-async-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterSideTurnEnd
+foreignpatch gates-iterator-postfix MegaCrit.Sts2.Core.Models.AbstractModel:BeforeSideTurnEnd
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 1

@@ -34,7 +34,7 @@ public static class ForeignShapesGates
         "gates-getter-gated-postfix", "gates-getter-ungated-postfix",
         "gates-init-extensions-postfix", "gates-init-ambiguous-postfix", "gates-forwarder-postfix", "gates-forwarder-acts-postfix",
         "gates-count-postfix", "gates-count-prefix", "gates-button-gated-prefix",
-        "gates-comparer-postfix", "gates-modcomparer-postfix",
+        "gates-comparer-postfix", "gates-modcomparer-postfix", "gates-async-postfix", "gates-iterator-postfix",
     };
 
     /// <summary>Whether a <c>foreignpatch</c> line is one of this file's.</summary>
@@ -111,6 +111,8 @@ public static class ForeignShapesGates
             "gates-button-gated-prefix" => (ButtonGatedPrefix(key), PatchSafety.PatchKind.Prefix),
             "gates-comparer-postfix" => (InitCase("g1-comparer-value", key), PatchSafety.PatchKind.Postfix),
             "gates-modcomparer-postfix" => (InitCase("g1-mod-comparer", key), PatchSafety.PatchKind.Postfix),
+            "gates-async-postfix" => (typeof(GatesStateMachineShapes).GetMethod(nameof(GatesStateMachineShapes.AsyncPostfix))!, PatchSafety.PatchKind.Postfix),
+            "gates-iterator-postfix" => (typeof(GatesStateMachineShapes).GetMethod(nameof(GatesStateMachineShapes.IteratorPostfix))!, PatchSafety.PatchKind.Postfix),
             _ => throw new ArgumentException("unknown gates shape " + shape),
         };
     }
@@ -1467,6 +1469,14 @@ public static class ForeignShapesGates
         yield return new Case("G1 control: EqualityComparer<ModType>.Default", InitCase("g1-mod-comparer"), postfix, model, gated, false);
         yield return new Case("G1 control: EqualityComparer<object>.Default for a HashSet<ModType>", InitCase("g1-mod-key"), postfix, model, gated, false);
         yield return new Case("G1 control: the accepted dictionary then Add", InitCase("g1-add"), postfix, model, gated, false);
+        // G6 (2026-11-21): an async body's MoveNext isn't compiled with the patch under .NET 9; an iterator's is.
+        if (Environment.Version.Major <= 9)
+        {
+            yield return new Case("G6 the gated path starts an async method whose MoveNext reaches an impure initializer",
+                typeof(GatesStateMachineShapes).GetMethod(nameof(GatesStateMachineShapes.AsyncPostfix))!, postfix, model, gated, true, "Squeeze");
+        }
+        yield return new Case("G6 control: an iterator whose MoveNext reaches an impure initializer",
+            typeof(GatesStateMachineShapes).GetMethod(nameof(GatesStateMachineShapes.IteratorPostfix))!, postfix, model, gated, false);
         // FW: forwarders.
         yield return new Case("FW a forwarder (__instance, ref __result) to a gated helper of its class", ForwarderPostfix("selftest"), postfix, model, gated, true, "Squeeze");
         yield return new Case("FW a helper's returned test (if (IsMine(__instance)))", ReturningHelperPostfix("selftest"), postfix, model, gated, true, "Squeeze");
@@ -1582,4 +1592,54 @@ public sealed class GatesRegistry
 public sealed class GatesImpureRegistry
 {
     public readonly long Started = Environment.TickCount64;
+}
+
+/// <summary>
+/// G6 (2026-11-21): gated postfixes in C# (this assembly compiled optimized: Release IL) whose gated path starts a state machine
+/// reaching <see cref="GatesImpureStatic"/> (a beforefieldinit initializer reading the clock): YutaMod's <c>as KashimoPhasePower</c>
+/// on AfterDeath, refused only by initializers reached from an async <c>MoveNext</c>. The async body's <c>MoveNext</c> (exception
+/// handling: never inlined by the .NET 9 JIT, compiled at its first call on the gated path) is out of the scanned code; the
+/// iterator's (no exception handling) stays in it.
+/// </summary>
+public static class GatesStateMachineShapes
+{
+    /// <summary><c>if (__instance is Squeeze) _ = CountAsync();</c>: kept (G6).</summary>
+    public static void AsyncPostfix(AbstractModel __instance)
+    {
+        if (__instance is Squeeze)
+        {
+            _ = CountAsync();
+        }
+    }
+
+    private static async System.Threading.Tasks.Task CountAsync()
+    {
+        GatesImpureStatic.Count++;
+        GatesCounter.Hit("gates-async-postfix");
+        await System.Threading.Tasks.Task.CompletedTask;
+    }
+
+    /// <summary><c>if (__instance is Squeeze) Items().GetEnumerator().MoveNext();</c>: the control, an iterator's body still scanned.</summary>
+    public static void IteratorPostfix(AbstractModel __instance)
+    {
+        if (__instance is Squeeze)
+        {
+            Items().GetEnumerator().MoveNext();
+        }
+    }
+
+    private static IEnumerable<int> Items()
+    {
+        GatesImpureStatic.Count++;
+        GatesCounter.Hit("gates-iterator-postfix");
+        yield return GatesImpureStatic.Count;
+    }
+}
+
+/// <summary>A class whose beforefieldinit initializer reads the clock (impure), reached only from the state machines above.</summary>
+public static class GatesImpureStatic
+{
+    public static readonly long Started = Environment.TickCount64;
+
+    public static int Count;
 }
