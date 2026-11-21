@@ -26,6 +26,7 @@ With a huge deck, the game slows down more and more until every action freezes i
 - **End of combat:** no more long freeze before the rewards.
 - **Co-op:** the long pause after every action is gone. Players with big decks no longer slow down everyone else.
 - **Deck view and card grids:** sorting, opening and scrolling are fast again.
+- **Saving the run (game's beta):** a huge deck's save no longer re-reads the previous one at every room.
 - **Lots of relics:** moving the mouse no longer slows the game down.
 - **Optional:** the relic effects at the start of a combat skip their animation pauses. It looks faster, and the effects stay exactly the same. In solo you can make it start only from a number of relics (always on in co-op).
 

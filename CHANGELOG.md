@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- On the game's beta (v0.113), saving the run is faster with a huge deck: the game re-read and re-checked the previous save before every backup, which took about 60-90 ms per save at 10,000 cards. The map travel to a shop went from a worst frame of about 170 ms to about 80 ms in my tests. There is a new option, "Faster run saves", for it; on the public version (v0.111) the game doesn't do that check, so there is nothing to speed up.
+- A reshuffle of a whole 10,000-card deck freezes the game about 100 ms less (the worst frame went from about 265-285 ms to about 140-185 ms in my tests, and more in co-op).
+- The card sort before a reshuffle or combat start (game beta v0.113) is a bit faster with a huge deck (about 9-18 ms a sort at 10,000 cards instead of 12-22).
+- Sorting the deck view by cost or title is faster with a huge deck.
+- More of the speed-up stays on next to other Workshop mods: SynergyMod keeps most of it (its back-offs went from 46 to 19 in my tests), YutaMod, Infinite Upgrades, newsanguo and BetterExperience keep more of it, and the settings page and `bdopt why` no longer show conflicts the mod doesn't actually take.
+
 ## v1.2.0
 
 - Co-op: when the game refuses to let you join only because of this mod (it is on for one player and off for the other, its "Co-op state check" option is set differently next to mods like RitsuLib, or the versions differ), the "mods don't match" message the joining player gets now says which in plain words, in your language, and what to change, instead of listing this mod twice as if it were two different mods. It also says what every player must have the same (the mod on or off, its version, that option next to such mods), and that its other settings may differ.
