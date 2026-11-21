@@ -45,7 +45,7 @@ public static class SaveCheckBench
                 bool clean = SaveBackupCheck.Mismatches == 0;
                 return new CmdResult(clean, $"SAVECHECK counters shortcuts {SaveBackupCheck.Shortcuts}, checks {SaveBackupCheck.Checks}, mismatches {SaveBackupCheck.Mismatches}; "
                     + $"misses: nothing kept {SaveBackupCheck.MissNone}, other bytes {SaveBackupCheck.MissDifferent}, not judged yet {SaveBackupCheck.MissNotReady}, "
-                    + $"outside the gate {SaveBackupCheck.MissGate}, other mods {SaveBackupCheck.MissBackOff}; files kept {SaveBackupCheck.Remembered}: "
+                    + $"outside the gate {SaveBackupCheck.MissGate}, other mods {SaveBackupCheck.MissBackOff}; files kept {SaveBackupCheck.Remembered}, writes not kept (file not checked yet) {SaveBackupCheck.NotKept}: "
                     + (clean ? "OK: no difference with the game's check" : "the part's check found a difference"));
         }
         if (!SaveBackupCheck.Applied)
@@ -222,8 +222,9 @@ public static class SaveCheckBench
     /// <summary>
     /// Through the game's own <c>GodotFileIo.WriteFile</c> (a store on the scratch folder), with the part on, then off: a file that
     /// isn't JSON written, then a whole save over it (CopyBackup must find the previous file not whole: no <c>.backup</c>, the game's
-    /// warning), then another whole save (the <c>.backup</c> must hold the second one's bytes). Both ways must leave the same files;
-    /// the part on must have answered both checks (one not whole, one whole), off none.
+    /// warning), then another whole save (the <c>.backup</c> must hold the second one's bytes). Every way must leave the same files;
+    /// the part on, the file already checked this session, must have answered both checks (one not whole, one whole); on, the file
+    /// new to the check, only the second (its first write not kept); off none.
     /// </summary>
     private static bool EndToEnd(StringBuilder report)
     {
@@ -232,15 +233,24 @@ public static class SaveCheckBench
         byte[] broken = Utf8("{\"cut\":[1,2"), first = Utf8("{\"save\":1}"), second = Utf8("{\"save\":2,\"more\":[true]}");
         var outcomes = new List<string>();
         var answers = new List<long>();
+        var firstKept = new List<bool>();
         try
         {
-            foreach (bool on in new[] { true, false })
+            // On, the file new to CopyBackup this session (its first write not kept: no check asked about it yet; its first check
+            // then finds nothing kept, the game's check answers); on again, the file now known (every check answered); off.
+            foreach ((bool on, bool fresh) in new[] { (true, true), (true, false), (false, false) })
             {
                 SaveBackupCheck.Enabled = on;
+                if (fresh)
+                {
+                    SaveBackupCheck.SetAskedForTest(full, false);
+                    SaveBackupCheck.Forget(full);
+                }
                 DirAccess.RemoveAbsolute(full);
                 DirAccess.RemoveAbsolute(full + ".backup");
                 long before = SaveBackupCheck.Shortcuts;
                 io.WriteFile(EndToEndFile, broken);
+                firstKept.Add(SaveBackupCheck.KeptVerdict(full) >= 0);
                 WaitJudged(full);
                 io.WriteFile(EndToEndFile, first);
                 string afterFirst = Godot.FileAccess.FileExists(full + ".backup") ? "backup written" : "no backup";
@@ -258,9 +268,14 @@ public static class SaveCheckBench
             // Only the part's own fault keeps it off (the bench ran with it on).
             SaveBackupCheck.Enabled = !PatchSafety.IsFaulted(SaveBackupCheck.Name);
             SaveBackupCheck.Forget(full);
+            SaveBackupCheck.SetAskedForTest(full, false);
         }
-        bool ok = outcomes[0] == outcomes[1] && outcomes[0] == "no backup, then backup = first save" && answers[0] == 2 && answers[1] == 0;
-        report.AppendLine($"  end to end (game's WriteFile): on: {outcomes[0]} ({answers[0]} answered); off: {outcomes[1]} ({answers[1]} answered): {(ok ? "OK" : "MISMATCH")}");
+        bool ok = outcomes.Count == 3 && outcomes.All(o => o == "no backup, then backup = first save")
+            && answers.SequenceEqual(new long[] { 1, 2, 0 }) && firstKept.SequenceEqual(new[] { false, true, false });
+        string Kept(int i) => i < firstKept.Count ? (firstKept[i] ? "first write kept" : "first write not kept") : "?";
+        report.AppendLine($"  end to end (game's WriteFile): on, file new to the check: {outcomes.ElementAtOrDefault(0)} ({answers.ElementAtOrDefault(0)} answered, {Kept(0)}); "
+            + $"on, file known: {outcomes.ElementAtOrDefault(1)} ({answers.ElementAtOrDefault(1)} answered, {Kept(1)}); "
+            + $"off: {outcomes.ElementAtOrDefault(2)} ({answers.ElementAtOrDefault(2)} answered): {(ok ? "OK" : "MISMATCH")}");
         return ok;
     }
 

@@ -228,6 +228,15 @@ public static class SaveReadDecode
                 {
                     Interlocked.Increment(ref Mismatches);
                     Disable($"MISMATCH on {SafePath(file)}: decoded {text.Length} chars, the game's text {game?.Length ?? -1} chars{FirstDifference(text, game)}");
+                    // SaveBackupCheck's verdicts rest on the same premise (Godot's text is the UTF-8 decoding of the bytes).
+                    try
+                    {
+                        SaveBackupCheck.TurnOffAfterReadMismatch();
+                    }
+                    catch (Exception)
+                    {
+                        // Its class unloadable on this game version: nothing of it runs anyway.
+                    }
                 }
                 return game!;
             }

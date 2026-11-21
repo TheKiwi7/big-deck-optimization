@@ -108,6 +108,8 @@ public static class SaveBackupCheck
     public static long Checks;
     public static long Mismatches;
     public static long Remembered;
+    /// <summary>Writes not kept: their file not checked by CopyBackup yet this session (<see cref="_asked"/>).</summary>
+    public static long NotKept;
 
     private static MethodInfo? _copyBackup;
     private static MethodInfo? _isWholeMethod;
@@ -130,6 +132,14 @@ public static class SaveBackupCheck
 
     private static readonly object _lock = new();
     private static readonly Dictionary<string, Entry> _entries = new(StringComparer.Ordinal);
+    /// <summary>
+    /// The files CopyBackup asked about this session (<see cref="IsWholeSave"/>, it asks only when the file exists): only their
+    /// writes are kept. A file written once to a new path (a run history's <c>.run</c>, ~10 MB at 10,000 cards) is never checked
+    /// again, so a copy of it would only cost memory (a large-object allocation on the main thread). Survives deletes (the run
+    /// save is deleted at a run's end and written again by the next run). The cost: one miss on a file's first check of the
+    /// session (nothing was kept for it before).
+    /// </summary>
+    private static readonly HashSet<string> _asked = new(StringComparer.Ordinal);
     private static long _order;
     private static long _keptBytes;
 
@@ -245,6 +255,10 @@ public static class SaveBackupCheck
             bool answered = false, answer = false, verify = false;
             try
             {
+                lock (_lock)
+                {
+                    _asked.Add(fullPath);
+                }
                 int verdict = Shortcut(file, fullPath, ref position, ref moved);
                 if (verdict is Whole or Broken)
                 {
@@ -403,8 +417,9 @@ public static class SaveBackupCheck
 
     /// <summary>
     /// Postfix of <c>GodotFileIo.WriteFile/WriteFileAsync(string path, byte[] bytes)</c>: the bytes given to the game's write,
-    /// kept for that file. After the write (WriteFileAsync: once its CopyBackup ran, before its first await), so that CopyBackup
-    /// still found the previous bytes kept.
+    /// kept for that file when CopyBackup already asked about it this session (<see cref="_asked"/>). After the write
+    /// (WriteFileAsync: once its CopyBackup ran, before its first await), so that CopyBackup still found the previous bytes kept,
+    /// and a file's first check has just added it to the set.
     /// </summary>
     private static void AfterWrite(GodotFileIo __instance, string path, byte[] bytes)
     {
@@ -415,7 +430,16 @@ public static class SaveBackupCheck
         try
         {
             // WriteFile's argument is the full path already; GetFullPath leaves a full path as it is.
-            Remember(__instance.GetFullPath(path), bytes, judgeNow: false);
+            string fullPath = __instance.GetFullPath(path);
+            lock (_lock)
+            {
+                if (!_asked.Contains(fullPath))
+                {
+                    Interlocked.Increment(ref NotKept);
+                    return;
+                }
+            }
+            Remember(fullPath, bytes, judgeNow: false);
         }
         catch (Exception e)
         {
@@ -529,6 +553,22 @@ public static class SaveBackupCheck
         }
     }
 
+    /// <summary>The bench: a file counted as checked by CopyBackup this session (its writes kept), or no longer.</summary>
+    internal static void SetAskedForTest(string fullPath, bool asked)
+    {
+        lock (_lock)
+        {
+            if (asked)
+            {
+                _asked.Add(fullPath);
+            }
+            else
+            {
+                _asked.Remove(fullPath);
+            }
+        }
+    }
+
     /// <summary>Lets go of what was kept for one file (the bench's), or of everything.</summary>
     internal static void Forget(string? fullPath = null)
     {
@@ -544,6 +584,21 @@ public static class SaveBackupCheck
                 _keptBytes -= entry.Bytes.Length;
             }
         }
+    }
+
+    /// <summary>
+    /// SaveReadDecode found Godot's text of a file not the UTF-8 decoding of its bytes (its own MISMATCH, logged there as an
+    /// error): this part's verdicts rest on the same premise, so it turns off for the session too (defence in depth).
+    /// </summary>
+    internal static void TurnOffAfterReadMismatch()
+    {
+        if (!Applied || PatchSafety.IsFaulted(Name))
+        {
+            return;
+        }
+        Enabled = false;
+        PatchSafety.Fault(Name);
+        Log.Info($"[{ModEntry.Id}] {Name} turned off for this session with SaveReadDecode (its read MISMATCH: Godot's text and the UTF-8 decoding differed), saves check the previous save as the game does");
     }
 
     private static void Disable(string why)
