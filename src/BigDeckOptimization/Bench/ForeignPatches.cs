@@ -125,13 +125,17 @@ public static class ForeignPatches
                 failures.Add(what);
             }
         }
+        // The synthetic patches' own class must keep a pure static initializer: every gated shape reaches ForeignPatches (Count), and an
+        // impure initializer makes every TypeGated control back off for that reason alone (2026-11-21: a long field set to -1 did).
+        Expect(PatchSafety.InitializerPure(typeof(ForeignPatches)), "the test patches' class ForeignPatches has a pure static initializer");
         // The IL shape itself (round 4: ldstr's literal was never decoded, so no name gate was ever found in game).
         foreach (string gated in new[] { nameof(Gates.SqueezeNameGatedPostfix), nameof(Gates.SqueezeFullNameGatedPostfix) })
         {
             MethodInfo patch = typeof(Gates).GetMethod(gated, BindingFlags.Public | BindingFlags.Static)!;
             bool gate = PatchSafety.TypeGates(patch, PatchSafety.PatchKind.Postfix) is { Length: > 0 };
             // Offline, an assembly whose types can't all be read refuses every name gate (by design: see below).
-            Expect(gate || Unreadable() != null, $"{gated}'s name test read as a gate" + (gate ? "" : $" (refused: {PatchSafety.TypesNamedFailure ?? "the IL shape"})"));
+            Expect(gate || Unreadable() != null, $"{gated}'s name test read as a gate" + (gate ? ""
+                : $" (refused: {PatchSafety.InitializerRefusal(patch) ?? PatchSafety.TypesNamedFailure ?? "the IL shape"})"));
         }
         MethodInfo nearMiss = typeof(Gates).GetMethod(nameof(Gates.SqueezeNameNearMissPostfix), BindingFlags.Public | BindingFlags.Static)!;
         Expect(PatchSafety.TypeGates(nearMiss, PatchSafety.PatchKind.Postfix) == null, "a call before the name test: no gate");
@@ -1600,7 +1604,9 @@ public static class ForeignPatches
     }
 
     /// <summary>The sort controls' calls in the current sort (its serial: <see cref="ListenerCache.SortSerialForTest"/>), and their changes.</summary>
-    private static long _sortSerial = -1, _sortCalls, _sortChanged;
+    // long.MinValue, not -1: Roslyn emits -1 for a long as ldc.i4.m1 + conv.i8, which PureInitializerCode doesn't accept, and this
+    // class's initializer must stay pure (every gated synthetic patch reaches ForeignPatches.Count; the name-gate self-test checks it).
+    private static long _sortSerial = long.MinValue, _sortCalls, _sortChanged;
 
     private static void WalkSortCheckPostfix(ref IEnumerable<AbstractModel> __result)
     {

@@ -8,6 +8,11 @@ requiregame v0.113
 expect CardSortKeys disabled, the game compares its cards
 expect COUNTERS end:.*CardSortKeys sorts \d+, answered [1-9]\d*, refused \d+ \(last: [^)]*\), checks [1-9]\d*, mismatches [1-9]
 expect FOREIGN display end energy-cost-unstable-postfix reads [1-9]
+# The unstable cost also trips the mod's other nets, as it should (each falls back to the game's result): HookFilter's comparison of
+# the cost hook, the snapshot verifier (vanilla snapshot used), the snapshot walk re-check.
+expect HookFilter: TryModifyEnergyCostWithHooks\(.*filtered .*vanilla
+expect SnapshotVerifier: (optimized snapshot differs from vanilla|line \d+: optimized)
+expect FOREIGN snapwalks .*re-check mismatches [1-9]
 timeout 900
 newrun NECROBINDER 1234
 waitfor run 120

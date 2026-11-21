@@ -3,7 +3,8 @@
 # listener: display only here, the co-op state check and game-value refreshes never reuse a kept output). The 1-in-16 check must
 # find a reused output different: the reuse turned off for the session, logged, the part faulted. ~945 cards.
 # effects-zero-ok: ListenerCache\.Walks
-expect ListenerCache: a kept listener walk output \(other mods' postfixes included\) differs from a fresh one
+# On v0.113 the card sort's own checked reuse (SortWalks) usually catches the unstable postfix first: the same error, "in a card sort".
+expect ListenerCache: (in a card sort, )?a kept listener walk output( \(other mods' postfixes included\))? differs from a fresh one
 timeout 1500
 newrun NECROBINDER 1234
 waitfor run 120
