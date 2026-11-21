@@ -1653,7 +1653,7 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                 return new CmdResult(success: false, "DECKCOUNT hploss: MISMATCH, no played Perfected Strike in the discard pile.");
             }
             int fresh = state.AllCards.Count(_gameCounts[DeckCountMemo.StrikeKind]);
-            decimal expected = played.DynamicVars.CalculationBase.BaseValue + played.DynamicVars.CalculationExtra.BaseValue * fresh;
+            decimal expected = played.DynamicVars.CalculationBase.BaseValue + played.DynamicVars.ExtraDamage.BaseValue * fresh;
             int loss = _hpBefore - (_hpTarget.CurrentHp + _hpTarget.Block);
             int? held = DeckCountMemo.HeldCount(state, DeckCountMemo.StrikeKind);
             bool stale = DeckCountMemo.Enabled && held is { } h && h != fresh;
