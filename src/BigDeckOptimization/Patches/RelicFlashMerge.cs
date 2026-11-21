@@ -161,10 +161,12 @@ public static class RelicFlashMerge
         // them off, DoFlash and the flash scene's script at once too.
         PatchSafety.WatchAll(Name, () => (_holderPatched ? new System.Reflection.MethodBase?[] { _holderFlash } : Array.Empty<System.Reflection.MethodBase?>())
             .Concat(_holderPatched && !PatchSafety.ShapeRules ? new System.Reflection.MethodBase?[] { _doFlash }.Concat(_holderScript) : Array.Empty<System.Reflection.MethodBase?>())
-            .Concat(_playerPatched ? new System.Reflection.MethodBase?[] { _playerFlash } : Array.Empty<System.Reflection.MethodBase?>())
-            .Concat(_sets is { } sets ? (_holderPatched ? Watched(sets.Holder, sets.HolderStrict, sets.HolderGuards) : Array.Empty<System.Reflection.MethodBase>())
-                .Concat(_playerPatched ? Watched(sets.Player, sets.PlayerStrict, sets.PlayerGuards) : Array.Empty<System.Reflection.MethodBase>()).Cast<System.Reflection.MethodBase?>()
-                : Array.Empty<System.Reflection.MethodBase?>()));
+            .Concat(_playerPatched ? new System.Reflection.MethodBase?[] { _playerFlash } : Array.Empty<System.Reflection.MethodBase?>()));
+        // The sets, as VisualUsable asks: a Creature member's other mods' read-only bool prefixes stand (rule RO for bool prefixes).
+        PatchSafety.WatchPairs(Name, () => (_sets is { } sets ? (_holderPatched ? Watched(sets.Holder, sets.HolderStrict, sets.HolderGuards) : Array.Empty<System.Reflection.MethodBase>())
+                .Concat(_playerPatched ? Watched(sets.Player, sets.PlayerStrict, sets.PlayerGuards) : Array.Empty<System.Reflection.MethodBase>())
+                : Array.Empty<System.Reflection.MethodBase>())
+            .Select(m => ((System.Reflection.MethodBase?)m, (System.Reflection.MethodInfo[]?)ReadOnlyAllowed(m))));
         // The sound set: strict with the shape rules off, as before rule D; with them, replayed (no back-off to show).
         if (player && !PatchSafety.ShapeRules)
         {
@@ -195,11 +197,7 @@ public static class RelicFlashMerge
     /// </summary>
     private static bool StrictMember(System.Reflection.MethodBase method)
     {
-        Type? type = method.DeclaringType;
-        while (type?.DeclaringType != null)
-        {
-            type = type.DeclaringType;
-        }
+        Type? type = OuterType(method);
         if (type == null)
         {
             return false;
@@ -207,6 +205,29 @@ public static class RelicFlashMerge
         string ns = type.Namespace ?? "";
         return ns == "MegaCrit.Sts2.Core.Random" || ns == "MegaCrit.Sts2.Core.Saves" || ns.StartsWith("MegaCrit.Sts2.Core.Saves.", StringComparison.Ordinal)
             || type == typeof(MegaCrit.Sts2.Core.Runs.RunState) || type == typeof(MegaCrit.Sts2.Core.Combat.CombatState) || type == typeof(Creature);
+    }
+
+    /// <summary>
+    /// Rule RO for bool prefixes (2026-11-21): on a strict member of <see cref="Creature"/> (its getters on a flash's path), other
+    /// mods' prefixes that only answer in the original's place from the creature's own fields, or let it run
+    /// (<see cref="PatchSafety.ReadOnlyPrefixes"/>: GensokyoSpire's on <c>Creature.get_IsPlayer</c>). A merged flash skips the
+    /// handler's calls, whose answers only fed that flash's visuals: such a prefix running fewer times changes nothing. Empty for
+    /// any other member and with the shape rules off. Never throws.
+    /// </summary>
+    private static System.Reflection.MethodInfo[] ReadOnlyAllowed(System.Reflection.MethodBase method) =>
+        PatchSafety.ShapeRules && OuterType(method) == typeof(Creature) ? PatchSafety.ReadOnlyPrefixes(method) : Array.Empty<System.Reflection.MethodInfo>();
+
+    private static readonly Func<System.Reflection.MethodBase, System.Reflection.MethodInfo[]> _readOnlyAllowed = ReadOnlyAllowed;
+
+    /// <summary>The member's outermost declaring type (a lambda's or display class's counts as its outer class's).</summary>
+    private static Type? OuterType(System.Reflection.MethodBase method)
+    {
+        Type? type = method.DeclaringType;
+        while (type?.DeclaringType != null)
+        {
+            type = type.DeclaringType;
+        }
+        return type;
     }
 
     /// <summary>The two effects don't depend on each other: a changed one only leaves that one to the game.</summary>
@@ -606,8 +627,9 @@ public static class RelicFlashMerge
                     continue;
                 }
                 // Every one asked: each back-off recorded (bdopt why names them all); a generic one on each closed instantiation
-                // Harmony patches too (D3).
-                patched |= PatchSafety.IsPatchedByOthersWithInstances(method, Caller);
+                // Harmony patches too (D3). A Creature member: read-only bool prefixes stand (ReadOnlyAllowed).
+                patched |= OuterType(method) == typeof(Creature) ? PatchSafety.IsPatchedByOthersWithInstances(method, _readOnlyAllowed, Caller)
+                    : PatchSafety.IsPatchedByOthersWithInstances(method, Caller);
             }
             return !patched && !StrictOverridden(strictVirtuals);
         }
@@ -676,6 +698,7 @@ public static class RelicFlashMerge
         var patched = new List<System.Reflection.MethodBase>();
         var behindBuilt = new List<System.Reflection.MethodBase>();
         var latched = new List<System.Reflection.MethodBase>();
+        var readOnly = new List<System.Reflection.MethodBase>();
         var overriders = new List<string>();
         // Only while flashes can be merged (G, re-audit of the premises): not once faulted (with the mod off: what would run once on).
         if (PatchSafety.ShapeRules && Applied && !PatchSafety.IsFaulted(Name) && Sets() is { } sets)
@@ -683,7 +706,7 @@ public static class RelicFlashMerge
             void Collect(CodeSet set, System.Reflection.MethodBase[] strict, System.Reflection.MethodBase? handler,
                 Dictionary<System.Reflection.MethodBase, LazyGuard.Guard> guards)
             {
-                if (!set.Reviewed || PatchSafety.HasOtherPatches(handler) || strict.Any(m => !Unreachable(m, guards) && PatchSafety.HasOtherPatchesWithInstances(m))
+                if (!set.Reviewed || PatchSafety.HasOtherPatches(handler) || strict.Any(m => !Unreachable(m, guards) && !OnlyReadOnly(m) && PatchSafety.HasOtherPatchesWithInstances(m))
                     || StrictOverridden(sets.StrictVirtuals))
                 {
                     return;
@@ -706,6 +729,10 @@ public static class RelicFlashMerge
                     {
                         behindBuilt.Add(method);
                     }
+                    else if (OnlyReadOnly(method))
+                    {
+                        readOnly.Add(method);
+                    }
                 }
                 overriders.AddRange(set.ForeignOverriders());
             }
@@ -720,6 +747,7 @@ public static class RelicFlashMerge
         }
         NoteBehindBuilt(behindBuilt);
         NoteLatched(latched);
+        NoteReadOnly(readOnly);
         if (patched.Count == 0 && overriders.Count == 0)
         {
             PatchSafety.ClearKept(Name, "flash_display");
@@ -741,6 +769,43 @@ public static class RelicFlashMerge
             + "doesn't run for the flashes merged where it would have: taken as display only, with no effect on the game's state (a stated "
             + "premise: what a merged flash leaves out is the relic bar's and the creature's flash effects; most of those methods only run on "
             + "a flash's first use or an error path; a mod changing game state there could desync co-op; its sound is still played)", mods.ToArray());
+    }
+
+    /// <summary>
+    /// Whether every other mod's patch on a strict member (and its patched instantiations, hidden IL hooks included) is a read-only
+    /// bool prefix let stand (<see cref="ReadOnlyAllowed"/>). Display: nothing recorded.
+    /// </summary>
+    private static bool OnlyReadOnly(System.Reflection.MethodBase method)
+    {
+        try
+        {
+            System.Reflection.MethodInfo[] allowed = ReadOnlyAllowed(method);
+            if (allowed.Length == 0 || HarmonyWatch.HiddenOwners(method).Length > 0 || method.ContainsGenericParameters
+                || Harmony.GetPatchInfo(method) is not { } info)
+            {
+                return false;
+            }
+            return PatchSafety.AllPatches(info).All(p => PatchGuard.IsOurs(p.owner)
+                || (PatchSafety.PatchMethodOf(p) is { } patch && allowed.Any(a => a.MethodHandle == patch.MethodHandle)));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>The kept note of rule RO for bool prefixes: strict Creature members whose other mods' patches are all read-only bool prefixes.</summary>
+    private static void NoteReadOnly(List<System.Reflection.MethodBase> methods)
+    {
+        if (methods.Count == 0)
+        {
+            PatchSafety.ClearKept(Name, "flash_readonly");
+            return;
+        }
+        PatchSafety.Kept(Name, "flash_readonly", "other mods' code on game code a relic flash reaches "
+            + $"({string.Join(", ", methods.Select(m => $"{m.DeclaringType?.Name}.{m.Name}").Distinct())}) only reads the game and answers in the "
+            + "game's place, or lets the game's code run: a merged flash leaves out nothing of it (its answers were only used there)",
+            PatchSafety.OtherModsPatching(methods));
     }
 
     /// <summary>The kept note of rule latch: strict members whose other mods' patches are latches shut now.</summary>

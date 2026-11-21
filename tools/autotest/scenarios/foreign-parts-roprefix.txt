@@ -1,0 +1,105 @@
+# Rule RO for bool prefixes (2026-11-21, GensokyoSpire's CreatureIsPlayerPatch on Creature.get_IsPlayer: `if (__instance.Monster !=
+# null) { __result = false; return false; } return true;`), mod on, one side. Synthetic prefixes of "another mod" (Bench/ForeignShapesParts.cs,
+# emitted IL; the type they test is never a monster's: each always lets the original run, no game state changes).
+# `foreignpatch ro-prefix-selftest`: every shape's verdict (two accepted layouts on get_IsPlayer and GetVfxContainer, five controls).
+# Phase hookskip: (1) ro-prefix (GensokyoSpire's Debug layout) on Creature.get_IsPlayer, a helper of HookSkip's choice contexts
+# (GetOwner -> Players -> PlayerCreatures -> IsPlayer): the turn hooks constructing contexts stay filtered, a kept note names it.
+# (2) Control ro-chain-prefix (a getter on a returned object): those hooks go vanilla, the back-off recorded.
+# Phase flash (a campfire clone, ~945 cards, Bing Bong): (3) ro-release-prefix on Creature.GetVfxContainer, a strict member of
+# RelicFlashMerge's creature effect: creature flashes still merge (mergedcreature grew), a kept note names it. Phase flashctl (a new
+# run): (4) control ro-chain-prefix there: no creature flash merged (mergedcreature same), the back-off recorded.
+timeout 2400
+expect FOREIGN roprefix selftest all: \d+ cases as expected
+expect FOREIGN roprefix ro-prefix: read-only
+expect FOREIGN walks Hook\.BeforeSideTurnStart: [1-9][0-9]* since the mark, [1-9][0-9]* filtered
+expect FOREIGN kept HookSkip: other mods' code on the hooks' choice-context helpers \(.*Creature\.get_IsPlayer.*\)
+expect FOREIGN roprefix ro-chain-prefix: not read-only
+expect HookSkip: Creature\.get_IsPlayer is also patched by bdtest\.foreign\.ro-chain-prefix: normal game for that part
+expect FOREIGN walks Hook\.BeforeSideTurnStart: [1-9][0-9]* since the mark, 0 filtered
+expect FOREIGN roprefix ro-release-prefix: read-only
+expect FOREIGN parts mergedcreature grew since 'roflash'
+expect FOREIGN kept RelicFlashMerge: other mods' code on game code a relic flash reaches \(.*Creature\.GetVfxContainer.*\)
+expect RelicFlashMerge: Creature\.GetVfxContainer is also patched by bdtest\.foreign\.ro-chain-prefix: normal game for that part
+expect FOREIGN parts mergedcreature same since 'roflashctl'
+foreignpatch ro-prefix-selftest all
+# Phase hookskip.
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 999999
+speed fast
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+# (1) GensokyoSpire's shape: accepted.
+foreignpatch ro-prefix MegaCrit.Sts2.Core.Entities.Creatures.Creature:get_IsPlayer
+wait 3
+foreignpatch walks mark
+play 3
+waitfor idle 120
+endturn
+waitfor idle 300
+foreignpatch require filtered BeforeSideTurnStart,BeforeFlush,BeforeSideTurnEnd
+cmd bdopt why
+foreignpatch report ro1
+foreignpatch remove
+wait 3
+# (2) A getter on a returned object: the control.
+foreignpatch ro-chain-prefix MegaCrit.Sts2.Core.Entities.Creatures.Creature:get_IsPlayer
+wait 3
+foreignpatch walks mark
+play 3
+waitfor idle 120
+endturn
+waitfor idle 300
+foreignpatch require vanilla BeforeSideTurnStart,BeforeFlush,BeforeSideTurnEnd
+cmd bdopt why
+foreignpatch remove
+wait 3
+cmd kill all
+waitfor nocombat 300
+wait 2
+# Phase flash (3): accepted on the creature effect's strict member.
+tomenu
+wait 2
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+foreignpatch ro-release-prefix MegaCrit.Sts2.Core.Entities.Creatures.Creature:GetVfxContainer
+wait 3
+foreignpatch parts-mark roflash mergedcreature
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+foreignpatch parts-grew roflash mergedcreature
+cmd bdopt why
+foreignpatch report roflash
+foreignpatch remove
+# Phase flashctl (4): the control.
+tomenu
+wait 2
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+foreignpatch ro-chain-prefix MegaCrit.Sts2.Core.Entities.Creatures.Creature:GetVfxContainer
+wait 3
+foreignpatch parts-mark roflashctl mergedcreature
+cmd room RestSite
+wait 5
+restsite CloneRestSiteOption
+waitfor deckcount 900
+wait 2
+foreignpatch parts-same roflashctl mergedcreature
+cmd bdopt why
+foreignpatch remove
+quit
