@@ -777,13 +777,19 @@ public static class DeckCountMemo
                 return false;
             }
             bool replacement = false;
-            if (method.DeclaringType == null)
+            // MonoMod's DMD types (a replacement built in a dynamic assembly) are judged as their original too.
+            if (method.DeclaringType == null || method.DeclaringType.Assembly.IsDynamic)
             {
                 // A dynamic method: a Harmony replacement (judged as its original), MonoMod's glue right above one, or reflection's stub.
                 if (OriginalOf(frame, method) is { } original)
                 {
                     method = original;
                     replacement = true;
+                }
+                else if (method.DeclaringType != null)
+                {
+                    // A dynamic assembly's method that isn't a mapped replacement: unknown code.
+                    return false;
                 }
                 else if (belowWasReplacement && method.Name.StartsWith("Glue:AbiFixup<", StringComparison.Ordinal))
                 {
