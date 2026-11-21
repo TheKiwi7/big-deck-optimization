@@ -31,6 +31,9 @@ public static class ForeignShapesParts
         "ro-prefix", "ro-release-prefix", "ro-static-prefix", "ro-chain-prefix", "ro-write-prefix", "ro-runoriginal-prefix", "ro-storetrue-prefix",
         // Not a shape: "foreignpatch ro-prefix-selftest <label>" judges each of those shapes' IL on Creature.get_IsPlayer (offline too).
         "ro-prefix-selftest",
+        // Not a shape: "foreignpatch walkgetters-check <label>" (in a combat): FastListeners' walk mirrors call the walks' player
+        // getters as often as the game's walks (2026-11-21).
+        "walkgetters-check",
         // Not a shape: "foreignpatch c0-override constant|patch|subclass|stateful" (rule C0: classes of "another mod" emitted into a
         // dynamic assembly, overriding PowerModel.OwnerIsSecondaryEnemy, which CardFlightLimit's combat-end check reaches).
         "c0-override",
@@ -97,6 +100,10 @@ public static class ForeignShapesParts
         if (shape == "ro-prefix-selftest")
         {
             return ReadOnlyPrefixSelfTest(parts[1]);
+        }
+        if (shape == "walkgetters-check")
+        {
+            return WalkGettersCheck(parts[1]);
         }
         if (shape == "parts-report")
         {
@@ -531,6 +538,60 @@ public static class ForeignShapesParts
         }
         lines.Add($"FOREIGN roprefix selftest {label}: {lines.Count} cases as expected");
         return lines;
+    }
+
+    /// <summary>Calls of the walks' player getters counted by <see cref="WalkGettersCheck"/>'s postfixes.</summary>
+    public static long CombatPlayersCalls, RunPlayersCalls, IsPlayerCalls;
+
+    public static void CountCombatPlayers() => CombatPlayersCalls++;
+    public static void CountRunPlayers() => RunPlayersCalls++;
+    public static void CountIsPlayer() => IsPlayerCalls++;
+
+    /// <summary>
+    /// <c>foreignpatch walkgetters-check &lt;label&gt;</c> (in a combat; 2026-11-21): counting postfixes on CombatState.get_Players,
+    /// RunState.get_Players and Creature.get_IsPlayer for the time of the check, then one walk of FastListeners' unpatched combat
+    /// mirror and one of the game's own (ListenerCache.RunVanilla: every listener optimization off), the same for the run walk
+    /// (no child combat): each getter must run as many times in the mirror as in the game (the game's walks start with
+    /// <c>new List(Players.Count * 50)</c>, which the mirrors once left out). Throws on a difference, or when a mirror can't answer.
+    /// </summary>
+    private static IReadOnlyList<string> WalkGettersCheck(string label)
+    {
+        if (MegaCrit.Sts2.Core.Combat.CombatManager.Instance?.DebugOnlyGetState() is not MegaCrit.Sts2.Core.Combat.CombatState combat
+            || MegaCrit.Sts2.Core.Runs.RunManager.Instance.DebugOnlyGetState() is not MegaCrit.Sts2.Core.Runs.RunState run)
+        {
+            throw new InvalidOperationException("walkgetters-check: start a combat first");
+        }
+        string id = ForeignPatches.IdPrefix + "walkgetters";
+        var harmony = new Harmony(id);
+        MethodInfo combatPlayers = AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Combat.CombatState), "Players")!;
+        MethodInfo runPlayers = AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Runs.RunState), "Players")!;
+        MethodInfo isPlayer = AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Entities.Creatures.Creature), "IsPlayer")!;
+        harmony.Patch(combatPlayers, postfix: new HarmonyMethod(typeof(ForeignShapesParts), nameof(CountCombatPlayers)));
+        harmony.Patch(runPlayers, postfix: new HarmonyMethod(typeof(ForeignShapesParts), nameof(CountRunPlayers)));
+        harmony.Patch(isPlayer, postfix: new HarmonyMethod(typeof(ForeignShapesParts), nameof(CountIsPlayer)));
+        try
+        {
+            (long Combat, long Run, long IsPlayer) Calls(Func<int> walk)
+            {
+                (long c, long r, long p) = (CombatPlayersCalls, RunPlayersCalls, IsPlayerCalls);
+                _ = walk();
+                return (CombatPlayersCalls - c, RunPlayersCalls - r, IsPlayerCalls - p);
+            }
+            var mirrorCombat = Calls(() => FastListeners.UnpatchedCombat(combat)?.Count() ?? throw new InvalidOperationException("walkgetters-check: the combat mirror can't answer now"));
+            var gameCombat = Calls(() => ListenerCache.RunVanilla(() => combat.IterateHookListeners().Count()));
+            var mirrorRun = Calls(() => FastListeners.UnpatchedRun(run, null)?.Count() ?? throw new InvalidOperationException("walkgetters-check: the run mirror can't answer now"));
+            var gameRun = Calls(() => ListenerCache.RunVanilla(() => run.IterateHookListeners(null).Count()));
+            string line = $"FOREIGN walkgetters {label}: combat walk mirror {mirrorCombat} game {gameCombat}, run walk mirror {mirrorRun} game {gameRun}";
+            if (mirrorCombat != gameCombat || mirrorRun != gameRun || gameCombat.Combat == 0 || gameRun.Run == 0)
+            {
+                throw new InvalidOperationException("walkgetters-check: " + line);
+            }
+            return new[] { line + " (same)" };
+        }
+        finally
+        {
+            harmony.UnpatchAll(id);
+        }
     }
 
     public static void CountPileGate() => PileGateRuns++;

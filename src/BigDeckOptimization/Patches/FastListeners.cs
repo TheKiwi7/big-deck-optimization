@@ -3638,6 +3638,12 @@ public static class FastListeners
     /// <summary><c>CombatState.IterateHookListeners</c>'s list: every listener it walks (filtered: those the filter keeps).</summary>
     private static void AddCombat(List<AbstractModel> list, CombatState state, PileFilter? filter)
     {
+        // The game's first step (CombatState.cs:425 v0.113.1, :413 v0.111.1): `new List(Players.Count * 50)`, which runs the
+        // getters Players, PlayerCreatures, Creatures, each creature's IsPlayer and each player creature's Player. Called here
+        // too, at the same place: another mod's patch on one of them (a postfix on Players, a prefix on IsPlayer) then runs once
+        // per walk, as in the game, and a throw comes at the same point; the answer only sized the game's list. Cheaper than
+        // watching those getters (a back-off of the whole mirror for a patch that only changes who counts as a player).
+        _ = state.Players.Count;
         List<Creature> allies = _allies!(state);
         List<Creature> enemies = _enemies!(state);
         for (int i = 0; i < allies.Count + enemies.Count; i++)
@@ -3725,6 +3731,9 @@ public static class FastListeners
     /// <summary><c>RunState.IterateHookListeners</c>'s list, before its mod subscribers and child combat.</summary>
     private static void AddRun(List<AbstractModel> list, RunState run, ICombatState? childCombatState, PileFilter? filter)
     {
+        // As AddCombat: the game's `new List(Players.Count * 50)` first (RunState.IterateHookListeners, every version), so a patch
+        // on RunState.Players runs as many times per walk as in the game (three with no child combat, two with one).
+        _ = run.Players.Count;
         foreach (Player player in run.Players)
         {
             if (!player.IsActiveForHooks)

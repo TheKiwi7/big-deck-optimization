@@ -8,8 +8,12 @@
 # Phase flash (a campfire clone, ~945 cards, Bing Bong): (3) ro-release-prefix on Creature.GetVfxContainer, a strict member of
 # RelicFlashMerge's creature effect: creature flashes still merge (mergedcreature grew), a kept note names it. Phase flashctl (a new
 # run): (4) control ro-chain-prefix there: no creature flash merged (mergedcreature same), the back-off recorded.
+# Walk getters (2026-11-21, FastListeners): `foreignpatch walkgetters-check` counts CombatState.Players, RunState.Players and
+# Creature.IsPlayer over one walk of each unpatched mirror and one of the game's own walk: the same counts (the game's walks
+# start with `new List(Players.Count * 50)`, which the mirrors left out until then: the check failed there).
 timeout 2400
 expect FOREIGN roprefix selftest all: \d+ cases as expected
+expect FOREIGN walkgetters base: .* \(same\)
 expect FOREIGN roprefix ro-prefix: read-only
 expect FOREIGN walks Hook\.BeforeSideTurnStart: [1-9][0-9]* since the mark, [1-9][0-9]* filtered
 expect FOREIGN kept HookSkip: other mods' code on the hooks' choice-context helpers \(.*Creature\.get_IsPlayer.*\)
@@ -35,6 +39,8 @@ immortal
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 1
+foreignpatch walkgetters-check base
+wait 3
 # (1) GensokyoSpire's shape: accepted.
 foreignpatch ro-prefix MegaCrit.Sts2.Core.Entities.Creatures.Creature:get_IsPlayer
 wait 3
