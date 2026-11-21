@@ -27,6 +27,13 @@ public static class ForeignShapesParts
         "latch-postfix", "latch-reset-postfix", "latch-open-postfix", "latch-or-postfix",
         "pilegate-postfix", "pilegate-beq-postfix", "pilegate-nearmiss-postfix",
         "ro-postfix", "ro-chain-postfix", "ro-call-postfix",
+        // Rule RO for bool prefixes (2026-11-21), on a Creature method returning a value (get_IsPlayer, GetVfxContainer).
+        "ro-prefix", "ro-release-prefix", "ro-static-prefix", "ro-chain-prefix", "ro-write-prefix", "ro-runoriginal-prefix", "ro-storetrue-prefix",
+        // Not a shape: "foreignpatch ro-prefix-selftest <label>" judges each of those shapes' IL on Creature.get_IsPlayer (offline too).
+        "ro-prefix-selftest",
+        // Not a shape: "foreignpatch walkgetters-check <label>" (in a combat): FastListeners' walk mirrors call the walks' player
+        // getters as often as the game's walks (2026-11-21).
+        "walkgetters-check",
         // Not a shape: "foreignpatch c0-override constant|patch|subclass|stateful" (rule C0: classes of "another mod" emitted into a
         // dynamic assembly, overriding PowerModel.OwnerIsSecondaryEnemy, which CardFlightLimit's combat-end check reaches).
         "c0-override",
@@ -46,6 +53,7 @@ public static class ForeignShapesParts
         "skippedaddbumps" => FastListeners.SkippedAddBumps,
         "latched" => LazyGuard.LatchedChecks,
         "mergedflushes" => CardFlightLimit.MergedFlushes,
+        "mergedcreature" => RelicFlashMerge.MergedCreature,
 #endif
         _ => throw new ArgumentException("parts-require: unknown counter " + name),
     };
@@ -88,6 +96,14 @@ public static class ForeignShapesParts
         if (shape == "c0-override")
         {
             return C0Override(parts[1], installed);
+        }
+        if (shape == "ro-prefix-selftest")
+        {
+            return ReadOnlyPrefixSelfTest(parts[1]);
+        }
+        if (shape == "walkgetters-check")
+        {
+            return WalkGettersCheck(parts[1]);
         }
         if (shape == "parts-report")
         {
@@ -233,6 +249,27 @@ public static class ForeignShapesParts
                 harmony.Patch(target, postfix: new HarmonyMethod(readOnly) { priority = priority });
                 verdict = $"FOREIGN ro {shape}: {(PatchSafety.ReadOnlyPostfixes(target).Any(p => p.MethodHandle == readOnly.MethodHandle) ? "read-only" : "not read-only")}";
                 break;
+            case "ro-prefix":
+            case "ro-release-prefix":
+            case "ro-static-prefix":
+            case "ro-chain-prefix":
+            case "ro-write-prefix":
+            case "ro-runoriginal-prefix":
+            case "ro-storetrue-prefix":
+            {
+                // Rule RO for bool prefixes (GensokyoSpire's CreatureIsPlayerPatch on Creature.get_IsPlayer): see EmitReadOnlyPrefix.
+                // On get_IsPlayer (HookSkip's choice-context helpers) or GetVfxContainer (RelicFlashMerge's creature effect). No game
+                // state changes: the type tested is never a monster's, so each lets the original run.
+                if (target.DeclaringType != typeof(MegaCrit.Sts2.Core.Entities.Creatures.Creature) || target is not MethodInfo { IsStatic: false } method
+                    || method.ReturnType == typeof(void))
+                {
+                    throw new ArgumentException(shape + " goes on an instance method of MegaCrit.Sts2.Core.Entities.Creatures.Creature returning a value");
+                }
+                MethodInfo prefix = EmitReadOnlyPrefix(shape, method);
+                harmony.Patch(target, prefix: new HarmonyMethod(prefix) { priority = priority });
+                verdict = $"FOREIGN roprefix {shape}: {(PatchSafety.ReadOnlyPrefixes(target).Any(p => p.MethodHandle == prefix.MethodHandle) ? "read-only" : "not read-only")}";
+                break;
+            }
             default:
                 throw new ArgumentException("unknown shape " + shape);
         }
@@ -338,6 +375,223 @@ public static class ForeignShapesParts
         il.MarkLabel(done);
         il.Emit(System.Reflection.Emit.OpCodes.Ret);
         return type.CreateType()!.GetMethod("Postfix", BindingFlags.Public | BindingFlags.Static)!;
+    }
+
+    /// <summary>Read by ro-static-prefix (never set: it never answers); written by ro-write-prefix at each call.</summary>
+    public static bool RoFlag;
+    public static int RoWrites;
+
+    /// <summary>
+    /// Rule RO for bool prefixes' shapes, each in an emitted class of its own without a type initializer, on a Creature method
+    /// returning a value (<paramref name="target"/>), testing a never-true condition (so the original always runs) and answering the
+    /// result type's default in its place otherwise. Accepted: ro-prefix (GensokyoSpire's Debug layout: <c>if (__instance.Monster is
+    /// ForeignShapesParts) { __result = default; return false; } return true;</c> with its two bool locals, both answers joined in one
+    /// <c>ret</c>) and ro-release-prefix (the same, Release layout: one <c>ret</c> per answer). Controls: ro-static-prefix (a static
+    /// read: <c>if (RoFlag)</c>, ZZZLib-like), ro-chain-prefix (a getter on a returned object: <c>__instance.Player?.Creature is
+    /// ForeignShapesParts</c>), ro-write-prefix (a static write first: <c>RoWrites = 1</c>), ro-runoriginal-prefix (a
+    /// <c>__runOriginal</c> parameter too), ro-storetrue-prefix (stores <c>__result</c>, then returns true).
+    /// </summary>
+    private static MethodInfo EmitReadOnlyPrefix(string shape, MethodInfo target)
+    {
+        if (_c0Module == null)
+        {
+            string unique = "BdoC0Shapes" + Environment.TickCount64.ToString("X");
+            _c0Module = System.Reflection.Emit.AssemblyBuilder.DefineDynamicAssembly(new AssemblyName(unique), System.Reflection.Emit.AssemblyBuilderAccess.Run)
+                .DefineDynamicModule(unique);
+        }
+        Type creature = typeof(MegaCrit.Sts2.Core.Entities.Creatures.Creature);
+        Type result = target.ReturnType;
+        bool runOriginal = shape == "ro-runoriginal-prefix";
+        System.Reflection.Emit.TypeBuilder type = _c0Module.DefineType("BdoReadOnlyPrefix" + (++_guards),
+            TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed | TypeAttributes.Class | TypeAttributes.BeforeFieldInit);
+        Type[] parameters = runOriginal ? new[] { creature, result.MakeByRefType(), typeof(bool) } : new[] { creature, result.MakeByRefType() };
+        System.Reflection.Emit.MethodBuilder prefix = type.DefineMethod("Prefix", MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.HideBySig,
+            typeof(bool), parameters);
+        prefix.DefineParameter(1, ParameterAttributes.None, "__instance");
+        prefix.DefineParameter(2, ParameterAttributes.None, "__result");
+        if (runOriginal)
+        {
+            prefix.DefineParameter(3, ParameterAttributes.None, "__runOriginal");
+        }
+        System.Reflection.Emit.ILGenerator il = prefix.GetILGenerator();
+        System.Reflection.Emit.Label pass = il.DefineLabel();
+        void StoreDefault()
+        {
+            il.Emit(System.Reflection.Emit.OpCodes.Ldarg_1);
+            if (!result.IsValueType)
+            {
+                il.Emit(System.Reflection.Emit.OpCodes.Ldnull);
+                il.Emit(System.Reflection.Emit.OpCodes.Stind_Ref);
+            }
+            else if (result == typeof(bool))
+            {
+                il.Emit(System.Reflection.Emit.OpCodes.Ldc_I4_0);
+                il.Emit(System.Reflection.Emit.OpCodes.Stind_I1);
+            }
+            else if (result == typeof(int))
+            {
+                il.Emit(System.Reflection.Emit.OpCodes.Ldc_I4_0);
+                il.Emit(System.Reflection.Emit.OpCodes.Stind_I4);
+            }
+            else
+            {
+                throw new ArgumentException("ro prefixes: a reference, bool or int result");
+            }
+        }
+        void MonsterTest()
+        {
+            il.Emit(System.Reflection.Emit.OpCodes.Ldarg_0);
+            il.Emit(System.Reflection.Emit.OpCodes.Callvirt, AccessTools.PropertyGetter(creature, "Monster")!);
+            il.Emit(System.Reflection.Emit.OpCodes.Isinst, typeof(ForeignShapesParts));
+        }
+        if (shape == "ro-prefix")
+        {
+            il.DeclareLocal(typeof(bool));
+            il.DeclareLocal(typeof(bool));
+            System.Reflection.Emit.Label join = il.DefineLabel();
+            il.Emit(System.Reflection.Emit.OpCodes.Nop);
+            MonsterTest();
+            il.Emit(System.Reflection.Emit.OpCodes.Ldnull);
+            il.Emit(System.Reflection.Emit.OpCodes.Cgt_Un);
+            il.Emit(System.Reflection.Emit.OpCodes.Stloc_0);
+            il.Emit(System.Reflection.Emit.OpCodes.Ldloc_0);
+            il.Emit(System.Reflection.Emit.OpCodes.Brfalse_S, pass);
+            il.Emit(System.Reflection.Emit.OpCodes.Nop);
+            StoreDefault();
+            il.Emit(System.Reflection.Emit.OpCodes.Ldc_I4_0);
+            il.Emit(System.Reflection.Emit.OpCodes.Stloc_1);
+            il.Emit(System.Reflection.Emit.OpCodes.Br_S, join);
+            il.MarkLabel(pass);
+            il.Emit(System.Reflection.Emit.OpCodes.Ldc_I4_1);
+            il.Emit(System.Reflection.Emit.OpCodes.Stloc_1);
+            il.Emit(System.Reflection.Emit.OpCodes.Br_S, join);
+            il.MarkLabel(join);
+            il.Emit(System.Reflection.Emit.OpCodes.Ldloc_1);
+            il.Emit(System.Reflection.Emit.OpCodes.Ret);
+            return type.CreateType()!.GetMethod("Prefix", BindingFlags.Public | BindingFlags.Static)!;
+        }
+        switch (shape)
+        {
+            case "ro-static-prefix":
+                il.Emit(System.Reflection.Emit.OpCodes.Ldsfld, typeof(ForeignShapesParts).GetField(nameof(RoFlag))!);
+                break;
+            case "ro-chain-prefix":
+                il.DeclareLocal(typeof(MegaCrit.Sts2.Core.Entities.Players.Player));
+                il.Emit(System.Reflection.Emit.OpCodes.Ldarg_0);
+                il.Emit(System.Reflection.Emit.OpCodes.Callvirt, AccessTools.PropertyGetter(creature, "Player")!);
+                il.Emit(System.Reflection.Emit.OpCodes.Stloc_0);
+                il.Emit(System.Reflection.Emit.OpCodes.Ldloc_0);
+                il.Emit(System.Reflection.Emit.OpCodes.Brfalse_S, pass);
+                il.Emit(System.Reflection.Emit.OpCodes.Ldloc_0);
+                il.Emit(System.Reflection.Emit.OpCodes.Callvirt, AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Entities.Players.Player), "Creature")!);
+                il.Emit(System.Reflection.Emit.OpCodes.Isinst, typeof(ForeignShapesParts));
+                break;
+            case "ro-write-prefix":
+                il.Emit(System.Reflection.Emit.OpCodes.Ldc_I4_1);
+                il.Emit(System.Reflection.Emit.OpCodes.Stsfld, typeof(ForeignShapesParts).GetField(nameof(RoWrites))!);
+                MonsterTest();
+                break;
+            default:
+                // ro-release-prefix, ro-runoriginal-prefix, ro-storetrue-prefix.
+                MonsterTest();
+                break;
+        }
+        il.Emit(System.Reflection.Emit.OpCodes.Brfalse_S, pass);
+        StoreDefault();
+        il.Emit(shape == "ro-storetrue-prefix" ? System.Reflection.Emit.OpCodes.Ldc_I4_1 : System.Reflection.Emit.OpCodes.Ldc_I4_0);
+        il.Emit(System.Reflection.Emit.OpCodes.Ret);
+        il.MarkLabel(pass);
+        il.Emit(System.Reflection.Emit.OpCodes.Ldc_I4_1);
+        il.Emit(System.Reflection.Emit.OpCodes.Ret);
+        return type.CreateType()!.GetMethod("Prefix", BindingFlags.Public | BindingFlags.Static)!;
+    }
+
+    /// <summary>
+    /// <c>foreignpatch ro-prefix-selftest &lt;label&gt;</c>: each ro prefix shape's verdict (rule RO for bool prefixes' shape, nothing
+    /// installed) on Creature.get_IsPlayer, and the accepted ones on Creature.GetVfxContainer, against the expected one; throws on a
+    /// difference.
+    /// </summary>
+    private static IReadOnlyList<string> ReadOnlyPrefixSelfTest(string label)
+    {
+        Type creature = typeof(MegaCrit.Sts2.Core.Entities.Creatures.Creature);
+        MethodInfo isPlayer = AccessTools.PropertyGetter(creature, "IsPlayer") ?? throw new MissingMethodException(creature.Name, "get_IsPlayer");
+        MethodInfo vfx = AccessTools.Method(creature, "GetVfxContainer") ?? throw new MissingMethodException(creature.Name, "GetVfxContainer");
+        var lines = new List<string>();
+        var failures = new List<string>();
+        foreach ((string shape, MethodInfo target, bool expected) in new[]
+        {
+            ("ro-prefix", isPlayer, true), ("ro-release-prefix", isPlayer, true), ("ro-prefix", vfx, true), ("ro-release-prefix", vfx, true),
+            ("ro-static-prefix", isPlayer, false), ("ro-chain-prefix", isPlayer, false), ("ro-write-prefix", isPlayer, false),
+            ("ro-runoriginal-prefix", isPlayer, false), ("ro-storetrue-prefix", isPlayer, false),
+        })
+        {
+            bool found = PatchSafety.ReadOnlyPrefixShapeForTest(EmitReadOnlyPrefix(shape, target), target);
+            lines.Add($"FOREIGN roprefix selftest {label} {(found == expected ? "ok" : "WRONG")}: {shape} on {target.Name}: {(found ? "read-only" : "not read-only")}");
+            if (found != expected)
+            {
+                failures.Add($"{shape} on {target.Name}");
+            }
+        }
+        if (failures.Count > 0)
+        {
+            throw new InvalidOperationException("ro-prefix-selftest: " + string.Join(", ", failures) + " || " + string.Join(" || ", lines));
+        }
+        lines.Add($"FOREIGN roprefix selftest {label}: {lines.Count} cases as expected");
+        return lines;
+    }
+
+    /// <summary>Calls of the walks' player getters counted by <see cref="WalkGettersCheck"/>'s postfixes.</summary>
+    public static long CombatPlayersCalls, RunPlayersCalls, IsPlayerCalls;
+
+    public static void CountCombatPlayers() => CombatPlayersCalls++;
+    public static void CountRunPlayers() => RunPlayersCalls++;
+    public static void CountIsPlayer() => IsPlayerCalls++;
+
+    /// <summary>
+    /// <c>foreignpatch walkgetters-check &lt;label&gt;</c> (in a combat; 2026-11-21): counting postfixes on CombatState.get_Players,
+    /// RunState.get_Players and Creature.get_IsPlayer for the time of the check, then one walk of FastListeners' unpatched combat
+    /// mirror and one of the game's own (ListenerCache.RunVanilla: every listener optimization off), the same for the run walk
+    /// (no child combat): each getter must run as many times in the mirror as in the game (the game's walks start with
+    /// <c>new List(Players.Count * 50)</c>, which the mirrors once left out). Throws on a difference, or when a mirror can't answer.
+    /// </summary>
+    private static IReadOnlyList<string> WalkGettersCheck(string label)
+    {
+        if (MegaCrit.Sts2.Core.Combat.CombatManager.Instance?.DebugOnlyGetState() is not MegaCrit.Sts2.Core.Combat.CombatState combat
+            || MegaCrit.Sts2.Core.Runs.RunManager.Instance.DebugOnlyGetState() is not MegaCrit.Sts2.Core.Runs.RunState run)
+        {
+            throw new InvalidOperationException("walkgetters-check: start a combat first");
+        }
+        string id = ForeignPatches.IdPrefix + "walkgetters";
+        var harmony = new Harmony(id);
+        MethodInfo combatPlayers = AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Combat.CombatState), "Players")!;
+        MethodInfo runPlayers = AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Runs.RunState), "Players")!;
+        MethodInfo isPlayer = AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Entities.Creatures.Creature), "IsPlayer")!;
+        harmony.Patch(combatPlayers, postfix: new HarmonyMethod(typeof(ForeignShapesParts), nameof(CountCombatPlayers)));
+        harmony.Patch(runPlayers, postfix: new HarmonyMethod(typeof(ForeignShapesParts), nameof(CountRunPlayers)));
+        harmony.Patch(isPlayer, postfix: new HarmonyMethod(typeof(ForeignShapesParts), nameof(CountIsPlayer)));
+        try
+        {
+            (long Combat, long Run, long IsPlayer) Calls(Func<int> walk)
+            {
+                (long c, long r, long p) = (CombatPlayersCalls, RunPlayersCalls, IsPlayerCalls);
+                _ = walk();
+                return (CombatPlayersCalls - c, RunPlayersCalls - r, IsPlayerCalls - p);
+            }
+            var mirrorCombat = Calls(() => FastListeners.UnpatchedCombat(combat)?.Count() ?? throw new InvalidOperationException("walkgetters-check: the combat mirror can't answer now"));
+            var gameCombat = Calls(() => ListenerCache.RunVanilla(() => combat.IterateHookListeners().Count()));
+            var mirrorRun = Calls(() => FastListeners.UnpatchedRun(run, null)?.Count() ?? throw new InvalidOperationException("walkgetters-check: the run mirror can't answer now"));
+            var gameRun = Calls(() => ListenerCache.RunVanilla(() => run.IterateHookListeners(null).Count()));
+            string line = $"FOREIGN walkgetters {label}: combat walk mirror {mirrorCombat} game {gameCombat}, run walk mirror {mirrorRun} game {gameRun}";
+            if (mirrorCombat != gameCombat || mirrorRun != gameRun || gameCombat.Combat == 0 || gameRun.Run == 0)
+            {
+                throw new InvalidOperationException("walkgetters-check: " + line);
+            }
+            return new[] { line + " (same)" };
+        }
+        finally
+        {
+            harmony.UnpatchAll(id);
+        }
     }
 
     public static void CountPileGate() => PileGateRuns++;

@@ -26,7 +26,7 @@ public static partial class PatchSafety
     /// the state, and the postfix reads, writes and calls nothing else: code that calls the getter computes what it computes without
     /// the postfix's own effects, so running it fewer times changes nothing but that code's own calls. Not a tolerance of the strict
     /// checks: only a caller that keeps whole results of that code per patch set (LimitlessCloneMemo, cleared when
-    /// <c>PatchStamp()</c> changes) may take it. <paramref name="mods"/>: those postfixes' mods (log). Asked again per Harmony epoch
+    /// <c>PatchStamp()</c> changes) may take it, and LimitlessHookSkip through <see cref="LastConstantResult"/> (the value bounded against each saved level). <paramref name="mods"/>: those postfixes' mods (log). Asked again per Harmony epoch
     /// and at most every 2 s. Never throws (false when it can't tell).
     /// </summary>
     internal static bool ConstantResultPostfixesOnly(MethodBase? method, MethodInfo[] allowed, out string[] mods)
@@ -87,6 +87,80 @@ public static partial class PatchSafety
         _constantResults[(method, key)] = new ConstantAnswer(epoch, now, only, mods);
         return only;
     }
+
+    /// <summary>
+    /// G3 for LimitlessHookSkip's drops (2026-11-21): <see cref="ConstantResultPostfixesOnly"/> holds for the int getter
+    /// <paramref name="method"/>, and the last of all its postfixes in Harmony's order (<c>PatchProcessor.GetSortedPatchMethods</c>:
+    /// priorities, <c>before</c>/<c>after</c>, then registration; ours and the allowed ones included) is one of those constant
+    /// postfixes: the getter then answers that postfix's constant <paramref name="value"/> on every call that reaches the patched
+    /// code (what ran before it, the original and the allowed postfixes, only had its result overwritten: an allowed postfix
+    /// was judged by its fingerprint, Limitless's overwrites <c>__result</c> without reading it). Not cached here: asked once per
+    /// chain answer. Never throws (false when it can't tell: a factory, a patch method that doesn't resolve).
+    /// </summary>
+    internal static bool LastConstantResult(MethodBase? method, MethodInfo[] allowed, out int value)
+    {
+        value = 0;
+        try
+        {
+            if (method is not MethodInfo { ReturnType: var result } || result != typeof(int) || !ConstantResultPostfixesOnly(method, allowed, out _)
+                || Harmony.GetPatchInfo(method) is not { } info)
+            {
+                return false;
+            }
+            Patch[] postfixes = info.Postfixes.ToArray();
+            MethodInfo?[] methods = postfixes.Select(PatchMethodOf).ToArray();
+            if (postfixes.Length == 0 || methods.Any(m => m == null || IsFactory(m)))
+            {
+                return false;
+            }
+            for (int i = 0; i < postfixes.Length; i++)
+            {
+                postfixes[i].PatchMethod = methods[i];
+            }
+            List<MethodInfo> sorted = PatchProcessor.GetSortedPatchMethods(method, postfixes);
+            if (sorted.Count != postfixes.Length)
+            {
+                return false;
+            }
+            MethodInfo last = sorted[^1];
+            int at = Array.FindIndex(methods, m => m!.MethodHandle == last.MethodHandle);
+            // The last one another mod's, not an allowed one, of the constant shape (ConstantResultPostfixesOnly judged every such
+            // patch, its class's initializer and its own patches included).
+            if (at < 0 || PatchGuard.IsOurs(postfixes[at].owner) || allowed.Any(a => a.MethodHandle == last.MethodHandle)
+                || !ConstantResultShape(last, result))
+            {
+                return false;
+            }
+            return ConstantInt(last, out value);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>The int a <see cref="ConstantResultShape"/> postfix stores (its one constant load), false for another kind of constant.</summary>
+    private static bool ConstantInt(MethodInfo postfix, out int value)
+    {
+        value = 0;
+        List<MethodFingerprint.Instruction> code = MethodFingerprint.Instructions(postfix).Where(i => i.Op != OpCodes.Nop).ToList();
+        if (code.Count != 4 || code[2].Op != OpCodes.Stind_I4)
+        {
+            return false;
+        }
+        // ldc.i4.m1 to ldc.i4.8, ldc.i4.s, ldc.i4 (an ldc.i8 or a float isn't an int's constant).
+        if (IntConstant(code[1]) is not { } known)
+        {
+            return false;
+        }
+        value = known;
+        return true;
+    }
+
+#if BENCH
+    /// <summary>The bench's view of <see cref="ConstantInt"/> (G3's drop self-test: the constant decoded from each emitted variant).</summary>
+    internal static int? ConstantIntForTest(MethodInfo postfix) => ConstantInt(postfix, out int value) ? value : null;
+#endif
 
     /// <summary>
     /// A postfix whose whole IL is <c>nop*; ldarg __result; ldc.*|ldnull|ldstr; stind.*; ret</c> (nops anywhere): static, void, not

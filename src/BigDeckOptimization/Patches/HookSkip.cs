@@ -349,8 +349,9 @@ public static partial class HookSkip
                 // No tolerance: a dropped listener skips its calls to this helper, which has no listener argument to gate on,
                 // so a patch here would miss those calls. The same for every game method the helpers may call and for the
                 // reviewed chains' getters (in the sets since 2026-11-17, from fpdiff's call graph: CardModel.Owner,
-                // Creature.Player, CombatState.Players... the v0.107.1 constructor inlines the owner lookup).
-                if (PatchSafety.IsPatchedByOthers(helper))
+                // Creature.Player, CombatState.Players... the v0.107.1 constructor inlines the owner lookup). Rule RO for bool
+                // prefixes (2026-11-21): other mods' read-only bool prefixes stand (ReadOnlyAllowed).
+                if (PatchSafety.IsPatchedByOthers(helper, ReadOnlyAllowed(helper)))
                 {
                     return true;
                 }
@@ -640,6 +641,7 @@ public static partial class HookSkip
         PatchSafety.Watch(Name, new[] { _combatBadges, _runBadges });
         // Other mods' patches let stand on the choice-context helpers (gated on the listener): shown in bdopt why (kept section).
         PatchSafety.WatchNote(Name, NoteHelperGates);
+        PatchSafety.WatchNote(Name, NoteHelperReadOnly);
         BaseLibHooks.Init(harmony);
         PatchOverFrames(harmony);
     }
@@ -708,9 +710,10 @@ public static partial class HookSkip
             {
                 // Display only here: the runtime check resolves them again and falls back to vanilla on a throw.
             }
-            // As AnyHelperPatched asks: the helpers without a listener argument (and the async ones' state machines) strictly,
-            // the others gated on the listener's parameter.
-            PatchSafety.WatchAll(Name, () => HelperMethods(group).Where(h => h.Listener == null).Select(h => (MethodBase?)h.Method));
+            // As AnyHelperPatched asks: the helpers without a listener argument (and the async ones' state machines) strictly but
+            // for read-only bool prefixes, the others gated on the listener's parameter.
+            PatchSafety.WatchPairs(Name, () => HelperMethods(group).Where(h => h.Listener == null)
+                .Select(h => ((MethodBase?)h.Method, (MethodInfo[]?)ReadOnlyAllowed(h.Method))));
             PatchSafety.WatchPairs(Name, () => HelperMethods(group).Where(h => h.Listener != null).Select(h => ((MethodBase?)h.Method, (MethodInfo[]?)null)),
                 PatchTolerance.TypeGated);
         }
@@ -736,12 +739,60 @@ public static partial class HookSkip
         }
         foreach ((MethodBase helper, string? listener) in helpers)
         {
-            if (listener == null ? PatchSafety.IsPatchedByOthers(helper, Name) : PatchSafety.IsPatchedByOthers(helper, out _, Name))
+            if (listener == null ? PatchSafety.IsPatchedByOthers(helper, ReadOnlyAllowed(helper), Name) : PatchSafety.IsPatchedByOthers(helper, out _, Name))
             {
                 return true;
             }
         }
         return false;
+    }
+
+    /// <summary>
+    /// Rule RO for bool prefixes (2026-11-21): other mods' prefixes on a helper without a listener argument that only answer in
+    /// the original's place from the instance's own fields, or let it run (<see cref="PatchSafety.ReadOnlyPrefixes"/>: GensokyoSpire's
+    /// on <c>Creature.get_IsPlayer</c>, which <c>GetOwner</c> reaches through <c>Players</c> and <c>PlayerCreatures</c>). A dropped
+    /// listener's iteration skips its calls to the helper, and the helper's answer only feeds that iteration: such a prefix running
+    /// fewer times changes nothing (its kept calls run as in the game). None with the shape rules off. Never throws.
+    /// </summary>
+    private static MethodInfo[] ReadOnlyAllowed(MethodBase helper) =>
+        PatchSafety.ShapeRules ? PatchSafety.ReadOnlyPrefixes(helper) : Array.Empty<MethodInfo>();
+
+    /// <summary>
+    /// The kept note of rule RO for bool prefixes (display only, bdopt why): the helpers without a listener argument whose other
+    /// mods' patches are all read-only bool prefixes (<see cref="ReadOnlyAllowed"/>), in a group that runs filtered. Cleared when
+    /// there is none.
+    /// </summary>
+    private static void NoteHelperReadOnly()
+    {
+        var names = new List<string>();
+        var prefixes = new List<MethodInfo>();
+        foreach (int group in _watchedGroups.ToArray())
+        {
+            // As NoteHelperGates: the runtime's last answer for the group, before the first walk the preflight's own.
+            if (_helperAnswers?[group] is { Patched: true } || (_helperAnswers?[group] == null && PreflightPatched(group)))
+            {
+                continue;
+            }
+            foreach ((MethodBase helper, string? listener) in HelperMethods(group))
+            {
+                MethodInfo[] allowed;
+                if (listener != null || !PatchSafety.HasOtherPatches(helper) || (allowed = ReadOnlyAllowed(helper)).Length == 0
+                    || PatchSafety.IsPatchedByOthers(helper, allowed, Name))
+                {
+                    continue;
+                }
+                names.Add($"{helper.DeclaringType?.Name}.{helper.Name}");
+                prefixes.AddRange(allowed);
+            }
+        }
+        if (names.Count == 0)
+        {
+            PatchSafety.ClearKept(Name, "helper_readonly");
+            return;
+        }
+        PatchSafety.Kept(Name, "helper_readonly", $"other mods' code on the hooks' choice-context helpers ({string.Join(", ", names.Distinct())}) only "
+            + "reads the game and answers in the game's place, or lets the game's code run: the listeners that do nothing skip those calls with no "
+            + "difference (their answers were only used there): kept", PatchSafety.ModNamesOf(prefixes.Select(p => p.DeclaringType?.Assembly)));
     }
 
     /// <summary>

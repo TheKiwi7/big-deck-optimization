@@ -338,22 +338,32 @@ public static class LimitlessCloneMemo
     {
         public readonly Reach Patched;
         public readonly Reach MemoPatched;
+        /// <summary>
+        /// LimitlessHookSkip's drops (G3 for drops, 2026-11-21): <see cref="Patched"/> less the upgrade group when its only strict
+        /// patches are constant-result postfixes on <c>get_MaxUpgradeLevel</c>, the last of whose postfixes in Harmony's order is one
+        /// of them (<see cref="DropCap"/>: its constant, null when none).
+        /// </summary>
+        public readonly Reach DropPatched;
+        public readonly int? DropCap;
         public readonly long CheckedAt;
         /// <summary>The patch stamp it was made at (<see cref="PatchStamp"/>): a Harmony change makes it stale at once.</summary>
         public readonly long Stamp;
         public readonly (System.Reflection.MethodBase Method, System.Reflection.MethodInfo[] Allowed, Type[] Gates, Reach Reach)[] Gated;
 
-        public ChainAnswer(Reach patched, Reach memoPatched, long checkedAt, long stamp, (System.Reflection.MethodBase, System.Reflection.MethodInfo[], Type[], Reach)[] gated)
+        public ChainAnswer(Reach patched, Reach memoPatched, Reach dropPatched, int? dropCap, long checkedAt, long stamp,
+            (System.Reflection.MethodBase, System.Reflection.MethodInfo[], Type[], Reach)[] gated)
         {
             Patched = patched;
             MemoPatched = memoPatched;
+            DropPatched = dropPatched;
+            DropCap = dropCap;
             CheckedAt = checkedAt;
             Stamp = stamp;
             Gated = gated;
         }
     }
 
-    private static volatile ChainAnswer _chainAnswer = new(Reach.None, Reach.None, long.MinValue / 2, -1, Array.Empty<(System.Reflection.MethodBase, System.Reflection.MethodInfo[], Type[], Reach)>());
+    private static volatile ChainAnswer _chainAnswer = new(Reach.None, Reach.None, Reach.None, null, long.MinValue / 2, -1, Array.Empty<(System.Reflection.MethodBase, System.Reflection.MethodInfo[], Type[], Reach)>());
 
     /// <summary>
     /// The chain's card methods run on the inner card itself: the upgrade cap (get_MaxUpgradeLevel, the card's own), so a patch
@@ -393,15 +403,83 @@ public static class LimitlessCloneMemo
     /// <see cref="PatchStamp"/> changes; a build that throws is never kept), and such a postfix reads, writes and calls nothing, so
     /// building again would give the same saved card. Not for LimitlessHookSkip's drops (they skip the build the game's code does
     /// and keep the old saved list: a constant <c>get_CurrentUpgradeLevel</c> makes the game's forwarder rewrite it; a
-    /// <c>get_MaxUpgradeLevel</c> below a saved level throws in <c>set_CurrentUpgradeLevel</c>).
+    /// <c>get_MaxUpgradeLevel</c> below a saved level throws in <c>set_CurrentUpgradeLevel</c>): theirs is <see cref="DropPatchedFor"/>, which judges the saved level.
     /// </summary>
     internal static bool ChainPatchedFor(Type cardType, Reach reach, bool memo = false)
     {
         ChainAnswer answer = CurrentChainAnswer();
-        if (((memo ? answer.MemoPatched : answer.Patched) & (reach | Reach.Spine)) != 0)
+        return ((memo ? answer.MemoPatched : answer.Patched) & (reach | Reach.Spine)) != 0 || GatedPatchedFor(answer, cardType, reach);
+    }
+
+    /// <summary>
+    /// LimitlessHookSkip's question (G3 for drops, 2026-11-21): <see cref="ChainPatchedFor"/>'s strict answer, except on
+    /// <c>get_MaxUpgradeLevel</c> when its other mods' patches are all constant-result postfixes and the last postfix in Harmony's
+    /// order is one of them, answering K (<see cref="PatchSafety.LastConstantResult"/>). In an inner card's build the getter's value is
+    /// read only by <c>set_CurrentUpgradeLevel</c>'s cap check, once per step of FromSerializable's upgrade loop (it throws past the
+    /// cap); nothing the build or ToSerializable writes is derived from it. So a drop skipping that build skips only the constant
+    /// postfix's own calls when the saved level <paramref name="level"/> is at most K (null: any level, the type-level verdict, only
+    /// when K is int.MaxValue). A card type overriding <c>MaxUpgradeLevel</c> stays strict (its override answers, not the patched
+    /// getter). The rest as <see cref="ChainPatchedFor"/> (the gated card methods, every other group strict).
+    /// </summary>
+    internal static bool DropPatchedFor(Type cardType, Reach reach, int? level)
+    {
+        ChainAnswer answer = CurrentChainAnswer();
+        if ((answer.DropPatched & (reach | Reach.Spine)) != 0)
         {
             return true;
         }
+        // The upgrade group patched only by the capped getter: the strict answer would back off here.
+        if ((reach & Reach.Upgrade) != 0 && answer.DropCap is { } cap)
+        {
+            if ((level is { } saved ? saved > cap : cap != int.MaxValue) || OverridesMaxUpgradeLevel(cardType))
+            {
+                return true;
+            }
+#if BENCH
+            System.Threading.Interlocked.Increment(ref CappedAnswers);
+#endif
+        }
+        return GatedPatchedFor(answer, cardType, reach);
+    }
+
+#if BENCH
+    /// <summary>LimitlessHookSkip's answers <see cref="DropPatchedFor"/> gave "not patched" thanks to the capped getter (the strict one backs off).</summary>
+    public static long CappedAnswers;
+#endif
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, bool> _overridesMax = new();
+
+    /// <summary>Whether the type's most derived <c>get_MaxUpgradeLevel</c> isn't CardModel's (true when it can't tell).</summary>
+    private static bool OverridesMaxUpgradeLevel(Type cardType) => _overridesMax.GetOrAdd(cardType, static type =>
+    {
+        try
+        {
+            System.Reflection.MethodInfo? baseGetter = typeof(CardModel).GetProperty(nameof(CardModel.MaxUpgradeLevel))?.GetGetMethod();
+            for (Type? at = type; at != null && baseGetter != null; at = at.BaseType)
+            {
+                foreach (System.Reflection.MethodInfo method in DeclaredMethods(at))
+                {
+                    if (method.Name == baseGetter.Name && !method.IsStatic && method.GetParameters().Length == 0 && method.GetBaseDefinition() == baseGetter)
+                    {
+                        return at != typeof(CardModel);
+                    }
+                }
+            }
+            return true;
+        }
+        catch
+        {
+            return true;
+        }
+    });
+
+    /// <summary>G3 for drops: the chain entry this applies to, CardModel's own <c>get_MaxUpgradeLevel</c>.</summary>
+    private static bool IsMaxUpgradeLevel(System.Reflection.MethodBase method) =>
+        method.DeclaringType == typeof(CardModel) && method.Name == "get_MaxUpgradeLevel" && !method.IsStatic && method.GetParameters().Length == 0;
+
+    /// <summary>The gated card methods' part of <see cref="ChainPatchedFor"/> and <see cref="DropPatchedFor"/>.</summary>
+    private static bool GatedPatchedFor(ChainAnswer answer, Type cardType, Reach reach)
+    {
         foreach ((System.Reflection.MethodBase method, System.Reflection.MethodInfo[] allowed, Type[] gates, Reach group) in answer.Gated)
         {
             if ((group & (reach | Reach.Spine)) == 0)
@@ -433,7 +511,8 @@ public static class LimitlessCloneMemo
         // Until the allowed patches' callees are known (a worker reads them at Apply), every group counts as patched. SecondEnchant isn't
         // judged here (no entry holds it): its contents are never kept (KnownTypes, ContentPatched).
         Reach patched = _allowedCallees == null ? Reach.Spine | Reach.Enchant | Reach.Upgrade : Reach.None;
-        Reach memoPatched = patched;
+        Reach memoPatched = patched, dropPatched = patched;
+        int? dropCap = null;
         var gated = new List<(System.Reflection.MethodBase, System.Reflection.MethodInfo[], Type[], Reach)>();
         foreach ((System.Reflection.MethodBase method, Reach reach) in _allowedCallees ?? Array.Empty<(System.Reflection.MethodBase, Reach)>())
         {
@@ -442,13 +521,14 @@ public static class LimitlessCloneMemo
             {
                 patched |= reach;
                 memoPatched |= reach;
+                dropPatched |= reach;
             }
         }
         var constants = new List<string>();
         foreach ((System.Reflection.MethodBase method, System.Reflection.MethodInfo[] allowed, bool isGated, Reach reach) in ChainMethods())
         {
             // Every group asked (each records its back-off); a method only reached inside a closure is judged there.
-            if (reach == Reach.None || ((patched & reach) == reach && (memoPatched & reach) == reach))
+            if (reach == Reach.None || ((patched & reach) == reach && (memoPatched & reach) == reach && (dropPatched & reach) == reach))
             {
                 continue;
             }
@@ -458,7 +538,17 @@ public static class LimitlessCloneMemo
             // strict check's back-off there is LimitlessHookSkip's (its drops), recorded under its name, the memo's cleared (display).
             bool constantOnly = ConstantOnlyGetter(method, allowedNow, out string[] constantMods);
             string caller = constantOnly ? HookSkipCaller : OwnCaller;
-            if (isGated)
+            // G3 for drops: on get_MaxUpgradeLevel, the last postfix a constant one; with int.MaxValue no saved level can reach the
+            // cap check's throw, so the drops don't back off there at all (not recorded: the strict answer is known, every other
+            // mod's patch being a constant postfix no tolerance lets stand; a back-off recorded before is cleared, display).
+            int cap = 0;
+            bool capped = constantOnly && IsMaxUpgradeLevel(method) && PatchSafety.LastConstantResult(method, allowedNow, out cap);
+            if (capped && cap == int.MaxValue)
+            {
+                strict = true;
+                PatchSafety.ForgetBackOff(LimitlessHookSkip.Name, method, isGated ? PatchTolerance.TypeGated : PatchTolerance.None);
+            }
+            else if (isGated)
             {
                 strict = PatchSafety.IsPatchedByOthers(method, allowed, out Type[] gates, caller);
                 if (!strict && gates.Length > 0)
@@ -488,9 +578,17 @@ public static class LimitlessCloneMemo
             {
                 memoPatched |= reach;
             }
+            if (capped)
+            {
+                dropCap = Math.Min(dropCap ?? int.MaxValue, cap);
+            }
+            else
+            {
+                dropPatched |= reach;
+            }
         }
-        LogConstants(constants);
-        answer = new ChainAnswer(patched, memoPatched, now, stamp, gated.ToArray());
+        LogConstants(constants, dropCap);
+        answer = new ChainAnswer(patched, memoPatched, dropPatched, dropCap, now, stamp, gated.ToArray());
         _chainAnswer = answer;
         return answer;
     }
@@ -509,17 +607,21 @@ public static class LimitlessCloneMemo
     private static string _constantsLogged = "";
 
     /// <summary>Logs the chain getters G3 lets the memo keep, once per change (display only; any thread).</summary>
-    private static void LogConstants(List<string> constants)
+    /// <param name="dropCap">G3 for drops: get_MaxUpgradeLevel's last postfix's constant, when LimitlessHookSkip's drops take it.</param>
+    private static void LogConstants(List<string> constants, int? dropCap)
     {
-        string text = string.Join("; ", constants);
-        if (System.Threading.Interlocked.Exchange(ref _constantsLogged, text) == text)
+        string text = string.Join("; ", constants), key = text + "|" + dropCap;
+        if (System.Threading.Interlocked.Exchange(ref _constantsLogged, key) == key)
         {
             return;
         }
         if (text.Length > 0)
         {
+            string drops = dropCap is not { } cap ? "still back off there"
+                : cap == int.MaxValue ? "take them too (the last postfix's constant is int.MaxValue: no saved upgrade level reaches the cap check)"
+                : $"take an inner card whose saved upgrade level is at most {cap} (the last postfix's constant), back off for the others";
             Log.Info($"[{ModEntry.Id}] {Name}: {text}: patched only with a constant result, kept by this memo for the contents reaching it "
-                + $"(their builds give the same saved card); {LimitlessHookSkip.Name}'s drops still back off there");
+                + $"(their builds give the same saved card); {LimitlessHookSkip.Name}'s drops {drops}");
         }
     }
 
@@ -596,10 +698,26 @@ public static class LimitlessCloneMemo
             {
                 // G3: under this class's name a getter patched only with constant results isn't listed (the memo keeps its contents;
                 // its back-off is LimitlessHookSkip's, whose own registration lists it), and a back-off recorded before is cleared.
-                PatchSafety.WatchPairs(patch, () => ChainPart(index).Where(c => c.Gated && !(patch == Name && ConstantOnlyForDisplay(c.Method, c.Allowed)))
+                // G3 for drops: under LimitlessHookSkip's name, a getter capped at int.MaxValue isn't listed either (its drops don't back off there).
+                PatchSafety.WatchPairs(patch, () => ChainPart(index).Where(c => c.Gated && !(patch == Name && ConstantOnlyForDisplay(c.Method, c.Allowed))
+                        && !(patch == LimitlessHookSkip.Name && UncappedForDisplay(c.Method, c.Allowed)))
                     .Select(c => ((System.Reflection.MethodBase?)c.Method, (System.Reflection.MethodInfo[]?)c.Allowed)), PatchTolerance.TypeGated);
             }
         }
+    }
+
+    /// <summary>
+    /// G3 for drops, the preflight under LimitlessHookSkip's name: true when its drops never back off on that getter (capped at
+    /// int.MaxValue: <see cref="DropPatchedFor"/> for any level), and clears its recorded back-off there.
+    /// </summary>
+    private static bool UncappedForDisplay(System.Reflection.MethodBase method, System.Reflection.MethodInfo[] allowed)
+    {
+        if (!IsMaxUpgradeLevel(method) || !PatchSafety.LastConstantResult(method, allowed, out int cap) || cap != int.MaxValue)
+        {
+            return false;
+        }
+        PatchSafety.ForgetBackOff(LimitlessHookSkip.Name, method, PatchTolerance.TypeGated);
+        return true;
     }
 
     /// <summary>G3 for the preflight under this class's name: true clears the memo's recorded back-off on that getter.</summary>
@@ -1337,7 +1455,8 @@ public static class LimitlessCloneMemo
         {
             return true;
         }
-        if (ChainPatchedFor(cardType, reach) || OnTheWay(cardType) is not { } overrides || OverridesPatched(overrides))
+        // G3 for drops: a constant upgrade cap at or above the saved level isn't counted (DropPatchedFor).
+        if (DropPatchedFor(cardType, reach, saved.CurrentUpgradeLevel) || OnTheWay(cardType) is not { } overrides || OverridesPatched(overrides))
         {
             return true;
         }

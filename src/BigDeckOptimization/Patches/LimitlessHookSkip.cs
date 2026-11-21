@@ -28,7 +28,9 @@ namespace BigDeckOptimization.Patches;
 /// Off with <c>limitless_saves</c>, a changed hook, LimitlessReserialize not applied (its fingerprint of
 /// <c>SetSerializableCards</c> is what "rebuilding gives what it holds" rests on), or another mod patching what a drop skips
 /// (the forwarders, the inner list's getter and the build of a clone's inner cards, the saved list's setter), or the game's
-/// code of that build changed (<see cref="LimitlessCloneMemo.GameChainKnown"/>, the getter's own code too). One forwarded
+/// code of that build changed (<see cref="LimitlessCloneMemo.GameChainKnown"/>, the getter's own code too). G3 for drops
+/// (2026-11-21): other mods' constant-result postfixes on <c>CardModel.get_MaxUpgradeLevel</c>, the last of its postfixes one of
+/// them, count only for an inner card saved above that constant (<see cref="LimitlessCloneMemo.DropPatchedFor"/>). One forwarded
 /// hook call in <see cref="SampleEvery"/> checks a dropped one against what its forwarder would have done.
 /// Known limit: an enchantment of a type no card has yet, reacting to a hook, added to a stacked enchantment during that
 /// very hook's walk, isn't called by that walk. Only another mod can do that: the game enchants with a reacting type
@@ -471,8 +473,13 @@ public static class LimitlessHookSkip
         return false;
     }
 
-    private static bool AnyGroupPatched() => LimitlessCloneMemo.ChainPatchedFor(_storageCard!, LimitlessCloneMemo.Reach.Spine | LimitlessCloneMemo.Reach.Enchant
-        | LimitlessCloneMemo.Reach.Upgrade);
+    /// <summary>
+    /// The groups any inner card may reach, for the storage card at any upgrade level (G3 for drops, 2026-11-21: a constant
+    /// <c>get_MaxUpgradeLevel</c> postfix sorted last counts as not patched here only when its constant is int.MaxValue, no saved
+    /// level then reaching the cap check's throw; a lower cap is judged per inner card, AnyInner).
+    /// </summary>
+    private static bool AnyGroupPatched() => LimitlessCloneMemo.DropPatchedFor(_storageCard!, LimitlessCloneMemo.Reach.Spine | LimitlessCloneMemo.Reach.Enchant
+        | LimitlessCloneMemo.Reach.Upgrade, level: null);
 
     /// <summary>An enchanted inner card not exactly Limitless's storage card was noted (<see cref="Note"/>): it reaches CardCmd.Enchant.</summary>
     private static volatile bool _nonStorageInner;
@@ -511,7 +518,7 @@ public static class LimitlessHookSkip
                     return true;
                 }
                 // Rule L: a drop skips this inner card's build; what that build reaches (its groups, its card and enchantment types'
-                // code on the way with what it calls) is judged for this saved card.
+                // code on the way with what it calls) is judged for this saved card; a constant upgrade cap against its saved level (G3).
                 if (saved[i] == null || LimitlessCloneMemo.ContentPatched(saved[i]))
                 {
                     return true;

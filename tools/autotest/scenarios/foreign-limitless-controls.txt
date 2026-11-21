@@ -16,10 +16,14 @@
 # PlayerCombatState.get_AllPiles, CardPile.Get, ModelDb.GetEntry...; the worker's walk stops there, `reach ... closures` says where);
 # (l3) CardModel.get_MaxUpgradeLevel: a level-1 content no longer kept, a level-0 one still is.
 # G3 (2026-11-21): constant-result postfixes on CardModel.get_MaxUpgradeLevel (Bench/ForeignShapesLimitless.cs lim-constant-postfix):
-# (u1) `__result = 99` and (u2) Infinite Upgrades' `__result = int.MaxValue`: a level-1 content kept by LimitlessCloneMemo, still
-# counted patched by LimitlessHookSkip (its drops keep the strict answer); controls, a level-1 content not kept: (u3) a static read
-# (`__result = Flag ? 1 : 0`), (u4) `Math.Max(__result, 5)`, (u5) its class's initializer reading the clock, (u6) an __instance
-# parameter too. `foreignpatch limitless constant selftest`: every variant's shape verdict.
+# (u1) `__result = 99` and (u2) Infinite Upgrades' `__result = int.MaxValue`: a level-1 content kept by LimitlessCloneMemo; controls,
+# a level-1 content not kept: (u3) a static read (`__result = Flag ? 1 : 0`), (u4) `Math.Max(__result, 5)`, (u5) its class's
+# initializer reading the clock, (u6) an __instance parameter too. `foreignpatch limitless constant selftest`: every variant's shape
+# verdict and the constant decoded from it. G3 for drops (2026-11-21): LimitlessHookSkip takes the same postfixes when the last
+# postfix in Harmony's order is theirs (both installed at the default priority after Limitless's): (u1) a level-1 content not
+# patched for its drops, a level-100 one patched (above the cap), the type-level verdict's chain groups still patched (99 isn't
+# int.MaxValue); (u2) a level-1 content not patched and the chain groups not patched (any level); control (u7) the u1 postfix at
+# priority 800, sorted before Limitless's own (which then answers last): kept by the memo, patched for the drops.
 # Review of 2026-11-19 (C2): a counting postfix on one closed instantiation of a generic member (Bench/ForeignShapesLimitless.cs
 # lim-generic-count-postfix: Harmony patches the instantiation, the chain and the closures name the definition, on which Harmony
 # finds nothing): (g2) <>z__ReadOnlySingleElementList<int>'s
@@ -69,9 +73,14 @@ expect FOREIGN reach l3 storage Sharp 0: kept True
 expect FOREIGN limitless constant selftest: \d+ cases as expected
 expect LimitlessCloneMemo: CardModel\.get_MaxUpgradeLevel \(bdtest\.foreign\.lim-constant-postfix-release\): patched only with a constant result
 expect LimitlessHookSkip: CardModel\.get_MaxUpgradeLevel is also patched by bdtest\.foreign\.lim-constant-postfix-release \(patches gated on the listener.s type not enough\)
-expect FOREIGN reach u1 storage Sharp 1: kept True, reaches Spine, Enchant, Upgrade, hookskip patched True
+expect FOREIGN reach u1 storage Sharp 1: kept True, reaches Spine, Enchant, Upgrade, hookskip patched False
 expect FOREIGN reach u1 storage Sharp 0: kept True, reaches Spine, Enchant, hookskip patched False
-expect FOREIGN reach u2 storage Sharp 1: kept True, reaches Spine, Enchant, Upgrade, hookskip patched True
+expect FOREIGN reach u1 storage Sharp 100: kept True, reaches Spine, Enchant, Upgrade, hookskip patched True
+expect FOREIGN anyknown u1: \S+ \(chain groups patched True
+expect FOREIGN reach u2 storage Sharp 1: kept True, reaches Spine, Enchant, Upgrade, hookskip patched False
+expect FOREIGN reach u2 storage Sharp 100: kept True, reaches Spine, Enchant, Upgrade, hookskip patched False
+expect FOREIGN anyknown u2: \S+ \(chain groups patched False
+expect FOREIGN reach u7 storage Sharp 1: kept True, reaches Spine, Enchant, Upgrade, hookskip patched True
 expect FOREIGN reach u3 storage Sharp 1: kept False
 expect FOREIGN reach u4 storage Sharp 1: kept False
 expect FOREIGN reach u5 storage Sharp 1: kept False
@@ -206,11 +215,20 @@ foreignpatch lim-constant-postfix MegaCrit.Sts2.Core.Models.CardModel:get_MaxUpg
 wait 3
 foreignpatch limitless reach storage Sharp 1 u1
 foreignpatch limitless reach storage Sharp 0 u1
+foreignpatch limitless reach storage Sharp 100 u1
+foreignpatch limitless anyknown u1
 foreignpatch limitless remove
 wait 3
 foreignpatch lim-constant-postfix MegaCrit.Sts2.Core.Models.CardModel:get_MaxUpgradeLevel max
 wait 3
 foreignpatch limitless reach storage Sharp 1 u2
+foreignpatch limitless reach storage Sharp 100 u2
+foreignpatch limitless anyknown u2
+foreignpatch limitless remove
+wait 3
+foreignpatch lim-constant-postfix MegaCrit.Sts2.Core.Models.CardModel:get_MaxUpgradeLevel release priority 800
+wait 3
+foreignpatch limitless reach storage Sharp 1 u7
 foreignpatch limitless remove
 wait 3
 foreignpatch lim-constant-postfix MegaCrit.Sts2.Core.Models.CardModel:get_MaxUpgradeLevel staticread
