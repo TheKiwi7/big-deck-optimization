@@ -24,13 +24,6 @@ namespace BigDeckOptimization.Patches;
 /// cost from its state), or is the asking card, the game counts. None of the three reads anything else. Squeeze leaves itself
 /// out: <see cref="PileIndex"/> says whether it's in those piles, and when unsure the game's code runs. One answer in
 /// <see cref="VerifyEvery"/> lets the game's code run and compares; a difference turns this off.
-///
-/// Two more kinds the same way: Wah Symphony (game v0.113+: cards with the Wah, Cho or Ki tag, up to three tag checks per card)
-/// and Flak Cannon (status cards not in the exhaust pile: every card's <c>Type</c>, then each status card's <c>Pile</c>). Flak
-/// Cannon's count is kept per pile (the exhaust pile left out), which is the game's <c>c.Pile.Type</c> only while each status card
-/// of the piles is in exactly one pile, of its owner (the asking card's owner): <see cref="PileIndex"/> says so per card
-/// (<see cref="PileIndex.PlacesIn"/>), at each walk for every status card and at each update for every status card moved since;
-/// any other answer (two piles, another owner, an index unsure or off) leaves the count to the game, as a card of a changing type does.
 /// </summary>
 public static class DeckCountMemo
 {
@@ -43,22 +36,6 @@ public static class DeckCountMemo
     private const string StrikeCountsFingerprint = "E8CCC3F56A47163F";
     private const string SpearFingerprint = "21EE28A0E953DF12";
     private const string SpearCountsFingerprint = "DA71AF536A9834A6";
-    /// <summary>
-    /// v0.113.1 <c>WahSymphony</c> (not in v0.111.1): its multiplier (<c>AllCards.Count(...)</c>, the counting lambda included) and
-    /// what it counts, <c>Tags.Contains</c> of the tags 6, 7 and 8 (<c>Wah</c>, <c>Cho</c>, <c>Ki</c>: the constants pinned here).
-    /// </summary>
-    private const string WahFingerprint = "4F023E398297CBA2";
-    private const string WahCountsFingerprint = "6200908F542A0E45";
-    /// <summary>
-    /// v0.111.1 and v0.113.1 <c>FlakCannon</c> (the same code): its multiplier (<c>GetStatuses(card.Owner).Count()</c>),
-    /// <c>GetStatuses</c> (<c>owner.PlayerCombatState.AllCards.Where(...)</c>) and what it keeps,
-    /// <c>c.Type == CardType.Status (4) &amp;&amp; c.Pile.Type != PileType.Exhaust (4)</c>.
-    /// </summary>
-    private const string FlakFingerprint = "447D8603071A53ED";
-    private const string FlakCountsFingerprint = "52F7A6BB995319E0";
-    private const string FlakStatusesFingerprint = "7882128CA404FB3D";
-    /// <summary><c>CardModel.Type</c>, an auto-property set by the constructor only (v0.107.1 to v0.113.1).</summary>
-    private const string BaseTypeFingerprint = "B3671DD3787AE845";
     /// <summary>
     /// <c>CardModel.Tags</c>: <c>_tags ?? (_tags = CanonicalTags)</c> (v0.107.1, v0.111, v0.113): a card's tags are its type's
     /// <c>CanonicalTags</c>, kept from the first read, so fixed when that getter returns a constant.
@@ -73,14 +50,6 @@ public static class DeckCountMemo
     private const int SqueezeKind = 0;
     private const int StrikeKind = 1;
     private const int SpearKind = 2;
-    private const int WahKind = 3;
-    private const int FlakKind = 4;
-    private const int Kinds = 5;
-
-    /// <summary>What Wah Symphony's lambda checks (its fingerprint pins the constants): Wah, Cho, Ki on game v0.113.</summary>
-    private const CardTag WahTag = (CardTag)6;
-    private const CardTag ChoTag = (CardTag)7;
-    private const CardTag KiTag = (CardTag)8;
 
 #if BENCH
     internal static int VerifyEvery { get; set; } = 16;
@@ -101,25 +70,18 @@ public static class DeckCountMemo
     public static long Unsure { get; private set; }
     public static long Checks { get; private set; }
     public static long Mismatches { get; private set; }
-    /// <summary>Counts of its own for the two later kinds, answered or compared (<c>bdperf deckcount answered wah|flak</c>).</summary>
-    public static long WahSymphonyAnswers { get; private set; }
-    public static long FlakCannonAnswers { get; private set; }
 
     private static readonly Func<CardModel, bool>[] _counted =
     {
         c => c.Tags.Contains(CardTag.OstyAttack),
         c => c.Tags.Contains(CardTag.Strike),
         c => c.CanonicalStarCost >= 0 || c.HasStarCostX,
-        c => c.Tags.Contains(WahTag) || c.Tags.Contains(ChoTag) || c.Tags.Contains(KiTag),
-        // Flak Cannon: counted in the piles other than the exhaust pile (CountedPiles), as c.Pile.Type != Exhaust while not Odd.
-        c => c.Type == CardType.Status,
     };
 
-    /// <summary>What may change over a card's life, per type (<see cref="FlagsOf"/>): its tags, its star cost, its type.</summary>
+    /// <summary>What may change over a card's life, per type (<see cref="FlagsOf"/>): its tags, its star cost.</summary>
     private const byte TagsMove = 1;
     private const byte StarMove = 2;
-    private const byte TypeMove = 4;
-    private static readonly byte[] _moveMask = { TagsMove, TagsMove, StarMove, TagsMove, TypeMove };
+    private static readonly byte[] _moveMask = { TagsMove, TagsMove, StarMove };
 
     /// <summary>Per kind, the cards whose type may change what that kind counts: only their type is read, nothing of the card.</summary>
     private static readonly Func<CardModel, bool>[] _moving =
@@ -127,55 +89,27 @@ public static class DeckCountMemo
         c => (FlagsOf(c.GetType()) & TagsMove) != 0,
         c => (FlagsOf(c.GetType()) & TagsMove) != 0,
         c => (FlagsOf(c.GetType()) & StarMove) != 0,
-        c => (FlagsOf(c.GetType()) & TagsMove) != 0,
-        c => (FlagsOf(c.GetType()) & TypeMove) != 0,
     };
 
     private sealed class Counts
     {
-        public readonly long[] Version = Enumerable.Repeat(-1L, Kinds).ToArray();
-        public readonly int[] Count = new int[Kinds];
-        /// <summary>
-        /// Cards in the piles of a type that may change what the kind counts (Flak Cannon: and status cards <see cref="Odd"/>):
-        /// while any, the game counts.
-        /// </summary>
-        public readonly int[] Moving = new int[Kinds];
+        public readonly long[] Version = { -1, -1, -1 };
+        public readonly int[] Count = new int[3];
+        /// <summary>Cards in the piles of a type that may change what the kind counts: while any, the game counts.</summary>
+        public readonly int[] Moving = new int[3];
         /// <summary><see cref="_flagsEpoch"/> the counts were taken with: the moving counts depend on the type flags.</summary>
-        public readonly long[] Epoch = new long[Kinds];
-        /// <summary>Flak Cannon's piles: <see cref="PlayerCombatState.AllPiles"/> without the exhaust pile, and the list it was made from.</summary>
-        private CardPile[]? _unexhausted, _from;
-
-        public IReadOnlyList<CardPile> Unexhausted(IReadOnlyList<CardPile> piles)
-        {
-            if (_from != null && _unexhausted != null && _from.Length == piles.Count)
-            {
-                bool same = true;
-                for (int i = 0; i < _from.Length && same; i++)
-                {
-                    same = ReferenceEquals(_from[i], piles[i]);
-                }
-                if (same)
-                {
-                    return _unexhausted;
-                }
-            }
-            _from = piles.ToArray();
-            _unexhausted = _from.Where(p => p.Type != PileType.Exhaust).ToArray();
-            return _unexhausted;
-        }
+        public readonly long[] Epoch = new long[3];
     }
 
     /// <summary>Tied to the combat's piles: nothing here outlives them.</summary>
     private static readonly ConditionalWeakTable<PlayerCombatState, Counts> _counts = new();
-    private static readonly MethodBase?[] _targets = new MethodBase?[Kinds];
+    private static readonly MethodBase?[] _targets = new MethodBase?[3];
     /// <summary>Per card, what a kept count skips calling: the count lambda, the piles' card list, what it reads of each card.</summary>
-    private static readonly MethodBase?[][] _skipped = new MethodBase?[Kinds][];
+    private static readonly MethodBase?[][] _skipped = new MethodBase?[3][];
     private static int _untilCheck;
 
-    private static MethodInfo? _tagsGetter, _canonicalTagsGetter, _starCostGetter, _starXGetter, _typeGetter;
-    private static bool _baseTagsKnown, _baseTypeKnown;
-    /// <summary><c>CardModel._owner</c>, what the game's <c>Pile</c> searches the piles of (Flak Cannon).</summary>
-    private static AccessTools.FieldRef<CardModel, Player?>? _owner;
+    private static MethodInfo? _tagsGetter, _canonicalTagsGetter, _starCostGetter, _starXGetter;
+    private static bool _baseTagsKnown;
 
     public static void Apply(Harmony harmony)
     {
@@ -200,30 +134,13 @@ public static class DeckCountMemo
             _baseTagsKnown = false;
             Log.Info($"[{ModEntry.Id}] {Name}: cards without their own Tags counted by the game: {e.Message}");
         }
-        _typeGetter = Reflect.PropertyGetter(typeof(CardModel), nameof(CardModel.Type));
-        try
-        {
-            // An auto-property: fixed in a card when only its constructor writes it.
-            PatchSafety.RequireFingerprint(_typeGetter ?? throw new MissingMethodException("CardModel.Type"), BaseTypeFingerprint);
-            _ = Reflect.Field(typeof(CardModel), "<Type>k__BackingField") ?? throw new MissingFieldException(nameof(CardModel), "<Type>k__BackingField");
-            PatchSafety.RequireFieldWriters(typeof(CardModel), "<Type>k__BackingField", ".ctor");
-            _baseTypeKnown = true;
-        }
-        catch (Exception e) when (e is PatchSkippedException or MissingMemberException)
-        {
-            _baseTypeKnown = false;
-            Log.Info($"[{ModEntry.Id}] {Name}: cards without their own Type counted by the game (Flak Cannon): {e.Message}");
-        }
         _readers[SqueezeKind] = new[] { allCards, pileCards, _tagsGetter, _canonicalTagsGetter };
         _readers[StrikeKind] = new[] { allCards, pileCards, _tagsGetter, _canonicalTagsGetter };
         _readers[SpearKind] = new[] { allCards, pileCards, _starCostGetter, _starXGetter };
-        _readers[WahKind] = new[] { allCards, pileCards, _tagsGetter, _canonicalTagsGetter };
         bool squeeze = Card(SqueezeKind, typeof(Squeeze), nameof(SqueezePrefix), harmony, SqueezeFingerprint, SqueezeCountsFingerprint);
         bool strike = Card(StrikeKind, typeof(PerfectedStrike), nameof(StrikePrefix), harmony, StrikeFingerprint, StrikeCountsFingerprint);
         bool spear = Card(SpearKind, typeof(CrescentSpear), nameof(SpearPrefix), harmony, SpearFingerprint, SpearCountsFingerprint);
-        bool wah = Card(WahKind, Reflect.TypeByName("MegaCrit.Sts2.Core.Models.Cards.WahSymphony"), nameof(WahPrefix), harmony, WahFingerprint, WahCountsFingerprint);
-        bool flak = Flak(harmony, allCards, pileCards);
-        if (!squeeze && !strike && !spear && !wah && !flak)
+        if (!squeeze && !strike && !spear)
         {
             throw new PatchSkippedException("none of its cards has the known code");
         }
@@ -242,18 +159,13 @@ public static class DeckCountMemo
     }
 
     /// <summary>One card, on its own: a card that changed only leaves that card to the game.</summary>
-    private static bool Card(int kind, Type? card, string prefix, Harmony harmony, string fingerprint, string countsFingerprint,
-        string countsIn = "get_CanonicalVars")
+    private static bool Card(int kind, Type card, string prefix, Harmony harmony, string fingerprint, string countsFingerprint)
     {
         try
         {
-            if (card == null)
-            {
-                throw new PatchSkippedException("not in this game version");
-            }
-            MethodInfo multiplier = Lambda(card, typeof(decimal), "get_CanonicalVars");
+            MethodInfo multiplier = Lambda(card, typeof(decimal));
             PatchSafety.RequireFingerprint(multiplier, fingerprint);
-            MethodInfo counts = Lambda(card, typeof(bool), countsIn);
+            MethodInfo counts = Lambda(card, typeof(bool));
             PatchSafety.RequireFingerprint(counts, countsFingerprint);
             _skipped[kind] = _readers[kind].Append(counts).ToArray();
             PatchGuard.Patch(harmony, multiplier, prefix: new HarmonyMethod(typeof(DeckCountMemo), prefix), postfix: new HarmonyMethod(typeof(DeckCountMemo), nameof(Postfix)));
@@ -262,46 +174,21 @@ public static class DeckCountMemo
         }
         catch (Exception e) when (e is PatchSkippedException or MissingMemberException)
         {
-            Log.Info($"[{ModEntry.Id}] {Name}: {card?.Name ?? "card " + kind} left vanilla: {e.Message}");
+            Log.Info($"[{ModEntry.Id}] {Name}: {card.Name} left vanilla: {e.Message}");
             return false;
         }
     }
 
     /// <summary>
-    /// Flak Cannon: its multiplier calls <c>GetStatuses</c>, whose lambda reads each card's <c>Type</c>, then a status card's
-    /// <c>Pile</c> (<c>_owner.Piles</c> searched) and that pile's <c>Type</c>: all skipped by a kept count, so all in its readers.
+    /// The compiler's method for a lambda of the card's variables, found by what it returns in whichever generated class holds it: their
+    /// names carry a number that shifts when the game adds a member, with the same code.
     /// </summary>
-    private static bool Flak(Harmony harmony, MethodBase? allCards, MethodBase? pileCards)
-    {
-        try
-        {
-            MethodInfo statuses = Reflect.Method(typeof(FlakCannon), "GetStatuses") ?? throw new MissingMethodException(nameof(FlakCannon), "GetStatuses");
-            PatchSafety.RequireFingerprint(statuses, FlakStatusesFingerprint);
-            _owner = Reflect.FieldRefAccess<CardModel, Player?>("_owner");
-            _readers[FlakKind] = new MethodBase?[]
-            {
-                allCards, pileCards, statuses, _typeGetter, Reflect.PropertyGetter(typeof(CardModel), nameof(CardModel.Pile)),
-                Reflect.PropertyGetter(typeof(CardPile), nameof(CardPile.Type)), Reflect.PropertyGetter(typeof(Player), nameof(Player.Piles)),
-            };
-        }
-        catch (Exception e) when (e is PatchSkippedException or MissingMemberException or ArgumentException)
-        {
-            Log.Info($"[{ModEntry.Id}] {Name}: {nameof(FlakCannon)} left vanilla: {e.Message}");
-            return false;
-        }
-        return Card(FlakKind, typeof(FlakCannon), nameof(FlakPrefix), harmony, FlakFingerprint, FlakCountsFingerprint, "GetStatuses");
-    }
-
-    /// <summary>
-    /// The compiler's method for a lambda of the card's method <paramref name="within"/>, found by what it returns in whichever
-    /// generated class holds it: their names carry a number that shifts when the game adds a member, with the same code.
-    /// </summary>
-    private static MethodInfo Lambda(Type card, Type returns, string within)
+    private static MethodInfo Lambda(Type card, Type returns)
     {
         MethodInfo[] found = card.GetNestedTypes(BindingFlags.NonPublic)
             .SelectMany(holder => holder.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
-            .Where(m => m.Name.Contains("<" + within + ">") && m.ReturnType == returns).ToArray();
-        return found.Length == 1 ? found[0] : throw new MissingMethodException(card.Name, within + " lambda");
+            .Where(m => m.Name.Contains("get_CanonicalVars") && m.ReturnType == returns).ToArray();
+        return found.Length == 1 ? found[0] : throw new MissingMethodException(card.Name, "CanonicalVars lambda");
     }
 
     private static bool SqueezePrefix(CardModel __0, ref decimal __result, out decimal? __state) => Answer(SqueezeKind, __0, ref __result, out __state);
@@ -310,11 +197,7 @@ public static class DeckCountMemo
 
     private static bool SpearPrefix(CardModel __0, ref decimal __result, out decimal? __state) => Answer(SpearKind, __0, ref __result, out __state);
 
-    private static bool WahPrefix(CardModel __0, ref decimal __result, out decimal? __state) => Answer(WahKind, __0, ref __result, out __state);
-
-    private static bool FlakPrefix(CardModel __0, ref decimal __result, out decimal? __state) => Answer(FlakKind, __0, ref __result, out __state);
-
-    private static readonly MethodBase?[][] _readers = new MethodBase?[Kinds][];
+    private static readonly MethodBase?[][] _readers = new MethodBase?[3][];
 
     /// <summary>Another mod patches what a kept count skips (a missing one counts as patched).</summary>
     private static bool SkippedPatched(int kind)
@@ -362,7 +245,7 @@ public static class DeckCountMemo
                     return true;
                 }
             }
-            int count = Count(kind, state, card.Owner, out bool moving) - own;
+            int count = Count(kind, state, out bool moving) - own;
             if (moving)
             {
                 Unsure++;
@@ -371,15 +254,6 @@ public static class DeckCountMemo
 #if BENCH
             count += WrongForTest;
 #endif
-            // Its own count, answered or compared below.
-            if (kind == WahKind)
-            {
-                WahSymphonyAnswers++;
-            }
-            else if (kind == FlakKind)
-            {
-                FlakCannonAnswers++;
-            }
             if (--_untilCheck <= 0)
             {
                 _untilCheck = VerifyEvery;
@@ -411,7 +285,7 @@ public static class DeckCountMemo
     }
 
     /// <summary>The kind's count over the piles, and whether a card of a type that may change it is among them.</summary>
-    private static int Count(int kind, PlayerCombatState state, Player player, out bool moving)
+    private static int Count(int kind, PlayerCombatState state, out bool moving)
     {
         Counts counts = _counts.GetOrCreateValue(state);
         long version = FastListeners.PileVersion;
@@ -428,18 +302,14 @@ public static class DeckCountMemo
             return counts.Count[kind];
         }
         IReadOnlyList<CardPile> piles = state.AllPiles;
-        // Flak Cannon counts outside the exhaust pile; the moving cards and Odd ones are looked for in every pile, as it reads them all.
-        bool flak = kind == FlakKind;
-        IReadOnlyList<CardPile> countedPiles = flak ? counts.Unexhausted(piles) : piles;
         int count = counts.Count[kind];
         int movingCount = counts.Moving[kind];
         // Both from the same moves (MovesSince gives the same answer twice): the count, then the cards of changing types.
         // Only from a count taken with no card of a changing type in the piles: a move is judged when applied, so such a
         // card that entered under one answer and leaves under another would leave the count off once it is gone.
         if (counts.Version[kind] >= 0 && counts.Moving[kind] == 0
-            && FastListeners.ApplyMoves(counts.Version[kind], countedPiles, _counted[kind], ref count)
-            && FastListeners.ApplyMoves(counts.Version[kind], piles, _moving[kind], ref movingCount)
-            && (!flak || !OddMoved(counts.Version[kind], piles, player)))
+            && FastListeners.ApplyMoves(counts.Version[kind], piles, _counted[kind], ref count)
+            && FastListeners.ApplyMoves(counts.Version[kind], piles, _moving[kind], ref movingCount))
         {
             Updated++;
         }
@@ -455,20 +325,12 @@ public static class DeckCountMemo
             foreach (CardPile pile in piles)
             {
                 IReadOnlyList<CardModel> cards = pile.Cards;
-                bool countsHere = !flak || pile.Type != PileType.Exhaust;
                 for (int i = 0; i < cards.Count; i++)
                 {
                     CardModel card = cards[i];
                     if (counted(card))
                     {
-                        if (countsHere)
-                        {
-                            count++;
-                        }
-                        if (flak && Odd(card, piles, player))
-                        {
-                            movingCount++;
-                        }
+                        count++;
                     }
                     Type type = card.GetType();
                     if (type != lastType)
@@ -489,51 +351,6 @@ public static class DeckCountMemo
         moving = movingCount > 0;
         return count;
     }
-
-    /// <summary>
-    /// A status card in these piles whose <c>Pile</c> may not be the pile it is in: not in exactly one pile as far as
-    /// <see cref="PileIndex"/> knows (or the index unsure, off), or owned by another player than the asking card's (the game's
-    /// <c>Pile</c> searches the owner's piles). <c>PlayerCombatState.AllPiles</c> are the owner's own (<c>Player.Piles</c> starts
-    /// with them). For a card met in a walk: it is in these piles, so anything but 1 is odd.
-    /// </summary>
-    private static bool Odd(CardModel card, IReadOnlyList<CardPile> piles, Player player) =>
-        PileIndex.PlacesIn(card, piles) != 1 || !ReferenceEquals(_owner!(card), player);
-
-    private static IReadOnlyList<CardPile>? _oddPiles;
-    private static Player? _oddPlayer;
-    private static bool _oddFound;
-
-    /// <summary>
-    /// Every status card moved since <paramref name="version"/> and still in these piles is not <see cref="Odd"/> (as now): with the
-    /// walk's check on the others, every status card of the piles is then where its <c>Pile</c> says. An owner changed without a
-    /// pile move isn't seen: the game's owner changes are made out of a pile (<c>CardPileCmd.GiveToAnotherPlayer</c> removes the card
-    /// first; the <c>Owner</c> setter refuses a second owner), and an owner-less card in a pile makes the game's own count throw.
-    /// </summary>
-    private static bool OddMoved(long version, IReadOnlyList<CardPile> piles, Player player)
-    {
-        _oddPiles = piles;
-        _oddPlayer = player;
-        _oddFound = false;
-        int none = 0;
-        try
-        {
-            return !FastListeners.ApplyMoves(version, piles, _oddCheck, ref none) || _oddFound;
-        }
-        finally
-        {
-            _oddPiles = null;
-            _oddPlayer = null;
-        }
-    }
-
-    private static readonly Func<CardModel, bool> _oddCheck = card =>
-    {
-        if (!_oddFound && _counted[FlakKind](card) && PileIndex.PlacesIn(card, _oddPiles!) != 0 && Odd(card, _oddPiles!, _oddPlayer!))
-        {
-            _oddFound = true;
-        }
-        return false;
-    };
 
     // --- Which card types may answer differently over time ---
 
@@ -585,7 +402,7 @@ public static class DeckCountMemo
             _flags.Clear();
             _watched.Clear();
             _flagsEpoch++;
-            Log.Info($"[{ModEntry.Id}] {Name}: another mod's patch on a card's tags, star cost or type came or went: card types read again");
+            Log.Info($"[{ModEntry.Id}] {Name}: another mod's patch on a card's tags or star cost came or went: card types read again");
         }
     }
 
@@ -628,19 +445,11 @@ public static class DeckCountMemo
                     flags |= StarMove;
                 }
             }
-            // Type fixed: the type keeps CardModel.Type (the constructor's value) or its own Type returns a constant (a mock card);
-            // one reading its state (Mad Science's TinkerTimeType) changes.
-            MethodInfo? cardType = Implementation(type, _typeGetter);
-            if (cardType == null || Watched(cardType)
-                || (cardType.DeclaringType == typeof(CardModel) ? !_baseTypeKnown : !ReturnsConstant(cardType)))
-            {
-                flags |= TypeMove;
-            }
         }
         catch (Exception e)
         {
-            flags = TagsMove | StarMove | TypeMove;
-            Log.Info($"[{ModEntry.Id}] {Name}: {type.Name}'s tags, star cost and type not read, counted by the game: {e.Message}");
+            flags = TagsMove | StarMove;
+            Log.Info($"[{ModEntry.Id}] {Name}: {type.Name}'s tags and star cost not read, counted by the game: {e.Message}");
         }
         _flags[type] = flags;
         return flags;
