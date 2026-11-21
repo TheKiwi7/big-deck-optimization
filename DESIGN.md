@@ -1386,7 +1386,11 @@ v0.111.1 and v0.113.1, `combatcards`, `pile-cards`, `foreign-limitless-u/umax/l`
 `saveread`, `saveread-serve`, `deckcount`, `ab-2k` (BaseLib loaded) on/off pairs IDENTICAL; `wrong-combatcards-1k-on`,
 `foreign-limitless-controls`, `hover-tips-prefixes/-transpiler/-ctl`, `savecheck-wrong/-bench`, `saveread-wrong/-bench`,
 `audit-deckcount-fault` pass; `savecheck-bench`'s end-to-end case: the file new to the check answers 1 (its first write not
-kept), known 2, off 0.
+kept), known 2, off 0. Delta review of those commits (no critical or major): the skipped player and pile getters (and the walk's
+`Players` call) only while the eight getters' code is the one pinned (same fingerprints on both versions: read-only, never
+throwing; another body runs them); the subscriber's generic callees (the SpireField indexer) checked with their patched
+instantiations; `AnswerForTest` puts builds and give-ups back for scratch combats only. `combatcards`, `ab-2k`, `firstturn`
+and `firstturn-real` (RitsuLib: scopes 2 then 4, backed off 0) IDENTICAL on both versions.
 
 **Revisited ideas verified and rejected.** A Hornet argument gate (one mod); SnapshotCardReuse next to a foreign `ToSerializable`
 postfix (not provable); A (patches on `HashSet<CardTag>`); cross-call walk reuse for the first turn.

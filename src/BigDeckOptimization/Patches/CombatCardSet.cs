@@ -408,11 +408,14 @@ public static class CombatCardSet
     }
 
 #if BENCH
-    /// <summary>Bench: this combat's answer for the card here (null when the game's scan would run), counted as no effect.</summary>
-    internal static bool? AnswerForTest(CombatState combat, CardModel card)
+    /// <summary>
+    /// Bench: this combat's answer for the card here (null when the game's scan would run), counted as no effect. Answers,
+    /// fallbacks and checks are put back; builds and give-ups only for a <paramref name="scratch"/> combat (the self-test's: sets
+    /// of its own), so a real combat's set built or given up here still shows (a real give-up never wiped).
+    /// </summary>
+    internal static bool? AnswerForTest(CombatState combat, CardModel card, bool scratch = false)
     {
         bool result = false;
-        // Every counter put back (the self-test's scratch combats build and give up sets of their own): only the game's calls count.
         long answered = Answered, fallbacks = Fallbacks, checks = Checks, builds = Builds, gaveUp = GaveUp;
         bool answeredHere;
         try
@@ -424,8 +427,11 @@ public static class CombatCardSet
             Answered = answered;
             Fallbacks = fallbacks;
             Checks = checks;
-            Builds = builds;
-            GaveUp = gaveUp;
+            if (scratch)
+            {
+                Builds = builds;
+                GaveUp = gaveUp;
+            }
         }
         return answeredHere ? result : null;
     }
@@ -461,7 +467,7 @@ public static class CombatCardSet
             List<CardModel> current = _allCards!(combat);
             foreach (CardModel card in cards)
             {
-                bool? mine = AnswerForTest(combat, card);
+                bool? mine = AnswerForTest(combat, card, scratch: true);
                 answered += mine == null ? 0 : 1;
                 if (mine != null && mine != current.Contains(card))
                 {
