@@ -1,0 +1,25 @@
+# CardSortKeys' own sort alone at ~10,300 cards (v0.113+; "not applied" before): the local piles sorted by the part with the
+# shared-key comparison and with the game's variable loop, alternating, 3 passes each (no game sort: minutes at this size).
+# Times per sort, cost reads per sort (once per card at most) and identical orders; checks off (1 answer in 1,024 compared).
+timeout 1800
+newrun NECROBINDER 1234
+waitfor run 120
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 2
+cmd bdperf sortkeys partonly 0 3
+cmd bdperf sortkeys partonly 2000 3
+quit

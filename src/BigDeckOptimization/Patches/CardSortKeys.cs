@@ -166,6 +166,12 @@ public static class CardSortKeys
     public static long Mismatches { get; private set; }
     /// <summary>Comparisons that reached the variables and compared them from two entries sharing their keys (bench, counters).</summary>
     public static long SharedKeyCompares { get; private set; }
+    /// <summary>Card costs read by answered sorts (once per card per sort at most; bench).</summary>
+    public static long CostReads { get; private set; }
+#if BENCH
+    /// <summary>Bench (<c>bdperf sortkeys partonly</c>): the shared-key comparison off, the game's variable loop in every comparison.</summary>
+    internal static bool NoSharedKeysForTest { get; set; }
+#endif
 
     /// <summary>Sorts left to the game, and the last reason (bench, log).</summary>
     public static long Refused { get; private set; }
@@ -259,74 +265,89 @@ public static class CardSortKeys
     private static MethodBase?[] _costDefaults = Array.Empty<MethodBase?>();
 
     /// <summary>
-    /// Per card of the sort: its cost and ordered keys once read, and the variables of those keys (<see cref="Vars"/>) with the set
-    /// and the set's dictionary version they were read from (<see cref="SameVars"/>).
+    /// Per card of the sort: its cost and ordered keys once read, and where the variables of those keys are in the sort's pool
+    /// (<see cref="VarsAt"/>), with the set, its dictionary, version and count they were read from (<see cref="SameVars"/>). In one
+    /// array made when the sort opens: no allocation per card during the sort.
     /// </summary>
-    private sealed class Entry
+    private struct Entry
     {
         public bool HasCost;
         public int Cost;
         /// <summary>The ordered keys, shared with the other cards of the sort with the same type and the same keys (<see cref="Scope.SharedKeys"/>).</summary>
         public string[]? Keys;
-        /// <summary><c>DynamicVars[Keys[i]]</c>, read with the keys; null when the variables can't be followed (<see cref="_varsKnown"/>).</summary>
-        public DynamicVar[]? Vars;
+        /// <summary>Where <c>DynamicVars[Keys[i]]</c> start in <see cref="Scope.VarPool"/>, read with the keys; -1 when not read (<see cref="Scope.Shared"/>).</summary>
+        public int VarsAt;
         public DynamicVarSet? Set;
         public Dictionary<string, DynamicVar>? SetDictionary;
         public int SetVersion;
         public int SetCount;
     }
 
-    private sealed class Scope(Dictionary<CardModel, Entry?> cards, Scope? previous)
+    private sealed class Scope(Dictionary<CardModel, int> index, Scope? previous)
     {
-        /// <summary>The sort's cards; each one's entry made at its first comparison.</summary>
-        public readonly Dictionary<CardModel, Entry?> Cards = cards;
+        /// <summary>The sort's cards and where each one's entry is in <see cref="Entries"/>.</summary>
+        public readonly Dictionary<CardModel, int> Index = index;
+        public readonly Entry[] Entries = new Entry[index.Count];
         public readonly Scope? Previous = previous;
         public long Answered;
         /// <summary>Per card type, the first ordered key array met: a card of that type with the same keys shares it.</summary>
         public readonly Dictionary<Type, string[]> SharedKeys = new();
         /// <summary>The shared-key comparison may be used in this sort (<see cref="_varsKnown"/>, <see cref="_varReads"/> unpatched).</summary>
         public bool Shared;
+        /// <summary>The variables read with the keys, every card's one after another (<see cref="Entry.VarsAt"/>).</summary>
+        public DynamicVar[] VarPool = Array.Empty<DynamicVar>();
+        public int VarCount;
         /// <summary>
         /// The last two cards looked up and their entries: the sort compares one pivot with each element in turn, so one of the two
         /// cards of a comparison is nearly always the last one's (one dictionary lookup a comparison instead of three).
         /// </summary>
         public CardModel? Card0, Card1;
-        public Entry? Entry0, Entry1;
+        public int At0 = -1, At1 = -1;
         public bool LastWas1;
 
-        /// <summary>The card's entry, made at its first lookup; null for a card that isn't in the sort.</summary>
-        public Entry? Find(CardModel card)
+        /// <summary>Where the card's entry is, or -1 for a card that isn't in the sort.</summary>
+        public int Find(CardModel card)
         {
             if (ReferenceEquals(card, Card0))
             {
                 LastWas1 = false;
-                return Entry0;
+                return At0;
             }
             if (ReferenceEquals(card, Card1))
             {
                 LastWas1 = true;
-                return Entry1;
+                return At1;
             }
-            ref Entry? slot = ref CollectionsMarshal.GetValueRefOrNullRef(Cards, card);
-            if (Unsafe.IsNullRef(ref slot))
+            if (!Index.TryGetValue(card, out int at))
             {
-                return null;
+                return -1;
             }
-            Entry entry = slot ??= new Entry();
             // The slot not used last: the other card of the comparison under way (the pivot) stays.
             if (LastWas1)
             {
                 Card0 = card;
-                Entry0 = entry;
+                At0 = at;
                 LastWas1 = false;
             }
             else
             {
                 Card1 = card;
-                Entry1 = entry;
+                At1 = at;
                 LastWas1 = true;
             }
-            return entry;
+            return at;
+        }
+
+        /// <summary>Room for <paramref name="count"/> more variables in the pool; where they start.</summary>
+        public int Reserve(int count)
+        {
+            if (VarCount + count > VarPool.Length)
+            {
+                Array.Resize(ref VarPool, Math.Max(VarPool.Length * 2, Math.Max(64, VarCount + count)));
+            }
+            int at = VarCount;
+            VarCount += count;
+            return at;
         }
     }
 
@@ -704,7 +725,7 @@ public static class CardSortKeys
                     costGates = costGates == null ? gates : costGates.Concat(gates).ToArray();
                 }
             }
-            Dictionary<CardModel, Entry?> cards = new(list.Count, ReferenceEqualityComparer.Instance);
+            Dictionary<CardModel, int> cards = new(list.Count, ReferenceEqualityComparer.Instance);
             List<ICombatState>? combats = null;
             ICombatState? last = null;
             // R3-2: a card's combat is judged only when it can be in a combat pile or a combat preview (no other mod's code on the
@@ -713,7 +734,7 @@ public static class CardSortKeys
             Dictionary<MegaCrit.Sts2.Core.Entities.Players.Player, HashSet<CardModel>>? combatCards = null;
             foreach (CardModel card in list)
             {
-                if (card == null || !cards.TryAdd(card, null))
+                if (card == null || !cards.TryAdd(card, cards.Count))
                 {
                     continue;
                 }
@@ -763,8 +784,15 @@ public static class CardSortKeys
                 }
             }
             Scope scope = new(cards, _scope);
+            for (int i = 0; i < scope.Entries.Length; i++)
+            {
+                scope.Entries[i].VarsAt = -1;
+            }
             // The variables' reads, strict for the shared-key comparison only (asked once per sort).
             bool shared = _varsKnown;
+#if BENCH
+            shared &= !NoSharedKeysForTest;
+#endif
             foreach (MethodBase? method in _varReads)
             {
                 shared &= !PatchSafety.IsPatchedByOthers(method);
@@ -1086,9 +1114,9 @@ public static class CardSortKeys
             {
                 return true; // The game's cast throws.
             }
-            Entry? mine = scope.Find(__instance);
-            Entry? theirs = other == null ? null : scope.Find(other);
-            if (mine == null || (other != null && theirs == null))
+            int mine = scope.Find(__instance);
+            int theirs = other == null ? -1 : scope.Find(other);
+            if (mine < 0 || (other != null && theirs < 0))
             {
                 return true; // Not a card of this sort: nothing was judged about it.
             }
@@ -1120,7 +1148,7 @@ public static class CardSortKeys
     }
 
     /// <summary>v0.113's <c>CardModel.CompareTo</c> (with <c>AbstractModel.CompareTo</c>), the same reads in the same order.</summary>
-    private static int Compare(Scope scope, CardModel a, Entry entry, CardModel? b, Entry? other)
+    private static int Compare(Scope scope, CardModel a, int mine, CardModel? b, int theirs)
     {
         if (ReferenceEquals(a, b))
         {
@@ -1150,8 +1178,10 @@ public static class CardSortKeys
         {
             return result;
         }
-        int costA = Cost(a, entry);
-        result = costA.CompareTo(Cost(b, other!));
+        ref Entry entry = ref scope.Entries[mine];
+        ref Entry other = ref scope.Entries[theirs];
+        int costA = Cost(a, ref entry);
+        result = costA.CompareTo(Cost(b, ref other));
         if (result != 0)
         {
             return result;
@@ -1161,7 +1191,7 @@ public static class CardSortKeys
         {
             return result;
         }
-        string[] keys = entry.Keys ?? Read(scope, a, entry);
+        string[] keys = entry.Keys ?? Read(scope, a, ref entry);
         if (keys.Length == 0)
         {
             return 0; // The game reads nothing of b's variables then: neither is it read here.
@@ -1170,17 +1200,18 @@ public static class CardSortKeys
         // read with the keys (SameVars; a variable replaced under its key inside the sort rests on the sort's premise): b has each of
         // a's keys (TryGetValue finds it), and its variable is the one read then. The values are read live, in the game's order, up
         // to the first difference.
-        if (other!.Keys == null)
+        if (other.Keys == null)
         {
-            Read(scope, b, other);
+            Read(scope, b, ref other);
         }
-        if (ReferenceEquals(keys, other.Keys) && SameVars(a, entry) && SameVars(b, other))
+        if (ReferenceEquals(keys, other.Keys) && SameVars(a, ref entry) && SameVars(b, ref other))
         {
             SharedKeyCompares++;
-            DynamicVar[] mine = entry.Vars!, theirs = other.Vars!;
-            for (int i = 0; i < mine.Length; i++)
+            DynamicVar[] pool = scope.VarPool;
+            int at = entry.VarsAt, atOther = other.VarsAt;
+            for (int i = 0; i < keys.Length; i++)
             {
-                result = mine[i].BaseValue.CompareTo(theirs[i].BaseValue);
+                result = pool[at + i].BaseValue.CompareTo(pool[atOther + i].BaseValue);
                 if (result != 0)
                 {
                     return result;
@@ -1202,10 +1233,11 @@ public static class CardSortKeys
         return 0;
     }
 
-    private static int Cost(CardModel card, Entry entry)
+    private static int Cost(CardModel card, ref Entry entry)
     {
         if (!entry.HasCost)
         {
+            CostReads++;
             entry.Cost = card.EnergyCost.GetResolved();
             entry.HasCost = true;
         }
@@ -1216,34 +1248,42 @@ public static class CardSortKeys
     /// The card's keys in <c>DynamicVars.Keys.Order(StringComparer.Ordinal)</c> order (dictionary keys are distinct, so any sort
     /// gives that order), the array shared with an earlier card of the same type with the same keys, and the variables of those
     /// keys with where they were read from (<see cref="SameVars"/>). Read where the game's comparison first reads the card's
-    /// variables (its <c>DynamicVars</c> getter, which makes them on a first read, at the same comparison).
+    /// variables (its <c>DynamicVars</c> getter, which makes them on a first read, at the same comparison). A card whose keys are
+    /// its type's shared ones (the same count, each one in them) allocates nothing.
     /// </summary>
-    private static string[] Read(Scope scope, CardModel card, Entry entry)
+    private static string[] Read(Scope scope, CardModel card, ref Entry entry)
     {
         DynamicVarSet set = card.DynamicVars;
-        string[] keys = set.Keys.ToArray();
-        Array.Sort(keys, StringComparer.Ordinal);
         Type type = card.GetType();
-        if (scope.SharedKeys.TryGetValue(type, out string[]? shared))
+        Dictionary<string, DynamicVar>? vars = _varsKnown && ReferenceEquals(_cardVars!(card), set) ? _setVars!(set) : null;
+        string[]? keys = null;
+        if (scope.SharedKeys.TryGetValue(type, out string[]? shared) && vars != null && SameKeys(vars, shared))
         {
-            if (shared.AsSpan().SequenceEqual(keys))
+            keys = shared;
+        }
+        else
+        {
+            keys = set.Keys.ToArray();
+            Array.Sort(keys, StringComparer.Ordinal);
+            if (shared == null)
+            {
+                scope.SharedKeys[type] = keys;
+            }
+            else if (shared.AsSpan().SequenceEqual(keys))
             {
                 keys = shared;
             }
         }
-        else
-        {
-            scope.SharedKeys[type] = keys;
-        }
         entry.Keys = keys;
-        if (scope.Shared && ReferenceEquals(_cardVars!(card), set) && _setVars!(set) is { } vars)
+        if (scope.Shared && vars != null)
         {
-            var read = new DynamicVar[keys.Length];
+            int at = scope.Reserve(keys.Length);
+            DynamicVar[] pool = scope.VarPool;
             for (int i = 0; i < keys.Length; i++)
             {
-                read[i] = set[keys[i]];
+                pool[at + i] = set[keys[i]];
             }
-            entry.Vars = read;
+            entry.VarsAt = at;
             entry.Set = set;
             entry.SetDictionary = vars;
             entry.SetVersion = _dictionaryVersion!(vars);
@@ -1258,14 +1298,34 @@ public static class CardSortKeys
     /// added) and count (none removed, no clear). A variable replaced under an existing key bumps neither (.NET Core 3+): not seen
     /// here, see <see cref="_varsKnown"/> (the sort's premise).
     /// </summary>
-    private static bool SameVars(CardModel card, Entry entry)
+    private static bool SameVars(CardModel card, ref Entry entry)
     {
-        if (entry.Vars == null || !ReferenceEquals(_cardVars!(card), entry.Set))
+        if (entry.VarsAt < 0 || !ReferenceEquals(_cardVars!(card), entry.Set))
         {
             return false;
         }
         Dictionary<string, DynamicVar>? vars = _setVars!(entry.Set!);
         return vars != null && ReferenceEquals(vars, entry.SetDictionary) && _dictionaryVersion!(vars) == entry.SetVersion && vars.Count == entry.SetCount;
+    }
+
+    /// <summary>
+    /// The dictionary's keys are the sorted <paramref name="shared"/> ones: as many, each one in them (keys are distinct). Read from
+    /// the dictionary itself (<c>DynamicVarSet.Keys</c> is <c>_vars.Keys</c>, fingerprinted), no allocation.
+    /// </summary>
+    private static bool SameKeys(Dictionary<string, DynamicVar> vars, string[] shared)
+    {
+        if (vars.Count != shared.Length)
+        {
+            return false;
+        }
+        foreach (string key in vars.Keys)
+        {
+            if (Array.BinarySearch(shared, key, StringComparer.Ordinal) < 0)
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     /// <summary>The game's answer for this pair (nothing in the sort can change what it reads: see <see cref="Open"/>).</summary>

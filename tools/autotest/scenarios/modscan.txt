@@ -1,0 +1,61 @@
+# Back-off scan (scratchpad, not committed): effects-check's plays with one more Workshop mod loaded, then bdopt why and the
+# effects at zero. No comparisons: what is read is which optimizations back off or never ran next to that mod.
+timeout 600
+onfail continue
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bdopt why
+wait 2
+forcefocus
+cmd bigdeck import ref all all
+enemyhp 999999
+cmd fight CULTISTS_NORMAL
+waitfor idle 75
+wait 2
+cmd bdperf relicflash 50
+wait 1
+checksum first fight
+cmd kill all
+waitfor nocombat 60
+wait 2
+deckview 2
+decksort
+cmd bigdeck import ref 1 cards
+cmd fight CULTISTS_NORMAL
+waitfor idle 75
+wait 2
+checksum start
+hover 0
+wait 1
+mousesweep 2
+hover 0
+wait 1
+cmd power CURIOUS_POWER 1 0
+checksum curious
+play 4
+waitfor idle 60
+wait 1
+checksum plays
+emptyhand
+cmd card DUAL_WIELD hand
+cmd card PERFECTED_STRIKE hand
+cmd card PERFECTED_STRIKE hand
+handselect DUAL_WIELD hold 1 free
+checksum handselect
+pilescroll draw 30 40
+pilemove draw discard 2
+wait 1
+endturn
+waitfor idle 75
+checksum reshuffle
+play 3
+waitfor idle 60
+checksum t2
+cmd kill all
+waitfor nocombat 60
+wait 3
+effects end
+cmd bdopt why
+effectcheck all ran except ^(SyncedCardRelease|ReplayStateSkip@v0\.107\..*|HookSkip\.Emptied|HookSkip\.NoBadge)$
+quit
