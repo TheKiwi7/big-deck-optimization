@@ -32,11 +32,12 @@ namespace BigDeckOptimization.Bench;
 /// <c>foreignpatch iljudge selftest</c> runs the judge on the game's own code of three hooks with each shape and its near misses
 /// built as instruction lists (nothing patched): a reordered pair, a changed branch, a handler mark removed, an observer at the
 /// state machine's entry, an ungated observer in the iteration, the listener read after its loop, a gated method in a class with a
-/// static constructor, Minty's own shape (a <c>GetCurrentMethod</c> call next to the gated one); and ExtraScopes' first-turn judge on
-/// <c>SetupPlayerTurn</c>'s state machine (code changed outside the queries accepted, RitsuLib's hand size rewrite among them; an
-/// observer inside a query, a predicate swapped, the pile stored again, a jump into a query, a query dropped refused); each verdict
-/// must be the expected one. <c>il-firstturn-outside</c> on <c>CombatManager:SetupPlayerTurn</c>: code inserted at the state
-/// machine's entry (accepted: the first turn's filters keep their scope).
+/// static constructor, Minty's own shape (a <c>GetCurrentMethod</c> call next to the gated one); each verdict must be the expected
+/// one. ExtraScopes' first turn, on <c>CombatManager:SetupPlayerTurn</c> (no IL judge there: its stand-ins decide at run time from
+/// what they are given): <c>il-firstturn-outside</c> code inserted at the state machine's entry (the filters keep their scope);
+/// <c>il-firstturn-predicate</c> the Innate filter's predicate replaced by an equivalent one of this bench (that filter without a
+/// scope, the same cards); <c>il-firstturn-source</c> the bottom-of-pile filter reading an array copy of the draw pile (that filter
+/// without a scope, the same cards).
 /// <c>foreignpatch iljudge sweep</c>: the prewalk observer and the gated observer on every classified hook of this game (how many the
 /// analysis follows).
 /// The identity bridge (the owner-approved premise of 2026-11-17, Downfall's and Watcher's <c>ModifyDamageInternal</c> shape):
@@ -50,7 +51,7 @@ namespace BigDeckOptimization.Bench;
 public static class IlJudgeShapes
 {
     public static readonly string[] Shapes = { "il-gated-observer", "il-prewalk-observer", "il-ungated-observer", "il-store-local", "il-game-call", "il-branch", "il-firstturn-outside",
-        "il-damage-bridge", "il-damage-bridge-callfirst" };
+        "il-firstturn-predicate", "il-firstturn-source", "il-damage-bridge", "il-damage-bridge-callfirst" };
 
     private static readonly ConcurrentDictionary<string, long> _counts = new();
 
@@ -167,14 +168,20 @@ public static class IlJudgeShapes
     /// <summary>Installs a shape on the hook's code; returns the method patched.</summary>
     public static MethodBase Install(string shape, string gate, MethodBase hook, Harmony harmony, int priority)
     {
-        if (shape == "il-firstturn-outside")
+        if (shape.StartsWith("il-firstturn-", StringComparison.Ordinal))
         {
             if (hook.DeclaringType != typeof(CombatManager) || hook.Name != "SetupPlayerTurn")
             {
                 throw new ArgumentException(shape + " goes on MegaCrit.Sts2.Core.Combat.CombatManager:SetupPlayerTurn");
             }
             MethodBase setup = FirstTurnBody();
-            harmony.Patch(setup, transpiler: new HarmonyMethod(typeof(IlJudgeShapes), nameof(FirstTurnOutsideTranspiler)) { priority = priority });
+            string firstTurn = shape switch
+            {
+                "il-firstturn-outside" => nameof(FirstTurnOutsideTranspiler),
+                "il-firstturn-predicate" => nameof(FirstTurnPredicateTranspiler),
+                _ => nameof(FirstTurnSourceTranspiler),
+            };
+            harmony.Patch(setup, transpiler: new HarmonyMethod(typeof(IlJudgeShapes), firstTurn) { priority = priority });
             return setup;
         }
         if (hook.DeclaringType != typeof(Hook))
@@ -217,7 +224,7 @@ public static class IlJudgeShapes
     {
         if (body.DeclaringType?.DeclaringType == typeof(CombatManager))
         {
-            yield return "FOREIGN iljudge SetupPlayerTurn: " + (ExtraScopes.FirstTurnVerdict.Length == 0 ? "no other mod's transpiler" : ExtraScopes.FirstTurnVerdict);
+            yield return "FOREIGN iljudge SetupPlayerTurn: not judged (ExtraScopes decides each first-turn filter at run time: bdperf firstturn status)";
             yield break;
         }
         string hook = HookName(body);
@@ -249,6 +256,60 @@ public static class IlJudgeShapes
     /// </summary>
     private static IEnumerable<CodeInstruction> FirstTurnOutsideTranspiler(IEnumerable<CodeInstruction> instructions) =>
         Insert(instructions.ToList(), 0, new CodeInstruction(OpCodes.Ldstr, "SetupPlayerTurn"), new CodeInstruction(OpCodes.Pop))!;
+
+    /// <summary>The state machine's calls of <c>Enumerable.Where&lt;CardModel&gt;</c> (the game's, before ExtraScopes' transpiler runs).</summary>
+    private static List<int> FirstTurnWheres(List<CodeInstruction> code)
+    {
+        List<int> wheres = Enumerable.Range(0, code.Count).Where(i => code[i].opcode == OpCodes.Call && code[i].operand is MethodInfo
+        {
+            Name: nameof(Enumerable.Where), IsGenericMethod: true,
+        } m && m.DeclaringType == typeof(Enumerable) && m.GetGenericArguments()[0] == typeof(CardModel)).ToList();
+        return wheres.Count == 2 ? wheres : throw new InvalidOperationException($"SetupPlayerTurn: {wheres.Count} Where<CardModel> calls found, 2 expected");
+    }
+
+    /// <summary>
+    /// The Innate filter's predicate (the second <c>Where</c>'s) dropped and this bench's equivalent one given instead: another
+    /// predicate than the game's lambda (ExtraScopes: that filter without a scope), the same cards.
+    /// </summary>
+    private static IEnumerable<CodeInstruction> FirstTurnPredicateTranspiler(IEnumerable<CodeInstruction> instructions)
+    {
+        List<CodeInstruction> code = instructions.ToList();
+        int second = FirstTurnWheres(code)[1];
+        // The Where call carries the label the game's cached-delegate branch jumps to: moved to the inserted run, which both paths take.
+        var pop = new CodeInstruction(OpCodes.Pop);
+        code[second].MoveLabelsTo(pop);
+        return Insert(code, second, pop, Call(typeof(FirstTurnStandIns), nameof(FirstTurnStandIns.InnatePredicate)))!;
+    }
+
+    /// <summary>
+    /// The bottom-of-pile filter (the first <c>Where</c>) reading an array copy of the draw pile (right after the last
+    /// <c>CardPile.Cards</c> read before it): not the game's list (ExtraScopes: that filter without a scope), the same cards.
+    /// </summary>
+    private static IEnumerable<CodeInstruction> FirstTurnSourceTranspiler(IEnumerable<CodeInstruction> instructions)
+    {
+        List<CodeInstruction> code = instructions.ToList();
+        int first = FirstTurnWheres(code)[0];
+        int cards = code.FindLastIndex(first, c => c.operand is MethodInfo { Name: "get_Cards" } m && m.DeclaringType == typeof(CardPile));
+        if (cards < 0)
+        {
+            throw new InvalidOperationException("SetupPlayerTurn: no CardPile.Cards read before the first Where");
+        }
+        if (code[cards + 1].labels.Count > 0)
+        {
+            throw new InvalidOperationException("SetupPlayerTurn: a jump target right after the CardPile.Cards read before the first Where");
+        }
+        return Insert(code, cards + 1, Call(typeof(FirstTurnStandIns), nameof(FirstTurnStandIns.ArrayCopy)))!;
+    }
+
+    /// <summary>What the first-turn shapes give the game's queries instead: the same answers, not the game's objects.</summary>
+    public static class FirstTurnStandIns
+    {
+        private static readonly Func<CardModel, bool> Innate = c => c.Keywords.Contains(CardKeyword.Innate);
+
+        public static Func<CardModel, bool> InnatePredicate() => Innate;
+
+        public static IReadOnlyList<CardModel> ArrayCopy(IReadOnlyList<CardModel> cards) => cards.ToArray();
+    }
 
     private static IEnumerable<CodeInstruction> UngatedObserverTranspiler(IEnumerable<CodeInstruction> instructions) =>
         InsertBefore(instructions, IsExecutionFinished, _ => new[] { new CodeInstruction(OpCodes.Dup), Call(typeof(Plain), nameof(Plain.Every)) });
@@ -603,25 +664,6 @@ public static class IlJudgeShapes
                 failures.Add(line + " (expected refused)");
             }
         }
-        // ExtraScopes' first turn: other mods' transpilers on SetupPlayerTurn's state machine, judged by what feeds the queries.
-        MethodBase setup = FirstTurnBody();
-        List<CodeInstruction> setupCode = PatchProcessor.GetOriginalInstructions(setup, out ILGenerator setupGenerator);
-        var setupIns = setupCode.Select(TranspilerJudge.Ins.From).ToList();
-        foreach ((string name, bool accept, List<CodeInstruction>? variant) in FirstTurnVariants(setupCode, setupGenerator))
-        {
-            if (variant == null)
-            {
-                continue;
-            }
-            cases++;
-            string? why = ExtraScopes.FirstTurnRefusal(setupIns, variant.Select(TranspilerJudge.Ins.From).ToList(), ToListOfCards);
-            string line = $"FOREIGN iljudge SetupPlayerTurn {name}: {(why == null ? "accepted" : "refused (" + why + ")")}";
-            lines.Add(line);
-            if ((why == null) != accept)
-            {
-                failures.Add(line + $" (expected {(accept ? "accepted" : "refused")})");
-            }
-        }
         if (failures.Count > 0)
         {
             throw new InvalidOperationException($"IL judge self-test: {failures.Count} of {cases} case(s) unexpected: " + string.Join(" | ", failures));
@@ -806,74 +848,9 @@ public static class IlJudgeShapes
         }
     }
 
-    private static readonly MethodInfo ToListOfCards = AccessTools.Method(typeof(Enumerable), nameof(Enumerable.ToList)).MakeGenericMethod(typeof(CardModel));
-
     /// <summary>CombatManager.SetupPlayerTurn's state machine (ExtraScopes' first turn).</summary>
     internal static MethodBase FirstTurnBody() =>
         AccessTools.AsyncMoveNext(AccessTools.Method(typeof(CombatManager), "SetupPlayerTurn") ?? throw new MissingMethodException("CombatManager.SetupPlayerTurn"));
-
-    private static bool IsToList(CodeInstruction code) => code.opcode == OpCodes.Call && code.operand is MethodInfo m && m == ToListOfCards;
-
-    /// <summary>
-    /// Other mods' transpilers on SetupPlayerTurn's state machine: accepted when they leave the queries and what feeds them as the
-    /// game's (code elsewhere: an observer at the entry, RitsuLib's shape, a constant rewritten), refused otherwise.
-    /// </summary>
-    private static IEnumerable<(string Name, bool Accept, List<CodeInstruction>? Code)> FirstTurnVariants(List<CodeInstruction> o, ILGenerator generator)
-    {
-        int first = o.FindIndex(IsToList);
-        int second = first < 0 ? -1 : o.FindIndex(first + 1, IsToList);
-        yield return ("unchanged", true, new List<CodeInstruction>(o));
-        yield return ("entry-observer", true, Insert(o, 0, new CodeInstruction(OpCodes.Ldstr, "selftest"), Call(typeof(Plain), nameof(Plain.PreWalk))));
-        // RitsuLib's shape: the hand size read (a constant or CardPile.MaxCardsInHand) replaced by a call of its own.
-        int handSize = o.FindIndex(c => c.operand is MethodInfo { Name: "get_MaxCardsInHand" });
-        List<CodeInstruction>? ritsu = null;
-        if (handSize >= 0)
-        {
-            ritsu = new List<CodeInstruction>(o);
-            CodeInstruction replaced = Copy(o[handSize]);
-            replaced.opcode = OpCodes.Ldc_I4_S;
-            replaced.operand = (sbyte)10;
-            ritsu[handSize] = replaced;
-        }
-        yield return ("hand-size-rewritten", true, ritsu);
-        yield return ("observer-in-query", false, first < 0 ? null : Insert(o, first, new CodeInstruction(OpCodes.Ldstr, "selftest"), Call(typeof(Plain), nameof(Plain.PreWalk))));
-        // The second query's predicate swapped for the first one's (its ldftn operand).
-        int[] lambdas = Enumerable.Range(0, o.Count).Where(i => o[i].opcode == OpCodes.Ldftn).ToArray();
-        List<CodeInstruction>? swapped = null;
-        if (lambdas.Length >= 2 && !Equals(o[lambdas[0]].operand, o[lambdas[1]].operand))
-        {
-            swapped = new List<CodeInstruction>(o);
-            CodeInstruction other = Copy(o[lambdas[1]]);
-            other.operand = o[lambdas[0]].operand;
-            swapped[lambdas[1]] = other;
-        }
-        yield return ("predicate-swapped", false, swapped);
-        // The pile the second query reads stored once more (at the entry: outside every query).
-        int pileLoad = second < 0 ? -1 : Enumerable.Range(0, second).Reverse().Take(30).FirstOrDefault(i => LocalOf(o[i]) != null, -1);
-        yield return ("pile-stored-again", false, pileLoad < 0 ? null
-            : Insert(o, 0, new CodeInstruction(OpCodes.Ldnull), new CodeInstruction(OpCodes.Stloc, LocalOf(o[pileLoad]))));
-        // A jump to the first query's call from the entry.
-        List<CodeInstruction>? jump = null;
-        if (first >= 0)
-        {
-            jump = new List<CodeInstruction>(o);
-            Label label = generator.DefineLabel();
-            CodeInstruction target = Copy(o[first]);
-            target.labels.Add(label);
-            jump[first] = target;
-            jump.Insert(0, new CodeInstruction(OpCodes.Br, label));
-        }
-        yield return ("jump-into-query", false, jump);
-        yield return ("query-dropped", false, second < 0 ? null : o.Where((_, i) => i != second).ToList());
-    }
-
-    /// <summary>The local an <c>ldloc</c> loads, as an operand for <c>stloc</c> (its index), else null.</summary>
-    private static object? LocalOf(CodeInstruction code)
-    {
-        OpCode op = code.opcode;
-        return op == OpCodes.Ldloc_0 ? 0 : op == OpCodes.Ldloc_1 ? 1 : op == OpCodes.Ldloc_2 ? 2 : op == OpCodes.Ldloc_3 ? 3
-            : op == OpCodes.Ldloc_S || op == OpCodes.Ldloc ? code.operand : null;
-    }
 
     private static CodeInstruction Copy(CodeInstruction code)
     {

@@ -1,0 +1,56 @@
+# ExtraScopes' first-turn filters next to a mod with hidden IL hooks (A/B, mod off; BDTEST_EXTRA_MODS=STS2-RitsuLib): the same as
+# firstturn-2k-off; CHECKSUM and STATE lines must match firstturn-real-2k-on line for line.
+timeout 1500
+cmd bdopt off
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck 1970
+cmd bigdeck 2000 BACKSTAB
+cmd bdperf firstturn imbue 6
+cmd bdperf checks off
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+state start
+play 3
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 3
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat 1
+state after combat 1
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start 2
+state start 2
+play 3
+waitfor idle 120
+checksum c2 t1 plays
+endturn
+waitfor idle 300
+checksum c2 t1 end
+state c2 t1
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat 2
+state after combat 2
+cmd bdopt on
+quit

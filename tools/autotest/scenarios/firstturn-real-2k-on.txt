@@ -1,0 +1,67 @@
+# ExtraScopes' first-turn filters next to a mod with hidden IL hooks (A/B, mod on; DESIGN "ExtraScopes' first turn decided at run
+# time", 2026-11-21): firstturn-2k-on with RitsuLib loaded (BDTEST_EXTRA_MODS=STS2-RitsuLib): it transpiles SetupPlayerTurn's
+# state machine (its hand size) and patches Harmony's pipeline (HarmonyWatch then treats every method another mod rebuilds as
+# patched by it), which left both first-turn filters without a scope before 2026-11-21. Now the stand-ins decide from what they
+# are given: 4 scopes, nothing refused, no back-off, ExtraScopes effect, each filter's cards identical to the same query run
+# vanilla. CHECKSUM and STATE identical with firstturn-real-2k-off.
+timeout 1500
+expect HarmonyWatch: .*patch Harmony's own .*: hidden IL hooks possible
+expect FIRSTTURN imbued 6 of 6 deck cards
+expect FIRSTTURN scopes 2, refused source 0, predicate 0, except 0, plain ToList 0, backed off 0, on True, faulted False
+expect FIRSTTURN scopes 4, refused source 0, predicate 0, except 0, plain ToList 0, backed off 0, on True, faulted False
+expect ExtraScopes first-turn filter \(in a scope\): [1-9][0-9]* cards, .*OK: identical to vanilla
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck 1970
+cmd bigdeck 2000 BACKSTAB
+cmd bdperf firstturn imbue 6
+enemyhp 999999
+immortal
+effects before
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+effectcheck ExtraScopes grew before
+cmd bdperf firstturn status
+checksum start
+state start
+play 3
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 3
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat 1
+state after combat 1
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd bdperf firstturn status
+checksum start 2
+state start 2
+play 3
+waitfor idle 120
+checksum c2 t1 plays
+endturn
+waitfor idle 300
+checksum c2 t1 end
+state c2 t1
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat 2
+state after combat 2
+cmd bdopt why
+quit
