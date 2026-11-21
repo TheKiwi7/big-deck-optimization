@@ -1289,7 +1289,14 @@ v0.113.1), RO extended to static reads and game getters (no named mod passes: im
 above; S4 and S5 not done. Proofs on both versions: on/off pairs IDENTICAL (savecheck, combatcards, reshuffle, shuffle, ab-2k,
 sortkeys-premise, foreign-parts-sort, foreign-gates, foreign-hookfilter-2k, foreign-limitless-u-2k, limitless-gated,
 foreign-limitless-l, fool-2k on v0.113), positive controls caught, mutations save-backup / pile-remove / pile-writer / rename-method
-as expected. Battery leads1121: see the final report.
+as expected. Battery `leads1121` (release.psd1 plus a `solo-new` step with every new or touched scenario: combatcards, reshuffle,
+sortkeys, foreign-gates, foreign-hookfilter, foreign-limitless-controls/-u/-l, limitless-gated, foreign-controls, preflight, walkcode,
+conflict, deckcount), both versions, 106 min: 42 of 45 steps passed at once (mutations 46/46 on each copy, co-op coopfast IDENTICAL
+to its vanilla twins, coop4 and coop4leak, settings, baselib-optional, limitless-switches, started-off, rendered, extra mods); the
+3 others reran clean: `solo-pace` (beta) and `vanillacheck` (pub) had died on a status file locked by another series (a tooling
+bug, fixed: the status write is skipped, 27a986e), and the powers sweep (pub) on a mod-off session that stalled (no DIFFERENT
+chunk; rerun IDENTICAL). Final rendered ladder (release-like, 10,295 cards, v0.113.1) against f29442e: every phase the same or
+better, combat start worst frame 695 -> 653 ms (a first run's mouse-play spikes did not repeat).
 
 - **S1 SaveBackupCheck** (option `save_check`, "Faster run saves", v0.113 only; "not needed" on v0.111). Review fixes: the game's own
   exception passes on, the FileAccess getters are watched, `savefiles` STATE lines in the A/B, mutation `save-backup`, battery step.
