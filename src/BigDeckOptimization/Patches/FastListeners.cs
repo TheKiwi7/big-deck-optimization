@@ -3660,14 +3660,25 @@ public static class FastListeners
         MethodBase[] callees = ModifierCallees(method);
         foreach (MethodBase callee in callees)
         {
-            // No tolerance: the skipped subscriber leaves these calls out.
-            if (callee == null || PatchSafety.IsPatchedByOthers(callee))
+            // No tolerance: the skipped subscriber leaves these calls out. A generic one (BaseLib's SpireField indexer, a member
+            // of a closed generic type): every instantiation of its definition Harmony patches counts too (shared reference-type
+            // code), as ExtraScopes asks; Harmony unable to list them counts as patched.
+            if (callee == null || PatchSafety.IsPatchedByOthers(callee)
+                || (IsGenericInstance(callee) && PatchSafety.IsPatchedByOthersWithInstances(MethodFingerprint.Definition(callee), OwnCaller)))
             {
                 return true;
             }
         }
         return false;
     }
+
+    /// <summary>A closed generic method, or a member of a closed generic type.</summary>
+    private static bool IsGenericInstance(MethodBase method) =>
+        method is MethodInfo { IsGenericMethod: true, IsGenericMethodDefinition: false }
+        || method.DeclaringType is { IsGenericType: true, IsGenericTypeDefinition: false };
+
+    /// <summary>The call site this file's checks record under (its patch name, as <c>[CallerFilePath]</c> gives it).</summary>
+    private const string OwnCaller = Name + ".cs";
 
     private static bool CardModifiersEmpty(string id, Delegate del)
     {
