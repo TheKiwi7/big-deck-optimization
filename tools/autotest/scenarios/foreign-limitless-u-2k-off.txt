@@ -1,0 +1,58 @@
+# G3 (2026-11-21), mod off: the same constant-result postfix as foreign-limitless-u-2k-on (see there); CHECKSUM and STATE
+# lines must match line for line.
+timeout 1500
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bdopt off
+cmd bigdeck import ref all all
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum CULTISTS_NORMAL start
+state CULTISTS_NORMAL start
+cmd kill all
+waitfor nocombat 300
+wait 2
+foreignpatch lim-constant-postfix MegaCrit.Sts2.Core.Models.CardModel:get_MaxUpgradeLevel release
+foreignpatch limitless upgradeinner 200
+wait 3
+cmd fight KNIGHTS_ELITE
+waitfor idle 600
+wait 1
+checksum KNIGHTS_ELITE start
+state KNIGHTS_ELITE start
+play 5
+waitfor idle 300
+checksum KNIGHTS_ELITE plays
+state KNIGHTS_ELITE plays
+endturn
+waitfor idle 600
+checksum KNIGHTS_ELITE t1 end
+state KNIGHTS_ELITE t1 end
+cmd kill all
+waitfor nocombat 300
+wait 2
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum CULTISTS_NORMAL start
+state CULTISTS_NORMAL start
+play 5
+waitfor idle 300
+checksum CULTISTS_NORMAL plays
+state CULTISTS_NORMAL plays
+endturn
+waitfor idle 600
+checksum CULTISTS_NORMAL t1 end
+state CULTISTS_NORMAL t1 end
+cmd kill all
+waitfor nocombat 300
+wait 2
+foreignpatch report end
+foreignpatch limitless report end
+foreignpatch remove
+foreignpatch limitless remove
+quit

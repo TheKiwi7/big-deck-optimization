@@ -15,6 +15,11 @@
 # running (SoulsPower contents are never kept next to BaseLib and Limitless: its closure reaches methods they patch themselves,
 # PlayerCombatState.get_AllPiles, CardPile.Get, ModelDb.GetEntry...; the worker's walk stops there, `reach ... closures` says where);
 # (l3) CardModel.get_MaxUpgradeLevel: a level-1 content no longer kept, a level-0 one still is.
+# G3 (2026-11-21): constant-result postfixes on CardModel.get_MaxUpgradeLevel (Bench/ForeignShapesLimitless.cs lim-constant-postfix):
+# (u1) `__result = 99` and (u2) Infinite Upgrades' `__result = int.MaxValue`: a level-1 content kept by LimitlessCloneMemo, still
+# counted patched by LimitlessHookSkip (its drops keep the strict answer); controls, a level-1 content not kept: (u3) a static read
+# (`__result = Flag ? 1 : 0`), (u4) `Math.Max(__result, 5)`, (u5) its class's initializer reading the clock, (u6) an __instance
+# parameter too. `foreignpatch limitless constant selftest`: every variant's shape verdict.
 # Review of 2026-11-19 (C2): a counting postfix on one closed instantiation of a generic member (Bench/ForeignShapesLimitless.cs
 # lim-generic-count-postfix: Harmony patches the instantiation, the chain and the closures name the definition, on which Harmony
 # finds nothing): (g2) <>z__ReadOnlySingleElementList<int>'s
@@ -29,6 +34,8 @@
 # its chain-group part stays False and the non-storage inner flag stays False (the reference run's 1,579 inner cards are all Limitless's
 # storage card). Its first word is True on both sides: one of the reference run's 8 inner enchantment types, SoulsPower, has its
 # closure stopped at a method BaseLib and Limitless patch (unknown types [SoulsPower]), which makes the type as a whole react anyway.
+# G5 (2026-11-21, c8 too): CardCmd.Enchant (a chain entry of no group, judged only inside a closure reaching it) shows as a
+# back-off in the preflight's display only while a published override closure reaches it (`foreignpatch limitless display`).
 # Rule B (copies of BaseLib's SavedSpireFieldPatch, Bench/ForeignShapesLimitlessTwins.cs, on SavedProperties.FromInternal):
 # (b1) GetFieldsForModel without its filter, (b2) a null result stored, (b3) its class's initializer doing more than make the
 # list, (b3a) GetFieldsForModel reading another class's list of the same name (it describes as BaseLib's: the twin aliased IL
@@ -59,6 +66,16 @@ expect FOREIGN reach l2 storage Goopy 0: kept True
 expect FOREIGN reach l2 storage Sharp 0: kept True
 expect FOREIGN reach l3 storage Sharp 1: kept False
 expect FOREIGN reach l3 storage Sharp 0: kept True
+expect FOREIGN limitless constant selftest: \d+ cases as expected
+expect LimitlessCloneMemo: CardModel\.get_MaxUpgradeLevel \(bdtest\.foreign\.lim-constant-postfix-release\): patched only with a constant result
+expect LimitlessHookSkip: CardModel\.get_MaxUpgradeLevel is also patched by bdtest\.foreign\.lim-constant-postfix-release \(patches gated on the listener.s type not enough\)
+expect FOREIGN reach u1 storage Sharp 1: kept True, reaches Spine, Enchant, Upgrade, hookskip patched True
+expect FOREIGN reach u1 storage Sharp 0: kept True, reaches Spine, Enchant, hookskip patched False
+expect FOREIGN reach u2 storage Sharp 1: kept True, reaches Spine, Enchant, Upgrade, hookskip patched True
+expect FOREIGN reach u3 storage Sharp 1: kept False
+expect FOREIGN reach u4 storage Sharp 1: kept False
+expect FOREIGN reach u5 storage Sharp 1: kept False
+expect FOREIGN reach u6 storage Sharp 1: kept False
 expect FOREIGN reach g2 storage Goopy 0: kept False
 expect FOREIGN reach g2 storage Sharp 0: kept True
 expect FOREIGN reach g3 storage Goopy 0: kept False
@@ -66,6 +83,7 @@ expect FOREIGN reach g3 storage Sharp 0: kept True
 expect FOREIGN reach c7 Dazed none 0: kept False, reaches Spine, hookskip patched True, foreign calls 0
 expect FOREIGN anyknown base8: .*\(chain groups patched False, types recorded [0-9]+, non-storage inner False
 expect FOREIGN anyknown c8: .*\(chain groups patched False, types recorded [0-9]+, non-storage inner False
+expect FOREIGN chain display c8: CardCmd\.Enchant shown (True, reached by a closure True|False, reached by a closure False)
 expect LimitlessCloneMemo: CardModel\.set_HasBeenRemovedFromState is also patched by bdtest\.foreign\.count-postfix: normal game for that part
 expect FOREIGN reach s1 storage Sharp 0: kept False, reaches Spine, Enchant, hookskip patched True
 expect FOREIGN anyknown s1: True \(chain groups patched True
@@ -182,6 +200,39 @@ foreignpatch limitless reach storage Sharp 1 l3
 foreignpatch limitless reach storage Sharp 0 l3
 foreignpatch remove
 wait 3
+# G3: constant-result postfixes on get_MaxUpgradeLevel (u1, u2 kept by the memo; u3 to u6 controls).
+foreignpatch limitless constant selftest
+foreignpatch lim-constant-postfix MegaCrit.Sts2.Core.Models.CardModel:get_MaxUpgradeLevel release
+wait 3
+foreignpatch limitless reach storage Sharp 1 u1
+foreignpatch limitless reach storage Sharp 0 u1
+foreignpatch limitless remove
+wait 3
+foreignpatch lim-constant-postfix MegaCrit.Sts2.Core.Models.CardModel:get_MaxUpgradeLevel max
+wait 3
+foreignpatch limitless reach storage Sharp 1 u2
+foreignpatch limitless remove
+wait 3
+foreignpatch lim-constant-postfix MegaCrit.Sts2.Core.Models.CardModel:get_MaxUpgradeLevel staticread
+wait 3
+foreignpatch limitless reach storage Sharp 1 u3
+foreignpatch limitless remove
+wait 3
+foreignpatch lim-constant-postfix MegaCrit.Sts2.Core.Models.CardModel:get_MaxUpgradeLevel mathmax
+wait 3
+foreignpatch limitless reach storage Sharp 1 u4
+foreignpatch limitless remove
+wait 3
+foreignpatch lim-constant-postfix MegaCrit.Sts2.Core.Models.CardModel:get_MaxUpgradeLevel impure
+wait 3
+foreignpatch limitless reach storage Sharp 1 u5
+foreignpatch limitless remove
+wait 3
+foreignpatch lim-constant-postfix MegaCrit.Sts2.Core.Models.CardModel:get_MaxUpgradeLevel instance
+wait 3
+foreignpatch limitless reach storage Sharp 1 u6
+foreignpatch limitless remove
+wait 3
 # (s1) Full audit B-1: a strict patch on a spine method's own callee (CardModel.AfterCloned's set_HasBeenRemovedFromState).
 foreignpatch count-postfix MegaCrit.Sts2.Core.Models.CardModel:set_HasBeenRemovedFromState
 wait 3
@@ -258,6 +309,7 @@ foreignpatch limitless anyknown base8
 foreignpatch lim-inner-count-postfix MegaCrit.Sts2.Core.Commands.CardCmd::Enchant(EnchantmentModel,CardModel,Decimal)
 wait 3
 foreignpatch limitless anyknown c8
+foreignpatch limitless display c8
 foreignpatch limitless remove
 wait 3
 # (b1) Rule B: a copy whose GetFieldsForModel has no filter.

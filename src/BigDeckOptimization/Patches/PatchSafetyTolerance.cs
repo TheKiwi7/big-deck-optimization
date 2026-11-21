@@ -239,9 +239,11 @@ public static partial class PatchSafety
         public readonly string[] Mods;
         public readonly string[] ToleratedMods;
         public readonly Type[] Gates;
+        /// <summary>Why each refused patch was refused (G2: the back-off's log line), or null.</summary>
+        public readonly string? Detail;
         public readonly string?[] LoggedFor = new string?[4];
 
-        public TolerantAnswer(bool patched, int epoch, long checkedAt, string[] mods, string[] toleratedMods, Type[] gates)
+        public TolerantAnswer(bool patched, int epoch, long checkedAt, string[] mods, string[] toleratedMods, Type[] gates, string? detail)
         {
             Patched = patched;
             Epoch = epoch;
@@ -249,6 +251,7 @@ public static partial class PatchSafety
             Mods = mods;
             ToleratedMods = toleratedMods;
             Gates = gates;
+            Detail = detail;
         }
     }
 
@@ -353,7 +356,7 @@ public static partial class PatchSafety
         {
             if (cached.Patched || _anyConflict)
             {
-                RecordOnce(caller, method, cached.Mods, tolerance);
+                RecordOnce(caller, method, cached.Mods, tolerance, cached.Detail);
             }
             if (!cached.Patched && cached.ToleratedMods.Length > 0)
             {
@@ -397,26 +400,30 @@ public static partial class PatchSafety
         var remaining = new List<Patch>();
         var tolerated = new List<Patch>();
         var gateList = new List<Type>();
+        // G2 (2026-11-21): each refused patch's reason, for the back-off's log line (not the menu).
+        var reasons = new List<string>();
         foreach ((Patch patch, PatchKind kind) in others)
         {
             if (PatchMethodOf(patch) is { } patchMethod && allowedPatches.Any(a => a.MethodHandle == patchMethod.MethodHandle))
             {
                 continue;
             }
-            if (Intolerable(method, info!, patch, kind, tolerance, gateList) == null)
+            if (Intolerable(method, info!, patch, kind, tolerance, gateList) is not { } why)
             {
                 tolerated.Add(patch);
             }
             else
             {
                 remaining.Add(patch);
+                reasons.Add($"{ModName(patch)}'s {(PatchMethodOf(patch) is { } refused ? refused.DeclaringType?.Name + "." + refused.Name : patch.owner)}: {why}");
             }
         }
         string[] mods = WithHidden(method, ModNames(remaining));
         string[] toleratedMods = ModNames(tolerated);
         Type[] gateTypes = mods.Length > 0 ? Type.EmptyTypes : gateList.Distinct().ToArray();
-        RecordOnce(caller, method, mods, tolerance);
-        var answer = new TolerantAnswer(mods.Length > 0, epoch, now, mods, toleratedMods, gateTypes);
+        string? detail = reasons.Count > 0 ? string.Join("; ", reasons) : null;
+        RecordOnce(caller, method, mods, tolerance, detail);
+        var answer = new TolerantAnswer(mods.Length > 0, epoch, now, mods, toleratedMods, gateTypes, detail);
         _tolerant[(method, key, tolerance)] = answer;
         if (mods.Length == 0 && toleratedMods.Length > 0)
         {
@@ -774,7 +781,7 @@ public static partial class PatchSafety
             {
                 return refused;
             }
-            if (tolerance != PatchTolerance.TypeGated && ArgumentRefusal(original, method, kind) is { } argument)
+            if (tolerance != PatchTolerance.TypeGated && ArgumentRefusal(original, method, kind, tolerance) is { } argument)
             {
                 return argument;
             }
@@ -896,9 +903,11 @@ public static partial class PatchSafety
                 }
                 // An argument by reference only read through (every use of it an immediate load of the value: never written,
                 // never passed on as an address): Intolerable also requires one of the original's out/ref parameters (its value
-                // after the body, read as the game's caller would). Anything else by reference stays refused.
+                // after the body, read as the game's caller would). G4 (2026-11-21): under BeforeReplace one written too, judged
+                // per original by ArgumentRefusal (a mirror declaring it leaves that argument as the original would). Anything
+                // else by reference stays refused.
                 if ((parameter.ParameterType.IsByRef || parameter.IsOut) && parameter.Name is not ("__state" or "__result")
-                    && !(IsArgumentName(parameter.Name) && OnlyReadThrough(method, parameter.Position)))
+                    && !(IsArgumentName(parameter.Name) && (OnlyReadThrough(method, parameter.Position) || tolerance == PatchTolerance.BeforeReplace)))
                 {
                     return $"postfix taking {parameter.Name} by reference";
                 }
@@ -948,10 +957,11 @@ public static partial class PatchSafety
 
     /// <summary>
     /// For a patch's by-reference arguments the shape rules let stand (a prefix's: any of the original's parameters; a
-    /// postfix's: one of its out or ref parameters, only read through): why not, or null. Asked per original (the shape
-    /// itself is cached per patch method). Harmony would refuse to patch with a name the original lacks; checked anyway.
+    /// postfix's: one of its out or ref parameters, only read through, or under BeforeReplace one a mirror reproduces:
+    /// <see cref="SetReproducedByReference"/>, G4): why not, or null. Asked per original (the shape itself is cached per patch
+    /// method). Harmony would refuse to patch with a name the original lacks; checked anyway.
     /// </summary>
-    private static string? ArgumentRefusal(MethodBase original, MethodInfo patch, PatchKind kind)
+    private static string? ArgumentRefusal(MethodBase original, MethodInfo patch, PatchKind kind, PatchTolerance tolerance)
     {
         ParameterInfo[] arguments = original.GetParameters();
         foreach (ParameterInfo parameter in patch.GetParameters())
@@ -970,9 +980,40 @@ public static partial class PatchSafety
                 // A by-value argument's own slot, which this mod's finalizers read after it (the message the shape gave before).
                 return $"postfix taking {parameter.Name} by reference";
             }
+            // G4: under BeforeReplace (the only tolerance whose shape rule lets a written one through), a postfix writing one of the
+            // original's out/ref arguments stands only where this mod's replacement of the body leaves that argument as the original
+            // would (the postfix then reads and writes the caller's variable as without this mod); otherwise only read through.
+            if (kind == PatchKind.Postfix && tolerance == PatchTolerance.BeforeReplace && !OnlyReadThrough(patch, parameter.Position)
+                && !Reproduces(original, argument.Name))
+            {
+                return $"postfix taking {parameter.Name} by reference";
+            }
         }
         return null;
     }
+
+    /// <summary>
+    /// G4 (2026-11-21): per original, the out/ref arguments a mirror of this mod (a prefix replacing the body: BeforeReplace) assigns
+    /// on every path that skips the original, with the value the original would leave, and that no code of this mod reads after
+    /// the postfixes: HookFilter's ShouldPlay mirror and its <c>preventer</c>.
+    /// </summary>
+    private static readonly ConcurrentDictionary<MethodBase, string[]> _reproducedByReference = new();
+
+    /// <summary>
+    /// Declares that this mod's mirror of <paramref name="original"/> leaves <paramref name="arguments"/> (out/ref parameters of the
+    /// original) as the original would on every path skipping it, and that nothing of this mod reads them after the postfixes:
+    /// other mods' postfixes taking them by reference (and writing them) then stand under BeforeReplace. Never throws.
+    /// </summary>
+    internal static void SetReproducedByReference(MethodBase? original, params string[] arguments)
+    {
+        if (original != null)
+        {
+            _reproducedByReference[original] = arguments;
+        }
+    }
+
+    private static bool Reproduces(MethodBase original, string? argument) =>
+        argument != null && _reproducedByReference.TryGetValue(original, out string[]? arguments) && Array.IndexOf(arguments, argument) >= 0;
 
     /// <summary>
     /// Whether the patch method only reads through its by-reference parameter at <paramref name="position"/>: every
@@ -1860,7 +1901,8 @@ public static partial class PatchSafety
 
     /// <summary>
     /// Why <see cref="TypeGates(MethodInfo, PatchKind, MethodBase?)"/> gives no gate, for the log: the IL shape first (a patch not
-    /// gated is told so, whatever its class), then the type initializers it may run (<see cref="InitializersFree"/>).
+    /// gated is told so, whatever its class), then the type initializers it may run (<see cref="InitializersFree"/>), the methods
+    /// its no-op path calls, and its name gates that didn't resolve.
     /// </summary>
     private static string GateRefusal(MethodInfo patch, PatchKind kind, MethodBase original, string listener)
     {
@@ -1883,6 +1925,15 @@ public static partial class PatchSafety
         if (shaped && PatchedPathCallee(gateKey) is { } callee)
         {
             return $"{KindText(kind, patch)} gated, but {callee.DeclaringType?.Name}.{callee.Name}, which it calls on every call, is patched (its code isn't the one read)";
+        }
+        // G2 (2026-11-21): the shape passed with name gates (the reflection-reads premise) that TypeGates couldn't resolve to loaded
+        // types: said only when that resolution (TypeGates' own step) fails now.
+        if (shaped && _gates.TryGetValue(gateKey, out Type[]? shape) && shape != null && Array.IndexOf(shape, typeof(NameGateMarker)) >= 0
+            && (!_gateNames.TryGetValue(gateKey, out (bool Full, string Name)[]? gateNames) || WithNamedTypes(shape, gateNames) == null))
+        {
+            string names = gateNames != null ? string.Join(", ", gateNames.Select(n => n.Name)) : "unrecorded";
+            return $"{KindText(kind, patch)} gated on a type's name ({names}), but that name can't be resolved to the loaded types"
+                + (TypesNamedFailure is { } failure ? $" (the last type scan failed: {failure})" : " (a generic or closed generic name, a type still being built, or an unreadable assembly)");
         }
         return $"{KindText(kind, patch)} not provably gated on the listener's type" + listener;
     }
@@ -2514,8 +2565,8 @@ public static partial class PatchSafety
     /// <summary>
     /// The code the runtime may compile with the patch method (the re-audit round 2 of 2026-11-17): the method, and (A2) the methods
     /// of its own assembly it calls directly, transitively to depth 3 (the JIT may inline them into it, and their static accesses
-    /// with them), plus the state machine of any of those (an async or iterator body, started through the runtime's generic
-    /// builder). Lambdas only referenced by a delegate (ldftn) are compiled on their own when first invoked, on the path that
+    /// with them), plus the state machine of any of those (an iterator body; an async body only where the JIT may inline it:
+    /// <see cref="NeverInlinedAsyncBody"/>, G6). Lambdas only referenced by a delegate (ldftn) are compiled on their own when first invoked, on the path that
     /// invokes them (B4: no longer scanned unless called directly). Throws when the IL can't be read (the caller refuses).
     /// </summary>
     private static List<MethodBase> CompiledWith(MethodInfo patch)
@@ -2543,13 +2594,38 @@ public static partial class PatchSafety
         }
         foreach (MethodBase method in found.ToArray())
         {
-            if (method.GetCustomAttribute<StateMachineAttribute>()?.StateMachineType?.GetMethod("MoveNext",
-                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly) is { } moveNext && seen.Add(moveNext))
+            if (method.GetCustomAttribute<StateMachineAttribute>() is { StateMachineType: { } machine } attribute
+                && machine.GetMethod("MoveNext", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly) is { } moveNext
+                && !NeverInlinedAsyncBody(attribute, moveNext) && seen.Add(moveNext))
             {
                 found.Add(moveNext);
             }
         }
         return found;
+    }
+
+    /// <summary>
+    /// G6 (2026-11-21): an async method's <c>MoveNext</c> that the runtime compiles only at its own first call, never with the
+    /// patch: an <see cref="AsyncStateMachineAttribute"/> body with exception handling, under .NET 9 or older (the game ships 9.0.7),
+    /// whose JIT never inlines a method with exception handling; the stub starts it through <c>AsyncMethodBuilderCore.Start</c>, which
+    /// has a try/finally itself. So it compiles (and the beforefieldinit initializers it reaches may run) at its first call, on the
+    /// path that calls the stub, as without this mod. The stub's own accesses stay scanned (it is one of the methods found). Iterators
+    /// (no exception handling, started by the caller's own MoveNext calls), async iterators and any later runtime keep the body scanned.
+    /// An experiment of 2026-11-21 (runtimes 9.0.21 and 10.0.10, tiered, TieredPGO off and TieredCompilation=0) saw no beforefieldinit
+    /// initializer run early even for an AggressiveInlining callee: the hazard CompiledWith models isn't observable today; this only
+    /// drops from that conservative model a method the .NET 9 JIT can't inline at all.
+    /// </summary>
+    private static bool NeverInlinedAsyncBody(StateMachineAttribute attribute, MethodInfo moveNext)
+    {
+        try
+        {
+            return Environment.Version.Major <= 9 && attribute.GetType() == typeof(AsyncStateMachineAttribute)
+                && moveNext.GetMethodBody() is { ExceptionHandlingClauses.Count: > 0 };
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>
@@ -2628,7 +2704,8 @@ public static partial class PatchSafety
     /// <c>MethodBase.GetMethodFromHandle</c>), arrays of runtime types (<c>newarr</c>, <c>stelem</c>,
     /// <c>RuntimeHelpers.InitializeArray</c>), <c>new object()</c>, empty runtime collections of runtime element types
     /// (<c>System.Collections.*</c> constructors taking nothing, a constant non-negative capacity, or a comparer from a runtime
-    /// static getter: <c>StringComparer.*</c>, <c>EqualityComparer&lt;T&gt;.Default</c>, <c>Comparer&lt;T&gt;.Default</c>),
+    /// static getter: <c>StringComparer.*</c>, <c>EqualityComparer&lt;T&gt;.Default</c>, <c>Comparer&lt;T&gt;.Default</c>, whose
+    /// compared type is a runtime type: G1, the collection's other type arguments then free, as without a comparer),
     /// runtime static readonly fields (<c>Type.EmptyTypes</c>, <c>string.Empty</c>), <c>Array.Empty&lt;T&gt;()</c>, field
     /// lookups (HarmonyLib's <c>AccessTools.Field/DeclaredField(Type, string)</c>, which return null for a missing field (they throw only
     /// for two fields of one name in one class, which emitted IL alone can make), and
@@ -3154,8 +3231,11 @@ public static partial class PatchSafety
                 return parameters.Length == 0;
             }
             // An empty collection: no argument or a constant capacity (any element types, B4 of the re-audit round 2: constructing
-            // it runs no code of theirs; a ConditionalWeakTable too), or a runtime comparer (runtime element types only: the comparer
-            // is theirs). No other argument: a collection initializer's Add runs the keys' Equals and GetHashCode.
+            // it runs no code of theirs; a ConditionalWeakTable too), or a runtime comparer whose own type argument (the key or element
+            // it compares: the parameter's IEqualityComparer<K> / IComparer<K>) is a runtime type. G1 (2026-11-21): the collection's
+            // other type arguments (a dictionary's value type) are free, as without a comparer: constructing it runs no code of theirs
+            // (SynergyMod's new Dictionary<string, ISynergyHandler>(StringComparer.Ordinal)); EqualityComparer<ModType>.Default stays
+            // refused (RuntimeComparer). No other argument: a collection initializer's Add runs the keys' Equals and GetHashCode.
             bool weakTable = owner.IsGenericType && owner.GetGenericTypeDefinition() == typeof(System.Runtime.CompilerServices.ConditionalWeakTable<,>);
             if ((!weakTable && owner.Namespace is not ("System.Collections.Generic" or "System.Collections.Concurrent" or "System.Collections.ObjectModel" or "System.Collections"))
                 || at - parameters.Length < 0)
@@ -3176,7 +3256,7 @@ public static partial class PatchSafety
                         _ => false,
                     }
                     : type.IsGenericType && type.GetGenericTypeDefinition() is var d && (d == typeof(IEqualityComparer<>) || d == typeof(IComparer<>))
-                        ? argument.Operand is MethodBase getter && RuntimeComparer(getter) && owner.GetGenericArguments().All(IsRuntimeType)
+                        ? argument.Operand is MethodBase getter && RuntimeComparer(getter) && IsRuntimeType(type.GetGenericArguments()[0])
                     : false;
                 if (!ok)
                 {

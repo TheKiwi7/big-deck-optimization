@@ -9,6 +9,7 @@ cmd bigdeck import ref all all
 cmd bdperf checks off
 enemyhp 999999
 foreignpatch bool-prefix MegaCrit.Sts2.Core.Hooks.Hook:ShouldPlay priority 800
+foreignpatch hf-ref-write-postfix MegaCrit.Sts2.Core.Hooks.Hook:ShouldPlay
 foreignpatch noop-postfix MegaCrit.Sts2.Core.Hooks.Hook:ShouldAllowHitting
 foreignpatch hf-gated-damage-postfix MegaCrit.Sts2.Core.Models.AbstractModel:ModifyDamageAdditive squeeze
 cmd fight CULTISTS_NORMAL

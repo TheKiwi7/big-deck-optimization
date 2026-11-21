@@ -410,14 +410,14 @@ public static partial class PatchSafety
     /// Records a check's answer under its call site. Keyed by the tolerance too: one patch may check a method strictly for one
     /// part and with a tolerance for another, two answers that must not undo each other at every call.
     /// </summary>
-    private static void RecordOnce(string caller, MethodBase method, string[] mods, PatchTolerance tolerance = PatchTolerance.None)
+    private static void RecordOnce(string caller, MethodBase method, string[] mods, PatchTolerance tolerance = PatchTolerance.None, string? detail = null)
     {
         if (_recordedFrom.TryGetValue((caller, method, tolerance), out string[]? recorded) && ReferenceEquals(recorded, mods))
         {
             return;
         }
         _recordedFrom[(caller, method, tolerance)] = mods;
-        Record(caller, method, mods, tolerance);
+        Record(caller, method, mods, tolerance, detail);
     }
 
     /// <summary>
@@ -496,7 +496,34 @@ public static partial class PatchSafety
         }
     }
 
-    private static void Record(string caller, MethodBase method, string[] mods, PatchTolerance tolerance = PatchTolerance.None)
+    /// <summary>
+    /// Forgets <paramref name="patch"/>'s back-off recorded on <paramref name="method"/> under <paramref name="tolerance"/> (display: a
+    /// call site that learns the answer isn't its own any more, G3's constant-only getters under LimitlessCloneMemo). Never throws.
+    /// </summary>
+    internal static void ForgetBackOff(string patch, MethodBase? method, PatchTolerance tolerance)
+    {
+        try
+        {
+            if (method != null && _conflicts.TryRemove((patch, method, tolerance), out _))
+            {
+                Config.Settings.NotifyStatesChanged();
+            }
+            foreach ((string Caller, MethodBase Method, PatchTolerance Tolerance) key in _recordedFrom.Keys)
+            {
+                if (key.Method == method && key.Tolerance == tolerance && PatchName(key.Caller) == patch)
+                {
+                    _recordedFrom.TryRemove(key, out _);
+                }
+            }
+        }
+        catch
+        {
+            // Display only.
+        }
+    }
+
+    /// <param name="detail">Why the tolerance refused each patch (G2, 2026-11-21): appended to the log line only, never to the menu's text.</param>
+    private static void Record(string caller, MethodBase method, string[] mods, PatchTolerance tolerance = PatchTolerance.None, string? detail = null)
     {
         string patch = PatchName(caller);
         if (mods.Length == 0)
@@ -513,7 +540,8 @@ public static partial class PatchSafety
             _conflicts[(patch, method, tolerance)] = mods;
             Config.Settings.NotifyStatesChanged();
             MegaCrit.Sts2.Core.Logging.Log.Info($"[{ModEntry.Id}] {patch}: {method.DeclaringType?.Name}.{method.Name} is also patched by {string.Join(", ", mods)}"
-                + (tolerance == PatchTolerance.None ? "" : $" ({ToleranceText(tolerance)} not enough)") + ": normal game for that part");
+                + (tolerance == PatchTolerance.None ? "" : $" ({ToleranceText(tolerance)} not enough)") + ": normal game for that part"
+                + (detail == null ? "" : $" (refused: {detail})"));
         }
     }
 

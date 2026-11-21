@@ -34,6 +34,7 @@ public static class ForeignShapesGates
         "gates-getter-gated-postfix", "gates-getter-ungated-postfix",
         "gates-init-extensions-postfix", "gates-init-ambiguous-postfix", "gates-forwarder-postfix", "gates-forwarder-acts-postfix",
         "gates-count-postfix", "gates-count-prefix", "gates-button-gated-prefix",
+        "gates-comparer-postfix", "gates-modcomparer-postfix", "gates-async-postfix", "gates-iterator-postfix",
     };
 
     /// <summary>Whether a <c>foreignpatch</c> line is one of this file's.</summary>
@@ -108,6 +109,10 @@ public static class ForeignShapesGates
             "gates-count-postfix" => (CountPatch(key), PatchSafety.PatchKind.Postfix),
             "gates-count-prefix" => (CountPatch(key), PatchSafety.PatchKind.Prefix),
             "gates-button-gated-prefix" => (ButtonGatedPrefix(key), PatchSafety.PatchKind.Prefix),
+            "gates-comparer-postfix" => (InitCase("g1-comparer-value", key), PatchSafety.PatchKind.Postfix),
+            "gates-modcomparer-postfix" => (InitCase("g1-mod-comparer", key), PatchSafety.PatchKind.Postfix),
+            "gates-async-postfix" => (typeof(GatesStateMachineShapes).GetMethod(nameof(GatesStateMachineShapes.AsyncPostfix))!, PatchSafety.PatchKind.Postfix),
+            "gates-iterator-postfix" => (typeof(GatesStateMachineShapes).GetMethod(nameof(GatesStateMachineShapes.IteratorPostfix))!, PatchSafety.PatchKind.Postfix),
             _ => throw new ArgumentException("unknown gates shape " + shape),
         };
     }
@@ -422,7 +427,7 @@ public static class ForeignShapesGates
         });
 
     /// <summary>Debug IL of the name test <c>if (__instance.GetType().Name != "Squeeze") return; Hit(key);</c>: a name gate.</summary>
-    private static MethodInfo DebugNameGatedPostfix(string key) => Emit("debug_name_gated_postfix", typeof(void), InstanceOnly, il =>
+    private static MethodInfo DebugNameGatedPostfix(string key, string typeName = "Squeeze") => Emit("debug_name_gated_postfix", typeof(void), InstanceOnly, il =>
     {
         il.DeclareLocal(typeof(bool));
         Label work = il.DefineLabel(), end = il.DefineLabel();
@@ -430,7 +435,7 @@ public static class ForeignShapesGates
         il.Emit(OpCodes.Ldarg_0);
         il.Emit(OpCodes.Callvirt, typeof(object).GetMethod(nameof(GetType))!);
         il.Emit(OpCodes.Callvirt, typeof(MemberInfo).GetProperty(nameof(MemberInfo.Name))!.GetGetMethod()!);
-        il.Emit(OpCodes.Ldstr, "Squeeze");
+        il.Emit(OpCodes.Ldstr, typeName);
         il.Emit(OpCodes.Call, typeof(string).GetMethod("op_Inequality", new[] { typeof(string), typeof(string) })!);
         il.Emit(OpCodes.Stloc_0);
         il.Emit(OpCodes.Ldloc_0);
@@ -916,7 +921,47 @@ public static class ForeignShapesGates
                     il.Emit(OpCodes.Pop);
                     il.Emit(OpCodes.Newobj, typeof(GatesRegistry).GetConstructor(Type.EmptyTypes)!);
                 });
+            case "g1-comparer-value":
+                // G1: new Dictionary<string, GatesRegistry>(StringComparer.Ordinal), a mod type as the value (SynergyMod's SynergyRuntime).
+                return InitGatedPostfix(kind, key, typeof(object), il =>
+                {
+                    il.Emit(OpCodes.Call, typeof(StringComparer).GetProperty(nameof(StringComparer.Ordinal))!.GetGetMethod()!);
+                    il.Emit(OpCodes.Newobj, typeof(Dictionary<string, GatesRegistry>).GetConstructor(new[] { typeof(IEqualityComparer<string>) })!);
+                });
+            case "g1-sorted-value":
+                // G1: new SortedDictionary<string, GatesRegistry>(StringComparer.Ordinal) (an IComparer<string> parameter).
+                return InitGatedPostfix(kind, key, typeof(object), il =>
+                {
+                    il.Emit(OpCodes.Call, typeof(StringComparer).GetProperty(nameof(StringComparer.Ordinal))!.GetGetMethod()!);
+                    il.Emit(OpCodes.Newobj, typeof(SortedDictionary<string, GatesRegistry>).GetConstructor(new[] { typeof(IComparer<string>) })!);
+                });
             // Controls.
+            case "g1-mod-comparer":
+                // EqualityComparer<GatesRegistry>.Default: the compared type is a mod's (its Equals and GetHashCode).
+                return InitGatedPostfix(kind, key, typeof(object), il =>
+                {
+                    il.Emit(OpCodes.Call, typeof(EqualityComparer<GatesRegistry>).GetProperty(nameof(EqualityComparer<GatesRegistry>.Default))!.GetGetMethod()!);
+                    il.Emit(OpCodes.Newobj, typeof(Dictionary<GatesRegistry, int>).GetConstructor(new[] { typeof(IEqualityComparer<GatesRegistry>) })!);
+                });
+            case "g1-mod-key":
+                // A runtime comparer of a runtime type passed for a mod key type (IEqualityComparer<object> as IEqualityComparer<GatesRegistry>,
+                // contravariant): the compared type, the parameter's, is the mod's.
+                return InitGatedPostfix(kind, key, typeof(object), il =>
+                {
+                    il.Emit(OpCodes.Call, typeof(EqualityComparer<object>).GetProperty(nameof(EqualityComparer<object>.Default))!.GetGetMethod()!);
+                    il.Emit(OpCodes.Newobj, typeof(HashSet<GatesRegistry>).GetConstructor(new[] { typeof(IEqualityComparer<GatesRegistry>) })!);
+                });
+            case "g1-add":
+                // The accepted construction followed by a collection initializer's Add.
+                return InitGatedPostfix(kind, key, typeof(object), il =>
+                {
+                    il.Emit(OpCodes.Call, typeof(StringComparer).GetProperty(nameof(StringComparer.Ordinal))!.GetGetMethod()!);
+                    il.Emit(OpCodes.Newobj, typeof(Dictionary<string, GatesRegistry>).GetConstructor(new[] { typeof(IEqualityComparer<string>) })!);
+                    il.Emit(OpCodes.Dup);
+                    il.Emit(OpCodes.Ldstr, "a");
+                    il.Emit(OpCodes.Ldnull);
+                    il.Emit(OpCodes.Callvirt, typeof(Dictionary<string, GatesRegistry>).GetMethod(nameof(Dictionary<string, GatesRegistry>.Add))!);
+                });
             case "ambiguous":
                 return InitGatedPostfix(kind, key, typeof(object), il => EmitMethodLookup(il, typeof(Math), nameof(Math.Max)));
             case "computed-name":
@@ -1327,7 +1372,7 @@ public static class ForeignShapesGates
     // --- The self-test ---
 
     private readonly record struct Case(string Name, MethodInfo Patch, PatchSafety.PatchKind Kind, MethodBase Original, PatchTolerance Tolerance,
-        bool Stands, string? Gates = null, Action? Before = null, Action? After = null);
+        bool Stands, string? Gates = null, Action? Before = null, Action? After = null, string? Why = null);
 
     private static IEnumerable<Case> Cases()
     {
@@ -1361,6 +1406,9 @@ public static class ForeignShapesGates
         {
             yield return new Case("E Debug name test", DebugNameGatedPostfix("selftest"), postfix, model, gated, true, "Squeeze");
         }
+        // G2 (2026-11-21): a name gate that can't be resolved (a generic arity's name) is told so, not "not provably gated".
+        yield return new Case("G2 control: a name gate that can't be resolved (List`1) names it", DebugNameGatedPostfix("selftest", "List`1"), postfix, model, gated, false,
+            Why: "gated on a type's name (List`1), but that name can't be resolved");
         yield return new Case("E control: passthrough returning a constant", PassthroughPostfix("selftest", constant: true), postfix, model, gated, false);
         yield return new Case("E control: passthrough's first parameter not named __result", PassthroughPostfix("selftest", name: "result"), postfix, model, gated, false);
         yield return new Case("E control: a branch on another argument", GateControl("unknown-branch"), postfix, model, gated, false);
@@ -1418,6 +1466,20 @@ public static class ForeignShapesGates
         yield return new Case("R1 control: a constructor reading the clock", InitCase("r1-impure"), postfix, model, gated, false);
         yield return new Case("R1 control: two initializers constructing each other (refused, no recursion)", InitCase("r1-cycle"), postfix, model, gated, false);
         yield return new Case("control: FieldRefAccess (it emits code)", InitCase("field-ref-access"), postfix, model, gated, false);
+        // G1 (2026-11-21): a runtime comparer of a runtime key, any value type.
+        yield return new Case("G1 new Dictionary<string, ModType>(StringComparer.Ordinal)", InitCase("g1-comparer-value"), postfix, model, gated, true, "Squeeze");
+        yield return new Case("G1 new SortedDictionary<string, ModType>(StringComparer.Ordinal)", InitCase("g1-sorted-value"), postfix, model, gated, true, "Squeeze");
+        yield return new Case("G1 control: EqualityComparer<ModType>.Default", InitCase("g1-mod-comparer"), postfix, model, gated, false);
+        yield return new Case("G1 control: EqualityComparer<object>.Default for a HashSet<ModType>", InitCase("g1-mod-key"), postfix, model, gated, false);
+        yield return new Case("G1 control: the accepted dictionary then Add", InitCase("g1-add"), postfix, model, gated, false);
+        // G6 (2026-11-21): an async body's MoveNext isn't compiled with the patch under .NET 9; an iterator's is.
+        if (Environment.Version.Major <= 9)
+        {
+            yield return new Case("G6 the gated path starts an async method whose MoveNext reaches an impure initializer",
+                typeof(GatesStateMachineShapes).GetMethod(nameof(GatesStateMachineShapes.AsyncPostfix))!, postfix, model, gated, true, "Squeeze");
+        }
+        yield return new Case("G6 control: an iterator whose MoveNext reaches an impure initializer",
+            typeof(GatesStateMachineShapes).GetMethod(nameof(GatesStateMachineShapes.IteratorPostfix))!, postfix, model, gated, false);
         // FW: forwarders.
         yield return new Case("FW a forwarder (__instance, ref __result) to a gated helper of its class", ForwarderPostfix("selftest"), postfix, model, gated, true, "Squeeze");
         yield return new Case("FW a helper's returned test (if (IsMine(__instance)))", ReturningHelperPostfix("selftest"), postfix, model, gated, true, "Squeeze");
@@ -1473,12 +1535,12 @@ public static class ForeignShapesGates
                 c.After?.Invoke();
             }
             string found = string.Join("|", gates.Select(g => g.Name).Distinct().OrderBy(n => n, StringComparer.Ordinal));
-            bool ok = (why == null) == c.Stands && (c.Gates == null || c.Gates == found);
+            bool ok = (why == null) == c.Stands && (c.Gates == null || c.Gates == found) && (c.Why == null || (why?.Contains(c.Why, StringComparison.Ordinal) ?? false));
             string verdict = why == null ? "stands" + (found.Length > 0 ? " gated on " + found : "") : "backs off (" + why + ")";
             lines.Add($"FOREIGN gates selftest {(ok ? "ok" : "WRONG")}: {c.Name}: {verdict}");
             if (!ok)
             {
-                failures.Add($"{c.Name}: {verdict}, expected {(c.Stands ? "stands" + (c.Gates != null ? " gated on " + c.Gates : "") : "a back-off")}");
+                failures.Add($"{c.Name}: {verdict}, expected {(c.Stands ? "stands" + (c.Gates != null ? " gated on " + c.Gates : "") : "a back-off" + (c.Why != null ? " saying " + c.Why : ""))}");
             }
         }
         if (failures.Count > 0)
@@ -1533,4 +1595,54 @@ public sealed class GatesRegistry
 public sealed class GatesImpureRegistry
 {
     public readonly long Started = Environment.TickCount64;
+}
+
+/// <summary>
+/// G6 (2026-11-21): gated postfixes in C# (this assembly compiled optimized: Release IL) whose gated path starts a state machine
+/// reaching <see cref="GatesImpureStatic"/> (a beforefieldinit initializer reading the clock): YutaMod's <c>as KashimoPhasePower</c>
+/// on AfterDeath, refused only by initializers reached from an async <c>MoveNext</c>. The async body's <c>MoveNext</c> (exception
+/// handling: never inlined by the .NET 9 JIT, compiled at its first call on the gated path) is out of the scanned code; the
+/// iterator's (no exception handling) stays in it.
+/// </summary>
+public static class GatesStateMachineShapes
+{
+    /// <summary><c>if (__instance is Squeeze) _ = CountAsync();</c>: kept (G6).</summary>
+    public static void AsyncPostfix(AbstractModel __instance)
+    {
+        if (__instance is Squeeze)
+        {
+            _ = CountAsync();
+        }
+    }
+
+    private static async System.Threading.Tasks.Task CountAsync()
+    {
+        GatesImpureStatic.Count++;
+        GatesCounter.Hit("gates-async-postfix");
+        await System.Threading.Tasks.Task.CompletedTask;
+    }
+
+    /// <summary><c>if (__instance is Squeeze) Items().GetEnumerator().MoveNext();</c>: the control, an iterator's body still scanned.</summary>
+    public static void IteratorPostfix(AbstractModel __instance)
+    {
+        if (__instance is Squeeze)
+        {
+            Items().GetEnumerator().MoveNext();
+        }
+    }
+
+    private static IEnumerable<int> Items()
+    {
+        GatesImpureStatic.Count++;
+        GatesCounter.Hit("gates-iterator-postfix");
+        yield return GatesImpureStatic.Count;
+    }
+}
+
+/// <summary>A class whose beforefieldinit initializer reads the clock (impure), reached only from the state machines above.</summary>
+public static class GatesImpureStatic
+{
+    public static readonly long Started = Environment.TickCount64;
+
+    public static int Count;
 }

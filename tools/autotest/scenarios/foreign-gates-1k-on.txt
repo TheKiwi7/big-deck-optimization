@@ -18,6 +18,12 @@
 # Priority.Last patched after this mod's on the heal modifier (it runs after the filter is set): backs off.
 # TG on IdleButtonInput: a Debug bool prefix on NButton._Input gated on NCharacterSelectButton (Into The Spireverse's shape,
 # its gated path reading nothing impure): kept, idle buttons still muted (that type would keep its input).
+# G1 (2026-11-21): a gated postfix whose class initializer builds new Dictionary<string, ModType>(StringComparer.Ordinal)
+# (SynergyMod's SynergyRuntime) on BeforeHandDraw: kept. Control: EqualityComparer<ModType>.Default there (AfterCardDiscarded).
+# G6 (2026-11-21): a gated C# postfix starting an async method whose MoveNext reaches an impure beforefieldinit initializer
+# (YutaMod's AfterDeath shape) on AfterSideTurnEnd: kept (the .NET 9 JIT never inlines that MoveNext). Control: the same through
+# an iterator (BeforeSideTurnEnd).
+# G2 (2026-11-21): a back-off's log line names each refused patch and why (the G1 control's initializer).
 # CHECKSUM and STATE lines identical with the off side. ~945 cards.
 expect FOREIGN gates selftest: \d+ cases as expected
 expect HookSkip: Hook\.AfterCardPlayed is also patched by bdtest\.foreign\.gates-passthrough-finalizer \(prefixes and postfixes around the transpiled body: run around this mod's code as without it\): kept
@@ -54,6 +60,13 @@ expect FOREIGN runtime HookSkip MaxHandSizePatch\.GetMaxHandSize \(SurroundingOn
 expect STATE foreign end gates-count-postfix MaxHandSizePatch\.GetMaxHandSize [1-9]
 expect STATE foreign end gates-count-prefix MaxHandSizePatch\.GetMaxHandSize [1-9]
 expect IdleButtonInput: NButton\._Input is also patched by bdtest\.foreign\.gates-button-gated-prefix \(patches gated on the listener's type: NCharacterSelectButton treated as overriding it
+expect HookSkip: AbstractModel\.BeforeHandDraw is also patched by bdtest\.foreign\.gates-comparer-postfix \(patches gated on the listener's type: Squeeze treated as overriding it
+expect HookSkip: AbstractModel\.AfterCardDiscarded is also patched by bdtest\.foreign\.gates-modcomparer-postfix \(patches gated on the listener's type not enough\)
+expect FOREIGN runtime HookSkip AbstractModel\.BeforeHandDraw \(TypeGated\) kept [1-9]
+expect HookSkip: AbstractModel\.AfterSideTurnEnd is also patched by bdtest\.foreign\.gates-async-postfix \(patches gated on the listener's type: Squeeze treated as overriding it
+expect HookSkip: AbstractModel\.BeforeSideTurnEnd is also patched by bdtest\.foreign\.gates-iterator-postfix \(patches gated on the listener's type not enough\)
+expect FOREIGN runtime HookSkip AbstractModel\.AfterSideTurnEnd \(TypeGated\) kept [1-9]
+expect HookSkip: AbstractModel\.AfterCardDiscarded is also patched by .*: normal game for that part \(refused: bdtest\.foreign\.gates-modcomparer-postfix's init_g1_mod_comparer_\d+\.Patch: postfix gated, but its class init_g1_mod_comparer_\d+ has a static initializer
 timeout 1500
 newrun NECROBINDER 1234
 waitfor run 120
@@ -79,6 +92,10 @@ foreignpatch gates-count-postfix BaseLib.Patches.Hooks.MaxHandSizePatch:GetMaxHa
 foreignpatch gates-count-prefix BaseLib.Patches.Hooks.MaxHandSizePatch:GetMaxHandSize/2
 foreignpatch gates-count-prefix BaseLib.Patches.Hooks.ModifyHealAmountPatches:ModifyAdditive priority 0
 foreignpatch gates-button-gated-prefix MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton:_Input
+foreignpatch gates-comparer-postfix MegaCrit.Sts2.Core.Models.AbstractModel:BeforeHandDraw
+foreignpatch gates-modcomparer-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterCardDiscarded
+foreignpatch gates-async-postfix MegaCrit.Sts2.Core.Models.AbstractModel:AfterSideTurnEnd
+foreignpatch gates-iterator-postfix MegaCrit.Sts2.Core.Models.AbstractModel:BeforeSideTurnEnd
 effects start
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
