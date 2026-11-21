@@ -445,6 +445,7 @@ $BaselineBenchParts = [ordered]@{
     'AutoTestRooms.cs'      = '^\s*(autoroom|automap|barrier|continuerun|runstate|restsite|selector|eventoption)\b'
     'AutoTestMouse.cs'      = '^\s*(hover|checktips|mouseplay|mousesweep|movehovered|buttoninput|controllermap|forcefocus|tipsrebuilt|targethover|mousehold)\b'
     'AutoTestSweep.cs'      = '^\s*(sweep|sweeptimeout)\b'
+    'AutoTestBetterSpire.cs' = '^\s*bs2panel\b'
     'AutoTestLeak.cs'       = '^\s*leakcheck\b'
     'AutoTestTrace.cs'      = '^\s*eventtrace\b'
     # Also through 'autoslayfirst', 'barrier' (a networked 'bigdeck mark') and '{hash:NAME}' (BigDeckConsoleCmd.SharedHash, any line).
