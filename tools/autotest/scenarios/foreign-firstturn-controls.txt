@@ -19,6 +19,8 @@ expect FIRSTTURN scopes 2, refused source 1, predicate 1, except 0, plain ToList
 expect FIRSTTURN scopes 2, refused source 1, predicate 1, except 0, plain ToList 2, backed off 4, scope failed 0, on True, faulted False
 expect FIRSTTURN scopes 2, refused source 1, predicate 1, except 0, plain ToList 4, backed off 4, scope failed 0, on True, faulted False
 expect ExtraScopes first-turn filter \(in a scope\): [1-9][0-9]* cards, .*OK: identical to vanilla
+# The stand-in control patches this mod's own ToListInScope on purpose: HarmonyWatch warns about it, as it should.
+expect HarmonyWatch: another mod patches this mod's own BigDeckOptimization\.Patches\.ExtraScopes\.ToListInScope \(bdtest\.foreign\.il-firstturn-standin\)
 expect ExtraScopes first-turn filter \(without a scope\): [1-9][0-9]* cards, .*OK: identical to vanilla
 expect ExtraScopes: the first turn's Innate card filter is given another predicate than the game's: that filter runs without a scope
 expect ExtraScopes: the first turn's bottom-of-pile card filter reads another collection than the game's draw pile list: that filter runs without a scope
