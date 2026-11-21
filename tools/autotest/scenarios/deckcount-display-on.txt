@@ -1,0 +1,73 @@
+# DeckCountMemo's display callers (2026-11-21, evening): outside the card redraw, the memo answers a calculation reached from a
+# Godot frame or deferred callback through other mods' code only (Bench/ForeignShapesDisplay.cs, synthetic callers of a
+# Perfected Strike in hand), and leaves every other one to the game's count (with the free check). ~945 cards, every answer
+# outside the sampled check (verify 1000000).
+# 1. A deferred call (BetterSpire2's panel, SpeedX's overlay) and the same through MethodInfo.Invoke: answered, the count equal
+#    to a fresh count of the piles. An async method's continuation, and a postfix on Perfected Strike's OnPlay run by the game's
+#    play: refused, the game's count.
+# 2. Positive control: a draw-pile card tagged Strike in place (no pile move: the memo's count is stale). The deferred caller
+#    gets the stale count (a wrong number shown); with the free check off the stale memo stays on and the play's damage is the
+#    game's count (hploss); free check on, the next play's own calculation sees the difference and turns the memo off.
+expect FOREIGN display-check deferred \(deferred\): .*: ok
+expect FOREIGN display-check invoke \(invoke\): .*: ok
+expect FOREIGN display-check async \(async\): .*: ok
+expect FOREIGN display-check hook \(hook\): .*: ok
+expect FOREIGN display-check stale \(deferred\): .*: ok
+expect DECKCOUNT inplace: .* tagged Strike in place
+expect DECKCOUNT hploss: .*ok, the damage came from the game's count
+expect DeckCountMemo disabled, the game counts its cards: .*outside the card redraw
+expect DECKCOUNT .*free mismatches [1-9]
+timeout 300
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 200
+emptyhand
+cmd bdperf deckcount verify 1000000
+cmd card PERFECTED_STRIKE hand
+cmd card PERFECTED_STRIKE hand
+wait 1
+cmd bdperf deckcount answered strike
+foreignpatch display-call deferred
+wait 0.3
+foreignpatch display-check deferred answered fresh
+foreignpatch display-call invoke
+wait 0.3
+foreignpatch display-check invoke answered fresh
+foreignpatch display-call async
+wait 0.3
+foreignpatch display-check async refused fresh
+foreignpatch display-hook-postfix
+playcard PERFECTED_STRIKE 0 free
+waitfor idle 60
+wait 1
+foreignpatch display-check hook refused fresh
+foreignpatch remove
+emptyhand
+cmd card PERFECTED_STRIKE hand
+wait 1
+cmd bdperf deckcount inplace
+foreignpatch display-call deferred
+wait 0.3
+foreignpatch display-check stale answered stale
+cmd bdperf deckcount freecheck off
+cmd bdperf deckcount hpmark
+playcard PERFECTED_STRIKE 0 free
+waitfor idle 60
+wait 1
+cmd bdperf deckcount hploss
+cmd bdperf deckcount freecheck on
+cmd card PERFECTED_STRIKE hand
+wait 1
+playcard PERFECTED_STRIKE 0 free
+waitfor idle 60
+wait 1
+cmd bdperf deckcount gamecount strike
+onfail continue
+cmd bdperf deckcount
+quit

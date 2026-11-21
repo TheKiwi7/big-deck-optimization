@@ -97,7 +97,7 @@ def part_command_problems():
 SRC = os.path.join(ROOT, '..', '..', 'src')
 CALLER_KEYED = [
     {
-        'files': ['ForeignPatches.cs', 'ForeignShapesGates.cs', 'ForeignShapesHookFilter.cs', 'ForeignShapesHover.cs',
+        'files': ['ForeignPatches.cs', 'ForeignShapesGates.cs', 'ForeignShapesHookFilter.cs', 'ForeignShapesHover.cs', 'ForeignShapesDisplay.cs',
                   'ForeignShapesLimitless.cs', 'ForeignShapesLimitlessTwins.cs', 'ForeignShapesParts.cs', 'ForeignShapesUnchanged.cs',
                   'IlJudgeShapes.cs'],
         'callers': {
