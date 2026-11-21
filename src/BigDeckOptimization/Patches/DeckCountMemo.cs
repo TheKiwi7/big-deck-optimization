@@ -68,8 +68,9 @@ namespace BigDeckOptimization.Patches;
 /// queued with the managed <c>Callable.CallDeferred</c> or a node's <c>_Process</c>/<c>_PhysicsProcess</c>/<c>_Draw</c>
 /// (<see cref="RootAllowed"/>): a signal handler or a <c>SignalAwaiter</c> continuation is refused. Those calls were free checks
 /// before they were answered: one display caller per card kind and player's piles in <see cref="DisplayCheckMs"/> gets the game's
-/// count instead, compared (<see cref="DisplayCheckDue"/>), so a stale count shows at most that long to display callers before
-/// the memo turns off. Every other calculation outside the redraw counts as the game does (~0.25-0.35 ms per counting card at
+/// count instead, compared (<see cref="DisplayCheckDue"/>): the next display call more than that after the last check turns a
+/// stale memo off; a panel refreshed only on events (BetterSpire2's) keeps its last label until its next refresh, a per-frame
+/// caller (SpeedX's) is corrected within that time. Every other calculation outside the redraw counts as the game does (~0.25-0.35 ms per counting card at
 /// 10,000 cards), with the free comparison above.
 /// </summary>
 public static class DeckCountMemo
@@ -835,8 +836,9 @@ public static class DeckCountMemo
     /// <summary>
     /// The display callers' check, as often as this per card kind and player's piles (the free check those calls were before
     /// 2026-11-21): at most one game count per 200 ms where SpeedX's per-frame preview asks ~620 times a second (~5 counts a
-    /// second, ~0.25 ms each at 10,000 cards: ~1.3 ms a second, under 0.2% of the frame time), and a stale count shown to a
-    /// display caller for at most 200 ms before the next display call turns the memo off. Per kind and player because a stale
+    /// second, ~0.25 ms each at 10,000 cards: ~1.3 ms a second, under 0.2% of the frame time), and the next display call more
+    /// than 200 ms after the last check turns a stale memo off (a panel refreshed only on events keeps its last label until its
+    /// next refresh). Per kind and player because a stale
     /// count is per kind and player: a global clock taken by whichever card asks first would leave another card's count unchecked.
     /// </summary>
     internal const int DisplayCheckMs = 200;
