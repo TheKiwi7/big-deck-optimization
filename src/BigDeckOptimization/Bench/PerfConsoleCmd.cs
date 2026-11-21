@@ -415,6 +415,18 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                     return new CmdResult(success: !(args[2] == "on" && displayFaulted),
                         $"DECKCOUNT display callers {(DeckCountMemo.DisplayEnabled ? "on" : "off")} (test){(args[2] == "on" && displayFaulted ? ": faulted, left off" : "")}.");
                 }
+                else if (args.Length >= 4 && args[1] == "display" && args[2] == "root" && args[3] is "off" or "on")
+                {
+                    // Test switch: the engine entry rule (DeckCountMemo.RootAllowed) off: signal handlers pass again (negative control).
+                    DeckCountMemo.RootCheckOffForTest = args[3] == "off";
+                    return new CmdResult(success: true, $"DECKCOUNT display engine entry rule {args[3]} (test).");
+                }
+                else if (args.Length >= 4 && args[1] == "display" && args[2] == "checkms" && (args[3] == "never" || long.TryParse(args[3], out long checkMs) && checkMs >= 0))
+                {
+                    // Test switch: the display callers' scheduled check (DeckCountMemo.DisplayCheckMs by default), or never.
+                    DeckCountMemo.SetDisplayCheckForTest(args[3] == "never" ? long.MaxValue : long.Parse(args[3]));
+                    return new CmdResult(success: true, $"DECKCOUNT display check every {args[3]}{(args[3] == "never" ? "" : " ms")} per card and player (test).");
+                }
                 else if (args.Length >= 2 && args[1] == "stackcost")
                 {
                     if (args.Length >= 3 && args[2] == "deferred")
@@ -440,7 +452,7 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                 bool deckCountOk = ownCheckOnly || DeckCountMemo.Mismatches == 0;
                 string deckCountCheck = "";
                 if (!setCountVerify && !ownCheckOnly && args.Length >= 1 && !(args.Length >= 2 && args[1] is "wrong" or "mark") && _deckCountVerifySet
-                    && DeckCountMemo.Checks + DeckCountMemo.FreeChecks == 0 && !ModEntry.NotApplied(DeckCountMemo.Name))
+                    && DeckCountMemo.Checks + DeckCountMemo.FreeChecks + DeckCountMemo.DisplayChecks == 0 && !ModEntry.NotApplied(DeckCountMemo.Name))
                 {
                     // Verify was set and no answer was ever compared: the part never answered, the report would pass on nothing.
                     deckCountOk = false;
@@ -480,7 +492,8 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                     + $"unsure {DeckCountMemo.Unsure}, checks {DeckCountMemo.Checks}, mismatches {DeckCountMemo.Mismatches}, answered {DeckCountMemo.Answered}, "
                     + $"in redraw {DeckCountMemo.InRedrawCalls}, outside {DeckCountMemo.OutsideCalls}, free checks {DeckCountMemo.FreeChecks}, "
                     + $"free mismatches {DeckCountMemo.FreeMismatches}, display answered {DeckCountMemo.AnsweredDisplay}, display looks {DeckCountMemo.DisplayLooks}, "
-                    + $"display refused {DeckCountMemo.DisplayRefused}, display small decks {DeckCountMemo.DisplaySmallDecks}{deckCountCheck}");
+                    + $"display refused {DeckCountMemo.DisplayRefused}, display small decks {DeckCountMemo.DisplaySmallDecks}, display checks {DeckCountMemo.DisplayChecks}, "
+                    + $"display mismatches {DeckCountMemo.DisplayMismatches}, display walks {DeckCountMemo.DisplayWalks}{deckCountCheck}");
             case "combatcards":
                 // bdperf combatcards [passes]: CombatCardSet and RemoveInternal's single scan against the game's code (Bench/CombatCardsBench.cs).
                 return CombatCardsBench.Run(args.Length >= 2 && int.TryParse(args[1], out int containsPasses) && containsPasses > 0 ? containsPasses : 3);

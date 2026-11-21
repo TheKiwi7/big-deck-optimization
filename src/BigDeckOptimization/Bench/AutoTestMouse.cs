@@ -282,7 +282,7 @@ public static partial class AutoTest
             buttons = MouseButtonMask.Left;
             await MouseGlide(tree, point, rest, 0.2, buttons);
         }
-        long outside = DeckCountMemo.OutsideCalls, display = DeckCountMemo.AnsweredDisplay, refused = DeckCountMemo.DisplayRefused;
+        long outside = DeckCountMemo.OutsideCalls, display = DeckCountMemo.AnsweredDisplay, refused = DeckCountMemo.DisplayRefused, displayChecks = DeckCountMemo.DisplayChecks;
         Say($"  holding: hand mode {hand.CurrentMode}, in card play {hand.InCardPlay}, focused {hand.FocusedHolder?.CardModel?.Id.Entry ?? "none"}, "
             + $"action synchronizer {MegaCrit.Sts2.Core.Runs.RunManager.Instance?.ActionQueueSynchronizer?.CombatState}");
         double start = _clock.Elapsed.TotalSeconds, last = start, worst = 0;
@@ -317,7 +317,8 @@ public static partial class AutoTest
         await Until(tree, () => !CombatManager.Instance.IsInProgress || IsIdle(), 120, "idle");
         Say($"  MOUSEHOLD {id} {(aim ? "aimed" : "hovered")} {frames} frames in {elapsed:F1} s: mean {elapsed * 1000 / Math.Max(1, frames):F2} ms, worst {worst * 1000:F1} ms; "
             + $"counts outside the card redraw {outsideCalls} ({outsideCalls / Math.Max(elapsed, 0.001):F0}/s), display answers {DeckCountMemo.AnsweredDisplay - display}, "
-            + $"display refused {DeckCountMemo.DisplayRefused - refused}; still in hand {holder.CardModel?.Pile?.Type == MegaCrit.Sts2.Core.Entities.Cards.PileType.Hand}");
+            + $"display refused {DeckCountMemo.DisplayRefused - refused}, display checks {DeckCountMemo.DisplayChecks - displayChecks} "
+            + $"({(DeckCountMemo.DisplayChecks - displayChecks) / Math.Max(elapsed, 0.001):F1}/s); still in hand {holder.CardModel?.Pile?.Type == MegaCrit.Sts2.Core.Entities.Cards.PileType.Hand}");
     }
 
     /// <summary>
