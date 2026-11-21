@@ -405,6 +405,20 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                     // Positive control of the free check outside the redraw (DeckCountBench, at the end of this file).
                     return DeckCountBench.InPlace();
                 }
+                else if (args.Length >= 3 && args[1] == "freecheck" && args[2] is "off" or "on")
+                {
+                    DeckCountMemo.FreeCheckOffForTest = args[2] == "off";
+                    return new CmdResult(success: true, $"DECKCOUNT free check {args[2]} (test).");
+                }
+                else if (args.Length >= 2 && args[1] == "hpmark")
+                {
+                    return DeckCountBench.HpMark();
+                }
+                else if (args.Length >= 2 && args[1] == "hploss")
+                {
+                    // The damage positive control: judged on its own, as answered and gamecount.
+                    return DeckCountBench.HpLoss();
+                }
                 // mark, then unsure-grew (the game counted since: a card of a changing type in the piles), answers-grew (it
                 // counted itself since: on) or answers-same (no count of its own since: off after a fault): self-checking scenarios.
                 // scope, answered <card>, gamecount <card>: DeckCountBench.
@@ -1602,6 +1616,51 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
             // Squeeze leaves itself out: its multiplier is the count less the Squeeze asking, which the bench can't tell apart.
             bool ok = kind == DeckCountMemo.SqueezeKind ? last <= fresh && last >= fresh - 1 : last == fresh;
             return (ok, $" (gamecount {name}: last outside the redraw {last}, the piles now {fresh}: {(ok ? "ok" : "MISMATCH")})");
+        }
+
+        /// <summary>The first living enemy (playcard's target 0) and its hit points plus block at <c>hpmark</c>.</summary>
+        private static MegaCrit.Sts2.Core.Entities.Creatures.Creature? _hpTarget;
+        private static int _hpBefore;
+        private static long _answeredInPlayBefore;
+
+        internal static CmdResult HpMark()
+        {
+            if (CombatManager.Instance.DebugOnlyGetState() is not { } combat || combat.Enemies.FirstOrDefault(e => e.IsAlive) is not { } enemy)
+            {
+                return new CmdResult(success: false, "Start a combat with a living enemy first.");
+            }
+            _hpTarget = enemy;
+            _hpBefore = enemy.CurrentHp + enemy.Block;
+            _answeredInPlayBefore = DeckCountMemo.AnsweredInPlay;
+            return new CmdResult(success: true, $"DECKCOUNT hpmark: target hp + block {_hpBefore}.");
+        }
+
+        /// <summary>
+        /// The damage positive control, after <c>freecheck off</c>, <c>inplace</c>, <c>hpmark</c> and one Perfected Strike play on
+        /// target 0: the target's loss must be the card's base + extra x the game's count of Strike cards now (the in-place tagged
+        /// card included), while the memo is still on and holds another count (stale: it answered the redraws, not the play).
+        /// </summary>
+        internal static CmdResult HpLoss()
+        {
+            if (_hpTarget == null || RunManager.Instance.DebugOnlyGetState() is not { } run || LocalContext.GetMe(run) is not { } me
+                || me.PlayerCombatState is not { } state)
+            {
+                return new CmdResult(success: false, "DECKCOUNT hploss: MISMATCH, no hpmark or not in combat.");
+            }
+            CardModel? played = state.AllCards.FirstOrDefault(c => c is MegaCrit.Sts2.Core.Models.Cards.PerfectedStrike && c.Pile?.Type == PileType.Discard);
+            if (played == null)
+            {
+                return new CmdResult(success: false, "DECKCOUNT hploss: MISMATCH, no played Perfected Strike in the discard pile.");
+            }
+            int fresh = state.AllCards.Count(_gameCounts[DeckCountMemo.StrikeKind]);
+            decimal expected = played.DynamicVars.CalculationBase.BaseValue + played.DynamicVars.CalculationExtra.BaseValue * fresh;
+            int loss = _hpBefore - (_hpTarget.CurrentHp + _hpTarget.Block);
+            int? held = DeckCountMemo.HeldCount(state, DeckCountMemo.StrikeKind);
+            bool stale = DeckCountMemo.Enabled && held is { } h && h != fresh;
+            bool ok = loss == expected && stale;
+            return new CmdResult(success: ok, $"DECKCOUNT hploss: target lost {loss}, the game's formula with the piles' count {fresh} gives {expected}; "
+                + $"memo enabled {DeckCountMemo.Enabled}, holds {held?.ToString() ?? "nothing"} (stale: {stale}), answers in redraws during plays since the mark "
+                + $"{DeckCountMemo.AnsweredInPlay - _answeredInPlayBefore}: {(ok ? "ok, the damage came from the game's count" : "MISMATCH")}");
         }
 
         /// <summary>The positive control's state change: one draw-pile card of a type with fixed tags gets the Strike tag in place.</summary>

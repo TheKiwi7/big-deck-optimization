@@ -11,6 +11,10 @@ using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
 using MegaCrit.Sts2.Core.Nodes.Cards;
+#if BENCH
+using MegaCrit.Sts2.Core.GameActions;
+using MegaCrit.Sts2.Core.Runs;
+#endif
 
 namespace BigDeckOptimization.Patches;
 
@@ -35,8 +39,13 @@ namespace BigDeckOptimization.Patches;
 /// summing <c>PreviewValue</c> to decide what it does). The premise "a card's tags change only through tracked moves" can't be
 /// proven over other mods' code (one adds a tag to a card's <c>Tags</c> set in place): outside the redraw, when the memo holds a
 /// count valid at the current pile version (kept, or updated from the moves: never a walk), the game's result is compared with
-/// it for free, the game having counted anyway, and a difference turns this off. A wrong display then lasts at most until the
-/// next play of such a card.
+/// it for free, the game having counted anyway, and a difference turns this off (a card property changed with no pile move, or
+/// a missed pile move). A wrong display then lasts at most until the next play of such a card.
+///
+/// The scope covers everything that runs synchronously inside <c>UpdateVisuals</c>' body: another mod's transpiler or inner
+/// patch there, a Godot signal emitted from it and handled inline, an await continuation that happens to run inline in it (none
+/// of these found calculating game logic). On v0.113 <c>DynamicVar.ToString()</c> and its <c>IConvertible</c> methods return
+/// <c>ShownValue = (int)PreviewValue</c> (DynamicVar.cs:101,186,236): the same class of read as <c>PreviewValue</c>.
 ///
 /// Display premise, the residue: a mod reading inside an action the <c>PreviewValue</c> the last redraw left on one of these
 /// cards (none found in the top 500 Workshop mods: their <c>PreviewValue</c> reads are each of its own card's variable), or a
@@ -44,6 +53,11 @@ namespace BigDeckOptimization.Patches;
 /// visuals by name). Other mods' prefixes and postfixes on <c>UpdateVisuals</c> run outside the scope (it opens in the last
 /// prefix and closes in the first postfix): they get the game's count, as without this. Inside it, the memo's answer is the
 /// game's except when the premise fails.
+///
+/// Cost given up: every calculation outside the redraw counts as the game does. SpeedX's targeting preview (its
+/// <c>LiteralAuditor</c>'s <c>UpdateDynamicVarPreview</c> call, from <c>TurboOverlay._Process</c>) calculates these cards per
+/// hittable enemy per frame outside the scope: the game's count each time (~0.35 ms at 10,000 cards), where the memo answered
+/// before.
 /// </summary>
 public static class DeckCountMemo
 {
@@ -115,6 +129,15 @@ public static class DeckCountMemo
 
     /// <summary>Per kind, the game's last result outside the redraw (<c>bdperf deckcount gamecount</c>), or null.</summary>
     internal static readonly decimal?[] LastOutside = new decimal?[Kinds];
+
+    /// <summary>
+    /// <c>bdperf deckcount freecheck off</c>: no comparison outside the redraw, so a stale memo stays on and keeps answering the
+    /// redraws while the actions still count with the game's code (the damage positive control).
+    /// </summary>
+    internal static bool FreeCheckOffForTest { get; set; }
+
+    /// <summary>Memo answers (in the redraw) given while a card play action was running: the memo was live during the play.</summary>
+    internal static long AnsweredInPlay { get; private set; }
     [ThreadStatic] private static int _benchKind;
     [ThreadStatic] private static bool _benchOutside;
 #endif
@@ -403,6 +426,12 @@ public static class DeckCountMemo
 #endif
             if (!inRedraw)
             {
+#if BENCH
+                if (FreeCheckOffForTest)
+                {
+                    return true;
+                }
+#endif
                 // An action's or another mod's calculation: the game's result, compared in the postfix.
                 expected = new Expected(count, Free: true);
                 return true;
@@ -415,6 +444,12 @@ public static class DeckCountMemo
                 return true;
             }
             Answered++;
+#if BENCH
+            if (RunManager.Instance?.ActionExecutor?.CurrentlyRunningAction is PlayCardAction)
+            {
+                AnsweredInPlay++;
+            }
+#endif
             result = count;
             return false;
         }
@@ -451,8 +486,8 @@ public static class DeckCountMemo
             if (expected.Free)
             {
                 FreeMismatches++;
-                Disable(new InvalidOperationException($"counted {expected.Count}, the game {__result} outside the card redraw "
-                    + "(a card's tags or star cost changed with no pile move: only the display had the memo's count)"));
+                Disable(new InvalidOperationException($"the kept count {expected.Count} differs from the game's count {__result} outside the card redraw "
+                    + "(a card property changed with no pile move, or a missed pile move): only the display had the memo's count"));
             }
             else
             {
@@ -552,7 +587,11 @@ public static class DeckCountMemo
 
 #if BENCH
     /// <summary>Bench: whether the memo holds a count of this kind for these piles (as of any pile version).</summary>
-    internal static bool HasCount(PlayerCombatState state, int kind) => _counts.TryGetValue(state, out Counts? counts) && counts.Version[kind] >= 0;
+    internal static bool HasCount(PlayerCombatState state, int kind) => HeldCount(state, kind) != null;
+
+    /// <summary>Bench: the count of this kind the memo holds for these piles (as of its pile version), or null.</summary>
+    internal static int? HeldCount(PlayerCombatState state, int kind) =>
+        _counts.TryGetValue(state, out Counts? counts) && counts.Version[kind] >= 0 ? counts.Count[kind] : null;
 
     /// <summary>Bench: whether cards of this type are left to the game for their tags (their type may change them).</summary>
     internal static bool TagsMayChange(Type type) => (FlagsOf(type) & TagsMove) != 0;

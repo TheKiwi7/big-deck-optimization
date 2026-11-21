@@ -1,9 +1,13 @@
-# Positive control of DeckCountMemo's free check outside the card redraw: a draw-pile card gets the Strike tag in place (its Tags
-# set, as a content mod adding a tag does), with no pile move, after the memo counted Perfected Strike. In-redraw answers are
-# never compared here (verify 1000000): only the check outside the redraw can see it. The play's damage must be the game's count
-# ("bdperf deckcount gamecount strike": the last result outside the redraw equals a fresh count of the piles, the tagged card
-# included) and the free check must turn the memo off (the expect lines).
+# Positive control of DeckCountMemo's redraw scope: a draw-pile card gets the Strike tag in place (its Tags set, as a content mod
+# adding a tag does), with no pile move, after the memo counted Perfected Strike. In-redraw answers are never compared here
+# (verify 1000000).
+# 1. The damage: free check off, so the stale memo stays on and answers the redraws; the play's damage must still be the game's
+#    count ("bdperf deckcount hploss": the target's loss equals the card's base + extra x a fresh count of the piles, the
+#    tagged card included, while the memo holds another count).
+# 2. The net: free check on, a second play; Perfected Strike's own `> 12` calculation outside the redraw must see the
+#    difference and turn the memo off (the expect lines), and that play gets the game's count ("gamecount strike").
 expect DECKCOUNT inplace: .* tagged Strike in place
+expect DECKCOUNT hploss: .*ok, the damage came from the game's count
 expect DeckCountMemo disabled, the game counts its cards: .*outside the card redraw
 expect DECKCOUNT .*free mismatches [1-9]
 timeout 300
@@ -18,10 +22,19 @@ cmd fight CULTISTS_NORMAL
 waitfor idle 200
 emptyhand
 cmd bdperf deckcount verify 1000000
+cmd bdperf deckcount freecheck off
 cmd card PERFECTED_STRIKE hand
 wait 1
 cmd bdperf deckcount answered strike
 cmd bdperf deckcount inplace
+cmd bdperf deckcount hpmark
+playcard PERFECTED_STRIKE 0 free
+waitfor idle 60
+wait 1
+cmd bdperf deckcount hploss
+cmd bdperf deckcount freecheck on
+cmd card PERFECTED_STRIKE hand
+wait 1
 playcard PERFECTED_STRIKE 0 free
 waitfor idle 60
 wait 1
