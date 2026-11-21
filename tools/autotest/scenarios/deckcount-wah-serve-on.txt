@@ -4,10 +4,11 @@
 # (Answered grew). CHECKSUM lines identical to deckcount-wah-off.
 # compare-with: deckcount-wah-off
 timeout 2400
-# The memo itself answered redraws (the report's `answered` counter), and every answer compared was right.
-expect DECKCOUNT enabled True, .*checks [1-9][0-9]*, mismatches 0, answered [1-9][0-9]*,
 # Wah Symphony exists from game v0.113: both sides stop here on an older game.
 requiregame v0.113
+# The memo itself answered redraws (the report's `answered` counter), and every answer compared was right (after the version
+# gate: a session ending there must not declare it).
+expect DECKCOUNT enabled True, .*checks [1-9][0-9]*, mismatches 0, answered [1-9][0-9]*,
 newrun NECROBINDER
 waitfor run 120
 wait 2

@@ -6,9 +6,10 @@
 # against the game's own check by the part itself (a difference turns it off with an error line, and the counters line fails).
 # Game v0.113+ only (v0.111's CopyBackup copies without the check: the part is not applied): requiregame ends both sides there.
 timeout 1800
-# The run save was written and is a whole file (never "absent": the comparison with the other side would then pass on nothing).
-expect STATE savefiles map 4: current_run\.save whole, content [0-9A-F]+;
 requiregame v0.113
+# The run save was written and is a whole file (never "absent": the comparison with the other side would then pass on nothing).
+# After the version gate: a session ending there must not declare it.
+expect STATE savefiles map 4: current_run\.save whole, content [0-9A-F]+;
 savefiles before the run
 newrun NECROBINDER 1234
 waitfor run 120
