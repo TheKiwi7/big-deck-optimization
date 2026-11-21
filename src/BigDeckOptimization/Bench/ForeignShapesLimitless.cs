@@ -268,6 +268,20 @@ public static class ForeignShapesLimitless
 
     private static readonly List<(string Id, MethodBase Target)> _installed = new();
 
+    /// <summary>
+    /// <c>foreignpatch limitless display [label]</c> (G5): after a preflight, whether LimitlessCloneMemo's display shows a back-off on
+    /// CardCmd.Enchant(EnchantmentModel, CardModel, decimal) (a chain entry of no group: c8's patched overload), and whether a
+    /// published override closure reaches it: the two must agree.
+    /// </summary>
+    private static IReadOnlyList<string> ChainDisplay(string label)
+    {
+        MethodBase enchant = Target("MegaCrit.Sts2.Core.Commands.CardCmd::Enchant(EnchantmentModel,CardModel,Decimal)");
+        Config.Settings.RefreshConflicts();
+        bool shown = PatchSafety.BackOffs().Any(b => b.Patch == LimitlessCloneMemo.Name && b.Method == enchant);
+        bool reached = LimitlessCloneMemo.ReachedByClosureForTest(enchant);
+        return new[] { $"FOREIGN chain display {label}: CardCmd.Enchant shown {shown}, reached by a closure {reached}" };
+    }
+
     /// <summary>Whether this file handles that <c>foreignpatch</c> line.</summary>
     public static bool Handles(string[] parts) =>
         parts.Length >= 2 && (parts[0] == "limitless" || Shapes.Contains(parts[0]));
@@ -285,9 +299,10 @@ public static class ForeignShapesLimitless
                 "anyknown" => new[] { $"FOREIGN anyknown {(parts.Length > 2 ? parts[2] : "now")}: {LimitlessHookSkip.AnyKnownForTest()}" },
                 "memo" => new[] { $"FOREIGN clonememo {(parts.Length > 2 ? parts[2] : "now")}: entries {LimitlessCloneMemo.MemoCount}, patch stamp clears {LimitlessCloneMemo.PatchStampClears}, reused {LimitlessCloneMemo.Reused}, constant kept {LimitlessCloneMemo.ConstantKept}" },
                 "constant" when parts.Length > 2 && parts[2] == "selftest" => ConstantSelfTest(),
+                "display" => ChainDisplay(parts.Length > 2 ? parts[2] : "now"),
                 // Full audit A-L1, B-3: the patched-methods maps act as if Harmony couldn't list its patched methods (within 2 s).
                 "cantlist" when parts.Length > 2 && parts[2] is "on" or "off" => CantList(parts[2] == "on"),
-                _ => throw new ArgumentException("foreignpatch limitless report [label] | remove | twin status|register|patchcallee [label] | reach <storage|CardClass> <EnchantmentClass|none> <level> [label] | memo [label] | anyknown [label] | cantlist on|off | constant selftest"),
+                _ => throw new ArgumentException("foreignpatch limitless report [label] | remove | twin status|register|patchcallee [label] | reach <storage|CardClass> <EnchantmentClass|none> <level> [label] | memo [label] | anyknown [label] | cantlist on|off | constant selftest | display [label]"),
             };
         }
         string shape = parts[0];

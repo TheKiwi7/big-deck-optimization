@@ -564,20 +564,41 @@ public static class LimitlessCloneMemo
     /// Registers the chain <see cref="ChainPatched"/> asks about for the back-off preflight, under this class's name (where
     /// its runtime check records, LimitlessHookSkip's asks included) or a patch relying on it (<paramref name="patch"/>:
     /// LimitlessHookSkip, so bdopt why and the menu show its back-offs while this one isn't running); the gated card methods
-    /// with their tolerance. One entry per chain entry (each its own preflight step), built inside the preflight. Never throws.
+    /// with their tolerance. One entry per chain entry (each its own preflight step), built inside the preflight. An entry of no
+    /// group (<see cref="Reach.None"/>: CardCmd.Enchant, AddKeyword, FindOnTable...) only while a published closure reaches it
+    /// (G5, 2026-11-21: the runtime judges it there only; until then the menu and log showed back-offs it never takes). Never throws.
     /// </summary>
     internal static void WatchChain(string patch = Name)
     {
         for (int i = 0; i < Chain.Length; i++)
         {
             int index = i;
-            PatchSafety.WatchPairs(patch, () => ChainPart(index).Where(c => !c.Gated).Select(c => ((System.Reflection.MethodBase?)c.Method, (System.Reflection.MethodInfo[]?)AllowedNow(c.Method, c.Allowed))));
+            PatchSafety.WatchPairs(patch, () => ChainPart(index).Where(c => !c.Gated && (c.Reach != Reach.None || ReachedByClosure(c.Method)))
+                .Select(c => ((System.Reflection.MethodBase?)c.Method, (System.Reflection.MethodInfo[]?)AllowedNow(c.Method, c.Allowed))));
             if (Chain[index].Type == typeof(CardModel) && GatedChain.Contains(Chain[index].Method))
             {
                 PatchSafety.WatchPairs(patch, () => ChainPart(index).Where(c => c.Gated).Select(c => ((System.Reflection.MethodBase?)c.Method, (System.Reflection.MethodInfo[]?)c.Allowed)),
                     PatchTolerance.TypeGated);
             }
         }
+    }
+
+#if BENCH
+    /// <summary>G5's view for the bench: whether a published closure reaches that chain method.</summary>
+    internal static bool ReachedByClosureForTest(System.Reflection.MethodBase method) => ReachedByClosure(method);
+#endif
+
+    /// <summary>G5: whether a published override closure reaches this chain method (<see cref="OverrideClosure.Known"/>, the only place it is judged).</summary>
+    private static bool ReachedByClosure(System.Reflection.MethodBase method)
+    {
+        foreach (object closure in _closures.Values)
+        {
+            if (closure is OverrideClosure { } known && known.Known.Any(k => k.Method == method))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>

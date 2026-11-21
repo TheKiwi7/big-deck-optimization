@@ -34,6 +34,8 @@
 # its chain-group part stays False and the non-storage inner flag stays False (the reference run's 1,579 inner cards are all Limitless's
 # storage card). Its first word is True on both sides: one of the reference run's 8 inner enchantment types, SoulsPower, has its
 # closure stopped at a method BaseLib and Limitless patch (unknown types [SoulsPower]), which makes the type as a whole react anyway.
+# G5 (2026-11-21, c8 too): CardCmd.Enchant (a chain entry of no group, judged only inside a closure reaching it) shows as a
+# back-off in the preflight's display only while a published override closure reaches it (`foreignpatch limitless display`).
 # Rule B (copies of BaseLib's SavedSpireFieldPatch, Bench/ForeignShapesLimitlessTwins.cs, on SavedProperties.FromInternal):
 # (b1) GetFieldsForModel without its filter, (b2) a null result stored, (b3) its class's initializer doing more than make the
 # list, (b3a) GetFieldsForModel reading another class's list of the same name (it describes as BaseLib's: the twin aliased IL
@@ -80,6 +82,7 @@ expect FOREIGN reach g3 storage Sharp 0: kept True
 expect FOREIGN reach c7 Dazed none 0: kept False, reaches Spine, hookskip patched True, foreign calls 0
 expect FOREIGN anyknown base8: .*\(chain groups patched False, types recorded [0-9]+, non-storage inner False
 expect FOREIGN anyknown c8: .*\(chain groups patched False, types recorded [0-9]+, non-storage inner False
+expect FOREIGN chain display c8: CardCmd\.Enchant shown (True, reached by a closure True|False, reached by a closure False)
 expect LimitlessCloneMemo: CardModel\.set_HasBeenRemovedFromState is also patched by bdtest\.foreign\.count-postfix: normal game for that part
 expect FOREIGN reach s1 storage Sharp 0: kept False, reaches Spine, Enchant, hookskip patched True
 expect FOREIGN anyknown s1: True \(chain groups patched True
@@ -305,6 +308,7 @@ foreignpatch limitless anyknown base8
 foreignpatch lim-inner-count-postfix MegaCrit.Sts2.Core.Commands.CardCmd::Enchant(EnchantmentModel,CardModel,Decimal)
 wait 3
 foreignpatch limitless anyknown c8
+foreignpatch limitless display c8
 foreignpatch limitless remove
 wait 3
 # (b1) Rule B: a copy whose GetFieldsForModel has no filter.
