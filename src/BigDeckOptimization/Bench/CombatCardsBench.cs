@@ -39,7 +39,10 @@ public static class CombatCardsBench
         string contains = Contains(combat, asked, passes, out bool containsOk);
         string removes = Removes(me, passes, out bool removesOk);
         string self = SelfTests(piles, out bool selfOk);
-        return new CmdResult(containsOk && removesOk && selfOk, $"COMBATCARDS {piles.Count} combat cards, {asked.Count - piles.Count} deck cards: {contains}; {removes}; {self}");
+        // The game's calls since the session's start (the bench's own put back): sets built (first builds and rebuilds), answers
+        // left to the game's scan, combats given up after too many rebuilds.
+        string counts = $"set builds {CombatCardSet.Builds}, fallbacks {CombatCardSet.Fallbacks}, gave up {CombatCardSet.GaveUp}";
+        return new CmdResult(containsOk && removesOk && selfOk, $"COMBATCARDS {piles.Count} combat cards, {asked.Count - piles.Count} deck cards: {contains}; {removes}; {self}; {counts}");
     }
 
     /// <summary><c>this == obj</c>, expression-bodied and as a block (the Debug compiler's two shapes), and a real override.</summary>

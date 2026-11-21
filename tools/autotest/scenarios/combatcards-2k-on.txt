@@ -3,7 +3,10 @@
 # with combatcards-2k-off (CHECKSUM/STATE lines). bdperf combatcards compares both parts with the game's code (same answers,
 # same lists after each remove, times both ways); the effects line shows both ran in the game's own calls.
 # effects-ran: ^(CombatCardSet|PileIndex\.Removes)$
-expect COMBATCARDS .*ContainsCard game .*OK: identical answers; RemoveInternal of .*OK: identical lists; self-tests OK
+expect COMBATCARDS .*ContainsCard game .*OK: identical answers; RemoveInternal of .*OK: identical lists; self-tests OK; set builds [0-9]+, fallbacks [0-9]+, gave up 0
+# The session's end (counters end, once): one combat's set built a few times (its first build and rebuilds after changes out
+# of step, at most 1 + 16 before a combat gives up), never given up.
+expect COUNTERS end: .*CombatCardSet builds ([1-9]|1[0-7]), fallbacks [0-9]+, gave up 0;
 timeout 1200
 newrun NECROBINDER 1234
 waitfor run 120

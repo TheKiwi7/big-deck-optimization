@@ -307,12 +307,17 @@ public static class CombatCardSet
     private static bool ContainsPrefix(CombatState __instance, CardModel card, ref bool __result)
     {
         // Inside ListenerCache.RunVanilla the answer is the reference others are compared with: the game's own.
-        if (!Enabled || card == null || ListenerCache.IsSuspended || Environment.CurrentManagedThreadId != _mainThread || Backoff())
+        if (!Enabled || card == null || ListenerCache.IsSuspended || Environment.CurrentManagedThreadId != _mainThread)
         {
             return true;
         }
         try
         {
+            // Inside the try: the back-off check reads Harmony's patch lists, which a fault there must not throw into the game.
+            if (Backoff())
+            {
+                return true;
+            }
             List<CardModel>? list = _allCards!(__instance);
             if (list == null)
             {
@@ -407,7 +412,8 @@ public static class CombatCardSet
     internal static bool? AnswerForTest(CombatState combat, CardModel card)
     {
         bool result = false;
-        long answered = Answered, fallbacks = Fallbacks, checks = Checks;
+        // Every counter put back (the self-test's scratch combats build and give up sets of their own): only the game's calls count.
+        long answered = Answered, fallbacks = Fallbacks, checks = Checks, builds = Builds, gaveUp = GaveUp;
         bool answeredHere;
         try
         {
@@ -418,6 +424,8 @@ public static class CombatCardSet
             Answered = answered;
             Fallbacks = fallbacks;
             Checks = checks;
+            Builds = builds;
+            GaveUp = gaveUp;
         }
         return answeredHere ? result : null;
     }
@@ -531,6 +539,7 @@ internal static class CardEquality
     private static readonly Dictionary<Type, Kind> _kinds = new();
     private static readonly List<MethodInfo> _referenceOverrides = new();
     private static int _epoch = int.MinValue;
+    private static long _checkedAt;
     private static bool _patched;
 
     internal static Kind Of(Type type)
@@ -551,11 +560,16 @@ internal static class CardEquality
         }
     }
 
-    /// <summary>Another mod patches one of the <c>this == obj</c> overrides met so far (then none of them counts as by reference).</summary>
+    /// <summary>
+    /// Another mod patches one of the <c>this == obj</c> overrides met so far (then none of them counts as by reference). Asked
+    /// again after any Patch or Unpatch (<see cref="HarmonyWatch.Epoch"/>), and each second while HarmonyWatch isn't applied (its
+    /// epoch then never moves).
+    /// </summary>
     internal static bool ReferenceOverridePatched()
     {
         int epoch = HarmonyWatch.Epoch;
-        if (epoch != _epoch)
+        long now = Environment.TickCount64;
+        if (epoch != _epoch || (!HarmonyWatch.Applied && now - _checkedAt >= 1000))
         {
             lock (_kinds)
             {
@@ -566,6 +580,7 @@ internal static class CardEquality
                 }
                 _patched = patched;
                 _epoch = epoch;
+                _checkedAt = now;
             }
         }
         return _patched;

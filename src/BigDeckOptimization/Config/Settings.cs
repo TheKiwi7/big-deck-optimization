@@ -681,9 +681,11 @@ public static class Settings
             // The sort's listener walks (ListenerCache's scope around an answered sort): needed where the sort is.
             parts: new OptionPart[] { new(CardSortKeys.Name, NotNeeded: () => CardSortKeys.NotNeeded), new(ListenerCache.SortWalksName, NotNeeded: () => CardSortKeys.NotNeeded), new(CombatCardSet.Name) },
             // PileIndex.ContainsCardEnabled: the RunState.ContainsCard shortcut reads no index, so a PileIndex fault doesn't stop it.
-            // PileIndex.SingleScanEnabled: RemoveInternal's single scan reads no index (a PileIndex fault still stops it, from inside).
+            // PileIndex.SingleScanEnabled: RemoveInternal's single scan reads no index, but relies on BeforeAdd (PileIndex's AddInternal
+            // prefix) noting each entering card's type: any PileIndex fault stops it, its own (_failed) and an outside one (HarmonyWatch
+            // finding a PileIndex method without its detour faults PileIndex, then re-applies the switches).
             // CombatCardSet: CombatState.ContainsCard answered from a per-combat card set (a reshuffle checks each moved card).
-            setParts: on => { Flag(() => CardSortKeys.Enabled = Part(on, CardSortKeys.Name)); Flag(() => ListenerCache.SortWalksEnabled = Part(on, ListenerCache.SortWalksName)); Flag(() => PileIndex.ContainsCardEnabled = on); Flag(() => PileIndex.SingleScanEnabled = on); Flag(() => CombatCardSet.Enabled = Part(on, CombatCardSet.Name)); }),
+            setParts: on => { Flag(() => CardSortKeys.Enabled = Part(on, CardSortKeys.Name)); Flag(() => ListenerCache.SortWalksEnabled = Part(on, ListenerCache.SortWalksName)); Flag(() => PileIndex.ContainsCardEnabled = on); Flag(() => PileIndex.SingleScanEnabled = Part(on, PileIndex.Name)); Flag(() => CombatCardSet.Enabled = Part(on, CombatCardSet.Name)); }),
         new("card_ids", "Combat card IDs",
             "Skips re-scanning whole card piles for new cards on every card move (reshuffles, end of combat).",
             new[] { CardDbScan.Name }, on => CardDbScan.Enabled = on,

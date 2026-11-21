@@ -423,7 +423,9 @@ public static class PileIndex
 
     /// <summary>
     /// <c>RemoveInternal</c>'s single scan (<see cref="RemoveInternalTranspiler"/>): its own switch, set with the pile_lookup switch by
-    /// <c>Settings</c>. It reads no index: only <see cref="_failed"/> (a pile changed in a way the index's checks didn't expect) and
+    /// <c>Settings</c>, off once PileIndex is faulted (its own <see cref="Fail"/>, or an outside fault: HarmonyWatch finding
+    /// <c>AddInternal</c> without its detour, so <see cref="BeforeAdd"/> no longer runs). It reads no index: only
+    /// <see cref="_failed"/> (a pile changed in a way the index's checks didn't expect) and
     /// a card type whose <c>Equals</c> may not answer by reference (<see cref="ByReference"/>) stop it, and so does another mod's
     /// patch PileIndex backs off from on a list method (<see cref="_others"/>): <see cref="ByReference"/> relies on
     /// <see cref="BeforeAdd"/> seeing every card that enters a pile, which such a patch may bypass (a skipping prefix adding
@@ -540,6 +542,27 @@ public static class PileIndex
     {
         _foundList = null;
         _foundCard = null;
+        try
+        {
+            if (ScanFor(cards, card) is { } found)
+            {
+                return found;
+            }
+        }
+        catch (Exception e)
+        {
+            // Inside the game's RemoveInternal: nothing of this mod's may throw there (RefreshOthers' and ByReference's reads of
+            // Harmony's patch lists). Nothing was recorded for RemoveFound: the game's Remove follows.
+            _foundList = null;
+            _foundCard = null;
+            Fail($"RemoveInternal's single scan threw: {e}");
+        }
+        return cards!.Contains(card); // The game's call, its own exception for a null collection included.
+    }
+
+    /// <summary><see cref="ContainsBeingRemoved"/>'s own search: null when the game's call answers.</summary>
+    private static bool? ScanFor(IEnumerable<CardModel> cards, CardModel card)
+    {
         // A null card: the game's call (List.IndexOf finds a null element, a search by reference would too, but nothing to gain).
         if (SingleScanEnabled && !_failed && !ListenerCache.IsSuspended && card != null && cards != null && ByReference() && !ListOthers()
             && cards.GetType() == typeof(List<CardModel>))
@@ -584,7 +607,7 @@ public static class PileIndex
             }
             return at >= 0;
         }
-        return cards!.Contains(card); // The game's call, its own exception for a null collection included.
+        return null;
     }
 
     /// <summary>
