@@ -43,7 +43,18 @@ public static partial class AutoTest
             Say($"  STATE savefiles {label}: no profile yet, not-whole warnings {Volatile.Read(ref _notWholeWarnings)}");
             return;
         }
-        string path = UserDataPathProvider.GetAccountScopedBasePath(null) + "/" + RunSaveManager.GetRunSavePath(SaveManager.Instance.CurrentProfileId, "current_run.save");
+        // Through reflection: GetRunSavePath(int, string) on v0.107.1, GetRunSavePath(int, string, bool?) from v0.111 (test tooling
+        // must load on every supported version; a direct call made the whole AutoTest patch fail to resolve).
+        System.Reflection.MethodInfo? getPath = typeof(RunSaveManager).GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+            .FirstOrDefault(m => m.Name == "GetRunSavePath" && m.GetParameters() is { Length: >= 2 } p && p[0].ParameterType == typeof(int) && p[1].ParameterType == typeof(string)
+                && p.Skip(2).All(extra => extra.HasDefaultValue));
+        if (getPath == null)
+        {
+            Say($"  STATE savefiles {label}: no GetRunSavePath(int, string) on this game version, not-whole warnings {Volatile.Read(ref _notWholeWarnings)}");
+            return;
+        }
+        object?[] pathArgs = getPath.GetParameters().Select((p, i) => i == 0 ? SaveManager.Instance.CurrentProfileId : i == 1 ? "current_run.save" : p.DefaultValue).ToArray();
+        string path = UserDataPathProvider.GetAccountScopedBasePath(null) + "/" + (string)getPath.Invoke(null, pathArgs)!;
         Say($"  STATE savefiles {label}: current_run.save {SaveFileText(path)}; .backup {SaveFileText(path + ".backup")}; not-whole warnings {Volatile.Read(ref _notWholeWarnings)}");
     }
 
