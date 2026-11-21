@@ -25,9 +25,10 @@ namespace BigDeckOptimization.Patches;
 /// the first one's answer kept in a local. <see cref="HideFirst"/> runs the game's hide in place, and the game's
 /// CreateAndShow then gets the body's own argument, whenever no reuse is possible: the part off, a back-off, tips blocked or
 /// hidden, no combat. Otherwise <see cref="Show"/> gets the final argument (what every other mod's prefix left: they all run
-/// before the body as in the game) and the alignment the game computed. The tips are read once (the list passed on to
-/// CreateAndShow: its Init reads them once too; a throw while reading is replayed to Init at the same item) and compared with
-/// the ones of the panel registered for the hitbox right now (every field of each tip: title, description with its numbers,
+/// before the body as in the game) and the alignment the game computed. The tips are read once (a rebuild passes CreateAndShow
+/// the caller's own collection when reading it again runs nothing and gives the same tips, see <see cref="PassedAsIs"/>, else the
+/// list read: an iterator is never run twice; a throw while reading is replayed to Init at the same item) and compared, as read
+/// (before the dedupe Init runs on them), with the ones of the panel registered for the hitbox right now (every field of each tip: title, description with its numbers,
 /// icon, debuff look...). Only when they are all identical, that panel is still the one built for them and everything the
 /// game places it from is unchanged (see <see cref="Placement"/>) is the rebuild left out; any difference rebuilds it with the
 /// game's two calls. Every caller goes through it (the state-change handler, focus, NIntent, NPower, NCreatureStateDisplay):
@@ -418,7 +419,8 @@ public static class HoverTipReuse
         List<IHoverTip> tips = new();
         try
         {
-            // Read once, as CreateAndShow's Init reads its argument (one foreach through RemoveDupes): that list goes on to it.
+            // Read once, as CreateAndShow's Init reads its argument (one foreach through RemoveDupes): on a rebuild Init gets this
+            // list, or the argument itself when reading it again is free (PassedAsIs).
             foreach (IHoverTip tip in hoverTips)
             {
                 tips.Add(tip);
@@ -431,11 +433,15 @@ public static class HoverTipReuse
         }
         List<HoverTip>? text = null;
         Placement? placement = null;
+        bool asIs = false;
         try
         {
-            List<IHoverTip> unique = IHoverTip.RemoveDupes(tips).ToList();
-            text = unique.All(t => t is HoverTip)
-                ? unique.Cast<HoverTip>().ToList()
+            asIs = PassedAsIs(hoverTips);
+            // The tips as read, compared before the dedupe Init runs on them (IHoverTip.RemoveDupes, a function of the tips):
+            // equal tips make an equal panel. This mod never calls RemoveDupes itself, so a patch there (MomoLib's prefix) runs
+            // only where the game calls it: on a rebuild, once; a reuse leaves it out with the rest of the build (the premise).
+            text = tips.All(t => t is HoverTip)
+                ? tips.Cast<HoverTip>().ToList()
                 : null; // Card previews: no field-by-field comparison, always rebuilt.
             // Exact values (Vector2 equality): a creature moved (enemies laid out again for a summon, pets placed again) or resized
             // (Osty growing) has its panel placed again by the game, so it is rebuilt.
@@ -454,8 +460,12 @@ public static class HoverTipReuse
             Fault(e);
             text = null;
         }
-        // The game's two calls, outside any try of this mod: what they throw reaches the game's code unchanged.
-        NHoverTipSet? built = GameShow(creature, hitbox, tips, alignment);
+        // The game's two calls, outside any try of this mod: what they throw reaches the game's code unchanged. They get the
+        // caller's own enumerable when reading it again gives the same tips with no side effect (PassedAsIs: the game's lists,
+        // arrays and the compiler's collection-expression lists, NIntent's single tip), as in the game (another mod's prefix
+        // on CreateAndShow, CreateAndRegister or Init sees the argument's own type); the copy read above otherwise (an iterator
+        // or a LINQ chain would run again).
+        NHoverTipSet? built = GameShow(creature, hitbox, asIs ? hoverTips : tips, alignment);
         Rebuilt++;
         try
         {
@@ -474,6 +484,36 @@ public static class HoverTipReuse
             Fault(e);
         }
         return built;
+    }
+
+    /// <summary>The compiler's collection-expression types (Roslyn, global namespace, [CompilerGenerated]): read-only wrappers.</summary>
+    private static readonly HashSet<string> CompilerLists = new(StringComparer.Ordinal)
+    {
+        "<>z__ReadOnlySingleElementList`1", "<>z__ReadOnlyArray`1", "<>z__ReadOnlyList`1",
+    };
+
+    /// <summary>Per argument type, whether it is one of <see cref="CompilerLists"/> (main thread: the creature's hover).</summary>
+    private static readonly Dictionary<Type, bool> _compilerList = new();
+
+    /// <summary>
+    /// Reading <paramref name="tips"/> again gives the same tips and runs no code of anyone's: exactly <c>List&lt;IHoverTip&gt;</c>
+    /// (not a subclass, which may enumerate otherwise), an array, or one of the compiler's read-only collection-expression lists
+    /// (NIntent's <c>[tip]</c>). Nothing runs between this mod's read and the game's (the hide, watched strictly).
+    /// </summary>
+    internal static bool PassedAsIs(IEnumerable<IHoverTip> tips)
+    {
+        Type type = tips.GetType();
+        if (type == typeof(List<IHoverTip>) || type.IsArray)
+        {
+            return true;
+        }
+        if (!_compilerList.TryGetValue(type, out bool known))
+        {
+            known = type.IsGenericType && type.Namespace == null && CompilerLists.Contains(type.GetGenericTypeDefinition().Name)
+                && type.IsDefined(typeof(CompilerGeneratedAttribute), false);
+            _compilerList[type] = known;
+        }
+        return known;
     }
 
     private static void Fault(Exception e)
