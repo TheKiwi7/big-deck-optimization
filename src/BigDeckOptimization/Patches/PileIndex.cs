@@ -274,8 +274,10 @@ public static class PileIndex
         try
         {
             MethodInfo addInternal = Reflect.Method(typeof(CardPile), nameof(CardPile.AddInternal))!;
-            // Last among transpilers, as this mod's others: another mod's transpiler sees the game's call.
-            PatchGuard.Patch(harmony, addInternal, transpiler: new HarmonyMethod(typeof(PileIndex), nameof(AddInternalTranspiler)) { priority = Priority.Last });
+            // Default priority, as shipped in v1.2.0: this transpiler takes the first Enumerable.Contains<CardModel> of the method,
+            // so it must run before other mods' transpilers (one inserting its own Contains<CardModel> before the game's check would
+            // otherwise have its call answered from the index). Review of 2026-11-21: not moved to Priority.Last.
+            PatchGuard.Patch(harmony, addInternal, transpiler: Method(nameof(AddInternalTranspiler)));
             Log.Info($"[{ModEntry.Id}] {Name}: AddInternal duplicate check {(_duplicateCheckPatched ? "patched" : "left vanilla (call not found)")}");
         }
         catch (Exception e)
