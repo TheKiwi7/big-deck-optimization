@@ -1343,6 +1343,14 @@ LibraryOfRuinaLib's live subscriber tail: declined for now (medium-low risk); th
 2026-11-03 without gain; text effects really cost ~0.1 ms a frame, the "25%" of that trace was sampler bias); co-op teammates' deck-add
 animation cap and S4: not done.
 
+**Owner decisions (2026-11-21, evening).** Declined: the co-op teammates' deck-add animation cap (visual queue only; it would extend the
+`card_flights` display premise to a clickable `NDeckHistoryEntry` whose closure passes 2,000 methods), S4 (a miss would persist in the
+save), the rest of S5 (Continue reusing the parsed save: medium) and, for now, the 32-bit card id (a wire format change; the 65,536-card
+wall of one co-op combat is far above the V1 goal). Approved: measure, then implement, DeckCountMemo's display callers outside the card
+redraw (a call reached from a Godot frame or deferred callback through other mods' code only, no game code above the preview chain:
+BetterSpire2's teammate hand panel, SpeedX's damage preview); a catalogue of the downloaded mods found no caller from such a callback
+using the value for a gameplay decision (SpeedX obfuscated: its use inferred as its overlay).
+
 **Revisited ideas verified and rejected.** A Hornet argument gate (one mod); SnapshotCardReuse next to a foreign `ToSerializable`
 postfix (not provable); A (patches on `HashSet<CardTag>`); cross-call walk reuse for the first turn.
 
