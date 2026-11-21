@@ -2628,7 +2628,8 @@ public static partial class PatchSafety
     /// <c>MethodBase.GetMethodFromHandle</c>), arrays of runtime types (<c>newarr</c>, <c>stelem</c>,
     /// <c>RuntimeHelpers.InitializeArray</c>), <c>new object()</c>, empty runtime collections of runtime element types
     /// (<c>System.Collections.*</c> constructors taking nothing, a constant non-negative capacity, or a comparer from a runtime
-    /// static getter: <c>StringComparer.*</c>, <c>EqualityComparer&lt;T&gt;.Default</c>, <c>Comparer&lt;T&gt;.Default</c>),
+    /// static getter: <c>StringComparer.*</c>, <c>EqualityComparer&lt;T&gt;.Default</c>, <c>Comparer&lt;T&gt;.Default</c>, whose
+    /// compared type is a runtime type: G1, the collection's other type arguments then free, as without a comparer),
     /// runtime static readonly fields (<c>Type.EmptyTypes</c>, <c>string.Empty</c>), <c>Array.Empty&lt;T&gt;()</c>, field
     /// lookups (HarmonyLib's <c>AccessTools.Field/DeclaredField(Type, string)</c>, which return null for a missing field (they throw only
     /// for two fields of one name in one class, which emitted IL alone can make), and
@@ -3154,8 +3155,11 @@ public static partial class PatchSafety
                 return parameters.Length == 0;
             }
             // An empty collection: no argument or a constant capacity (any element types, B4 of the re-audit round 2: constructing
-            // it runs no code of theirs; a ConditionalWeakTable too), or a runtime comparer (runtime element types only: the comparer
-            // is theirs). No other argument: a collection initializer's Add runs the keys' Equals and GetHashCode.
+            // it runs no code of theirs; a ConditionalWeakTable too), or a runtime comparer whose own type argument (the key or element
+            // it compares: the parameter's IEqualityComparer<K> / IComparer<K>) is a runtime type. G1 (2026-11-21): the collection's
+            // other type arguments (a dictionary's value type) are free, as without a comparer: constructing it runs no code of theirs
+            // (SynergyMod's new Dictionary<string, ISynergyHandler>(StringComparer.Ordinal)); EqualityComparer<ModType>.Default stays
+            // refused (RuntimeComparer). No other argument: a collection initializer's Add runs the keys' Equals and GetHashCode.
             bool weakTable = owner.IsGenericType && owner.GetGenericTypeDefinition() == typeof(System.Runtime.CompilerServices.ConditionalWeakTable<,>);
             if ((!weakTable && owner.Namespace is not ("System.Collections.Generic" or "System.Collections.Concurrent" or "System.Collections.ObjectModel" or "System.Collections"))
                 || at - parameters.Length < 0)
@@ -3176,7 +3180,7 @@ public static partial class PatchSafety
                         _ => false,
                     }
                     : type.IsGenericType && type.GetGenericTypeDefinition() is var d && (d == typeof(IEqualityComparer<>) || d == typeof(IComparer<>))
-                        ? argument.Operand is MethodBase getter && RuntimeComparer(getter) && owner.GetGenericArguments().All(IsRuntimeType)
+                        ? argument.Operand is MethodBase getter && RuntimeComparer(getter) && IsRuntimeType(type.GetGenericArguments()[0])
                     : false;
                 if (!ok)
                 {

@@ -34,6 +34,7 @@ public static class ForeignShapesGates
         "gates-getter-gated-postfix", "gates-getter-ungated-postfix",
         "gates-init-extensions-postfix", "gates-init-ambiguous-postfix", "gates-forwarder-postfix", "gates-forwarder-acts-postfix",
         "gates-count-postfix", "gates-count-prefix", "gates-button-gated-prefix",
+        "gates-comparer-postfix", "gates-modcomparer-postfix",
     };
 
     /// <summary>Whether a <c>foreignpatch</c> line is one of this file's.</summary>
@@ -108,6 +109,8 @@ public static class ForeignShapesGates
             "gates-count-postfix" => (CountPatch(key), PatchSafety.PatchKind.Postfix),
             "gates-count-prefix" => (CountPatch(key), PatchSafety.PatchKind.Prefix),
             "gates-button-gated-prefix" => (ButtonGatedPrefix(key), PatchSafety.PatchKind.Prefix),
+            "gates-comparer-postfix" => (InitCase("g1-comparer-value", key), PatchSafety.PatchKind.Postfix),
+            "gates-modcomparer-postfix" => (InitCase("g1-mod-comparer", key), PatchSafety.PatchKind.Postfix),
             _ => throw new ArgumentException("unknown gates shape " + shape),
         };
     }
@@ -916,7 +919,47 @@ public static class ForeignShapesGates
                     il.Emit(OpCodes.Pop);
                     il.Emit(OpCodes.Newobj, typeof(GatesRegistry).GetConstructor(Type.EmptyTypes)!);
                 });
+            case "g1-comparer-value":
+                // G1: new Dictionary<string, GatesRegistry>(StringComparer.Ordinal), a mod type as the value (SynergyMod's SynergyRuntime).
+                return InitGatedPostfix(kind, key, typeof(object), il =>
+                {
+                    il.Emit(OpCodes.Call, typeof(StringComparer).GetProperty(nameof(StringComparer.Ordinal))!.GetGetMethod()!);
+                    il.Emit(OpCodes.Newobj, typeof(Dictionary<string, GatesRegistry>).GetConstructor(new[] { typeof(IEqualityComparer<string>) })!);
+                });
+            case "g1-sorted-value":
+                // G1: new SortedDictionary<string, GatesRegistry>(StringComparer.Ordinal) (an IComparer<string> parameter).
+                return InitGatedPostfix(kind, key, typeof(object), il =>
+                {
+                    il.Emit(OpCodes.Call, typeof(StringComparer).GetProperty(nameof(StringComparer.Ordinal))!.GetGetMethod()!);
+                    il.Emit(OpCodes.Newobj, typeof(SortedDictionary<string, GatesRegistry>).GetConstructor(new[] { typeof(IComparer<string>) })!);
+                });
             // Controls.
+            case "g1-mod-comparer":
+                // EqualityComparer<GatesRegistry>.Default: the compared type is a mod's (its Equals and GetHashCode).
+                return InitGatedPostfix(kind, key, typeof(object), il =>
+                {
+                    il.Emit(OpCodes.Call, typeof(EqualityComparer<GatesRegistry>).GetProperty(nameof(EqualityComparer<GatesRegistry>.Default))!.GetGetMethod()!);
+                    il.Emit(OpCodes.Newobj, typeof(Dictionary<GatesRegistry, int>).GetConstructor(new[] { typeof(IEqualityComparer<GatesRegistry>) })!);
+                });
+            case "g1-mod-key":
+                // A runtime comparer of a runtime type passed for a mod key type (IEqualityComparer<object> as IEqualityComparer<GatesRegistry>,
+                // contravariant): the compared type, the parameter's, is the mod's.
+                return InitGatedPostfix(kind, key, typeof(object), il =>
+                {
+                    il.Emit(OpCodes.Call, typeof(EqualityComparer<object>).GetProperty(nameof(EqualityComparer<object>.Default))!.GetGetMethod()!);
+                    il.Emit(OpCodes.Newobj, typeof(HashSet<GatesRegistry>).GetConstructor(new[] { typeof(IEqualityComparer<GatesRegistry>) })!);
+                });
+            case "g1-add":
+                // The accepted construction followed by a collection initializer's Add.
+                return InitGatedPostfix(kind, key, typeof(object), il =>
+                {
+                    il.Emit(OpCodes.Call, typeof(StringComparer).GetProperty(nameof(StringComparer.Ordinal))!.GetGetMethod()!);
+                    il.Emit(OpCodes.Newobj, typeof(Dictionary<string, GatesRegistry>).GetConstructor(new[] { typeof(IEqualityComparer<string>) })!);
+                    il.Emit(OpCodes.Dup);
+                    il.Emit(OpCodes.Ldstr, "a");
+                    il.Emit(OpCodes.Ldnull);
+                    il.Emit(OpCodes.Callvirt, typeof(Dictionary<string, GatesRegistry>).GetMethod(nameof(Dictionary<string, GatesRegistry>.Add))!);
+                });
             case "ambiguous":
                 return InitGatedPostfix(kind, key, typeof(object), il => EmitMethodLookup(il, typeof(Math), nameof(Math.Max)));
             case "computed-name":
@@ -1418,6 +1461,12 @@ public static class ForeignShapesGates
         yield return new Case("R1 control: a constructor reading the clock", InitCase("r1-impure"), postfix, model, gated, false);
         yield return new Case("R1 control: two initializers constructing each other (refused, no recursion)", InitCase("r1-cycle"), postfix, model, gated, false);
         yield return new Case("control: FieldRefAccess (it emits code)", InitCase("field-ref-access"), postfix, model, gated, false);
+        // G1 (2026-11-21): a runtime comparer of a runtime key, any value type.
+        yield return new Case("G1 new Dictionary<string, ModType>(StringComparer.Ordinal)", InitCase("g1-comparer-value"), postfix, model, gated, true, "Squeeze");
+        yield return new Case("G1 new SortedDictionary<string, ModType>(StringComparer.Ordinal)", InitCase("g1-sorted-value"), postfix, model, gated, true, "Squeeze");
+        yield return new Case("G1 control: EqualityComparer<ModType>.Default", InitCase("g1-mod-comparer"), postfix, model, gated, false);
+        yield return new Case("G1 control: EqualityComparer<object>.Default for a HashSet<ModType>", InitCase("g1-mod-key"), postfix, model, gated, false);
+        yield return new Case("G1 control: the accepted dictionary then Add", InitCase("g1-add"), postfix, model, gated, false);
         // FW: forwarders.
         yield return new Case("FW a forwarder (__instance, ref __result) to a gated helper of its class", ForwarderPostfix("selftest"), postfix, model, gated, true, "Squeeze");
         yield return new Case("FW a helper's returned test (if (IsMine(__instance)))", ReturningHelperPostfix("selftest"), postfix, model, gated, true, "Squeeze");
