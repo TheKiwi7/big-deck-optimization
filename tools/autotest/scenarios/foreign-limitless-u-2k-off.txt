@@ -17,6 +17,7 @@ cmd kill all
 waitfor nocombat 300
 wait 2
 foreignpatch lim-constant-postfix MegaCrit.Sts2.Core.Models.CardModel:get_MaxUpgradeLevel release
+foreignpatch limitless upgradeinner 200
 wait 3
 cmd fight KNIGHTS_ELITE
 waitfor idle 600

@@ -1,10 +1,13 @@
 # G3 (2026-11-21): a constant-result postfix of another mod on CardModel.get_MaxUpgradeLevel (Bench/ForeignShapesLimitless.cs
 # lim-constant-postfix release, `__result = 99`: Infinite Upgrades' shape), installed after a first combat start filled the memo;
-# then two more combat starts at ~945 cards (the reference deck: level-0 storage inner cards, so the upgrade group it patches isn't
-# reached: the memo keeps running as under rule L; `foreignpatch limitless reach` shows a level-1 content kept by LimitlessCloneMemo
-# and counted patched by LimitlessHookSkip's strict answer). Mod on. Compare foreign-limitless-u-2k-off and foreign-limitless-u-2k-on:
-# CHECKSUM/STATE identical (the cap changes the game alike on both sides). The on side: both parts keep running past the patch,
-# the memo was cleared once because the patch set changed.
+# then 200 of the deck's stacked enchantments' inner cards set to level 1 (`foreignpatch limitless upgradeinner 200`: the reference deck's are
+# all level 0; the game's setter, then Limitless's own SetSerializableCards, on both sides), and two more combat starts at ~945
+# cards: their clones rebuild level-1 contents, which reach the upgrade group the postfix patches. Mod on, with the memo's byte
+# re-check every second hit (`bdperf clonememo verify 2`, the default 256): the memo really serves those contents (constant kept)
+# and rebuilds and compares some (constant verified; a difference would turn it off: `bdperf clonememo` enabled True), while
+# LimitlessHookSkip's strict answer counts them patched (its back-off recorded under its own name). Compare
+# foreign-limitless-u-2k-off and foreign-limitless-u-2k-on: CHECKSUM/STATE identical (the cap and the upgraded inner cards change the
+# game alike on both sides; the other inner cards stay level 0: LimitlessHookSkip keeps dropping theirs). The memo was cleared once because the patch set changed.
 timeout 1500
 expect FOREIGN clonememo filled: entries [1-9]
 expect FOREIGN clonememo end: entries [0-9]+, patch stamp clears [1-9]
@@ -12,7 +15,9 @@ expect LimitlessCloneMemo: CardModel\.get_MaxUpgradeLevel \(bdtest\.foreign\.lim
 expect LimitlessHookSkip: CardModel\.get_MaxUpgradeLevel is also patched by bdtest\.foreign\.lim-constant-postfix-release \(patches gated on the listener.s type not enough\)
 expect FOREIGN reach end storage Sharp 0: kept True, reaches Spine, Enchant, hookskip patched False
 expect FOREIGN reach end storage Sharp 1: kept True, reaches Spine, Enchant, Upgrade, hookskip patched True
-expect FOREIGN clonememo end: .*constant kept [1-9]
+expect FOREIGN upgradeinner: [1-9][0-9]* inner cards at level 1 in [1-9][0-9]* stacked enchantments
+expect FOREIGN clonememo end: .*constant kept [1-9][0-9]*, constant verified [1-9][0-9]*
+expect CLONEMEMO enabled True, reused [1-9]
 newrun NECROBINDER 1234
 waitfor run 120
 wait 2
@@ -30,6 +35,8 @@ waitfor nocombat 300
 wait 2
 foreignpatch limitless memo filled
 foreignpatch lim-constant-postfix MegaCrit.Sts2.Core.Models.CardModel:get_MaxUpgradeLevel release
+foreignpatch limitless upgradeinner 200
+cmd bdperf clonememo verify 2
 wait 3
 effects afterpatch
 cmd fight KNIGHTS_ELITE
@@ -69,6 +76,7 @@ foreignpatch limitless report end
 foreignpatch limitless reach storage Sharp 0 end
 foreignpatch limitless reach storage Sharp 1 end
 foreignpatch limitless memo end
+cmd bdperf clonememo
 effects end
 effectcheck LimitlessCloneMemo grew afterpatch
 effectcheck LimitlessHookSkip grew afterpatch

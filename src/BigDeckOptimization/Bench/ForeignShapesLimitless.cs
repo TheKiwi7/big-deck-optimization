@@ -269,6 +269,53 @@ public static class ForeignShapesLimitless
     private static readonly List<(string Id, MethodBase Target)> _installed = new();
 
     /// <summary>
+    /// <c>foreignpatch limitless upgradeinner [max]</c> (G3's in-game proof: the reference deck's inner cards are all level 0): in the
+    /// local player's deck, the level-0 inner cards of every stacked enchantment (Limitless's MultiEnchantment), up to
+    /// <paramref name="max"/>, set to level 1 through the game's setter, then the stack's saved list rewritten by Limitless's own
+    /// <c>SetSerializableCards</c> (the writer its parts watch): the next clones rebuild level-1 contents, which reach the upgrade
+    /// group. Deterministic, the same with this mod on or off (run it on both sides of an A/B, before the clones that compare);
+    /// needs a getter cap of 1 or more for the storage card (lim-constant-postfix installed first).
+    /// </summary>
+    private static IReadOnlyList<string> UpgradeInner(int max)
+    {
+        if (MegaCrit.Sts2.Core.Runs.RunManager.Instance.DebugOnlyGetState() is not { } state
+            || MegaCrit.Sts2.Core.Context.LocalContext.GetMe(state) is not { } me)
+        {
+            throw new InvalidOperationException("limitless upgradeinner: start a run first");
+        }
+        Type multi = AccessTools.TypeByName(LimitlessReserialize.MultiEnchantmentType) ?? throw new InvalidOperationException("Limitless not loaded");
+        PropertyInfo onCards = AccessTools.Property(multi, "EnchantmentsOnCards") ?? throw new MissingMemberException(multi.Name, "EnchantmentsOnCards");
+        MethodInfo setSaved = AccessTools.Method(multi, "SetSerializableCards") ?? throw new MissingMethodException(multi.Name, "SetSerializableCards");
+        MethodInfo setLevel = AccessTools.PropertySetter(typeof(CardModel), nameof(CardModel.CurrentUpgradeLevel))
+            ?? throw new MissingMethodException(nameof(CardModel), "set_CurrentUpgradeLevel");
+        int upgraded = 0, stacks = 0;
+        foreach (CardModel card in me.Deck.Cards.ToList())
+        {
+            if (upgraded >= max || card.Enchantment is not { } enchantment || !multi.IsInstanceOfType(enchantment)
+                || onCards.GetValue(enchantment) is not List<CardModel> inner)
+            {
+                continue;
+            }
+            bool any = false;
+            foreach (CardModel innerCard in inner)
+            {
+                if (upgraded < max && innerCard.CurrentUpgradeLevel == 0)
+                {
+                    setLevel.Invoke(innerCard, new object[] { 1 });
+                    upgraded++;
+                    any = true;
+                }
+            }
+            if (any)
+            {
+                setSaved.Invoke(enchantment, new object[] { inner });
+                stacks++;
+            }
+        }
+        return new[] { $"FOREIGN upgradeinner: {upgraded} inner cards at level 1 in {stacks} stacked enchantments" };
+    }
+
+    /// <summary>
     /// <c>foreignpatch limitless display [label]</c> (G5): after a preflight, whether LimitlessCloneMemo's display shows a back-off on
     /// CardCmd.Enchant(EnchantmentModel, CardModel, decimal) (a chain entry of no group: c8's patched overload), and whether a
     /// published override closure reaches it: the two must agree.
@@ -297,12 +344,13 @@ public static class ForeignShapesLimitless
                 "twin" when parts.Length > 2 => TwinCommand(parts[2], parts.Length > 3 ? parts[3] : null),
                 "reach" when parts.Length > 4 => ReachCommand(parts[2], parts[3], int.Parse(parts[4]), parts.Length > 5 ? parts[5] : "now"),
                 "anyknown" => new[] { $"FOREIGN anyknown {(parts.Length > 2 ? parts[2] : "now")}: {LimitlessHookSkip.AnyKnownForTest()}" },
-                "memo" => new[] { $"FOREIGN clonememo {(parts.Length > 2 ? parts[2] : "now")}: entries {LimitlessCloneMemo.MemoCount}, patch stamp clears {LimitlessCloneMemo.PatchStampClears}, reused {LimitlessCloneMemo.Reused}, constant kept {LimitlessCloneMemo.ConstantKept}" },
+                "memo" => new[] { $"FOREIGN clonememo {(parts.Length > 2 ? parts[2] : "now")}: entries {LimitlessCloneMemo.MemoCount}, patch stamp clears {LimitlessCloneMemo.PatchStampClears}, reused {LimitlessCloneMemo.Reused}, constant kept {LimitlessCloneMemo.ConstantKept}, constant verified {LimitlessCloneMemo.ConstantVerified}, verified {LimitlessCloneMemo.Verified}" },
+                "upgradeinner" => UpgradeInner(parts.Length > 2 ? int.Parse(parts[2]) : int.MaxValue),
                 "constant" when parts.Length > 2 && parts[2] == "selftest" => ConstantSelfTest(),
                 "display" => ChainDisplay(parts.Length > 2 ? parts[2] : "now"),
                 // Full audit A-L1, B-3: the patched-methods maps act as if Harmony couldn't list its patched methods (within 2 s).
                 "cantlist" when parts.Length > 2 && parts[2] is "on" or "off" => CantList(parts[2] == "on"),
-                _ => throw new ArgumentException("foreignpatch limitless report [label] | remove | twin status|register|patchcallee [label] | reach <storage|CardClass> <EnchantmentClass|none> <level> [label] | memo [label] | anyknown [label] | cantlist on|off | constant selftest | display [label]"),
+                _ => throw new ArgumentException("foreignpatch limitless report [label] | remove | twin status|register|patchcallee [label] | reach <storage|CardClass> <EnchantmentClass|none> <level> [label] | memo [label] | anyknown [label] | cantlist on|off | constant selftest | display [label] | upgradeinner [max]"),
             };
         }
         string shape = parts[0];

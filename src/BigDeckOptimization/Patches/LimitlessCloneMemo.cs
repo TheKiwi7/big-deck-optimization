@@ -1373,13 +1373,6 @@ public static class LimitlessCloneMemo
         {
             return false;
         }
-#if BENCH
-        // G3's effect: a content this memo keeps only because the groups it reaches are patched with constant results alone.
-        if (ChainPatchedFor(cardType, reach))
-        {
-            ConstantKept++;
-        }
-#endif
         if (saved.Enchantment == null)
         {
             return true;
@@ -1407,8 +1400,23 @@ public static class LimitlessCloneMemo
     internal static int MemoCount => _memo.Count;
     public static long PatchStampClears;
 
-    /// <summary>G3: content judgments kept by this memo that the strict chain answer (LimitlessHookSkip's) refuses.</summary>
-    public static long ConstantKept;
+    /// <summary>
+    /// G3: memo hits served (<see cref="ConstantKept"/>) and hits rebuilt and compared byte for byte (<see cref="ConstantVerified"/>)
+    /// for contents whose groups only the strict chain answer (LimitlessHookSkip's) counts as patched.
+    /// </summary>
+    public static long ConstantKept, ConstantVerified;
+
+    /// <summary>Whether a kept content's groups are patched for the strict answer only (group level: no gated check, nothing recorded).</summary>
+    private static bool KeptOnlyByConstants(SerializableCard saved)
+    {
+        if (saved.Id is not { } id || !_cardTypeOf.TryGetValue(id, out Type? cardType))
+        {
+            return false;
+        }
+        Reach reach = ReachOf(saved, cardType) | Reach.Spine;
+        ChainAnswer answer = CurrentChainAnswer();
+        return (answer.Patched & reach) != 0 && (answer.MemoPatched & reach) == 0;
+    }
 #endif
 
     /// <summary>The card type each saved id makes (filled by <see cref="CardTypeOf"/> before its overrides are cached). Main thread.</summary>
@@ -1517,13 +1525,29 @@ public static class LimitlessCloneMemo
             {
                 return true;
             }
+#if BENCH
+            // G3's effect: a content kept only because the groups it reaches are patched with constant results alone (strict there).
+            bool byConstants = KeptOnlyByConstants(__0);
+#endif
             if (++_sinceVerify >= VerifyEvery)
             {
                 // This one runs for real and the postfix compares.
                 _sinceVerify = 0;
+#if BENCH
+                if (byConstants)
+                {
+                    ConstantVerified++;
+                }
+#endif
                 return true;
             }
             Reused++;
+#if BENCH
+            if (byConstants)
+            {
+                ConstantKept++;
+            }
+#endif
             __result = memo;
             return false;
         }
