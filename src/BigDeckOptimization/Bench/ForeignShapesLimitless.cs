@@ -39,7 +39,9 @@ namespace BigDeckOptimization.Bench;
 /// closed instantiation of a generic member (<see cref="GenericCountPostfix"/>).</item>
 /// <item>G3 (2026-11-21): <c>lim-constant-postfix &lt;variant&gt;</c> on <c>CardModel:get_MaxUpgradeLevel</c>, emitted (Reflection.Emit):
 /// <c>release</c> (<c>ldarg.0; ldc.i4.s 99; stind.i4; ret</c>), <c>max</c> (Infinite Upgrades' <c>__result = int.MaxValue</c>),
-/// <c>debug</c> (nops first) are kept by LimitlessCloneMemo for upgraded contents (not by LimitlessHookSkip's drops); controls:
+/// <c>debug</c> (nops first) are kept by LimitlessCloneMemo for upgraded contents; LimitlessHookSkip's drops take them too when the
+/// postfix runs last (after Limitless's: the default priority, installed later) and the saved level is at most its constant (any level
+/// for <c>max</c>: the type-level verdict); controls:
 /// <c>staticread</c> (<c>__result = Flag ? 1 : 0</c>), <c>mathmax</c> (<c>Math.Max(__result, 5)</c>), <c>impure</c> (its class's
 /// initializer reads the clock), <c>instance</c> (an <c>__instance</c> parameter too). <c>foreignpatch limitless constant
 /// selftest</c>: each variant's shape verdict (offline too).</item>
@@ -144,11 +146,19 @@ public static class ForeignShapesLimitless
     {
         var lines = new List<string>();
         var failures = new List<string>();
-        foreach ((string variant, bool kept) in new[] { ("release", true), ("max", true), ("debug", true), ("staticread", false), ("mathmax", false), ("impure", false), ("instance", false) })
+        foreach ((string variant, bool kept, int? constant) in new (string, bool, int?)[]
         {
-            bool found = PatchSafety.ConstantResultShapeForTest(ConstantPostfix(variant), typeof(int));
-            lines.Add($"FOREIGN limitless constant selftest {(found == kept ? "ok" : "WRONG")}: {variant}: {(found ? "a constant result" : "not")}");
-            if (found != kept)
+            ("release", true, 99), ("max", true, int.MaxValue), ("debug", true, 99), ("staticread", false, null), ("mathmax", false, null),
+            ("impure", false, 99), ("instance", false, 99),
+        })
+        {
+            MethodInfo postfix = ConstantPostfix(variant);
+            bool found = PatchSafety.ConstantResultShapeForTest(postfix, typeof(int));
+            // G3 for drops: the int the drops compare saved levels with, decoded from the constant load (ldc.i4.s, ldc.i4).
+            int? decoded = PatchSafety.ConstantIntForTest(postfix);
+            bool ok = found == kept && decoded == constant;
+            lines.Add($"FOREIGN limitless constant selftest {(ok ? "ok" : "WRONG")}: {variant}: {(found ? "a constant result" : "not")}, constant {decoded?.ToString() ?? "none"}");
+            if (!ok)
             {
                 failures.Add(variant);
             }
@@ -344,7 +354,7 @@ public static class ForeignShapesLimitless
                 "twin" when parts.Length > 2 => TwinCommand(parts[2], parts.Length > 3 ? parts[3] : null),
                 "reach" when parts.Length > 4 => ReachCommand(parts[2], parts[3], int.Parse(parts[4]), parts.Length > 5 ? parts[5] : "now"),
                 "anyknown" => new[] { $"FOREIGN anyknown {(parts.Length > 2 ? parts[2] : "now")}: {LimitlessHookSkip.AnyKnownForTest()}" },
-                "memo" => new[] { $"FOREIGN clonememo {(parts.Length > 2 ? parts[2] : "now")}: entries {LimitlessCloneMemo.MemoCount}, patch stamp clears {LimitlessCloneMemo.PatchStampClears}, reused {LimitlessCloneMemo.Reused}, constant kept {LimitlessCloneMemo.ConstantKept}, constant verified {LimitlessCloneMemo.ConstantVerified}, verified {LimitlessCloneMemo.Verified}" },
+                "memo" => new[] { $"FOREIGN clonememo {(parts.Length > 2 ? parts[2] : "now")}: entries {LimitlessCloneMemo.MemoCount}, patch stamp clears {LimitlessCloneMemo.PatchStampClears}, reused {LimitlessCloneMemo.Reused}, constant kept {LimitlessCloneMemo.ConstantKept}, constant verified {LimitlessCloneMemo.ConstantVerified}, verified {LimitlessCloneMemo.Verified}, capped drops {LimitlessCloneMemo.CappedAnswers}" },
                 "upgradeinner" => UpgradeInner(parts.Length > 2 ? int.Parse(parts[2]) : int.MaxValue),
                 "constant" when parts.Length > 2 && parts[2] == "selftest" => ConstantSelfTest(),
                 "display" => ChainDisplay(parts.Length > 2 ? parts[2] : "now"),
