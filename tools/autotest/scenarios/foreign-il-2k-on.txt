@@ -30,8 +30,7 @@ expect FOREIGN judged walks Hook\.AfterEnergySpent [1-9]
 expect FOREIGN judged walks Hook\.ModifyHpLost [1-9]
 expect FOREIGN runtime HookSkip <AfterCardDrawn>d__[0-9]+\.MoveNext \(None\) kept 0 backed off [1-9]
 expect FOREIGN iljudge BeforeCardPlayed accepted
-expect FOREIGN iljudge SetupPlayerTurn: accepted
-expect ExtraScopes: SetupPlayerTurn's first-turn card filters, other mods' transpilers judged by their IL: the code feeding them is the game's: kept
+expect FOREIGN iljudge SetupPlayerTurn: not judged
 expect ExtraScopes first-turn filter \(in a scope\): [0-9]+ cards, .*OK: identical to vanilla
 expect STATE foreign end il-gated-observer squeeze calls [1-9]
 expect STATE foreign end il-prewalk-observer AfterEnergySpent walk 0 [1-9]

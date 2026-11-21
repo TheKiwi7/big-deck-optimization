@@ -1,0 +1,66 @@
+# ExtraScopes' first-turn filters decided at run time (A/B, mod on; DESIGN "ExtraScopes' first turn decided at run time",
+# 2026-11-21): ~2,000 cards (random Necrobinder cards, 30 Backstab: Innate; 6 deck cards with Imbued: bottom of the draw pile),
+# two combats, each first turn's two filters (bottom-of-pile, Innate minus those) run by this mod's stand-ins for Where, Except
+# and ToList inside a refresh scope (bdperf firstturn status: 4 scopes, nothing refused, no back-off; ExtraScopes effect; each
+# filter's cards identical to the same query run vanilla). Plays and turns after. CHECKSUM and STATE identical with firstturn-2k-off.
+# Run it also with BDTEST_EXTRA_MODS=STS2-RitsuLib: firstturn-real-2k-on/off (the same with RitsuLib's checks).
+timeout 1500
+expect FIRSTTURN imbued 6 of 6 deck cards
+expect FIRSTTURN scopes 2, refused source 0, predicate 0, except 0, plain ToList 0, backed off 0, on True, faulted False
+expect FIRSTTURN scopes 4, refused source 0, predicate 0, except 0, plain ToList 0, backed off 0, on True, faulted False
+expect ExtraScopes first-turn filter \(in a scope\): [1-9][0-9]* cards, .*OK: identical to vanilla
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck 1970
+cmd bigdeck 2000 BACKSTAB
+cmd bdperf firstturn imbue 6
+enemyhp 999999
+immortal
+effects before
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+effectcheck ExtraScopes grew before
+cmd bdperf firstturn status
+checksum start
+state start
+play 3
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 3
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat 1
+state after combat 1
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd bdperf firstturn status
+checksum start 2
+state start 2
+play 3
+waitfor idle 120
+checksum c2 t1 plays
+endturn
+waitfor idle 300
+checksum c2 t1 end
+state c2 t1
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat 2
+state after combat 2
+cmd bdopt why
+quit

@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -15,7 +16,8 @@ namespace BigDeckOptimization.Patches;
 /// Each reads keywords/damage through hooks once per card or per enemy, and every hook call rebuilt the listener list
 /// (all cards): O(cards²).
 ///   - First turn: <c>SetupPlayerTurn</c> filters the draw pile for Innate cards (and bottom-of-pile enchantments) with
-///     <c>Where(...).ToList()</c>: 6 s with 8000 cards. Both <c>ToList</c> calls run the same LINQ inside a scope.
+///     <c>Where(...).ToList()</c>: 6 s with 8000 cards. Both <c>ToList</c> calls run the same LINQ inside a scope, decided at
+///     run time from what the calls are given (<see cref="WhereInScope"/>), whatever other mods do to the state machine.
 ///   - BetterSpire2 (optional): <c>DamageTracker.Recalculate</c>, its damage preview recomputed 4 times a second,
 ///     only calls <c>Hook.ModifyDamage</c> and updates its own labels: ~100 ms per run with 8000 cards.
 /// Scopes follow <see cref="ListenerCache.RefreshEnabled"/> (the "combat refresh" setting). The scope bookkeeping runs
@@ -26,7 +28,7 @@ public static class ExtraScopes
 {
     public const string Name = "ExtraScopes";
 
-    /// <summary>v0.107.1 <c>CombatManager.SetupPlayerTurn</c> state machine, whose two ToList calls are replaced.</summary>
+    /// <summary>v0.107.1 <c>CombatManager.SetupPlayerTurn</c> state machine, whose first-turn queries are redirected.</summary>
     private const string SetupPlayerTurnFingerprint = "98A103A1D8204ED3";
 
     private const string BetterSpireAssembly = "BetterSpire2";
@@ -63,6 +65,27 @@ public static class ExtraScopes
     public static bool BenchChecks { get; set; } = true;
     /// <summary>First-turn filters run inside a scope (the effects check).</summary>
     public static long FirstTurnPasses { get; private set; }
+    /// <summary>First-turn <c>Where</c> calls left as the game's: a source that isn't exactly a <c>List&lt;CardModel&gt;</c>.</summary>
+    public static long RefusedSource { get; private set; }
+    /// <summary>The same for a predicate that isn't one of the game's two lambdas (single target, of its own class or none).</summary>
+    public static long RefusedPredicate { get; private set; }
+    /// <summary>First-turn <c>Except</c> calls on a scoped query whose second list isn't exactly a <c>List&lt;CardModel&gt;</c>.</summary>
+    public static long RefusedExcept { get; private set; }
+    /// <summary>Redirected <c>ToList</c> calls given anything but a scoped query: the game's <c>ToList</c>, no scope.</summary>
+    public static long PlainToLists { get; private set; }
+    /// <summary>A scoped query's <c>ToList</c> run without a scope: the part off or faulted, or a back-off (<see cref="FirstTurnPatched"/>).</summary>
+    public static long BackedOff { get; private set; }
+
+    /// <summary><c>bdperf firstturn status</c>.</summary>
+    internal static string BenchStatus() =>
+        $"FIRSTTURN scopes {FirstTurnPasses}, refused source {RefusedSource}, predicate {RefusedPredicate}, except {RefusedExcept}, "
+        + $"plain ToList {PlainToLists}, backed off {BackedOff}, on {FirstTurnOn}, faulted {PatchSafety.IsFaulted(Name)}";
+
+    /// <summary>The game's two first-turn predicates (the bench builds delegates of them), empty before the part applied.</summary>
+    internal static IReadOnlyList<MethodInfo> BenchGamePredicates => _gamePredicates;
+
+    /// <summary>Whether <paramref name="query"/> is a scoped query of this part (the self-test's view of a decision).</summary>
+    internal static bool BenchIsScoped(IEnumerable<CardModel>? query) => query is FirstTurnQuery;
 #endif
 
     public static void Apply(Harmony harmony)
@@ -90,251 +113,342 @@ public static class ExtraScopes
         }
     }
 
+    // ---- First turn ----
+
+    /// <summary>The game's LINQ calls the transpiler redirects, closed over CardModel.</summary>
+    private enum Linq
+    {
+        None,
+        Where,
+        Except,
+        ToList,
+    }
+
+    /// <summary>
+    /// Which of the redirected calls a call operand is: <c>Enumerable.Where/Except/ToList</c> closed over CardModel with the
+    /// game's overload (by its closed parameter and return types: no lookup by name of a generic overload).
+    /// </summary>
+    private static Linq KindOf(object? operand)
+    {
+        if (operand is not MethodInfo { IsGenericMethod: true } method || method.DeclaringType != typeof(Enumerable))
+        {
+            return Linq.None;
+        }
+        ParameterInfo[] p = method.GetParameters();
+        return method.Name switch
+        {
+            nameof(Enumerable.Where) when p.Length == 2 && p[0].ParameterType == typeof(IEnumerable<CardModel>)
+                && p[1].ParameterType == typeof(Func<CardModel, bool>) && method.ReturnType == typeof(IEnumerable<CardModel>) => Linq.Where,
+            nameof(Enumerable.Except) when p.Length == 2 && p[0].ParameterType == typeof(IEnumerable<CardModel>)
+                && p[1].ParameterType == typeof(IEnumerable<CardModel>) && method.ReturnType == typeof(IEnumerable<CardModel>) => Linq.Except,
+            nameof(Enumerable.ToList) when p.Length == 1 && p[0].ParameterType == typeof(IEnumerable<CardModel>)
+                && method.ReturnType == typeof(List<CardModel>) => Linq.ToList,
+            _ => Linq.None,
+        };
+    }
+
+    /// <summary>This part's stand-ins for them, same signatures (static, non-generic).</summary>
+    private static MethodInfo? _ownWhere, _ownExcept, _ownToList;
+
     private static void ApplyFirstTurn(Harmony harmony)
     {
         MethodInfo setup = Reflect.Method(typeof(CombatManager), "SetupPlayerTurn") ?? throw new MissingMethodException("CombatManager.SetupPlayerTurn");
         MethodInfo moveNext = Reflect.AsyncMoveNext(setup) ?? throw new MissingMethodException("SetupPlayerTurn state machine");
         PatchSafety.RequireFingerprint(moveNext, SetupPlayerTurnFingerprint);
-        // The scope relies on the query reading the draw pile without changing it: its predicates are lambdas of that state
-        // machine. Another mod's patch on one of them may make the pass write: no scope then (strict). On the state machine
-        // itself only what runs inside the scoped ToList calls matters: see FirstTurnAllowed and FirstTurnTranspiler.
-        _moveNext = moveNext;
+        _ownWhere = Reflect.Method(typeof(ExtraScopes), nameof(WhereInScope)) ?? throw new MissingMethodException(nameof(WhereInScope));
+        _ownExcept = Reflect.Method(typeof(ExtraScopes), nameof(ExceptInScope)) ?? throw new MissingMethodException(nameof(ExceptInScope));
+        _ownToList = Reflect.Method(typeof(ExtraScopes), nameof(ToListInScope)) ?? throw new MissingMethodException(nameof(ToListInScope));
+        // The game's predicates: the lambda each Where call of the game's code (read before this mod patches it, Harmony's reader:
+        // no transpiler runs) is given, from the ldftn before it. A scope opens only for a query over one of them (WhereInScope).
+        List<CodeInstruction> original = PatchProcessor.GetOriginalInstructions(moveNext);
+        var predicates = new List<MethodInfo>();
+        var linq = new List<MethodBase>();
+        int lastFtn = -1, wheres = 0, excepts = 0, toLists = 0;
+        for (int i = 0; i < original.Count; i++)
+        {
+            CodeInstruction ins = original[i];
+            if (ins.opcode == OpCodes.Ldftn)
+            {
+                lastFtn = i;
+                continue;
+            }
+            Linq kind = ins.opcode == OpCodes.Call ? KindOf(ins.operand) : Linq.None;
+            if (kind == Linq.None)
+            {
+                continue;
+            }
+            linq.Add((MethodBase)ins.operand);
+            if (kind == Linq.Where)
+            {
+                wheres++;
+                if (lastFtn < 0 || original[lastFtn].operand is not MethodInfo lambda || lambda.IsStatic || lambda.DeclaringType == null)
+                {
+                    throw new PatchSkippedException("SetupPlayerTurn's first-turn Where call without the game's lambda before it");
+                }
+                predicates.Add(lambda);
+                lastFtn = -1;
+            }
+            excepts += kind == Linq.Except ? 1 : 0;
+            toLists += kind == Linq.ToList ? 1 : 0;
+        }
+        if (wheres != 2 || excepts != 1 || toLists != 2 || predicates.Select(p => p.MethodHandle).Distinct().Count() != 2)
+        {
+            throw new PatchSkippedException($"SetupPlayerTurn's first-turn queries not as expected (Where {wheres}, Except {excepts}, ToList {toLists})");
+        }
+        _gamePredicates = predicates.ToArray();
+        // What runs inside the scope besides the BCL's List and LINQ code and the cards' Equals: the query lambdas (strict: another
+        // mod's patch on one may make the pass write, hidden IL hooks included), the closed LINQ methods and this part's stand-ins.
+        // Nothing on the state machine itself: what other mods do there runs outside the scope, and a query they change fails the
+        // checks of the stand-ins (the game's calls then). Display only for Watch: the runtime check decides (FirstTurnPatched).
         _lambdas = MethodFingerprint.GeneratedCode(moveNext).Where(m => m != moveNext).Distinct().ToArray();
-        // The game's code, read once before this mod patches it (Harmony's reader: no transpiler runs).
-        _originalFirstTurn = PatchProcessor.GetOriginalInstructions(moveNext).Select(TranspilerJudge.Ins.From).ToArray();
-        foreach (MethodBase code in _lambdas)
+        _strict = _lambdas.Concat(linq.Distinct()).Concat(new MethodBase[] { _ownWhere, _ownExcept, _ownToList }).ToArray();
+        foreach (MethodBase code in _strict)
         {
             PatchSafety.Watch(Name, code);
         }
-        PatchSafety.Watch(Name, moveNext, FirstTurnAllowed);
-        PatchSafety.WatchNote(Name, NoteFirstTurnCode);
         PatchGuard.Patch(harmony, moveNext, transpiler: new HarmonyMethod(typeof(ExtraScopes), nameof(FirstTurnTranspiler)) { priority = Priority.Last });
     }
 
-    /// <summary>SetupPlayerTurn's state machine, the lambdas the scoped queries run, and the game's code of the state machine.</summary>
-    private static MethodBase? _moveNext;
+    /// <summary>The lambdas of SetupPlayerTurn's state machine, and everything <see cref="FirstTurnPatched"/> checks.</summary>
     private static MethodBase[] _lambdas = Array.Empty<MethodBase>();
-    private static TranspilerJudge.Ins[] _originalFirstTurn = Array.Empty<TranspilerJudge.Ins>();
+    private static MethodBase[] _strict = Array.Empty<MethodBase>();
 
-    /// <summary>
-    /// Why the transpiler left the first turn's queries as the game's calls at the state machine's last rebuild (other mods'
-    /// transpilers changed the code feeding them), else null. Display only: the decision is in the code itself.
-    /// </summary>
-    private static volatile string? _firstTurnRefusal;
-    private static string _firstTurnLogged = "";
-#if BENCH
-    /// <summary>The transpiler's last verdict on other mods' transpilers ("" when there were none): the foreign tests' line.</summary>
-    public static string FirstTurnVerdict { get; private set; } = "";
-#endif
+    /// <summary>The game's two first-turn predicates (bottom-of-pile, Innate), from the unpatched code.</summary>
+    private static MethodInfo[] _gamePredicates = Array.Empty<MethodInfo>();
 
-    /// <summary>
-    /// Another mod patches the first turn's query code. The lambdas strictly. On the state machine, other mods' prefixes,
-    /// postfixes and finalizers run before or after a MoveNext call, never inside the ToList calls the scope covers: they
-    /// stand. So do their transpilers when Harmony runs them all before this mod's (<c>Priority.Last</c>): the code they
-    /// produce is what <see cref="FirstTurnTranspiler"/> judged (it redirects the calls only when the code feeding them is the
-    /// game's). Inner prefixes and postfixes, a transpiler sorted after this mod's or made by a factory: a back-off.
-    /// </summary>
+    /// <summary>Another mod patches code that runs inside the scope: the lambdas, the closed LINQ methods, the stand-ins (strict).</summary>
     private static bool FirstTurnPatched()
     {
-        foreach (MethodBase code in _lambdas)
+        foreach (MethodBase code in _strict)
         {
             if (PatchSafety.IsPatchedByOthers(code))
             {
                 return true;
             }
         }
-        return PatchSafety.IsPatchedByOthers(_moveNext, FirstTurnAllowed());
-    }
-
-    /// <summary>Other mods' patches on the state machine that can't run inside the scope (above). Never throws: none then.</summary>
-    private static MethodInfo[] FirstTurnAllowed()
-    {
-        try
-        {
-            return _moveNext == null || Harmony.GetPatchInfo(_moveNext) is not { } info ? Array.Empty<MethodInfo>() : FirstTurnAllowed(info);
-        }
-        catch
-        {
-            return Array.Empty<MethodInfo>();
-        }
-    }
-
-    /// <summary>The allowed patches of that patch list (inner prefixes and postfixes never: they run inside the ToList calls).</summary>
-    private static MethodInfo[] FirstTurnAllowed(HarmonyLib.Patches info)
-    {
-        var allowed = new List<MethodInfo>();
-        foreach (Patch patch in info.Prefixes.Concat(info.Postfixes).Concat(info.Finalizers))
-        {
-            if (!PatchGuard.IsOurs(patch.owner) && PatchSafety.PatchMethodOf(patch) is { } method)
-            {
-                allowed.Add(method);
-            }
-        }
-        Patch[] transpilers = info.Transpilers.ToArray();
-        if (transpilers.Any(p => !PatchGuard.IsOurs(p.owner)) && OwnTranspilerLast(transpilers))
-        {
-            allowed.AddRange(transpilers.Where(p => !PatchGuard.IsOurs(p.owner)).Select(p => PatchSafety.PatchMethodOf(p)!));
-        }
-        return allowed.ToArray();
-    }
-
-#if BENCH
-    /// <summary>
-    /// <c>bdperf firstturn inner</c>: Harmony 2.4.2 registers inner prefixes and postfixes but can't build them, so no foreign
-    /// one can be installed in game. A synthetic patch list of the state machine (another mod's void prefix, postfix and inner
-    /// postfix) goes through the allowed list and the same filter as <see cref="PatchSafety.IsPatchedByOthers(MethodBase?, MethodInfo[], string)"/>:
-    /// the prefix and postfix must stand, the inner postfix must be left over (a back-off). Throws otherwise.
-    /// </summary>
-    internal static string BenchInnerPatch()
-    {
-        if (_moveNext == null)
-        {
-            throw new InvalidOperationException("FIRSTTURN inner: the first turn's state machine isn't resolved (part not applied)");
-        }
-        MethodInfo prefix = Reflect.Method(typeof(ExtraScopes), nameof(BenchForeignPrefix))!;
-        MethodInfo postfix = Reflect.Method(typeof(ExtraScopes), nameof(BenchForeignPostfix))!;
-        MethodInfo inner = Reflect.Method(typeof(ExtraScopes), nameof(BenchForeignInner))!;
-        const string owner = "bdtest.foreign.firstturn";
-        var none = Array.Empty<Patch>();
-        var info = new HarmonyLib.Patches(new[] { new Patch(prefix, 0, owner, Priority.Normal, null, null, false) },
-            new[] { new Patch(postfix, 1, owner, Priority.Normal, null, null, false) }, none, none, none,
-            new[] { new Patch(inner, 2, owner, Priority.Normal, null, null, false) });
-        MethodInfo[] allowed = FirstTurnAllowed(info);
-        List<MethodInfo> left = PatchSafety.AllPatches(info)
-            .Where(p => !PatchGuard.IsOurs(p.owner) && !(PatchSafety.PatchMethodOf(p) is { } m && allowed.Any(a => a.MethodHandle == m.MethodHandle)))
-            .Select(p => PatchSafety.PatchMethodOf(p)!).ToList();
-        string line = $"FIRSTTURN inner: allowed {string.Join(", ", allowed.Select(m => m.Name))}; backs off for {string.Join(", ", left.Select(m => m.Name))}";
-        bool ok = left.Count == 1 && left[0].MethodHandle == inner.MethodHandle;
-        return ok ? line : throw new InvalidOperationException(line + " (expected: the inner postfix only)");
-    }
-
-    private static void BenchForeignPrefix()
-    {
-    }
-
-    private static void BenchForeignPostfix()
-    {
-    }
-
-    private static void BenchForeignInner()
-    {
-    }
-#endif
-
-    /// <summary>This mod's transpiler is the only one of this mod there and Harmony runs it last (no factory asked to sort).</summary>
-    private static bool OwnTranspilerLast(Patch[] transpilers)
-    {
-        MethodInfo own = Reflect.Method(typeof(ExtraScopes), nameof(FirstTurnTranspiler));
-        var methods = new MethodInfo[transpilers.Length];
-        for (int i = 0; i < transpilers.Length; i++)
-        {
-            // Harmony's sort would call a factory: never run another mod's code here.
-            if (PatchSafety.PatchMethodOf(transpilers[i]) is not { } method || PatchSafety.IsFactory(method))
-            {
-                return false;
-            }
-            methods[i] = method;
-            transpilers[i].PatchMethod = method;
-        }
-        if (methods.Count(m => m.MethodHandle == own.MethodHandle) != 1 || transpilers.Count(p => PatchGuard.IsOurs(p.owner)) != 1)
-        {
-            return false;
-        }
-        List<MethodInfo> sorted = PatchProcessor.GetSortedPatchMethods(_moveNext, transpilers);
-        return sorted.Count > 0 && sorted[^1].MethodHandle == own.MethodHandle;
-    }
-
-    /// <summary>The preflight's note: the first turn's queries left as the game's calls by the transpiler (_firstTurnRefusal).</summary>
-    private static void NoteFirstTurnCode()
-    {
-        if (_firstTurnRefusal is not { } why || _moveNext == null || Harmony.GetPatchInfo(_moveNext) is not { } info)
-        {
-            PatchSafety.ClearNote(Name, "first_turn_code");
-            return;
-        }
-        PatchSafety.Note(Name, "first_turn_code", $"other mods' transpilers change the code feeding the first turn's card filters ({why}): they run without a scope",
-            PatchSafety.ModNamesOf(info.Transpilers.Where(p => !PatchGuard.IsOurs(p.owner)).Select(p => PatchSafety.PatchMethodOf(p)?.DeclaringType?.Assembly)));
+        return false;
     }
 
     /// <summary>
-    /// Replaces the two <c>ToList</c> calls with <see cref="ToListInScope"/>, when the code feeding them is the game's. Runs last
-    /// (<c>Priority.Last</c>), at each rebuild of the state machine: what it is handed holds every other mod's transpiler sorted
-    /// before it (RitsuLib rewrites the hand size constants there), judged by <see cref="TranspilerJudge.FeedsUnchanged"/> (the
-    /// queries, the pile and list they read, and every store of those, instruction for instruction). Otherwise the calls stay the
-    /// game's (no scope). Never throws (it runs inside other mods' Patch calls).
+    /// Replaces every <c>Enumerable.Where/Except/ToList&lt;CardModel&gt;</c> call of the state machine with this part's stand-ins
+    /// (<see cref="WhereInScope"/>, <see cref="ExceptInScope"/>, <see cref="ToListInScope"/>), whatever code feeds them: each one
+    /// returns the game's own result for any arguments, and a scope opens only when the query is provably the game's (decided at
+    /// run time from the source, the predicate and the list). Runs last (<c>Priority.Last</c>) at each rebuild, so it sees the
+    /// calls other mods' transpilers sorted before it leave; one sorted after it may drop or redirect a stand-in (the game's
+    /// call, or its own code, then: no scope) or put code around it (outside the scope). Never throws (it runs inside other
+    /// mods' Patch calls).
     /// </summary>
     private static IEnumerable<CodeInstruction> FirstTurnTranspiler(IEnumerable<CodeInstruction> instructions)
     {
         List<CodeInstruction> code = instructions.ToList();
         try
         {
-            MethodInfo toList = Reflect.Method(typeof(Enumerable), nameof(Enumerable.ToList)).MakeGenericMethod(typeof(CardModel));
-            MethodInfo scoped = Reflect.Method(typeof(ExtraScopes), nameof(ToListInScope)).MakeGenericMethod(typeof(CardModel));
-            List<CodeInstruction> calls = code.Where(c => c.Calls(toList)).ToList();
-            if (calls.Count != 2)
-            {
-                Log.Error($"[{ModEntry.Id}] {Name}: expected 2 ToList calls in SetupPlayerTurn, found {calls.Count}: left vanilla");
-                return code;
-            }
-            List<TranspilerJudge.Ins> handed = code.Select(TranspilerJudge.Ins.From).ToList();
-            string? refusal = FirstTurnRefusal(_originalFirstTurn, handed, toList);
-            bool foreign = !TranspilerJudge.SameInstructions(_originalFirstTurn, handed);
-#if BENCH
-            FirstTurnVerdict = !foreign ? "" : refusal == null ? "accepted" : "refused (" + refusal + ")";
-#endif
-            string logged = !foreign ? "" : refusal ?? "kept";
-            if (foreign && logged != _firstTurnLogged)
-            {
-                Log.Info($"[{ModEntry.Id}] {Name}: SetupPlayerTurn's first-turn card filters, other mods' transpilers judged by their IL: "
-                    + (refusal == null ? "the code feeding them is the game's: kept" : $"refused ({refusal}): those filters run without a scope (normal game for that part)"));
-            }
-            _firstTurnLogged = logged;
-            _firstTurnRefusal = refusal;
-            if (refusal != null)
+            if (_ownWhere == null || _ownExcept == null || _ownToList == null)
             {
                 return code;
             }
-            foreach (CodeInstruction call in calls)
+            var redirects = new List<(CodeInstruction Call, MethodInfo To)>();
+            foreach (CodeInstruction ins in code)
             {
-                call.opcode = OpCodes.Call;
-                call.operand = scoped; // Same signature: IEnumerable<T> -> List<T>.
+                MethodInfo? to = ins.opcode != OpCodes.Call ? null : KindOf(ins.operand) switch
+                {
+                    Linq.Where => _ownWhere,
+                    Linq.Except => _ownExcept,
+                    Linq.ToList => _ownToList,
+                    _ => null,
+                };
+                if (to != null)
+                {
+                    redirects.Add((ins, to));
+                }
+            }
+            if (redirects.Count == 0)
+            {
+                Log.Info($"[{ModEntry.Id}] {Name}: no first-turn card filter call left in SetupPlayerTurn (other mods' transpilers): those filters run without a scope (normal game for that part)");
+                return code;
+            }
+            foreach ((CodeInstruction call, MethodInfo to) in redirects)
+            {
+                call.operand = to; // Same signature, a static call either way.
             }
             return code;
         }
         catch (Exception e)
         {
             Log.Error($"[{ModEntry.Id}] {Name}: the first-turn transpiler failed, SetupPlayerTurn left vanilla: {e.Message}");
-            return code;
+            return code; // Nothing redirected: the operands are set only once every call was found.
         }
     }
 
     /// <summary>
-    /// Why the first turn's queries can't be scoped in <paramref name="result"/> (SetupPlayerTurn's state machine with other mods'
-    /// transpilers applied), else null: the two <c>ToList</c> calls and everything feeding them as in <paramref name="original"/>.
-    /// Also the test tooling's entry (the self-test).
+    /// A first-turn query of the game's shape, made by <see cref="WhereInScope"/> or <see cref="ExceptInScope"/> only: the BCL's
+    /// query it holds (<see cref="Inner"/>) is what the game's code would hold. Anything else enumerating it gets that query's
+    /// enumerator: the game's laziness and results.
     /// </summary>
-    internal static string? FirstTurnRefusal(IReadOnlyList<TranspilerJudge.Ins> original, IReadOnlyList<TranspilerJudge.Ins> result, MethodInfo toList) =>
-        original.Count == 0 ? "the game's code not read"
-        : TranspilerJudge.FeedsUnchanged(original, result, ins => ins.Op == OpCodes.Call && ins.Operand is MethodInfo m && m == toList);
-
-    /// <summary><c>source.ToList()</c>, with the lazy query evaluated inside a refresh scope.</summary>
-    public static List<T> ToListInScope<T>(IEnumerable<T> source)
+    private sealed class FirstTurnQuery : IEnumerable<CardModel>
     {
-        List<T> result;
+        internal readonly IEnumerable<CardModel> Inner;
+
+        internal FirstTurnQuery(IEnumerable<CardModel> inner) => Inner = inner;
+
+        public IEnumerator<CardModel> GetEnumerator() => Inner.GetEnumerator();
+
+        IEnumerator IEnumerable.GetEnumerator() => Inner.GetEnumerator();
+    }
+
+    /// <summary>
+    /// <c>Enumerable.Where(source, predicate)</c> (its argument checks and result the game's), marked as a first-turn query when
+    /// all hold: <paramref name="source"/> is exactly a <c>List&lt;CardModel&gt;</c> (its enumeration is the BCL's); the predicate
+    /// is exactly a <c>Func&lt;CardModel, bool&gt;</c> with a single target (no combined delegate in the game's cache field), its
+    /// method one of the game's two lambdas and its target none or of that lambda's own class. Otherwise the plain result.
+    /// </summary>
+    public static IEnumerable<CardModel> WhereInScope(IEnumerable<CardModel> source, Func<CardModel, bool> predicate)
+    {
+        IEnumerable<CardModel> query = Enumerable.Where(source, predicate);
+        try
+        {
+            if (!FirstTurnOn)
+            {
+                return query;
+            }
+            if (source.GetType() != typeof(List<CardModel>))
+            {
+#if BENCH
+                RefusedSource++;
+#endif
+                Refused("first_turn_source", "a first-turn card filter reads another collection than the game's draw pile list", () => source.GetType().Assembly);
+                return query;
+            }
+            if (!IsGamePredicate(predicate))
+            {
+#if BENCH
+                RefusedPredicate++;
+#endif
+                Refused("first_turn_predicate", "a first-turn card filter is given another predicate than the game's", () => PatchSafety.DelegateAssembly(predicate));
+                return query;
+            }
+            return new FirstTurnQuery(query);
+        }
+        catch (Exception e)
+        {
+            Disable(Name, e);
+            return query;
+        }
+    }
+
+    /// <summary>The game's lambda as the game's code makes it (its cached delegate): one target, the lambda's class or none.</summary>
+    private static bool IsGamePredicate(Func<CardModel, bool> predicate)
+    {
+        if (predicate.GetType() != typeof(Func<CardModel, bool>) || !predicate.HasSingleTarget)
+        {
+            return false;
+        }
+        MethodInfo method = predicate.Method;
+        foreach (MethodInfo game in _gamePredicates)
+        {
+            if (method.MethodHandle == game.MethodHandle)
+            {
+                return predicate.Target == null || predicate.Target.GetType() == game.DeclaringType;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// <c>Enumerable.Except(first, second)</c> over the BCL query a first-turn query holds (what the game's code would pass), marked
+    /// as a first-turn query again when <paramref name="first"/> is one and <paramref name="second"/> is exactly a
+    /// <c>List&lt;CardModel&gt;</c>; otherwise the plain result.
+    /// </summary>
+    public static IEnumerable<CardModel> ExceptInScope(IEnumerable<CardModel> first, IEnumerable<CardModel> second)
+    {
+        if (first is not FirstTurnQuery scoped)
+        {
+            return Enumerable.Except(first, second);
+        }
+        IEnumerable<CardModel> query = Enumerable.Except(scoped.Inner, second);
+        try
+        {
+            if (second.GetType() == typeof(List<CardModel>))
+            {
+                return new FirstTurnQuery(query);
+            }
+#if BENCH
+            RefusedExcept++;
+#endif
+            Refused("first_turn_except", "the first turn's Innate filter leaves out another collection than the game's list", () => second.GetType().Assembly);
+            return query;
+        }
+        catch (Exception e)
+        {
+            Disable(Name, e);
+            return query;
+        }
+    }
+
+    /// <summary>
+    /// A first-turn query left as the game's by another mod's code: noted (bdopt why, the menu), with the mod when its code is
+    /// what was given. Never throws.
+    /// </summary>
+    private static void Refused(string key, string what, Func<Assembly?> from)
+    {
+        try
+        {
+            PatchSafety.Note(Name, key, what + ": that filter runs without a scope", PatchSafety.ModNamesOf(new[] { from() }));
+        }
+        catch
+        {
+            // Display only.
+        }
+    }
+
+    /// <summary>
+    /// <c>source.ToList()</c>; a first-turn query's evaluated inside a refresh scope, as <c>Enumerable.ToList</c> of the BCL
+    /// query it holds: the game's own call on the game's own query. Inside the scope only the BCL's List and LINQ code, the
+    /// game's two lambdas and the cards' Equals run.
+    /// </summary>
+    public static List<CardModel> ToListInScope(IEnumerable<CardModel> source)
+    {
+        IEnumerable<CardModel> query = source;
+        int scope = NoScope;
+        if (source is FirstTurnQuery scoped)
+        {
+            query = scoped.Inner;
+            // The query itself is the game's: its exceptions reach the game as they would. Only the scope's are caught.
+            bool open;
+            try
+            {
+                open = FirstTurnOn && !FirstTurnPatched();
+            }
+            catch (Exception e)
+            {
+                Disable(Name, e);
+                open = false;
+            }
+            scope = open ? Enter(display: false, Name) : NoScope;
+#if BENCH
+            if (scope != NoScope)
+            {
+                FirstTurnPasses++; // Only passes really run inside a scope prove the effect.
+            }
+            else
+            {
+                BackedOff++;
+            }
+#endif
+        }
+#if BENCH
+        else
+        {
+            PlainToLists++;
+        }
+#endif
+        List<CardModel> result;
 #if BENCH
         long start = System.Diagnostics.Stopwatch.GetTimestamp();
 #endif
-        // The query itself is the game's: its exceptions reach the game as they would. Only the scope's are caught.
-        int scope = FirstTurnOn && !FirstTurnPatched() ? Enter(display: false, Name) : NoScope;
-#if BENCH
-        if (scope != NoScope)
-        {
-            FirstTurnPasses++; // Only passes really run inside a scope prove the effect.
-        }
-#endif
         try
         {
-            result = source.ToList();
+            result = Enumerable.ToList(query);
         }
         finally
         {
@@ -351,7 +465,7 @@ public static class ExtraScopes
         // Test builds: the same query the vanilla way must give the same cards in the same order.
         double optimizedMs = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
         start = System.Diagnostics.Stopwatch.GetTimestamp();
-        List<T> vanilla = ListenerCache.RunVanilla(() => source.ToList());
+        List<CardModel> vanilla = ListenerCache.RunVanilla(() => Enumerable.ToList(query));
         double vanillaMs = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
         Log.Info($"[{ModEntry.Id}] {Name} first-turn filter ({(scope != NoScope ? "in a scope" : "without a scope")}): {result.Count} cards, optimized {optimizedMs:F0} ms, vanilla {vanillaMs:F0} ms, "
             + (vanilla.SequenceEqual(result) ? "OK: identical to vanilla" : $"MISMATCH: vanilla has {vanilla.Count}"));
