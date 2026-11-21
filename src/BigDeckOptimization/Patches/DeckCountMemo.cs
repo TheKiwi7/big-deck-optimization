@@ -58,11 +58,12 @@ namespace BigDeckOptimization.Patches;
 /// <c>CardModel.GetDescriptionForPile</c>, the formatters): they get the memo's answer. Inside the scope, the memo's answer is
 /// the game's except when the premise fails.
 ///
-/// Cost given up: every calculation outside the redraw counts as the game does (~0.35 ms per counting card at 10,000 cards),
-/// where the memo answered before. Measured callers outside it: SpeedX's targeting preview (its <c>LiteralAuditor</c>'s
-/// <c>UpdateDynamicVarPreview</c> call, from <c>TurboOverlay._Process</c>), per hittable enemy per frame; BetterSpire2's
-/// teammate hand panel (<c>ShowTeammateHand</c>, on by default in co-op: <c>DeckTracker</c> calls <c>UpdateDynamicVarPreview</c>
-/// for each card of the shown hand).
+/// Outside the redraw, a display caller is answered too (<see cref="DisplayCaller"/>, part <see cref="DisplayName"/>, 2026-11-21
+/// evening): a calculation reached on the main thread from a Godot frame or deferred callback through other mods' code only, no
+/// game code above the game's preview chain (SpeedX's damage preview, its <c>LiteralAuditor</c>'s <c>UpdateDynamicVarPreview</c>
+/// from <c>TurboOverlay._Process</c>, each frame a counting attack card is hovered or aimed; BetterSpire2's hand panel, its
+/// deferred <c>RefreshCards</c> previewing each shown card through <c>MethodInfo.Invoke</c>). Every other calculation outside the
+/// redraw counts as the game does (~0.25-0.35 ms per counting card at 10,000 cards), with the free comparison above.
 /// </summary>
 public static class DeckCountMemo
 {
@@ -145,6 +146,10 @@ public static class DeckCountMemo
     internal static long AnsweredInPlay { get; private set; }
     [ThreadStatic] private static int _benchKind;
     [ThreadStatic] private static bool _benchOutside;
+
+    /// <summary><c>bdperf deckcount stackcost</c>: the stack of the next calculation outside the redraw, kept for the bench.</summary>
+    internal static bool StackProbeForTest { get; set; }
+    internal static System.Diagnostics.StackTrace? LastProbe { get; set; }
 #endif
 
     public static bool Enabled { get; set; } = true;
@@ -171,7 +176,18 @@ public static class DeckCountMemo
     /// <summary>Outside the redraw, the game's result compared with a count the memo held (no walk of its own).</summary>
     public static long FreeChecks { get; private set; }
     public static long FreeMismatches { get; private set; }
-    /// <summary>Per kind, counts of its own computed inside the redraw (answered or compared): <c>bdperf deckcount answered</c>.</summary>
+    /// <summary>
+    /// The display callers part (<see cref="DisplayCaller"/>): its own name (fault, <c>bdopt</c> parts) and switch, under
+    /// <c>combat_refresh</c> as the memo itself.
+    /// </summary>
+    public const string DisplayName = Name + ".Display";
+    public static bool DisplayEnabled { get; set; } = true;
+    /// <summary>Answers given from the memo outside the redraw, to a display caller.</summary>
+    public static long AnsweredDisplay { get; private set; }
+    /// <summary>Callers looked at (a stack walk each) outside the redraw, and those left to the game's count.</summary>
+    public static long DisplayLooks { get; private set; }
+    public static long DisplayRefused { get; private set; }
+    /// <summary>Per kind, counts of its own computed inside the redraw or for a display caller (answered or compared): <c>bdperf deckcount answered</c>.</summary>
     internal static readonly long[] KindCounted = new long[Kinds];
 
     private static readonly Func<CardModel, bool>[] _counted =
@@ -276,6 +292,9 @@ public static class DeckCountMemo
             }
         }
         PatchSafety.WatchAll(Name, () => _watched.Keys.ToArray());
+        _mainThread = Environment.CurrentManagedThreadId;
+        // A part of its own: a changed preview chain leaves only the display callers to the game, the redraw keeps its answers.
+        ModEntry.TryApply(DisplayName, ApplyDisplay);
     }
 
     /// <summary>
@@ -387,6 +406,10 @@ public static class DeckCountMemo
 #if BENCH
         _benchKind = kind;
         _benchOutside = !inRedraw;
+        if (StackProbeForTest && !inRedraw)
+        {
+            LastProbe = new System.Diagnostics.StackTrace(0, false);
+        }
 #endif
         // Inside ListenerCache.RunVanilla the result is a reference others are compared with: the game's own.
         // No tolerance: the count's getter is answered from the memo, its patches wouldn't run.
@@ -434,7 +457,10 @@ public static class DeckCountMemo
 #if BENCH
             count += WrongForTest;
 #endif
-            if (!inRedraw)
+            // Outside the redraw, a display caller (a Godot frame or deferred callback reaching the preview through other mods'
+            // code only) is answered as the redraw is; the stack is looked at only here, with a count held at no walk's cost.
+            bool display = !inRedraw && DisplayCaller(kind);
+            if (!inRedraw && !display)
             {
 #if BENCH
                 if (FreeCheckOffForTest)
@@ -452,6 +478,12 @@ public static class DeckCountMemo
                 _untilCheck = VerifyEvery;
                 expected = new Expected(count, Free: false);
                 return true;
+            }
+            if (display)
+            {
+                AnsweredDisplay++;
+                result = count;
+                return false;
             }
             Answered++;
 #if BENCH
@@ -606,6 +638,234 @@ public static class DeckCountMemo
     /// <summary>Bench: whether cards of this type are left to the game for their tags (their type may change them).</summary>
     internal static bool TagsMayChange(Type type) => (FlagsOf(type) & TagsMove) != 0;
 #endif
+
+    // --- Display callers outside the redraw ---
+
+    /// <summary>
+    /// The game's preview chain from a card's preview down to the count (v0.107.1, v0.111.1, v0.113.1): what runs between a
+    /// display caller's <c>UpdateDynamicVarPreview</c> and the counting lambda, each display only (it writes <c>PreviewValue</c>).
+    /// The four cards' variable is a <c>CalculatedDamageVar</c>. Another body: the part is not applied.
+    /// </summary>
+    private static readonly (Type Type, string Method, Type[] Parameters, string[] Fingerprints)[] ChainMethods =
+    {
+        (typeof(CardModel), nameof(CardModel.UpdateDynamicVarPreview),
+            new[] { typeof(CardPreviewMode), typeof(MegaCrit.Sts2.Core.Entities.Creatures.Creature), typeof(MegaCrit.Sts2.Core.Localization.DynamicVars.DynamicVarSet) },
+            new[] { "15FF6441DB3CA930" }),
+        (typeof(MegaCrit.Sts2.Core.Localization.DynamicVars.CalculatedDamageVar), "UpdateCardPreview",
+            new[] { typeof(CardModel), typeof(CardPreviewMode), typeof(MegaCrit.Sts2.Core.Entities.Creatures.Creature), typeof(bool) },
+            new[] { "FB0A2A14BF00C00D", "812F80D69571BD55" }),
+        (typeof(MegaCrit.Sts2.Core.Localization.DynamicVars.CalculatedVar), "Calculate",
+            new[] { typeof(MegaCrit.Sts2.Core.Entities.Creatures.Creature) },
+            new[] { "205EB92C18FAAA58" }),
+    };
+
+    /// <summary>The allowed game frames of a display caller's stack (the chain and the counting lambdas), by module and token.</summary>
+    private static readonly HashSet<(Module, int)> _chain = new();
+    private static bool _displayReady;
+    private static int _mainThread;
+    private static readonly Assembly _sts2 = typeof(CardModel).Assembly;
+
+    private static void ApplyDisplay(Harmony harmony)
+    {
+        foreach ((Type type, string name, Type[] parameters, string[] fingerprints) in ChainMethods)
+        {
+            MethodInfo method = Reflect.Method(type, name, parameters) is { } found && found.DeclaringType == type
+                ? found : throw new MissingMethodException(type.Name, name);
+            string actual = MethodFingerprint.Of(method);
+            if (!fingerprints.Any(expected => PatchSafety.FingerprintMatches(actual, expected)))
+            {
+                throw new PatchSkippedException($"{type.Name}.{name} changed (fingerprint {actual}, expected one of {string.Join(", ", fingerprints)}): display callers counted by the game");
+            }
+            _chain.Add((method.Module, method.MetadataToken));
+        }
+        foreach (MethodBase? target in _targets)
+        {
+            if (target != null)
+            {
+                _chain.Add((target.Module, target.MetadataToken));
+            }
+        }
+        _displayReady = true;
+    }
+
+    /// <summary>
+    /// Whether this calculation outside the redraw is a display caller's, to be answered as the redraw is (owner-approved rule of
+    /// 2026-11-21). On the main thread, walking up from the count: the counting lambda, then only the game's preview chain
+    /// (<see cref="ChainMethods"/>), then no game code at all up to the top of the stack: a Godot frame or deferred callback
+    /// reaching the preview through other mods' code (SpeedX's damage preview, BetterSpire2's teammate hand panel). Refused, so
+    /// counted by the game with the free check as before: any game frame above the chain (an action, a hook, an event, the game's
+    /// own nodes), any async state machine (actions are async, and a continuation can't tell where it came from), any frame of this
+    /// mod's code but this file's at the bottom, a frame without a method, a Harmony replacement not mapped to its original.
+    /// Allowed above the chain: reflection (and its <c>InvokeStub_</c> methods), the runtime, Godot's glue, other mods. Premise
+    /// (display): a mod reaching the preview from a frame or deferred call uses the value to show it (the catalogue of the downloaded
+    /// mods found no other use; DESIGN "DeckCountMemo display callers").
+    /// </summary>
+    private static bool DisplayCaller(int kind)
+    {
+        if (!DisplayEnabled || !_displayReady || Environment.CurrentManagedThreadId != _mainThread)
+        {
+            return false;
+        }
+        DisplayLooks++;
+        try
+        {
+            if (Walk(kind))
+            {
+                return true;
+            }
+            DisplayRefused++;
+            return false;
+        }
+        catch (Exception e)
+        {
+            DisplayEnabled = false;
+            PatchSafety.Fault(DisplayName);
+            Log.Error($"[{ModEntry.Id}] {DisplayName} disabled, display callers counted by the game: {e}");
+            return false;
+        }
+    }
+
+    private const byte FrameChain = 1;
+    private const byte FrameOther = 2;
+    private const byte FrameRefused = 3;
+
+    /// <summary>Per method met on a stack, what it is (main thread only; emptied when large: replacements come and go).</summary>
+    private static readonly Dictionary<MethodBase, byte> _frames = new();
+    /// <summary>Per Harmony replacement met, its original (null: not one of Harmony's).</summary>
+    private static readonly Dictionary<MethodBase, MethodBase?> _originals = new();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool Walk(int kind)
+    {
+        System.Diagnostics.StackTrace trace = new(0, false);
+        int count = trace.FrameCount;
+        int i = 0;
+        // This file's own frames at the bottom (this walk, Answer, the card's prefix).
+        while (i < count && trace.GetFrame(i)?.GetMethod()?.DeclaringType == typeof(DeckCountMemo))
+        {
+            i++;
+        }
+        bool inChain = true, first = true, belowWasReplacement = false;
+        for (; i < count; i++)
+        {
+            System.Diagnostics.StackFrame? frame = trace.GetFrame(i);
+            MethodBase? method = frame?.GetMethod();
+            if (frame == null || method == null)
+            {
+                return false;
+            }
+            bool replacement = false;
+            if (method.DeclaringType == null)
+            {
+                // A dynamic method: a Harmony replacement (judged as its original), MonoMod's glue right above one, or reflection's stub.
+                if (OriginalOf(frame, method) is { } original)
+                {
+                    method = original;
+                    replacement = true;
+                }
+                else if (belowWasReplacement && method.Name.StartsWith("Glue:AbiFixup<", StringComparison.Ordinal))
+                {
+                    belowWasReplacement = false;
+                    continue;
+                }
+                else if (!first && method.Module == typeof(object).Module && method.Name.StartsWith("InvokeStub_", StringComparison.Ordinal))
+                {
+                    inChain = false;
+                    belowWasReplacement = false;
+                    continue;
+                }
+                else
+                {
+                    return false;
+                }
+            }
+            belowWasReplacement = replacement;
+            if (first)
+            {
+                // The count is this card's own lambda, reached through its replacement (this file's prefix runs in it).
+                first = false;
+                if (_targets[kind] is not { } target || method.Module != target.Module || method.MetadataToken != target.MetadataToken)
+                {
+                    return false;
+                }
+                continue;
+            }
+            switch (FrameOf(method))
+            {
+                case FrameChain:
+                    if (!inChain)
+                    {
+                        // Game code above the chain: not a display caller.
+                        return false;
+                    }
+                    break;
+                case FrameOther:
+                    inChain = false;
+                    break;
+                default:
+                    return false;
+            }
+        }
+        return !first;
+    }
+
+    private static MethodBase? OriginalOf(System.Diagnostics.StackFrame frame, MethodBase method)
+    {
+        if (_originals.TryGetValue(method, out MethodBase? known))
+        {
+            return known;
+        }
+        MethodBase? original = Harmony.GetOriginalMethodFromStackframe(frame);
+        if (original == method || original?.DeclaringType == null)
+        {
+            original = null;
+        }
+        if (_originals.Count > 4096)
+        {
+            _originals.Clear();
+        }
+        _originals[method] = original;
+        return original;
+    }
+
+    /// <summary>A frame's kind: the game's preview chain, allowed code (other mods, the runtime, Godot), or refused.</summary>
+    private static byte FrameOf(MethodBase method)
+    {
+        if (_frames.TryGetValue(method, out byte known))
+        {
+            return known;
+        }
+        Type type = method.DeclaringType!;
+        byte kind;
+        if (typeof(IAsyncStateMachine).IsAssignableFrom(type))
+        {
+            // An async flow (the game's actions are async): its continuation may run from anywhere.
+            kind = FrameRefused;
+        }
+        else if (type.Assembly == _sts2)
+        {
+            kind = _chain.Contains((method.Module, method.MetadataToken)) ? FrameChain : FrameRefused;
+        }
+        else if (type.Assembly == typeof(DeckCountMemo).Assembly)
+        {
+#if BENCH
+            // The test tooling's synthetic display callers stand for another mod's code.
+            kind = type.Namespace?.StartsWith(ModEntry.Id + ".Bench", StringComparison.Ordinal) == true ? FrameOther : FrameRefused;
+#else
+            kind = FrameRefused;
+#endif
+        }
+        else
+        {
+            kind = FrameOther;
+        }
+        if (_frames.Count > 4096)
+        {
+            _frames.Clear();
+        }
+        _frames[method] = kind;
+        return kind;
+    }
 
     // --- Which card types may answer differently over time ---
 
