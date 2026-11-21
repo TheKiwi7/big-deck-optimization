@@ -1703,6 +1703,30 @@ Branch `display-followup` (from 4f6e5ab). Three points the owner approved after 
   `deckcount-inplace-wrong`, `audit-deckcount-conflict` pass; 0 problems on either version. `check_scenarios.py` clean.
   Mutations `card-redraw` and `preview-chain` 2/2 on each version (`preview-chain`: only `DeckCountMemo.Display` left vanilla,
   nothing lost).
+- *Review of the follow-up (independent, no critical or major finding), fixes.* (a) Wording: the 200 ms bounds display
+  calls, not what is shown (point 1 above). (b) Cost: `Count(walk: false)` gives nothing at a new pile version while a card of
+  a changing type is in the piles (the moves are applied only from a count with none), so every calculation outside the redraw
+  there paid a stack walk, and a display caller a full memo walk ending `moving` before the game's count. Now `HeldMoving`
+  (the last count of that kind for those piles, current type flags, found such a card) skips both: no stack look, no walk, the
+  game counts (`display skipped moving`; a missed answer once such cards are gone, until a redraw walks the piles again). A
+  display walk also sets that kind's check time (a count just walked is what the check would compare with): one walk per
+  refresh, not a walk and a game count. Measured (`deckcount-stackcost-10k`, 11,247 cards, Debug, release-like rates), the
+  counts forgotten before each preview (`no count held`): the console caller (33 frames, refused: an action's path) 195-231 us
+  off, 214-260 us on, the stack walk (8-10 us at that depth) inside the run-to-run noise; a deferred caller 190-237 us off,
+  191-198 us on (the walk instead of the game's count, 600 display walks). (c) Tests: `deckcount-display-on` adds `physics`,
+  `draw` (a Bench node's `_PhysicsProcess` and `_Draw`, the engine calls them headless too: answered) and `byname`
+  (`GodotObject.CallDeferred("BenchPreview")` on that node, the engine calls it through `CSharpInstanceBridge.Call`:
+  refused); new `deckcount-display-walk-on`: the local piles forgotten, a deferred caller walks and is answered (1 walk,
+  1 look), the next answered from the kept count (0 walks); with Necrobinder's Strike tags patched (`fakeconflict`, a card
+  of a changing type in the draw pile) the forgotten piles' walk ends `moving` (1 walk, 1 look, no answer, the game counts);
+  that entry aged one pile version (`display-call aged`, as after a move no redraw followed): no walk, no look, skipped 1.
+  `Callable.Call` from native code is a signal's entry (the `signal` case); from a deferred callback it is that callback's
+  call and passes, as any code it runs.
+- *Residues (recorded).* Deferred calls are noted by method, not by delegate: a shared wrapper (one lambda method, e.g. a
+  mod's `Callable.From(() => Refresh())` helper used both for `CallDeferred` and as a signal handler) passes when the signal
+  calls it. The rule reads fixed frames at the stack's top: if the JIT inlines a frame there (tiered PGO devirtualizing the
+  trampoline's delegate call, or `InvokeGodotClassMethod`'s call of `_Process`), the expected frame is missing and the caller
+  is refused (the game counts): the safe side, and no such refusal was seen (`display refused 0` with SpeedX, both versions).
 
 ## Audit fixes B (2026-11-21, branch audit-fix-b: 1b027a5, 5336771, 9460f64)
 

@@ -36,7 +36,12 @@ namespace BigDeckOptimization.Bench;
 /// the engine): entered through the same glue as a deferred call but never queued deferred, refused.</item>
 /// <item><c>display-call signalawaiter</c>: a plain lambda given to Godot's <c>SignalAwaiter.OnCompleted</c> (the next process frame):
 /// entered through <c>SignalAwaiter.SignalCallback</c>, refused.</item>
-/// <item><c>display-call process</c>: a node's <c>_Process</c> called by the engine (as SpeedX's overlay): answered.</item>
+/// <item><c>display-call process|physics|draw</c>: a node's <c>_Process</c>, <c>_PhysicsProcess</c> or <c>_Draw</c> called by the
+/// engine (as SpeedX's overlay): answered. <c>display-call byname</c>: the same node's own method called deferred by name
+/// (<c>GodotObject.CallDeferred("BenchPreview")</c>): refused.</item>
+/// <item><c>display-call forget</c>: the memo forgets its counts for the local piles, then a deferred call previews: the display
+/// walk (answered when no card of a changing type is in the piles, the game's count otherwise). <c>display-call aged</c>: its counts
+/// taken as of an older pile version (as after a move no redraw followed): with a card of a changing type held, no walk, no look.</item>
 /// </list>
 /// <c>foreignpatch display-check &lt;label&gt; answered|refused|checked fresh|stale</c>: the last such call ran, was answered (or
 /// refused, or given the game's count by the scheduled check) by the memo, and the count its calculation got equals a fresh count of
@@ -52,7 +57,7 @@ public static class ForeignShapesDisplay
 
     private static string _how = "";
     private static bool _ran;
-    private static long _answered, _refused, _checked;
+    private static long _answered, _refused, _checked, _walks, _looks, _skipped;
     private static decimal? _got;
     private static int _fresh;
     private static int? _held;
@@ -89,11 +94,41 @@ public static class ForeignShapesDisplay
                 tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame).OnCompleted(() => Preview(viaInvoke: false));
                 return new[] { "FOREIGN display-call signalawaiter: a plain lambda given to SignalAwaiter.OnCompleted previews at the next process frame" };
             }
-            case "display-call" when parts.Length >= 2 && parts[1] == "process":
+            case "display-call" when parts.Length >= 2 && parts[1] is "process" or "physics" or "draw" or "byname":
             {
-                Reset("process");
-                ((SceneTree)Engine.GetMainLoop()).Root.AddChild(new DisplayProcessNode());
-                return new[] { "FOREIGN display-call process: a node previews in its first _Process, then leaves the tree" };
+                string mode = parts[1];
+                Reset(mode);
+                DisplayNode node = new(mode);
+                ((SceneTree)Engine.GetMainLoop()).Root.AddChild(node);
+                if (mode == "byname")
+                {
+                    node.CallDeferred("BenchPreview");
+                }
+                else if (mode == "draw")
+                {
+                    node.QueueRedraw();
+                }
+                return new[] { $"FOREIGN display-call {mode}: a node previews once from {mode switch { "process" => "its _Process", "physics" => "its _PhysicsProcess", "draw" => "its _Draw", _ => "its own method called deferred by name" }}, then leaves the tree" };
+            }
+            case "display-call" when parts.Length >= 2 && parts[1] is "forget" or "aged":
+            {
+                // The memo forgets its counts for the local piles (the display walk), or takes them as of an older pile version
+                // (as after a move no redraw followed), then a deferred caller previews.
+                string how = parts[1];
+                Reset(how);
+                if (RunManager.Instance.DebugOnlyGetState() is { } run && LocalContext.GetMe(run)?.PlayerCombatState is { } piles)
+                {
+                    if (how == "forget")
+                    {
+                        DeckCountMemo.ForgetForTest(piles);
+                    }
+                    else
+                    {
+                        DeckCountMemo.AgeForTest(piles);
+                    }
+                }
+                Callable.From(() => Preview(viaInvoke: false)).CallDeferred();
+                return new[] { $"FOREIGN display-call {how}: the memo's counts for the local piles {(how == "forget" ? "forgotten" : "taken as of an older pile version")}, a deferred call previews" };
             }
             case HookShape:
             {
@@ -123,10 +158,10 @@ public static class ForeignShapesDisplay
                 return Check(parts[1], parts[2], parts[3] == "stale");
             case "display-check" when parts.Length >= 6 && parts[2] == "counts" && long.TryParse(parts[3], out long answered)
                 && long.TryParse(parts[4], out long checkedCount) && long.TryParse(parts[5], out long refused):
-                return Counts(parts[1], answered, checkedCount, refused);
+                return Counts(parts[1], answered, checkedCount, refused, parts.Length >= 8 ? long.Parse(parts[6]) : null, parts.Length >= 8 ? long.Parse(parts[7]) : null, parts.Length >= 9 ? long.Parse(parts[8]) : null);
         }
-        throw new ArgumentException("foreignpatch display-call deferred|invoke|async|continuewith|signal|signalawaiter|process|burst <n> | display-hook-postfix "
-            + "| display-check <label> answered|refused|checked fresh|stale | display-check <label> counts <answered> <checked> <refused>");
+        throw new ArgumentException("foreignpatch display-call deferred|invoke|async|continuewith|signal|signalawaiter|process|physics|draw|byname|forget|aged|burst <n> "
+            + "| display-hook-postfix | display-check <label> answered|refused|checked fresh|stale | display-check <label> counts <answered> <checked> <refused> [<walks> <looks> [<skipped>]]");
     }
 
     private static void Reset(string how)
@@ -134,14 +169,14 @@ public static class ForeignShapesDisplay
         _how = how;
         _ran = false;
         _got = null;
-        _answered = _refused = _checked = 0;
+        _answered = _refused = _checked = _walks = _looks = _skipped = 0;
         _allFresh = true;
     }
 
     /// <summary>A display caller previewing n times in one call (as SpeedX's overlay per frame and enemy): outcomes summed.</summary>
     private static void Burst(int n)
     {
-        long answered = 0, refused = 0, checkedCount = 0;
+        long answered = 0, refused = 0, checkedCount = 0, walks = 0, looks = 0;
         bool allFresh = true;
         for (int i = 0; i < n; i++)
         {
@@ -149,11 +184,15 @@ public static class ForeignShapesDisplay
             answered += _answered;
             refused += _refused;
             checkedCount += _checked;
+            walks += _walks;
+            looks += _looks;
             allFresh &= _got == _fresh;
         }
         _answered = answered;
         _refused = refused;
         _checked = checkedCount;
+        _walks = walks;
+        _looks = looks;
         _allFresh = allFresh;
     }
 
@@ -161,13 +200,26 @@ public static class ForeignShapesDisplay
     /// A node of "another mod" whose <c>_Process</c> previews once: the engine calls it through <c>CSharpInstanceBridge.Call</c> and
     /// this class's <c>InvokeGodotClassMethod</c>, as Godot's source generator writes them for a mod's node (SpeedX's overlay).
     /// </summary>
-    private sealed class DisplayProcessNode : Node
+    private sealed class DisplayNode : Node2D
     {
+        /// <summary>A method of its own the engine calls by name (<c>CallDeferred("BenchPreview")</c>): not a per-frame virtual.</summary>
+        private static readonly StringName ByName = "BenchPreview";
+        private readonly string _mode;
         private bool _done;
 
-        public override void _Process(double delta)
+        public DisplayNode(string mode) => _mode = mode;
+
+        public override void _Process(double delta) => Once("process");
+
+        public override void _PhysicsProcess(double delta) => Once("physics");
+
+        public override void _Draw() => Once("draw");
+
+        public void BenchPreview() => Once("byname");
+
+        private void Once(string mode)
         {
-            if (_done)
+            if (_done || mode != _mode)
             {
                 return;
             }
@@ -178,17 +230,33 @@ public static class ForeignShapesDisplay
 
         protected override bool InvokeGodotClassMethod(in Godot.NativeInterop.godot_string_name method, Godot.NativeInterop.NativeVariantPtrArgs args, out Godot.NativeInterop.godot_variant ret)
         {
+            ret = default;
             if (method == MethodName._Process && args.Count == 1)
             {
                 _Process(Godot.NativeInterop.VariantUtils.ConvertTo<double>(in args[0]));
-                ret = default;
+                return true;
+            }
+            if (method == MethodName._PhysicsProcess && args.Count == 1)
+            {
+                _PhysicsProcess(Godot.NativeInterop.VariantUtils.ConvertTo<double>(in args[0]));
+                return true;
+            }
+            if (method == MethodName._Draw && args.Count == 0)
+            {
+                _Draw();
+                return true;
+            }
+            if (method == ByName && args.Count == 0)
+            {
+                BenchPreview();
                 return true;
             }
             return base.InvokeGodotClassMethod(in method, args, out ret);
         }
 
         protected override bool HasGodotClassMethod(in Godot.NativeInterop.godot_string_name method) =>
-            method == MethodName._Process || base.HasGodotClassMethod(in method);
+            method == MethodName._Process || method == MethodName._PhysicsProcess || method == MethodName._Draw || method == ByName
+            || base.HasGodotClassMethod(in method);
     }
 
     private static async Task AfterAFrame()
@@ -215,6 +283,7 @@ public static class ForeignShapesDisplay
             return;
         }
         long answered = DeckCountMemo.AnsweredDisplay, refused = DeckCountMemo.DisplayRefused, checkedBefore = DeckCountMemo.DisplayChecks;
+        long walks = DeckCountMemo.DisplayWalks, looks = DeckCountMemo.DisplayLooks, skipped = DeckCountMemo.DisplaySkippedMoving;
         DeckCountMemo.LastOutside[DeckCountMemo.StrikeKind] = null;
         DeckCountMemo.LastDisplay[DeckCountMemo.StrikeKind] = null;
         if (viaInvoke)
@@ -228,6 +297,9 @@ public static class ForeignShapesDisplay
         _answered = DeckCountMemo.AnsweredDisplay - answered;
         _refused = DeckCountMemo.DisplayRefused - refused;
         _checked = DeckCountMemo.DisplayChecks - checkedBefore;
+        _walks = DeckCountMemo.DisplayWalks - walks;
+        _looks = DeckCountMemo.DisplayLooks - looks;
+        _skipped = DeckCountMemo.DisplaySkippedMoving - skipped;
         // The memo's answer (a display caller) or the game's count: never both for one call.
         _got = DeckCountMemo.LastDisplay[DeckCountMemo.StrikeKind] ?? DeckCountMemo.LastOutside[DeckCountMemo.StrikeKind];
         _fresh = state.AllCards.Count(c => c.Tags.Contains(CardTag.Strike));
@@ -235,13 +307,15 @@ public static class ForeignShapesDisplay
         _ran = true;
     }
 
-    private static IReadOnlyList<string> Counts(string label, long answered, long checkedCount, long refused)
+    private static IReadOnlyList<string> Counts(string label, long answered, long checkedCount, long refused, long? walks, long? looks, long? skipped)
     {
-        string line = $"FOREIGN display-check {label} ({_how}): ran {_ran}, answered {_answered}, checked {_checked}, refused {_refused}, every count fresh {_allFresh}, "
-            + $"the piles now {_fresh}, the memo holds {_held?.ToString() ?? "nothing"}";
-        if (!_ran || _answered != answered || _checked != checkedCount || _refused != refused || !_allFresh)
+        string line = $"FOREIGN display-check {label} ({_how}): ran {_ran}, answered {_answered}, checked {_checked}, refused {_refused}, display walks {_walks}, "
+            + $"stack looks {_looks}, skipped (held moving) {_skipped}, every count fresh {_allFresh}, the piles now {_fresh}, the memo holds {_held?.ToString() ?? "nothing"}";
+        if (!_ran || _answered != answered || _checked != checkedCount || _refused != refused || !_allFresh
+            || walks is { } w && _walks != w || looks is { } l && _looks != l || skipped is { } s && _skipped != s)
         {
-            throw new InvalidOperationException(line + $" (MISMATCH: expected answered {answered}, checked {checkedCount}, refused {refused}, every count fresh)");
+            throw new InvalidOperationException(line + $" (MISMATCH: expected answered {answered}, checked {checkedCount}, refused {refused}"
+                + (walks != null ? $", display walks {walks}, stack looks {looks}" : "") + (skipped != null ? $", skipped {skipped}" : "") + ", every count fresh)");
         }
         return new[] { line + ": ok" };
     }
