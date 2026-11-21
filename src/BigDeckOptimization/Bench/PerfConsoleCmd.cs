@@ -493,7 +493,7 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                     + $"in redraw {DeckCountMemo.InRedrawCalls}, outside {DeckCountMemo.OutsideCalls}, free checks {DeckCountMemo.FreeChecks}, "
                     + $"free mismatches {DeckCountMemo.FreeMismatches}, display answered {DeckCountMemo.AnsweredDisplay}, display looks {DeckCountMemo.DisplayLooks}, "
                     + $"display refused {DeckCountMemo.DisplayRefused}, display small decks {DeckCountMemo.DisplaySmallDecks}, display checks {DeckCountMemo.DisplayChecks}, "
-                    + $"display mismatches {DeckCountMemo.DisplayMismatches}, display walks {DeckCountMemo.DisplayWalks}{deckCountCheck}");
+                    + $"display mismatches {DeckCountMemo.DisplayMismatches}, display walks {DeckCountMemo.DisplayWalks}, display skipped moving {DeckCountMemo.DisplaySkippedMoving}{deckCountCheck}");
             case "combatcards":
                 // bdperf combatcards [passes]: CombatCardSet and RemoveInternal's single scan against the game's code (Bench/CombatCardsBench.cs).
                 return CombatCardsBench.Run(args.Length >= 2 && int.TryParse(args[1], out int containsPasses) && containsPasses > 0 ? containsPasses : 3);
@@ -1725,8 +1725,8 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
         {
             bool displayWas = DeckCountMemo.DisplayEnabled;
             long outsideBefore = DeckCountMemo.OutsideCalls;
-            double previewUs, displayUs;
-            long answered, refused;
+            double previewUs, displayUs, noHeldOffUs, noHeldOnUs;
+            long answered, refused, noHeldWalks;
             try
             {
                 // The display callers part off (the game counts), then on (this caller answered or refused, after a stack walk).
@@ -1738,6 +1738,14 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                 displayUs = Previews(counting, passes);
                 answered = DeckCountMemo.AnsweredDisplay - answeredBefore;
                 refused = DeckCountMemo.DisplayRefused - refusedBefore;
+                // No count held (as at a new pile version the moves can't bring a count to): off, the game counts; on, the stack is
+                // looked at first (an action's calculation: refused, then the game's count; a display caller: the display walk).
+                DeckCountMemo.DisplayEnabled = false;
+                noHeldOffUs = Previews(counting, passes, forget: true);
+                DeckCountMemo.DisplayEnabled = !PatchSafety.IsFaulted(DeckCountMemo.DisplayName);
+                long walksBefore = DeckCountMemo.DisplayWalks;
+                noHeldOnUs = Previews(counting, passes, forget: true);
+                noHeldWalks = DeckCountMemo.DisplayWalks - walksBefore;
             }
             finally
             {
@@ -1757,22 +1765,30 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
             (int frames20, double us20) = Walk(passes, 20);
             (int frames60, double us60) = Walk(passes, 60);
             return $"[{label}] preview outside the redraw {previewUs:F1} us per card with display callers off, {displayUs:F1} us on (answered {answered}, refused {refused}; "
-                + $"{calcs} calculations in {2 * passes * counting.Count} previews); "
+                + $"{calcs} calculations in {4 * passes * counting.Count} previews); no count held: {noHeldOffUs:F1} us off, {noHeldOnUs:F1} us on "
+                + $"(display walks {noHeldWalks}); "
                 + $"the count's stack {probeFrames} frames ({nulls} without a method); walk + classify {us0:F1} us at {frames0} frames, {us20:F1} us at {frames20}, {us60:F1} us at {frames60}";
         }
 
         /// <summary>The counting cards previewed <paramref name="passes"/> times: microseconds per card.</summary>
-        private static double Previews(List<CardModel> counting, int passes)
+        private static double Previews(List<CardModel> counting, int passes, bool forget = false)
         {
-            Stopwatch watch = Stopwatch.StartNew();
+            MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState? piles = counting[0].Owner.PlayerCombatState;
+            TimeSpan spent = TimeSpan.Zero;
             for (int p = 0; p < passes; p++)
             {
                 foreach (CardModel card in counting)
                 {
+                    if (forget && piles != null)
+                    {
+                        DeckCountMemo.ForgetForTest(piles);
+                    }
+                    long start = Stopwatch.GetTimestamp();
                     card.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, card.DynamicVars);
+                    spent += Stopwatch.GetElapsedTime(start);
                 }
             }
-            return watch.Elapsed.TotalMilliseconds * 1000 / (passes * counting.Count);
+            return spent.TotalMilliseconds * 1000 / (passes * counting.Count);
         }
 
         /// <summary>Logs the stack of the count's next calculation outside the redraw (STACKPROBE lines): frames and those without a method.</summary>

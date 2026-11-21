@@ -202,6 +202,11 @@ public static class DeckCountMemo
     /// <summary>Display callers left to the game's count without a look, the deck being small (<see cref="DisplayMinCards"/>).</summary>
     public static long DisplaySmallDecks { get; private set; }
     /// <summary>
+    /// Calculations outside the redraw with no count held whose piles last held a card of a changing type for that kind: no
+    /// display walk, no stack look (<see cref="HeldMoving"/>), the game counts.
+    /// </summary>
+    public static long DisplaySkippedMoving { get; private set; }
+    /// <summary>
     /// Display callers given the game's count on the schedule (<see cref="DisplayCheckDue"/>) and compared with the memo's, and the
     /// differences found (each turns the memo off).
     /// </summary>
@@ -476,13 +481,23 @@ public static class DeckCountMemo
             }
             int? held = Count(kind, state, inRedraw, out bool moving);
             bool display = false;
-            if (held == null && !inRedraw && DisplayCaller(kind, state))
+            // The display walk only where it can end in an answer: not while the piles last held a card of a changing type for this
+            // kind (the walk would end `moving` and the game count anyway; a rare missed answer once such cards are gone), and the
+            // stack looked at only then (DisplayCaller's own cheap checks first: part on, main thread, deck size).
+            bool heldMoving = held == null && !inRedraw && HeldMoving(state, kind);
+            DisplaySkippedMoving += heldMoving ? 1 : 0;
+            if (held == null && !inRedraw && !heldMoving && DisplayCaller(kind, state))
             {
                 // A display caller and no count held for these piles (a teammate's, whose cards this peer doesn't redraw until they
                 // are played): walked as the redraw does, then kept or brought along from the moves for the next display callers.
                 display = true;
                 DisplayWalks++;
                 held = Count(kind, state, walk: true, out moving, tally: false);
+                // A count just walked is what the scheduled check would compare with: the next check one interval from now.
+                if (held != null && _counts.TryGetValue(state, out Counts? walked))
+                {
+                    walked.DisplayCheckedAt[kind] = System.Diagnostics.Stopwatch.GetTimestamp();
+                }
             }
             if (held is not { } total || moving)
             {
@@ -696,7 +711,32 @@ public static class DeckCountMemo
         return count;
     }
 
+    /// <summary>
+    /// Whether the memo's last count of this kind for these piles (with the current type flags) found a card of a changing type:
+    /// a walk now would most likely find it too, and the game counts while one is there.
+    /// </summary>
+    private static bool HeldMoving(PlayerCombatState state, int kind) =>
+        _counts.TryGetValue(state, out Counts? counts) && counts.Epoch[kind] == _flagsEpoch && counts.Version[kind] >= 0 && counts.Moving[kind] > 0;
+
 #if BENCH
+    /// <summary>Bench: the memo forgets its counts for these piles (a display caller then finds none held: the display walk).</summary>
+    internal static void ForgetForTest(PlayerCombatState state) => _counts.Remove(state);
+
+    /// <summary>Bench: the memo's counts for these piles taken as of an older pile version (as after a move no redraw followed).</summary>
+    internal static void AgeForTest(PlayerCombatState state)
+    {
+        if (_counts.TryGetValue(state, out Counts? counts))
+        {
+            for (int kind = 0; kind < Kinds; kind++)
+            {
+                if (counts.Version[kind] >= 0)
+                {
+                    counts.Version[kind] = Math.Max(0, counts.Version[kind] - 1);
+                }
+            }
+        }
+    }
+
     /// <summary>Bench: whether the memo holds a count of this kind for these piles (as of any pile version).</summary>
     internal static bool HasCount(PlayerCombatState state, int kind) => HeldCount(state, kind) != null;
 
