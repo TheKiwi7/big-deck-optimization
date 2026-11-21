@@ -3,7 +3,7 @@
 # with combatcards-2k-off (CHECKSUM/STATE lines). bdperf combatcards compares both parts with the game's code (same answers,
 # same lists after each remove, times both ways); the effects line shows both ran in the game's own calls.
 # effects-ran: ^(CombatCardSet|PileIndex\.Removes)$
-expect COMBATCARDS .*ContainsCard game .*OK: identical answers; RemoveInternal of .*OK: identical lists
+expect COMBATCARDS .*ContainsCard game .*OK: identical answers; RemoveInternal of .*OK: identical lists; self-tests OK
 timeout 1200
 newrun NECROBINDER 1234
 waitfor run 120

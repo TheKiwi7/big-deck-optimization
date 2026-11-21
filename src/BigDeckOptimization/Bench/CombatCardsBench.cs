@@ -38,7 +38,91 @@ public static class CombatCardsBench
         List<CardModel> asked = piles.Concat(me.Deck.Cards).ToList();
         string contains = Contains(combat, asked, passes, out bool containsOk);
         string removes = Removes(me, passes, out bool removesOk);
-        return new CmdResult(containsOk && removesOk, $"COMBATCARDS {piles.Count} combat cards, {asked.Count - piles.Count} deck cards: {contains}; {removes}");
+        string self = SelfTests(piles, out bool selfOk);
+        return new CmdResult(containsOk && removesOk && selfOk, $"COMBATCARDS {piles.Count} combat cards, {asked.Count - piles.Count} deck cards: {contains}; {removes}; {self}");
+    }
+
+    /// <summary><c>this == obj</c>, expression-bodied and as a block (the Debug compiler's two shapes), and a real override.</summary>
+    private sealed class SameReference
+    {
+        public override bool Equals(object? obj) => this == obj;
+        public override int GetHashCode() => 0;
+    }
+
+    private sealed class SameReferenceBlock
+    {
+        public override bool Equals(object? obj)
+        {
+            return this == obj;
+        }
+
+        public override int GetHashCode() => 0;
+    }
+
+    private sealed class ByValue
+    {
+        public int Value = 1;
+        public override bool Equals(object? obj) => obj is ByValue other && other.Value == Value;
+        public override int GetHashCode() => Value;
+    }
+
+    /// <summary>
+    /// CombatCardSet's writers driven as other mods' patches could make them run (<see cref="CombatCardSet.SelfTest"/>: a skipped
+    /// add inserting at the front, a nested add, a skipped remove, a swapped list), and the equality rule: <c>object.Equals</c> and
+    /// a <c>this == obj</c> override (both shapes) by reference, a real override not.
+    /// </summary>
+    private static string SelfTests(List<CardModel> piles, out bool ok)
+    {
+        var failures = new List<string>();
+        if (CombatCardSet.Applied && CombatCardSet.Enabled)
+        {
+            failures.AddRange(CombatCardSet.SelfTest(piles));
+        }
+        (Type Type, CardEquality.Kind Expected)[] kinds =
+        {
+            (typeof(CardModel), CardEquality.Kind.Reference),
+            (typeof(object), CardEquality.Kind.Reference),
+            (typeof(SameReference), CardEquality.Kind.ReferenceOverride),
+            (typeof(SameReferenceBlock), CardEquality.Kind.ReferenceOverride),
+            (typeof(ByValue), CardEquality.Kind.Other),
+            (typeof(string), CardEquality.Kind.Other),
+        };
+        foreach ((Type type, CardEquality.Kind expected) in kinds)
+        {
+            CardEquality.Kind kind = CardEquality.Classify(type, out _);
+            if (kind != expected)
+            {
+                failures.Add($"{type.Name}'s Equals classed {kind}, expected {expected}");
+            }
+        }
+        // The IL shapes themselves: this build compiles both classes above to the short one; the Debug compiler's (Guzhenren's
+        // cards) and near misses.
+        (string Name, byte[] Il, bool Expected)[] shapes =
+        {
+            ("short", new byte[] { 0x02, 0x03, 0xFE, 0x01, 0x2A }, true),
+            ("Debug compiler's", new byte[] { 0x00, 0x02, 0x03, 0xFE, 0x01, 0x0A, 0x2B, 0x00, 0x06, 0x2A }, true),
+            ("negated", new byte[] { 0x02, 0x03, 0xFE, 0x01, 0x16, 0xFE, 0x01, 0x2A }, false),
+            ("arguments swapped for a field", new byte[] { 0x02, 0x7B, 0x01, 0x00, 0x00, 0x04, 0x03, 0xFE, 0x01, 0x2A }, false),
+            ("branch elsewhere", new byte[] { 0x02, 0x03, 0xFE, 0x01, 0x0A, 0x2B, 0x02, 0x00, 0x16, 0x06, 0x2A }, false),
+            ("always true", new byte[] { 0x17, 0x2A }, false),
+        };
+        foreach ((string name, byte[] il, bool expected) in shapes)
+        {
+            if (CardEquality.IsReferenceComparison(il) != expected)
+            {
+                failures.Add($"IL shape '{name}' read as {(expected ? "not " : "")}a reference comparison");
+            }
+        }
+        foreach (Type type in piles.Select(c => c.GetType()).Distinct())
+        {
+            if (CardEquality.Classify(type, out _) != CardEquality.Kind.Reference)
+            {
+                failures.Add($"{type.Name} (a card of this combat) has its own Equals: the set and the single scan leave it to the game");
+                break;
+            }
+        }
+        ok = failures.Count == 0 || failures.All(f => f.Contains("has its own Equals"));
+        return failures.Count == 0 ? "self-tests OK" : "SELF-TEST " + string.Join("; ", failures);
     }
 
     private static string Contains(CombatState combat, List<CardModel> asked, int passes, out bool ok)
