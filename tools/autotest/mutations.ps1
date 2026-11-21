@@ -76,13 +76,29 @@ $Expected = [ordered]@{
     "replay-record"   = @("game", "ReplayStateSkip|RecordChecksum", "ReplayStateSkip")
     "theme-rename"    = @("game", "ThemeColorSkip|RefreshText", "")
     "upgrade-writer"  = @("game", "_currentUpgradeLevel", "SnapshotCardReuse\.(Trust|Moved|Dirty|Hooks)|LimitlessRecalcSkip\.Passes")
-    # The parts of the audit rounds since v1.2.0 (calibrated on no session yet: the first run may need its patterns widened).
+    # The parts of the audit rounds since v1.2.0: read-file, combat-contains, dynvar-tryget and card-redraw ran in the release battery of
+    # 2026-11-21 (mutations 50/49 as expected, DESIGN "Revisited leads"). The five rows marked "not run yet" below were added after
+    # it (audit of 2026-11-21, fixer 2) and are calibrated on no session: the first run may need its patterns widened.
     "combat-contains" = @("game", "CombatCardSet|ContainsCard", "CombatCardSet")
     "read-file"       = @("game", "SaveReadDecode|ReadFile", "SaveReadDecode(\.(RunSave|Checks))?")
     # CardSortKeys is not needed on v0.111.1 (cheap CompareTo): a 4th element, the lowest game version a mutation applies to.
     # Only the shared-key comparison leaves, the sort keys still answer: nothing may drop.
     "dynvar-tryget"   = @("game", "CardSortKeys|DynamicVarSet|TryGetValue|dynamic variable reads", "", "0.113")
     "card-redraw"     = @("game", "DeckCountMemo|UpdateVisuals", "DeckCountMemo(\.Checks)?")
+    # Not run yet. Each target is one fingerprinted method (PatchSafety.RequireFingerprint / Known: "<Type>.<Method> changed
+    # (fingerprint ..): left vanilla", or GridSortCache's "NCardGrid.SetCards changed (...): index orders left vanilla") of one part,
+    # so only that part's lines may appear and only its effect may drop. Effect names are the bare class name (first counter) or
+    # Class.Member (EffectCounters). Reference effects in v0.113.1: GridSortCache 1, HoverTipReuse 170, RelicFlashMerge 110.
+    # HoverTipReuse: ShowHoverTips is fingerprinted with the hide and the panel's Init; the transpiler (the only effect) is not applied.
+    "show-hover-tips"    = @("game", "HoverTipReuse|ShowHoverTips", "HoverTipReuse")
+    # GridSortCache: only the index orders leave (the part stays, cost and title orders still answer): its effect may stay above 0.
+    "grid-setcards"      = @("game", "GridSortCache|SetCards", "GridSortCache")
+    # CombatCardSet: a changed AddCard(CardModel) or RemoveCard leaves the whole part vanilla (no set, no ContainsCard answer).
+    "combat-add-card"    = @("game", "CombatCardSet|AddCard", "CombatCardSet")
+    "combat-remove-card" = @("game", "CombatCardSet|RemoveCard", "CombatCardSet")
+    # RelicFlashMerge: a changed DoFlash drops the holder's handler (Known fails), the player's handler may stay; Merged is driven by
+    # bdperf relicflash through the holder: the effect may drop (it may also stay through the player's handler).
+    "relic-doflash"      = @("game", "RelicFlashMerge|DoFlash", "RelicFlashMerge")
     "write-list"      = @("game", "pile bits not reused", "SnapshotCardReuse\.(PileBits|Blocks)")
     "local-keywords"  = @("game", "read through the game's own calls|get_LocalKeywords", "SnapshotCardReuse\.(Trust|Moved|Dirty|Hooks)")
     "limitless-body"  = @("Limitless", "LimitlessReserialize|LimitlessRecalcSkip|SetSerializableCards", "LimitlessReserialize|LimitlessRecalcSkip\.(Memos|Passes)|SnapshotCardReuse\.Moved|LimitlessCloneMemo|LimitlessHookSkip(\.Saved)?")

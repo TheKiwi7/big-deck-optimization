@@ -108,6 +108,18 @@ var mutations = new Dictionary<string, (string What, Action<ModuleDefinition> Ap
         Prepend(Method(m, "MegaCrit.Sts2.Core.Localization.DynamicVars.DynamicVarSet", "TryGetValue"), OpCodes.Ldarg_1, OpCodes.Pop)),
     ["card-redraw"] = ("NCard.UpdateVisuals changed (DeckCountMemo answers inside that redraw)", m =>
         Prepend(Method(m, "MegaCrit.Sts2.Core.Nodes.Cards.NCard", "UpdateVisuals"), OpCodes.Ldarg_0, OpCodes.Pop)),
+    // --- game, audit of 2026-11-21: fingerprinted methods of HoverTipReuse, GridSortCache, CombatCardSet, RelicFlashMerge ---
+    ["show-hover-tips"] = ("NCreature.ShowHoverTips changed (HoverTipReuse transpiles it; its fingerprint pins the hide-then-show sequence)", m =>
+        Prepend(Method(m, "MegaCrit.Sts2.Core.Nodes.Combat.NCreature", "ShowHoverTips"), OpCodes.Ldarg_1, OpCodes.Pop)),
+    ["grid-setcards"] = ("NCardGrid.SetCards changed (GridSortCache's index map relies on it only refilling _cards after the sort)", m =>
+        Prepend(Method(m, "MegaCrit.Sts2.Core.Nodes.Cards.NCardGrid", "SetCards"), OpCodes.Ldarg_1, OpCodes.Pop)),
+    // CombatState has two AddCard: the public (card, owner) one calls the private (card) one that CombatCardSet fingerprints.
+    ["combat-add-card"] = ("CombatState.AddCard(CardModel) changed (CombatCardSet counts the cards its _allCards.Add adds)", m =>
+        Prepend(MethodWithParameters(m, "MegaCrit.Sts2.Core.Combat.CombatState", "AddCard", 1), OpCodes.Ldarg_1, OpCodes.Pop)),
+    ["combat-remove-card"] = ("CombatState.RemoveCard changed (CombatCardSet counts the cards its _allCards.Remove removes)", m =>
+        Prepend(MethodWithParameters(m, "MegaCrit.Sts2.Core.Combat.CombatState", "RemoveCard", 1), OpCodes.Ldarg_1, OpCodes.Pop)),
+    ["relic-doflash"] = ("NRelicInventoryHolder.DoFlash changed: the relic bar's merge leaves (it pins the flash's own code), the player handler's stays", m =>
+        Prepend(Method(m, "MegaCrit.Sts2.Core.Nodes.Relics.NRelicInventoryHolder", "DoFlash"), OpCodes.Ldarg_0, OpCodes.Pop)),
     // --- game, v0.9.0 patches: only that part may leave ---
     ["flight-count"] = ("NCombatCardPile.AddCard changed (CardFlightLimit adds to its count)", m =>
         Prepend(Method(m, "MegaCrit.Sts2.Core.Nodes.Combat.NCombatCardPile", "AddCard"), OpCodes.Ldarg_0, OpCodes.Pop)),
@@ -208,6 +220,10 @@ return 0;
 static TypeDefinition Type(ModuleDefinition m, string name) => m.GetType(name) ?? throw new Exception("no type " + name);
 
 static MethodDefinition Method(ModuleDefinition m, string type, string name) => Type(m, type).Methods.First(x => x.Name == name && x.HasBody);
+
+// The overload with that many parameters (the game has two methods of one name where a patch pins one).
+static MethodDefinition MethodWithParameters(ModuleDefinition m, string type, string name, int parameters) =>
+    Type(m, type).Methods.Single(x => x.Name == name && x.HasBody && x.Parameters.Count == parameters);
 
 // A load and a pop at the start: the method does the same, its code (and fingerprint) changed.
 static void Prepend(MethodDefinition method, OpCode load, OpCode pop)
