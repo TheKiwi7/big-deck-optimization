@@ -51,6 +51,11 @@ public static class SaveBackupCheck
     private const string WriteFileAsyncFingerprint = "1374131C1EDE53C8";
     /// <summary><c>GodotFileIo.StoreBufferToFile</c> (v0.107.1 to v0.113.1): the bytes stored as they are.</summary>
     private const string StoreBufferFingerprint = "9C8F31F54BB7C8E7";
+    /// <summary>
+    /// <c>GodotFileIo.DeleteFile(string)</c> (v0.113.0, v0.113.1): <c>DirAccess.RemoveAbsolute(GetFullPath(path))</c>, an error
+    /// logged. Only lets go of a kept copy (memory), so a change leaves just that postfix out.
+    /// </summary>
+    private const string DeleteFileFingerprint = "3B9E3B6A0886B492";
 
     /// <summary>Judgments: not done yet, whole, not whole, none (outside the gate, or the parse threw something else).</summary>
     internal const int Pending = 0, Whole = 1, Broken = 2, NoVerdict = 3;
@@ -62,13 +67,17 @@ public static class SaveBackupCheck
 #if BENCH
     internal static int VerifyEvery { get; set; } = 4;
 
-    /// <summary>Positive control (<c>bdperf savecheck wrong</c>): every answer of the shortcut inverted.</summary>
+    /// <summary>
+    /// Positive control (<c>bdperf savecheck wrong</c>): the shortcut's answers the net compares inverted (never handed to the
+    /// game: the net returns the game's answer then), so the net must catch the first one and turn the part off.
+    /// </summary>
     internal static bool WrongForTest { get; set; }
 #else
     internal static int VerifyEvery { get; set; } = 64;
 #endif
 
-    private static bool _enabled = true;
+    /// <summary>Read on any thread (the main thread's saves, WriteFileAsync's callers): volatile.</summary>
+    private static volatile bool _enabled = true;
 
     /// <summary>Off: nothing is kept any more and what was kept is let go.</summary>
     public static bool Enabled
@@ -165,7 +174,10 @@ public static class SaveBackupCheck
         _isWholeMethod = isWhole;
         _copyBackup = copyBackup;
         _replaced = 0;
-        PatchGuard.Patch(harmony, copyBackup, transpiler: new HarmonyMethod(typeof(SaveBackupCheck), nameof(Transpiler)));
+        // Priority.Last, as SaveReadDecode's: other mods' transpilers run first. One that replaced or moved the check keeps its
+        // change (this one finds no such pair of calls and leaves the code as it is: not applied, or, for a transpiler patched
+        // later, the part backs off from it at run time: TranspiledOnly refuses a transpiler).
+        PatchGuard.Patch(harmony, copyBackup, transpiler: new HarmonyMethod(typeof(SaveBackupCheck), nameof(Transpiler)) { priority = Priority.Last });
         if (_replaced != 1)
         {
             // ModEntry.TryApply removes the transpiler that replaced nothing.
@@ -176,6 +188,18 @@ public static class SaveBackupCheck
         var remember = new HarmonyMethod(typeof(SaveBackupCheck), nameof(AfterWrite));
         PatchGuard.Patch(harmony, writeFile, postfix: remember);
         PatchGuard.Patch(harmony, writeFileAsync, postfix: remember);
+        // A deleted file's copy let go (the run save at a run's end or abandon: ~10 MB at 10,000 cards, a co-op host's more).
+        // Memory only: an entry left or dropped never changes an answer (the file's bytes are compared before any). Its own
+        // fingerprint: a changed DeleteFile leaves only this postfix out (the copies then go as the oldest, or on a miss).
+        MethodInfo? deleteFile = Reflect.DeclaredMethod(typeof(GodotFileIo), nameof(GodotFileIo.DeleteFile), new[] { typeof(string) });
+        if (deleteFile != null && MethodFingerprint.Of(deleteFile) == DeleteFileFingerprint)
+        {
+            PatchGuard.Patch(harmony, deleteFile, postfix: new HarmonyMethod(typeof(SaveBackupCheck), nameof(AfterDelete)));
+        }
+        else
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: GodotFileIo.DeleteFile {(deleteFile == null ? "not found" : "changed")}: copies of deleted files go as the oldest");
+        }
         // What the shortcut skips: the game's two calls. Another mod's patch on either would be skipped too: the game's check
         // runs then (no tolerance: a prefix or postfix there would not run). CopyBackup itself: this mod's only code there is
         // the transpiler above, which keeps what the body does (the same answer to the same question), and the read-only guard,
@@ -226,15 +250,17 @@ public static class SaveBackupCheck
                 {
                     answered = true;
                     answer = verdict == Whole;
+                    long n = Interlocked.Increment(ref Shortcuts);
+                    // The first answer of the session and one in VerifyEvery after it: the game's check too.
+                    verify = (n - 1) % Math.Max(1, VerifyEvery) == 0;
 #if BENCH
-                    if (WrongForTest)
+                    // Only the answers the net compares are inverted (never handed to the game: the net returns the game's
+                    // answer then), as SaveReadDecode's control does.
+                    if (WrongForTest && verify)
                     {
                         answer = !answer;
                     }
 #endif
-                    long n = Interlocked.Increment(ref Shortcuts);
-                    // The first answer of the session and one in VerifyEvery after it: the game's check too.
-                    verify = (n - 1) % Math.Max(1, VerifyEvery) == 0;
                 }
             }
             catch (Exception e)
@@ -320,6 +346,7 @@ public static class SaveBackupCheck
         if (length != (ulong)entry.Bytes.Length)
         {
             Interlocked.Increment(ref MissDifferent);
+            ForgetEntry(fullPath, entry);
             return NoVerdict;
         }
         // As GetAsText reads: from the start, the position put back after (CopyBackup's own read of the bytes relies on it).
@@ -332,9 +359,46 @@ public static class SaveBackupCheck
         if (now == null || !now.AsSpan().SequenceEqual(entry.Bytes))
         {
             Interlocked.Increment(ref MissDifferent);
+            ForgetEntry(fullPath, entry);
             return NoVerdict;
         }
         return verdict;
+    }
+
+    /// <summary>
+    /// The file no longer holds the kept bytes (rewritten outside WriteFile, by Steam Cloud or another mod): the copy can never
+    /// answer again, let go of (unless a newer write replaced it meanwhile). The write that follows keeps the new bytes.
+    /// </summary>
+    private static void ForgetEntry(string fullPath, Entry entry)
+    {
+        lock (_lock)
+        {
+            if (_entries.TryGetValue(fullPath, out Entry? current) && current == entry)
+            {
+                _entries.Remove(fullPath);
+                _keptBytes -= entry.Bytes.Length;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Postfix of <c>GodotFileIo.DeleteFile(string path)</c>: the copy kept for that file let go (memory only). Runs after the
+    /// delete returned (not when it threw: the file may still be there, the copy then waits as any other).
+    /// </summary>
+    private static void AfterDelete(GodotFileIo __instance, string path)
+    {
+        if (path == null || __instance == null)
+        {
+            return;
+        }
+        try
+        {
+            Forget(__instance.GetFullPath(path));
+        }
+        catch (Exception e)
+        {
+            Disable(e.ToString());
+        }
     }
 
     /// <summary>

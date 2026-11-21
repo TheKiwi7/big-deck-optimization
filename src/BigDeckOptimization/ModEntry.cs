@@ -24,6 +24,10 @@ public static class ModEntry
         (JoinMismatchNote.Name, JoinMismatchNote.Apply),
         // Next: other mods' Patch and Unpatch calls from now on are seen (caches dropped, lost detours, hidden IL hooks).
         (HarmonyWatch.Name, HarmonyWatch.Apply),
+        // The save reads next, in the first frame: the main menu reads the run save when it shows (up to three times with
+        // BaseLib). Priority.Last transpilers: other mods' transpilers, registered at their own init, still come first.
+        (SaveBackupCheck.Name, SaveBackupCheck.Apply),
+        (SaveReadDecode.Name, SaveReadDecode.Apply),
         (ListenerCache.Name, ListenerCache.Apply),
         (HookFilter.Name, HookFilter.Apply),
         (ExtraScopes.Name, ExtraScopes.Apply),
@@ -62,8 +66,6 @@ public static class ModEntry
         (RichTextEnvRelease.Name, RichTextEnvRelease.Apply),
         (DeckCountMemo.Name, DeckCountMemo.Apply),
         (CardSortKeys.Name, CardSortKeys.Apply),
-        (SaveBackupCheck.Name, SaveBackupCheck.Apply),
-        (SaveReadDecode.Name, SaveReadDecode.Apply),
     });
 
     /// <summary>Time given to patching per frame: each patched method takes ~1.5 ms, ~400 ms in all.</summary>
@@ -98,10 +100,12 @@ public static class ModEntry
     private static double _initMs;
 
     /// <summary>
-    /// The patches, a few per frame while the game loads, so the mod adds no pause to the game's start. Nothing they speed up
-    /// matters before a run starts (menu UI patches do run while the rest is still being applied), and a run starts from the main menu: as soon as that shows, whatever is left applies at
-    /// once. All of them then come after every other mod's, whatever the load order. Falls back to applying them all now
-    /// when frames can't be awaited.
+    /// The patches, a few per frame while the game loads, so the mod adds no pause to the game's start. Most of what they speed
+    /// up only matters once a run starts (menu UI patches do run while the rest is still being applied), and a run starts from
+    /// the main menu: as soon as that shows, whatever is left applies at once. The exception, the save reads the main menu
+    /// makes when it shows (SaveReadDecode, SaveBackupCheck), is at the front of the list, applied in the first frames. All of
+    /// them still come after every other mod's init, whatever the load order (nothing applies before the first frame). Falls
+    /// back to applying them all now when frames can't be awaited.
     /// </summary>
     private static async void ApplyOverFrames()
     {

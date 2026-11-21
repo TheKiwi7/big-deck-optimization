@@ -45,8 +45,13 @@ public static class Settings
         /// <summary>Fault names that take the parts away too: switches over the whole option, not pieces of it (<see cref="StateOf(Option)"/>).</summary>
         public string[] WholeFaults { get; } = wholeFaults ?? Array.Empty<string>();
 
-        /// <summary>Its parts still run though the main patch is off after a fault: switching the option still means something.</summary>
-        public bool PartsOutliveFault => SetParts != null && !(wholeFaults ?? Array.Empty<string>()).Any(PatchSafety.IsFaulted);
+        /// <summary>
+        /// Its parts still run though the main patch is off after a fault: switching the option still means something. Not when
+        /// every part has nothing to do here (<see cref="NothingToDo"/>: save_check on v0.111, whose only part isn't needed there):
+        /// the fault is then the whole option's.
+        /// </summary>
+        public bool PartsOutliveFault => SetParts != null && !(wholeFaults ?? Array.Empty<string>()).Any(PatchSafety.IsFaulted)
+            && Parts.Any(part => !NothingToDo(part));
 
         /// <summary>
         /// What of this option doesn't run although the option is on: parts that failed or didn't apply (one needing Limitless counts only
@@ -104,14 +109,13 @@ public static class Settings
     public const string BaseLibMissing = "not applied (BaseLib absent or changed)";
 
     /// <summary>
-    /// Not applied because this game version doesn't run what the optimization speeds up (v0.111's saves have no check to
-    /// skip): greyed out, but not shown as inactive (nothing is missing).
+    /// A part with nothing to do here, once every patch was tried: not applied because this game version doesn't run what it
+    /// speeds up (<see cref="OptionPart.NotNeeded"/>), or because it needs Limitless and Limitless is absent. Not counted as
+    /// missing, nor as a piece of the option (<see cref="StateOf(Option)"/>).
     /// </summary>
-    public const string NotNeededHere = "not applied (not needed on this game version)";
-
-    /// <summary>A patch that a game version may not need: <see cref="NotNeededHere"/> when it said so, else as <see cref="Missing"/>.</summary>
-    private static string? MissingOrNotNeeded(bool applied, Func<bool> notNeeded) =>
-        applied || !ModEntry.AllApplied ? null : notNeeded() ? NotNeededHere : GameChanged;
+    private static bool NothingToDo(OptionPart part) =>
+        ModEntry.AllApplied && ModEntry.NotApplied(part.Name)
+        && (part.NotNeeded?.Invoke() == true || (part.NeedsMods && LimitlessReason() != LimitlessChanged));
 
     /// <summary>
     /// Why the menu shows this optimization greyed out, in a sentence in this game language code (English when it has
@@ -125,8 +129,6 @@ public static class Settings
             "Unavailable: a game or Limitless update changed what this optimization speeds up. It stays off (normal game) until the mod is updated."),
         BaseLibMissing => Translations.Get(language, "why.baselib",
             "Unavailable: a BaseLib update changed what this optimization speeds up. It stays off (normal game) until the mod is updated."),
-        NotNeededHere => Translations.Get(language, "why.not_needed",
-            "Not needed: this version of the game doesn't do what this optimization speeds up."),
         { } => Translations.Get(language, "why.game",
             "Unavailable: a game update changed what this optimization speeds up. It stays off (normal game) until the mod is updated."),
         null when option.Fault != null && !option.PartsOutliveFault => Translations.Get(language, "why.fault",
@@ -524,9 +526,9 @@ public static class Settings
                 return PartState.Healthy; // Nothing of the mod loaded: the player's choice.
             }
             string? unavailable = option.Unavailable();
-            if (unavailable is LimitlessMissing or NotNeededHere)
+            if (unavailable is LimitlessMissing)
             {
-                return PartState.Healthy; // Limitless isn't installed, or this game version doesn't need it: nothing for it to speed up (greyed out, Why says so).
+                return PartState.Healthy; // Limitless isn't installed: nothing for it to speed up (greyed out, Why says so).
             }
             if (unavailable != null || (option.Fault != null && !option.PartsOutliveFault))
             {
@@ -546,8 +548,7 @@ public static class Settings
                 }
                 OptionPart[] part = option.Parts.Where(p => p.Name == name).ToArray();
                 bool notApplied = ModEntry.AllApplied && ModEntry.NotApplied(name);
-                if (part.Length > 0 && notApplied
-                    && (part[0].NotNeeded?.Invoke() == true || (part[0].NeedsMods && LimitlessReason() != LimitlessChanged)))
+                if (part.Length > 0 && NothingToDo(part[0]))
                 {
                     continue; // Nothing for it to do here (this game version, Limitless absent).
                 }
@@ -704,7 +705,7 @@ public static class Settings
             new[] { HoverTipReuse.Name }, on => HoverTipReuse.Enabled = on,
             () => Missing(HoverTipReuse.Applied)),
         new("save_check", "Faster run saves and loads",
-            "Reading a save file (the main menu showing your run, continuing it) turns its bytes into text directly instead of through the game engine's slower conversion: tens of milliseconds per read with a huge deck. Before each save the game also checks that the previous save is whole before backing it up: that check is now made in the background on what was written, and the file is only checked again if it changed since. Same saves, loads and backups.",
+            "Reading a save file (the main menu showing your run, continuing it) turns its bytes into text directly instead of through the game engine's slower conversion: tens of milliseconds per read with a huge deck. Before each save, newer game versions also check that the previous save is whole before backing it up: that check is now made in the background on what was written, and the file is only checked again if it changed since. Same saves, loads and backups.",
             // The read (both game versions) is the main patch; the backup check is a part only game v0.113+ needs.
             new[] { SaveReadDecode.Name }, on => SaveReadDecode.Enabled = on,
             () => NoneApplied(SaveReadDecode.Name, SaveBackupCheck.Name),
