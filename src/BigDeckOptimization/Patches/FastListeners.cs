@@ -3578,8 +3578,10 @@ public static class FastListeners
     /// each creature's IsPlayer and each player creature's Player; each player's PlayerCombatState and AllPiles), then each pile's
     /// Cards. Another mod's patch on one of them runs as often as with the subscriber called; only
     /// the per-card table lookups (DirectModifiers, BaseLib's, whose patches back the skip off: <see cref="CardModifierCalleesPatched"/>)
-    /// are left out. A throw comes where the subscriber's would. Called only while another mod patches one of those getters
-    /// (<see cref="CardModifierGettersPatched"/>, audit of 2026-11-21 evening): unpatched, they only read and allocate.
+    /// are left out; when they run, a throw comes where the subscriber's would. Called only while another mod patches one of
+    /// those getters or one's code isn't the one pinned (<see cref="CardModifierGettersPatched"/>, audit of 2026-11-21 evening):
+    /// unpatched and pinned, they only read and allocate and never throw (<see cref="ModifierGetterFingerprints"/>,
+    /// <see cref="CombatPlayerGetterFingerprints"/>), so leaving them out changes nothing anyone sees.
     /// </summary>
     private static void CardModifierGetters(CombatState state)
     {
@@ -3746,7 +3748,8 @@ public static class FastListeners
     /// <summary>
     /// Whether another mod patches (Harmony, or a hidden IL hook) code the game's <c>CombatState.Players</c> runs: the getters
     /// <c>Players</c>, <c>PlayerCreatures</c>, <c>Creatures</c>, their lambdas (<c>c =&gt; c.IsPlayer</c>, <c>c =&gt; c.Player</c>), and
-    /// <c>Creature.IsPlayer</c> and <c>Creature.Player</c>. Asked again per Harmony epoch (HarmonyWatch: any Patch or Unpatch) and at
+    /// <c>Creature.IsPlayer</c> and <c>Creature.Player</c>, or one of those getters' code isn't the one pinned
+    /// (<see cref="CombatPlayerGetterFingerprints"/>). Asked again per Harmony epoch (HarmonyWatch: any Patch or Unpatch) and at
     /// most every 2 s. True when it can't tell (the getters then run, as before).
     /// </summary>
     private static bool CombatPlayerGettersPatched()
@@ -3761,7 +3764,9 @@ public static class FastListeners
         try
         {
             MethodBase[] getters = _combatPlayerGetters ??= CombatPlayerGetters();
-            patched = getters.Length == 0 || getters.Any(m => HarmonyWatch.HiddenOwners(m).Length > 0
+            // The getters' own code as pinned (read-only, never throwing): else they run, as before.
+            _combatGettersPinned ??= Pinned(CombatPlayerGetterFingerprints);
+            patched = getters.Length == 0 || _combatGettersPinned != true || getters.Any(m => HarmonyWatch.HiddenOwners(m).Length > 0
                 || (Harmony.GetPatchInfo(m) is { } info && PatchSafety.AllPatches(info).Any(p => !PatchGuard.IsOurs(p.owner))));
         }
         catch
@@ -3770,6 +3775,53 @@ public static class FastListeners
         }
         _gettersAnswer = new GettersAnswer(epoch, now, patched);
         return patched;
+    }
+
+    /// <summary>
+    /// The getters a skipped call leaves out, pinned (v0.111.1 and v0.113.1 alike): <c>Creatures</c> (<c>_allies.Concat(_enemies)
+    /// .ToList()</c>), <c>PlayerCreatures</c> and <c>Players</c> (Where/Select over it, ToList), <c>Creature.IsPlayer</c>
+    /// (<c>Player != null</c>), <c>Creature.Player</c>, <c>Player.PlayerCombatState</c> (auto-properties),
+    /// <c>PlayerCombatState.AllPiles</c> (<c>_piles</c>, built once in its <c>_piles == null</c> branch, which the constructor
+    /// runs) and <c>CardPile.Cards</c> (<c>_cards</c>): reads and allocations only, none throws. Another body: the getters run.
+    /// </summary>
+    private static readonly (Type Type, string Getter, string Fingerprint)[] CombatPlayerGetterFingerprints =
+    {
+        (typeof(CombatState), "get_" + nameof(CombatState.Players), "CFAC31F80C505D80"),
+        (typeof(CombatState), "get_" + nameof(CombatState.PlayerCreatures), "1D66DBCEFBEDF159"),
+        (typeof(CombatState), "get_" + nameof(CombatState.Creatures), "642E5F95F03A9BB4"),
+        (typeof(Creature), "get_" + nameof(Creature.IsPlayer), "EBC2C13E9364F23C"),
+        (typeof(Creature), "get_" + nameof(Creature.Player), "CA3E9C802BA299F4"),
+    };
+
+    private static readonly (Type Type, string Getter, string Fingerprint)[] ModifierGetterFingerprints =
+    {
+        (typeof(Player), "get_" + nameof(Player.PlayerCombatState), "623F1DCA6A9A8525"),
+        (typeof(PlayerCombatState), "get_" + nameof(PlayerCombatState.AllPiles), "33A5BD7841727ED1"),
+        (typeof(CardPile), "get_" + nameof(CardPile.Cards), "C74105B9A028C09A"),
+    };
+
+    private static bool? _combatGettersPinned, _modifierGettersPinned;
+
+    /// <summary>Whether each getter's code is the one pinned (false when one is missing or can't be read).</summary>
+    private static bool Pinned((Type Type, string Getter, string Fingerprint)[] getters)
+    {
+        try
+        {
+            foreach ((Type type, string name, string fingerprint) in getters)
+            {
+                MethodBase? getter = Reflect.Method(type, name);
+                if (getter == null || !PatchSafety.FingerprintMatches(MethodFingerprint.Of(getter), fingerprint))
+                {
+                    Log.Info($"[{ModEntry.Id}] {Name}: {type.Name}.{name} {(getter == null ? "not found" : "changed")}: the walks call the game's player and pile getters as the game does");
+                    return false;
+                }
+            }
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static volatile GettersAnswer? _modifierGettersAnswer;
@@ -3809,7 +3861,9 @@ public static class FastListeners
         {
             MethodBase[] getters = _modifierGetters ??= ModifierGetters();
             MethodInfo? addPile = BaseLibAddPile();
-            patched = getters.Length == 0 || getters.Any(m => HarmonyWatch.HiddenOwners(m).Length > 0
+            // The getters' own code as pinned (BaseLib's exemption relies on AllPiles' null-branch shape): else they run.
+            _modifierGettersPinned ??= Pinned(ModifierGetterFingerprints);
+            patched = getters.Length == 0 || _modifierGettersPinned != true || getters.Any(m => HarmonyWatch.HiddenOwners(m).Length > 0
                 || (Harmony.GetPatchInfo(m) is { } info && PatchSafety.AllPatches(info).Any(p => !PatchGuard.IsOurs(p.owner)
                     && !(addPile != null && info.Transpilers.Contains(p) && p.PatchMethod == addPile))));
         }
