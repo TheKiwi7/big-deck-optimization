@@ -39,8 +39,9 @@ public static class CombatCardsBench
         string contains = Contains(combat, asked, passes, out bool containsOk);
         string removes = Removes(me, passes, out bool removesOk);
         string self = SelfTests(piles, out bool selfOk);
-        // The game's calls since the session's start (the bench's own put back): sets built (first builds and rebuilds), answers
-        // left to the game's scan, combats given up after too many rebuilds.
+        // Since the session's start (the self-test's scratch combats left out; this combat's set built here counts): sets built
+        // (first builds and rebuilds), answers left to the game's scan (the comparison's own put back), combats given up after
+        // too many rebuilds.
         string counts = $"set builds {CombatCardSet.Builds}, fallbacks {CombatCardSet.Fallbacks}, gave up {CombatCardSet.GaveUp}";
         return new CmdResult(containsOk && removesOk && selfOk, $"COMBATCARDS {piles.Count} combat cards, {asked.Count - piles.Count} deck cards: {contains}; {removes}; {self}; {counts}");
     }
