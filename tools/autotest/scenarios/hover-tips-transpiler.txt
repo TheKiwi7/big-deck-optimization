@@ -1,0 +1,36 @@
+# A transpiler of "another mod" on NCreature.ShowHoverTips replacing the very call HoverTipReuse's transpiler looks for
+# (HideHoverTips, by its own counting wrapper of it; default priority, so it runs before this mod's Priority.Last one), mod on:
+# its change must be kept (transpiled grew hide: the wrapper runs), HoverTipReuse leaves that code as it is and backs off (the
+# classify verdict, no reuse: effectcheck same), and the panel is the game's (checktips). ~945 cards.
+timeout 900
+expect FOREIGN classify NCreature\.ShowHoverTips: bdtest\.foreign\.hide-transpiler Transpiler .*AnyPrefix backs off \(transpiler
+expect FOREIGN transpiled hide since the mark: [0-9]+ -> [1-9]
+expect EFFECTCHECK HoverTipReuse same since 'start'
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+foreignpatch hide-transpiler
+foreignpatch transpiled mark hide
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+hover 0
+effects start
+play 3
+waitfor idle 300
+checktips plays
+endturn
+waitfor idle 300
+checktips t2
+play 2
+waitfor idle 300
+checktips t2plays
+effects end
+effectcheck HoverTipReuse same start
+foreignpatch transpiled grew hide
+cmd bdopt why
+foreignpatch remove
+quit

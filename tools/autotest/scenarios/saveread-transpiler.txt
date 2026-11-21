@@ -1,0 +1,37 @@
+# A transpiler of "another mod" on GodotFileIo.ReadFile replacing the very call SaveReadDecode's transpiler looks for (GetAsText,
+# by its own counting wrapper of it; default priority, so it runs before this mod's Priority.Last one), mod on, both game
+# versions: its change must be kept (transpiled grew readfile: the wrapper reads the run save when the main menu loads it and
+# when the run continues), SaveReadDecode leaves that code as it is and backs off (the classify verdict; no run save decoded:
+# effectcheck same), and the run continues as in the game (runstate).
+timeout 1800
+expect FOREIGN classify GodotFileIo\.ReadFile: bdtest\.foreign\.readfile-transpiler Transpiler .*TranspiledOnly backs off \(transpiler
+expect FOREIGN transpiled readfile since the mark: [0-9]+ -> [1-9]
+expect EFFECTCHECK SaveReadDecode\.RunSave same since 'before menu'
+foreignpatch readfile-transpiler
+foreignpatch transpiled mark readfile
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+enemyhp 1
+selector ui
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+automap
+wait 3
+runstate before save
+effects before menu
+tomenu
+wait 3
+continuerun 600
+wait 3
+runstate after load
+effects loaded
+effectcheck SaveReadDecode.RunSave same before menu
+effectcheck SaveReadDecode same before menu
+foreignpatch transpiled grew readfile
+cmd bdopt why
+foreignpatch remove
+quit
