@@ -21,7 +21,7 @@ namespace BigDeckOptimization.Bench;
 /// <item><c>status</c>: scopes opened and the stand-ins' refusals by reason (<see cref="ExtraScopes.BenchStatus"/>).</item>
 /// <item><c>selftest</c> (in combat): the stand-ins called directly over the local player's combat cards with the game's two
 /// lambdas and with near misses: each case must give the game's own LINQ result, and a scope exactly when the query is the game's
-/// shape (a <c>List&lt;CardModel&gt;</c> source, one of the game's lambdas as made by the game, a <c>List&lt;CardModel&gt;</c> to
+/// shape (a <c>List&lt;CardModel&gt;</c> source, that filter's game lambda as made by the game, a <c>List&lt;CardModel&gt;</c> to
 /// leave out). The effect counters are put back by the caller (only the game's calls count), the bench's vanilla comparison is
 /// paused (its log lines are the real first turn's), and the notes the refused cases record are cleared at the end.</item>
 /// <item><c>imbue &lt;n&gt;</c> (outside combat): the first <c>n</c> deck cards Imbued can enchant (not enchanted yet) enchanted with
@@ -103,10 +103,13 @@ public static class FirstTurnBench
 
         var failures = new List<string>();
         int cases = 0;
-        void Case(string name, bool expectScope, IEnumerable<CardModel> source, Func<CardModel, bool> predicate, IEnumerable<CardModel>? second = null)
+        // Filter 0 (bottom of the draw pile) goes through WhereFirstFilter, filter 1 (Innate) through WhereSecondFilter.
+        IEnumerable<CardModel> Where(int filter, IEnumerable<CardModel> source, Func<CardModel, bool> predicate) =>
+            filter == 0 ? ExtraScopes.WhereFirstFilter(source, predicate) : ExtraScopes.WhereSecondFilter(source, predicate);
+        void Case(string name, bool expectScope, int filter, IEnumerable<CardModel> source, Func<CardModel, bool> predicate, IEnumerable<CardModel>? second = null)
         {
             cases++;
-            IEnumerable<CardModel> query = ExtraScopes.WhereInScope(source, predicate);
+            IEnumerable<CardModel> query = Where(filter, source, predicate);
             if (second != null)
             {
                 query = ExtraScopes.ExceptInScope(query, second);
@@ -128,16 +131,18 @@ public static class FirstTurnBench
         try
         {
             // The game's shape: both filters as SetupPlayerTurn runs them.
-            Case("game-bottom", true, cards, bottom);
-            Case("game-innate-except", true, cards, innate, bottoms);
+            Case("game-bottom", true, 0, cards, bottom);
+            Case("game-innate-except", true, 1, cards, innate, bottoms);
             // The game's lambda closed over null (the rule: no target or one of the lambda's own class).
-            Case("game-lambda-null-target", true, cards, Game(games[1], nullTarget: true));
-            // Near misses: another predicate (the same answers), a combined delegate, another source type, another list left out.
-            Case("predicate-other", false, cards, OwnInnate);
-            Case("predicate-combined", false, cards, (Func<CardModel, bool>)Delegate.Combine(innate, innate));
-            Case("source-array", false, cards.ToArray(), innate);
-            Case("source-subclass", false, new SubList(cards), innate);
-            Case("except-array", false, cards, innate, bottoms.ToArray());
+            Case("game-lambda-null-target", true, 1, cards, Game(games[1], nullTarget: true));
+            // Near misses: another predicate (the same answers), the other filter's lambda, a combined delegate, another source
+            // type, another list left out.
+            Case("predicate-other", false, 1, cards, OwnInnate);
+            Case("predicate-other-filter", false, 1, cards, bottom);
+            Case("predicate-combined", false, 1, cards, (Func<CardModel, bool>)Delegate.Combine(innate, innate));
+            Case("source-array", false, 1, cards.ToArray(), innate);
+            Case("source-subclass", false, 1, new SubList(cards), innate);
+            Case("except-array", false, 1, cards, innate, bottoms.ToArray());
             // Except over a query the stand-in didn't make: no scope.
             cases++;
             List<CardModel> plainFirst = ExtraScopes.ToListInScope(ExtraScopes.ExceptInScope(Enumerable.Where(cards, innate), bottoms));
@@ -148,14 +153,16 @@ public static class FirstTurnBench
             }
             // The part off: the game's calls.
             ExtraScopes.Enabled = false;
-            Case("part-off", false, cards, innate);
+            Case("part-off", false, 1, cards, innate);
             ExtraScopes.Enabled = enabled;
-            // Another code enumerating a scoped query gets the BCL query's enumeration.
+            // Another code using a marked query gets the BCL's own object (its type, its fast paths: Count, Last, ElementAt).
             cases++;
-            IEnumerable<CardModel> scopedQuery = ExtraScopes.WhereInScope(cards, innate);
-            if (!ExtraScopes.BenchIsScoped(scopedQuery) || !scopedQuery.SequenceEqual(cards.Where(innate)) || scopedQuery.Count() != innates)
+            IEnumerable<CardModel> marked = ExtraScopes.WhereSecondFilter(cards, innate);
+            IEnumerable<CardModel> bcl = Enumerable.Where(cards, innate);
+            if (!ExtraScopes.BenchIsScoped(marked) || marked.GetType() != bcl.GetType() || !marked.SequenceEqual(bcl) || marked.Count() != innates
+                || !Equals(marked.LastOrDefault(), bcl.LastOrDefault()) || (innates > 0 && !Equals(marked.ElementAt(innates - 1), bcl.ElementAt(innates - 1))))
             {
-                failures.Add("foreign-enumeration: not scoped, or not the game's cards");
+                failures.Add($"foreign-consumer: marked {ExtraScopes.BenchIsScoped(marked)}, {marked.GetType().Name} (the BCL's {bcl.GetType().Name}), or not the game's cards");
             }
             // Null arguments throw as the game's calls do (same parameter names).
             cases++;
@@ -173,17 +180,17 @@ public static class FirstTurnBench
             }
             (string Name, string? Own, string? Bcl)[] nulls =
             {
-                ("Where source", Thrown(() => ExtraScopes.WhereInScope(null!, innate)), Thrown(() => Enumerable.Where(null!, innate))),
-                ("Where predicate", Thrown(() => ExtraScopes.WhereInScope(cards, null!)), Thrown(() => Enumerable.Where(cards, (Func<CardModel, bool>)null!))),
+                ("Where source", Thrown(() => ExtraScopes.WhereSecondFilter(null!, innate)), Thrown(() => Enumerable.Where(null!, innate))),
+                ("Where predicate", Thrown(() => ExtraScopes.WhereFirstFilter(cards, null!)), Thrown(() => Enumerable.Where(cards, (Func<CardModel, bool>)null!))),
                 ("Except first", Thrown(() => ExtraScopes.ExceptInScope(null!, bottoms)), Thrown(() => Enumerable.Except(null!, bottoms))),
-                ("Except second", Thrown(() => ExtraScopes.ExceptInScope(ExtraScopes.WhereInScope(cards, innate), null!)), Thrown(() => Enumerable.Except(cards.Where(innate), null!))),
+                ("Except second", Thrown(() => ExtraScopes.ExceptInScope(ExtraScopes.WhereSecondFilter(cards, innate), null!)), Thrown(() => Enumerable.Except(cards.Where(innate), null!))),
                 ("ToList source", Thrown(() => ExtraScopes.ToListInScope(null!)), Thrown(() => Enumerable.ToList((IEnumerable<CardModel>)null!))),
             };
-            foreach ((string name, string? own, string? bcl) in nulls)
+            foreach ((string name, string? own, string? bcl2) in nulls)
             {
-                if (own == null || own != bcl)
+                if (own == null || own != bcl2)
                 {
-                    failures.Add($"null {name}: {own ?? "no exception"} (the game's: {bcl ?? "none"})");
+                    failures.Add($"null {name}: {own ?? "no exception"} (the game's: {bcl2 ?? "none"})");
                 }
             }
         }
@@ -192,7 +199,7 @@ public static class FirstTurnBench
             ExtraScopes.Enabled = enabled;
             ExtraScopes.BenchChecks = checks;
             // The refused cases' notes are this test's own.
-            foreach (string key in new[] { "first_turn_source", "first_turn_predicate", "first_turn_except" })
+            foreach (string key in new[] { "first_turn_bottom", "first_turn_innate" })
             {
                 PatchSafety.ClearNote(ExtraScopes.Name, key);
             }

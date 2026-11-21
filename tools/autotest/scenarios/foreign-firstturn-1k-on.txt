@@ -1,0 +1,53 @@
+# ExtraScopes' first turn next to other mods' code on its queries (A/B, mod on; DESIGN "ExtraScopes' first turn decided at run
+# time", 2026-11-21): ~1,016 cards (random Necrobinder cards, 16 Backstab: Innate; 4 deck cards with Imbued). Two synthetic
+# transpilers of "another mod" on SetupPlayerTurn's state machine (Bench/IlJudgeShapes.cs), installed on both sides:
+# il-firstturn-consumer (code using the bottom-of-pile filter's Where result before its ToList: its type, Count() and
+# LastOrDefault() as a STATE line, the same on both sides only if it gets the BCL's own object, fast paths included; that filter
+# stays in a scope) and il-firstturn-except (the Innate filter's excluded list as an array copy: refused except, that filter
+# without a scope, noted). Plays and turns after. CHECKSUM and STATE identical with foreign-firstturn-1k-off.
+timeout 1200
+expect FIRSTTURN imbued 4 of 4 deck cards
+expect FIRSTTURN scopes 1, refused source 0, predicate 0, except 1, plain ToList 1, backed off 0, scope failed 0, on True, faulted False
+expect ExtraScopes first-turn filter \(in a scope\): [0-9]+ cards, .*OK: identical to vanilla
+expect ExtraScopes first-turn filter \(without a scope\): [0-9]+ cards, .*OK: identical to vanilla
+expect ExtraScopes: the first turn's Innate card filter leaves out another collection than the game's list: that filter runs without a scope
+expect STATE foreign end firstturn consumer \S*Where\S*Iterator\S* count [0-9]+ last \S+ 1
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck 1000
+cmd bigdeck 1016 BACKSTAB
+cmd bdperf firstturn imbue 4
+enemyhp 999999
+immortal
+foreignpatch il-firstturn-consumer MegaCrit.Sts2.Core.Combat.CombatManager:SetupPlayerTurn
+foreignpatch il-firstturn-except MegaCrit.Sts2.Core.Combat.CombatManager:SetupPlayerTurn
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd bdperf firstturn status
+checksum start
+state start
+play 3
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 3
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+foreignpatch report end
+cmd bdopt why
+foreignpatch remove
+quit

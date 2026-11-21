@@ -1,0 +1,43 @@
+# ExtraScopes' first turn next to other mods' code on its queries (A/B, mod off): the same deck and synthetic transpilers as
+# foreign-firstturn-1k-on (see there); CHECKSUM and STATE lines (the consumer's among them) must match line for line.
+timeout 1200
+cmd bdopt off
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck 1000
+cmd bigdeck 1016 BACKSTAB
+cmd bdperf firstturn imbue 4
+cmd bdperf checks off
+enemyhp 999999
+immortal
+foreignpatch il-firstturn-consumer MegaCrit.Sts2.Core.Combat.CombatManager:SetupPlayerTurn
+foreignpatch il-firstturn-except MegaCrit.Sts2.Core.Combat.CombatManager:SetupPlayerTurn
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+checksum start
+state start
+play 3
+waitfor idle 120
+checksum t1 plays
+endturn
+waitfor idle 300
+checksum t1 end
+state t1
+play 3
+waitfor idle 120
+checksum t2 plays
+endturn
+waitfor idle 300
+checksum t2 end
+state t2
+cmd kill all
+waitfor nocombat 300
+wait 3
+checksum after combat
+state after combat
+foreignpatch report end
+foreignpatch remove
+cmd bdopt on
+quit

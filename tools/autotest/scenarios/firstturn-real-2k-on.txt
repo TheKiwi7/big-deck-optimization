@@ -7,8 +7,8 @@
 timeout 1500
 expect HarmonyWatch: .*patch Harmony's own .*: hidden IL hooks possible
 expect FIRSTTURN imbued 6 of 6 deck cards
-expect FIRSTTURN scopes 2, refused source 0, predicate 0, except 0, plain ToList 0, backed off 0, on True, faulted False
-expect FIRSTTURN scopes 4, refused source 0, predicate 0, except 0, plain ToList 0, backed off 0, on True, faulted False
+expect FIRSTTURN scopes 2, refused source 0, predicate 0, except 0, plain ToList 0, backed off 0, scope failed 0, on True, faulted False
+expect FIRSTTURN scopes 4, refused source 0, predicate 0, except 0, plain ToList 0, backed off 0, scope failed 0, on True, faulted False
 expect ExtraScopes first-turn filter \(in a scope\): [1-9][0-9]* cards, .*OK: identical to vanilla
 newrun NECROBINDER 1234
 waitfor run 120

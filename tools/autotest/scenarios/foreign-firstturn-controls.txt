@@ -1,21 +1,28 @@
 # ExtraScopes' first turn decided at run time (DESIGN "ExtraScopes' first turn decided at run time", 2026-11-21): synthetic
-# transpilers of "another mod" on SetupPlayerTurn's state machine (Bench/IlJudgeShapes.cs), each first-turn filter judged by what
-# this mod's stand-ins for Where, Except and ToList are given. ~1,016 cards: random Necrobinder cards, 16 Backstab (Innate),
-# 4 deck cards with Imbued (bottom of the draw pile). Combat 1: il-firstturn-outside sorted after this mod's transpiler (priority 0:
-# a back-off before 2026-11-21, now nothing the stand-ins see) and il-firstturn-predicate (the Innate filter given an equivalent
-# predicate of the bench): the bottom-of-pile filter in a scope, the Innate one without (refused predicate), both the game's cards
-# (the bench's own vanilla comparison). Combat 2: il-firstturn-source alone (the bottom-of-pile filter reads an array copy of the
-# draw pile): that filter without a scope (refused source), the Innate one in a scope. Then the stand-ins' self-test over the
-# combat cards (the game's shape scoped; another predicate, a combined delegate, an array or a subclass as source, an array left
-# out, the part off: no scope; the game's cards and argument exceptions in every case).
-timeout 1200
+# patches of "another mod" (Bench/IlJudgeShapes.cs), each first-turn filter judged by what this mod's stand-ins for Where, Except
+# and ToList are given, or backed off when code running inside the scope is patched. ~1,016 cards: random Necrobinder cards,
+# 16 Backstab (Innate), 4 deck cards with Imbued (bottom of the draw pile). Each combat's status line is cumulative.
+# Combat 1: il-firstturn-outside sorted after this mod's transpiler (priority 0: a back-off before 2026-11-21, now nothing the
+# stand-ins see) and il-firstturn-predicate (the Innate filter given an equivalent predicate of the bench): the bottom-of-pile
+# filter in a scope, the Innate one without (refused predicate). Combat 2: il-firstturn-source (the bottom-of-pile filter reads an
+# array copy of the draw pile): that filter without a scope (refused source), the Innate one in a scope. Combat 3: a no-op postfix
+# on the Innate lambda (il-firstturn-lambda), combat 4 on the ToList stand-in (il-firstturn-standin): strict, both filters backed
+# off. Combat 5: il-firstturn-undo sorted after this mod's transpiler puts the Where stand-ins back to the game's call: nothing
+# marked, both filters without a scope (plain ToList). Every filter's cards identical to the same query run vanilla (the bench's
+# own comparison). Then the stand-ins' self-test over the combat cards (the game's shape scoped; another predicate, the other
+# filter's lambda, a combined delegate, an array or a subclass as source, an array left out, the part off: no scope; another
+# consumer gets the BCL's own object; the game's cards and argument exceptions in every case).
+timeout 2400
 expect FIRSTTURN imbued 4 of 4 deck cards
-expect FIRSTTURN scopes 1, refused source 0, predicate 1, except 0, plain ToList 1, backed off 0, on True, faulted False
-expect FIRSTTURN scopes 2, refused source 1, predicate 1, except 0, plain ToList 2, backed off 0, on True, faulted False
+expect FIRSTTURN scopes 1, refused source 0, predicate 1, except 0, plain ToList 1, backed off 0, scope failed 0, on True, faulted False
+expect FIRSTTURN scopes 2, refused source 1, predicate 1, except 0, plain ToList 2, backed off 0, scope failed 0, on True, faulted False
+expect FIRSTTURN scopes 2, refused source 1, predicate 1, except 0, plain ToList 2, backed off 2, scope failed 0, on True, faulted False
+expect FIRSTTURN scopes 2, refused source 1, predicate 1, except 0, plain ToList 2, backed off 4, scope failed 0, on True, faulted False
+expect FIRSTTURN scopes 2, refused source 1, predicate 1, except 0, plain ToList 4, backed off 4, scope failed 0, on True, faulted False
 expect ExtraScopes first-turn filter \(in a scope\): [1-9][0-9]* cards, .*OK: identical to vanilla
 expect ExtraScopes first-turn filter \(without a scope\): [1-9][0-9]* cards, .*OK: identical to vanilla
-expect ExtraScopes: a first-turn card filter is given another predicate than the game's: that filter runs without a scope
-expect ExtraScopes: a first-turn card filter reads another collection than the game's draw pile list: that filter runs without a scope
+expect ExtraScopes: the first turn's Innate card filter is given another predicate than the game's: that filter runs without a scope
+expect ExtraScopes: the first turn's bottom-of-pile card filter reads another collection than the game's draw pile list: that filter runs without a scope
 expect FIRSTTURN selftest: [0-9]+ cases as expected
 newrun NECROBINDER 1234
 waitfor run 120
@@ -38,6 +45,37 @@ waitfor nocombat 300
 wait 3
 foreignpatch remove
 foreignpatch il-firstturn-source MegaCrit.Sts2.Core.Combat.CombatManager:SetupPlayerTurn
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd bdperf firstturn status
+cmd kill all
+waitfor nocombat 300
+wait 3
+foreignpatch remove
+foreignpatch il-firstturn-lambda MegaCrit.Sts2.Core.Combat.CombatManager:SetupPlayerTurn
+# Past the 2 s a back-off answer is reused.
+wait 3
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd bdperf firstturn status
+cmd kill all
+waitfor nocombat 300
+wait 3
+foreignpatch remove
+foreignpatch il-firstturn-standin MegaCrit.Sts2.Core.Combat.CombatManager:SetupPlayerTurn
+wait 3
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd bdperf firstturn status
+cmd kill all
+waitfor nocombat 300
+wait 3
+foreignpatch remove
+foreignpatch il-firstturn-undo MegaCrit.Sts2.Core.Combat.CombatManager:SetupPlayerTurn priority 0
+wait 3
 cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 1
