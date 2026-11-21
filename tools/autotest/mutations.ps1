@@ -37,7 +37,9 @@ $Data = Join-Path $GameDir "data_sts2_windows_x86_64"
 $env:PATH = "C:\Program Files\dotnet;$env:PATH"; $env:DOTNET_CLI_TELEMETRY_OPTOUT = "1"
 
 # What leaves when the whole pile tracking does: the listener cache watches the same methods, hook lists are built inside it.
-$PileWriters = "ListenerCache(\.(Creatures|Suspended))?|HookFilter|PileIndex(\.(Duplicates|Removes))?|CardDbScan|DeckCountMemo(\.Checks)?|FastListeners\.(Cache|Moves)|LimitlessRecalcSkip\.Passes|SnapshotCardReuse\.(Trust|Moved|Dirty|Hooks|Piles|PileBits|Blocks)"
+# ExtraScopes: its first-turn scope only counts (effect FirstTurnPasses) when ListenerCache serves it (2026-11-21), so a mutation
+# leaving ListenerCache vanilla drops it too.
+$PileWriters = "ListenerCache(\.(Creatures|Suspended))?|HookFilter|ExtraScopes|PileIndex(\.(Duplicates|Removes))?|CardDbScan|DeckCountMemo(\.Checks)?|FastListeners\.(Cache|Moves)|LimitlessRecalcSkip\.Passes|SnapshotCardReuse\.(Trust|Moved|Dirty|Hooks|Piles|PileBits|Blocks)"
 # Target, pattern every "left vanilla" line must match ("" = nothing may be left vanilla), effects allowed to drop to zero ("" = none).
 $Expected = [ordered]@{
     "renumber-hooks"  = @("game", "", "")
@@ -104,7 +106,7 @@ $Expected = [ordered]@{
     "execfinished-clone" = @("game", "ExecutionFinished|AfterCloned", "LimitlessCloneMemo|LimitlessHookSkip(\.Saved)?")
     "hand-revalidate"    = @("game", "RevalidateSelectionAfterStateChange|dispatch scope", "ListenerCache\.Suspended")
     "hand-select"        = @("game", "SelectCards|dispatch scope", "ListenerCache\.Suspended")
-    "orb-enqueue"        = @("game", "ListenerCache|TryEnqueue", "ListenerCache(\.\w+)?|HookFilter|SnapshotCardReuse\.(Trust|Moved|Dirty|Hooks)")
+    "orb-enqueue"        = @("game", "ListenerCache|TryEnqueue", "ListenerCache(\.\w+)?|HookFilter|ExtraScopes|SnapshotCardReuse\.(Trust|Moved|Dirty|Hooks)")
 }
 # What the unmodified game itself leaves vanilla next to the test mods (the reference's own "left vanilla" lines): each must
 # match this pattern (a new one is a reference problem), and a mutation's lines that the reference has too are not its doing.
