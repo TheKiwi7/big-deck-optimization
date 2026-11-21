@@ -421,8 +421,16 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                     deckCountOk &= grew;
                     deckCountCheck += $" ({args[1]} since the mark: {(grew ? "ok" : "MISMATCH")}; answers {_deckCountMark.Answers}, unsure {_deckCountMark.Unsure} at the mark)";
                 }
+                else if (args.Length >= 3 && args[1] == "answered")
+                {
+                    // answered wah|flak: that card's own count was computed (answered or compared) at least once.
+                    long kindAnswers = args[2] == "wah" ? DeckCountMemo.WahSymphonyAnswers : args[2] == "flak" ? DeckCountMemo.FlakCannonAnswers : -1;
+                    deckCountOk &= kindAnswers > 0;
+                    deckCountCheck += $" (answered {args[2]}: {(kindAnswers > 0 ? "ok" : "MISMATCH, none")})";
+                }
                 return new CmdResult(success: deckCountOk, $"DECKCOUNT enabled {DeckCountMemo.Enabled}, kept {DeckCountMemo.Kept}, updated {DeckCountMemo.Updated}, walks {DeckCountMemo.Walks}, "
-                    + $"unsure {DeckCountMemo.Unsure}, checks {DeckCountMemo.Checks}, mismatches {DeckCountMemo.Mismatches}{deckCountCheck}");
+                    + $"unsure {DeckCountMemo.Unsure}, checks {DeckCountMemo.Checks}, mismatches {DeckCountMemo.Mismatches}, "
+                    + $"wah {DeckCountMemo.WahSymphonyAnswers}, flak {DeckCountMemo.FlakCannonAnswers}{deckCountCheck}");
             case "shufflebench":
                 return ShuffleBench.Run(args.Length >= 2 && int.TryParse(args[1], out int shufflePasses) && shufflePasses > 0 ? shufflePasses : 5);
             case "upgradebench":

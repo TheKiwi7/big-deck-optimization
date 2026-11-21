@@ -1,0 +1,121 @@
+# Flak Cannon (status cards outside the exhaust pile) and, on game v0.113+, Wah Symphony (Wah, Cho and Ki cards) kept in
+# hand at ~945 cards while cards move between piles; statuses in every pile. Compare with deckcount2-off: CHECKSUM lines
+# identical. The `bdperf deckcount answered` lines fail when that card's own count never ran (verify 1: every answer compared).
+timeout 2400
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+cmd bigdeck tank
+wait 1
+cmd power NO_DRAW_POWER 1 0
+cmd bdperf deckcount verify 1
+cmd card DAZED draw
+cmd card WOUND discard
+cmd card SLIMED exhaust
+cmd card BURN draw
+cmd card DAZED discard
+checksum start
+emptyhand
+cmd card FLAK_CANNON hand
+cmd card DAZED hand
+setenergy 5
+cmd card ALL_FOR_ONE hand
+playcard ALL_FOR_ONE free
+checksum after ALL_FOR_ONE
+emptyhand
+cmd card FLAK_CANNON hand
+cmd card DAZED hand
+setenergy 5
+cmd card ANOINTED hand
+playcard ANOINTED free
+checksum after ANOINTED
+emptyhand
+cmd card FLAK_CANNON hand
+cmd card DAZED hand
+setenergy 5
+cmd card ARMAMENTS hand
+playcard ARMAMENTS free
+checksum after ARMAMENTS
+emptyhand
+cmd card FLAK_CANNON hand
+cmd card DAZED hand
+setenergy 5
+cmd card CALCULATED_GAMBLE hand
+playcard CALCULATED_GAMBLE free
+checksum after CALCULATED_GAMBLE
+emptyhand
+cmd card FLAK_CANNON hand
+cmd card DAZED hand
+setenergy 5
+cmd card TRUE_GRIT hand
+playcard TRUE_GRIT free
+checksum after TRUE_GRIT
+emptyhand
+cmd card FLAK_CANNON hand
+cmd card DAZED hand
+setenergy 5
+cmd card UPROAR hand
+playcard UPROAR free
+checksum after UPROAR
+emptyhand
+cmd card FLAK_CANNON hand
+cmd card DAZED hand
+setenergy 5
+cmd card WISH hand
+playcard WISH free
+checksum after WISH
+emptyhand
+cmd card FLAK_CANNON hand
+cmd card WOUND hand
+setenergy 5
+playcard FLAK_CANNON free
+checksum after FLAK_CANNON
+cmd bdperf deckcount answered flak
+# Wah Symphony exists from game v0.113: both sides stop here on an older game.
+requiregame v0.113
+cmd card WAH_CHO draw
+cmd card KI_WHIP discard
+cmd card WAH_KI exhaust
+cmd card CHO_KI draw
+emptyhand
+cmd card WAH_SYMPHONY hand
+cmd card WAH_TOUCH hand
+setenergy 5
+cmd card ALL_FOR_ONE hand
+playcard ALL_FOR_ONE free
+checksum wah after ALL_FOR_ONE
+emptyhand
+cmd card WAH_SYMPHONY hand
+cmd card WAH_TOUCH hand
+setenergy 5
+cmd card ANOINTED hand
+playcard ANOINTED free
+checksum wah after ANOINTED
+emptyhand
+cmd card WAH_SYMPHONY hand
+cmd card WAH_TOUCH hand
+setenergy 5
+cmd card ARMAMENTS hand
+playcard ARMAMENTS free
+checksum wah after ARMAMENTS
+emptyhand
+cmd card WAH_SYMPHONY hand
+cmd card WAH_TOUCH hand
+setenergy 5
+cmd card CALCULATED_GAMBLE hand
+playcard CALCULATED_GAMBLE free
+checksum wah after CALCULATED_GAMBLE
+emptyhand
+cmd card WAH_SYMPHONY hand
+setenergy 5
+playcard WAH_SYMPHONY free
+checksum after WAH_SYMPHONY
+cmd bdperf deckcount answered wah
+cmd bdperf deckcount
+quit

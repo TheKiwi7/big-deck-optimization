@@ -1,0 +1,30 @@
+# Positive control of deckcount2-on: Flak Cannon's answers made wrong on purpose must be caught.
+timeout 2400
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+cmd bigdeck tank
+wait 1
+cmd power NO_DRAW_POWER 1 0
+cmd bdperf deckcount verify 1
+cmd card DAZED draw
+cmd card WOUND discard
+cmd card SLIMED exhaust
+cmd card BURN draw
+cmd card DAZED discard
+emptyhand
+cmd card FLAK_CANNON hand
+cmd card DAZED hand
+cmd bdperf deckcount wrong
+playcard FLAK_CANNON free
+waitfor idle 60
+wait 1
+onfail continue
+cmd bdperf deckcount
+quit
