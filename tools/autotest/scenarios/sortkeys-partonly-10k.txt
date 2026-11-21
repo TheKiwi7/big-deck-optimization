@@ -2,6 +2,8 @@
 # shared-key comparison and with the game's variable loop, alternating, a warm-up then 5 passes each (each printed) (no game sort: minutes at this size).
 # Times per sort, cost reads per sort (once per card at most) and identical orders; checks off (1 answer in 1,024 compared).
 timeout 1800
+# Game v0.113+ only (no card sort before a shuffle on older versions: CardSortKeys is not needed there).
+requiregame v0.113
 expect SORTKEYS partonly [0-9]+ cards, [0-9]+ kinds: .* shared-key comparisons [1-9][0-9]* per sort, .*OK: identical orders
 newrun NECROBINDER 1234
 waitfor run 120
