@@ -564,6 +564,8 @@ public static partial class AutoTest
             ("InlineGuard.Refreshed", InlineGuard.Refreshed),
             // Only where a join is refused over this mod's entry (coop-modetag.ps1's mixed pair; bdperf joinmsg puts it back).
             (JoinMismatchNote.Name, JoinMismatchNote.Explained),
+            // Game v0.113+ only (v0.111's saves have no check to answer), and only where a run travels: savecheck-on/off.
+            (SaveBackupCheck.Name, SaveBackupCheck.Shortcuts), (SaveBackupCheck.Name + ".Checks", SaveBackupCheck.Checks),
         };
         for (int i = 0; i < HookFilter.MirrorNames.Length; i++)
         {

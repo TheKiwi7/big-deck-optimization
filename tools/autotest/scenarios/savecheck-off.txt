@@ -1,0 +1,34 @@
+# SaveBackupCheck A/B (off; with savecheck-on): the same run with only this option off (save_check), the rest of the mod on.
+# The game's own check of the previous save runs at every save: the part's effect counter must stay at 0.
+timeout 1800
+requiregame v0.113
+cmd bdopt save_check off
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 1
+selector ui
+runstate start
+effects start
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+runstate after fight
+automap
+autoroom 900
+runstate map 1
+automap
+autoroom 900
+runstate map 2
+automap
+autoroom 900
+runstate map 3
+automap
+wait 3
+runstate map 4
+effects end
+effectcheck SaveBackupCheck zero
+quit

@@ -458,6 +458,7 @@ $BaselineBenchParts = [ordered]@{
     'ShuffleBench.cs'       = '^\s*(cmd|autoslayfirst)\s+bdperf\s+shufflebench\b'
     'UpgradeBench.cs'       = '^\s*(cmd|autoslayfirst)\s+bdperf\s+upgradebench\b'
     'SortKeysBench.cs'      = '^\s*(cmd|autoslayfirst)\s+bdperf\s+sortkeys\b'
+    'SaveCheckBench.cs'     = '^\s*(cmd|autoslayfirst)\s+bdperf\s+savecheck\b'
     'AutoTestStartup.cs'    = '^\s*(startsets|launchearly)\b'
     # Only the launch argument --bdstartprof turns it on, never a script line: no scripted session depends on it.
     'StartupProfile.cs'     = '(?!)'

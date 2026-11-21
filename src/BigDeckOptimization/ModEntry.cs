@@ -61,6 +61,7 @@ public static class ModEntry
         (RichTextEnvRelease.Name, RichTextEnvRelease.Apply),
         (DeckCountMemo.Name, DeckCountMemo.Apply),
         (CardSortKeys.Name, CardSortKeys.Apply),
+        (SaveBackupCheck.Name, SaveBackupCheck.Apply),
     });
 
     /// <summary>Time given to patching per frame: each patched method takes ~1.5 ms, ~400 ms in all.</summary>
