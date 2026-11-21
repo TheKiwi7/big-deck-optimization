@@ -50,7 +50,7 @@ public static class SortKeysBench
             return new CmdResult(success: false, $"{CardSortKeys.Name} is off (setting or fault): it would be compared with itself.");
         }
         List<CardModel> cards = new[] { PileType.Draw, PileType.Discard, PileType.Hand }.SelectMany(p => p.GetPile(me).Cards).ToList();
-        long sorts = CardSortKeys.Sorts, answered = CardSortKeys.Answered, mismatchesBefore = CardSortKeys.Mismatches;
+        long sorts = CardSortKeys.Sorts, answered = CardSortKeys.Answered, mismatchesBefore = CardSortKeys.Mismatches, sharedBefore = CardSortKeys.SharedKeyCompares;
         try
         {
             var random = new Random(1234);
@@ -108,7 +108,7 @@ public static class SortKeysBench
                 : $"MISMATCH: {different} of {starts.Count} sorts{(shuffleDifferent ? " and the shuffle" : "")} differ, own check mismatches {mismatches}{(CardSortKeys.Enabled ? "" : " (part turned off)")}{veilText}";
             // One line: scenarios match the verdict on it (expect SORTKEYS .*MISMATCH).
             return new CmdResult(ok, $"SORTKEYS {cards.Count} cards, {cards.Select(c => c.Id).Distinct().Count()} kinds: game {gameMs / starts.Count:F1} ms, "
-                + $"keys {keysMs / starts.Count:F1} ms per sort; answered {CardSortKeys.Answered - answered}, checks {CardSortKeys.Checks}: {verdict}");
+                + $"keys {keysMs / starts.Count:F1} ms per sort; answered {CardSortKeys.Answered - answered} ({CardSortKeys.SharedKeyCompares - sharedBefore} by shared keys), checks {CardSortKeys.Checks}: {verdict}");
         }
         finally
         {
