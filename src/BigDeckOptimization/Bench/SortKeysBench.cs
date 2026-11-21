@@ -125,6 +125,89 @@ public static class SortKeysBench
     /// answered, with the game's order. The verdict names the ended combat's first impure cost listener (the test's premise).
     /// </summary>
     public static CmdResult RunDeck()
+        => RunDeckCore();
+
+    /// <summary>
+    /// <c>bdperf sortkeys partonly [cards] [passes]</c>, in combat: the part's own sort alone, timed (no game sort: at ~10,000 cards
+    /// it takes minutes), with the shared-key comparison and with the game's variable loop in every comparison, alternating, from
+    /// one shuffled order of the local draw, discard and hand cards (the first <c>cards</c> of it). Both orders must be the same
+    /// (and the part's own check compares its answers with the game's, 1 in 16 in test builds); the cost reads per sort are
+    /// printed (once per card at most). The effect counters are put back.
+    /// </summary>
+    public static CmdResult RunPartOnly(int count, int passes)
+    {
+        if (!CombatManager.Instance.IsInProgress || RunManager.Instance.DebugOnlyGetState() is not { } run || LocalContext.GetMe(run) is not { } me)
+        {
+            return new CmdResult(success: false, "Start a combat first.");
+        }
+        if (!CardSortKeys.Applied || !CardSortKeys.Enabled)
+        {
+            return new CmdResult(success: !CardSortKeys.Applied, $"{CardSortKeys.Name} {(CardSortKeys.Applied ? "is off" : "not applied")}: nothing to time.");
+        }
+        List<CardModel> cards = new[] { PileType.Draw, PileType.Discard, PileType.Hand }.SelectMany(p => p.GetPile(me).Cards).ToList();
+        var random = new Random(1234);
+        for (int j = cards.Count - 1; j > 0; j--)
+        {
+            int k = random.Next(j + 1);
+            (cards[j], cards[k]) = (cards[k], cards[j]);
+        }
+        if (count > 0 && count < cards.Count)
+        {
+            cards = cards.Take(count).ToList();
+        }
+        long sorts = CardSortKeys.Sorts, answered = CardSortKeys.Answered, mismatches = CardSortKeys.Mismatches;
+        double sharedMs = 0, loopMs = 0;
+        long sharedReads = 0, loopReads = 0, sharedCompares = 0;
+        bool different = false;
+        try
+        {
+            for (int pass = 0; pass < passes; pass++)
+            {
+                foreach (bool shared in pass % 2 == 0 ? new[] { true, false } : new[] { false, true })
+                {
+                    List<CardModel> mine = cards.ToList();
+                    CardSortKeys.NoSharedKeysForTest = !shared;
+                    long reads = CardSortKeys.CostReads, compares = CardSortKeys.SharedKeyCompares, before = CardSortKeys.Answered;
+                    long t0 = Stopwatch.GetTimestamp();
+                    bool opened = CardSortKeys.SortInScope(mine);
+                    double ms = Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+                    if (!opened || (mine.Count > 1 && CardSortKeys.Answered == before))
+                    {
+                        return new CmdResult(success: true, $"{CardSortKeys.Name} left this sort to the game ({CardSortKeys.LastRefusal ?? "nothing answered"}): nothing to time.");
+                    }
+                    if (shared)
+                    {
+                        sharedMs += ms;
+                        sharedReads += CardSortKeys.CostReads - reads;
+                        sharedCompares += CardSortKeys.SharedKeyCompares - compares;
+                    }
+                    else
+                    {
+                        loopMs += ms;
+                        loopReads += CardSortKeys.CostReads - reads;
+                    }
+                    _partOnlyLast ??= mine;
+                    different |= Different(_partOnlyLast, mine);
+                    _partOnlyLast = mine;
+                }
+            }
+        }
+        finally
+        {
+            CardSortKeys.NoSharedKeysForTest = false;
+            CardSortKeys.RestoreCounters(sorts, answered);
+            _partOnlyLast = null;
+        }
+        long ownMismatches = CardSortKeys.Mismatches - mismatches;
+        bool ok = !different && ownMismatches == 0 && CardSortKeys.Enabled;
+        return new CmdResult(ok, $"SORTKEYS partonly {cards.Count} cards, {cards.Select(c => c.Id).Distinct().Count()} kinds: shared keys {sharedMs / passes:F1} ms, "
+            + $"variable loop {loopMs / passes:F1} ms per sort; cost reads per sort {sharedReads / passes} / {loopReads / passes}, shared-key comparisons {sharedCompares / passes} per sort, "
+            + $"checks {CardSortKeys.Checks}: {(ok ? "OK: identical orders" : $"MISMATCH: orders {(different ? "differ" : "same")}, own check mismatches {ownMismatches}")}");
+    }
+
+    private static List<CardModel>? _partOnlyLast;
+
+    private static CmdResult RunDeckCore()
     {
         if (RunManager.Instance.DebugOnlyGetState() is not { } run || LocalContext.GetMe(run) is not { } me)
         {

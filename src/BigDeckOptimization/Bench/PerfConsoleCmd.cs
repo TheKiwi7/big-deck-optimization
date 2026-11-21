@@ -60,7 +60,7 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
 
     public override string CmdName => "bdperf";
 
-    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | costcolors [iterations:int] | verify [off|sample|all] | snapnet | combatstart | grid [cards:int] | probe [reset|log|on|off|nodes|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | sortkeys [wrong] | combatcards [passes:int] | checks on|off | opt on|off [yes] | listeners [iterations:int] | costwrites | fault piles|walk | badges [clear|guard off|on] | snapgameerror <n> | reserialize [verify <n>] | clonememo [verify <n>] | conflicts | states | roomleft | modorder [none|<owner>] | firstturn inner | foreign <shape> <Type:Method> [gate] [priority N] | foreign remove|report|classify <Type:Method>";
+    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | costcolors [iterations:int] | verify [off|sample|all] | snapnet | combatstart | grid [cards:int] | probe [reset|log|on|off|nodes|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | sortkeys [wrong|deck|partonly [cards] [passes]] | combatcards [passes:int] | checks on|off | opt on|off [yes] | listeners [iterations:int] | costwrites | fault piles|walk | badges [clear|guard off|on] | snapgameerror <n> | reserialize [verify <n>] | clonememo [verify <n>] | conflicts | states | roomleft | modorder [none|<owner>] | firstturn inner | foreign <shape> <Type:Method> [gate] [priority N] | foreign remove|report|classify <Type:Method>";
 
     public override string Description => "[BigDeckOptimization] Measures the multiplayer post-action checksum cost, vanilla vs optimized, or shows/sets live snapshot verification.";
 
@@ -523,6 +523,10 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                 bool everySortChecked = CardSortKeys.Checks >= CardSortKeys.Sorts;
                 return new CmdResult(everySortChecked, $"SORTKEYS counters sorts {CardSortKeys.Sorts}, answered {CardSortKeys.Answered}, checks {CardSortKeys.Checks}, "
                     + $"mismatches {CardSortKeys.Mismatches}: {(everySortChecked ? "OK: every sort checked" : "FEWER CHECKS THAN SORTS")}");
+            case "sortkeys" when args.Length >= 2 && args[1] == "partonly":
+                // bdperf sortkeys partonly [cards] [passes]: the part's own sort alone, shared keys on and off (SortKeysBench.RunPartOnly).
+                return SortKeysBench.RunPartOnly(args.Length >= 3 && int.TryParse(args[2], out int partCards) && partCards > 0 ? partCards : 0,
+                    args.Length >= 4 && int.TryParse(args[3], out int partPasses) && partPasses > 0 ? partPasses : 3);
             case "sortkeys" when args.Length >= 2 && args[1] == "deck":
                 return SortKeysBench.RunDeck();
             case "sortkeys":
