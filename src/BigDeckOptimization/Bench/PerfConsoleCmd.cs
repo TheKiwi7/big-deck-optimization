@@ -536,7 +536,7 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
             case "sortkeys" when args.Length >= 2 && args[1] == "partonly":
                 // bdperf sortkeys partonly [cards] [passes]: the part's own sort alone, shared keys on and off (SortKeysBench.RunPartOnly).
                 return SortKeysBench.RunPartOnly(args.Length >= 3 && int.TryParse(args[2], out int partCards) && partCards > 0 ? partCards : 0,
-                    args.Length >= 4 && int.TryParse(args[3], out int partPasses) && partPasses > 0 ? partPasses : 3);
+                    args.Length >= 4 && int.TryParse(args[3], out int partPasses) && partPasses > 0 ? partPasses : 5);
             case "sortkeys" when args.Length >= 2 && args[1] == "deck":
                 return SortKeysBench.RunDeck();
             case "sortkeys":

@@ -283,11 +283,27 @@ public static class CardSortKeys
         public int SetCount;
     }
 
-    private sealed class Scope(Dictionary<CardModel, int> index, Scope? previous)
+    /// <summary>
+    /// A sort's tables, kept from one sort to the next (<see cref="_spare"/>): at 10,000 cards each is a large-object allocation
+    /// (the index ~240 KB, the entries ~480 KB, the pool), and allocating them per sort made collections (gen 2 for the large
+    /// object heap) during reshuffles. Emptied when the sort ends, so they hold no card between sorts.
+    /// </summary>
+    private sealed class Storage
     {
+        public readonly Dictionary<CardModel, int> Index = new(ReferenceEqualityComparer.Instance);
+        public Entry[] Entries = Array.Empty<Entry>();
+        public DynamicVar[] Pool = Array.Empty<DynamicVar>();
+    }
+
+    /// <summary>The storage of the last sort, empty, for the next one (a sort nested in a comparison takes a new one).</summary>
+    private static Storage? _spare;
+
+    private sealed class Scope(Storage storage, Scope? previous)
+    {
+        public readonly Storage Storage = storage;
         /// <summary>The sort's cards and where each one's entry is in <see cref="Entries"/>.</summary>
-        public readonly Dictionary<CardModel, int> Index = index;
-        public readonly Entry[] Entries = new Entry[index.Count];
+        public readonly Dictionary<CardModel, int> Index = storage.Index;
+        public readonly Entry[] Entries = storage.Entries;
         public readonly Scope? Previous = previous;
         public long Answered;
         /// <summary>Per card type, the first ordered key array met: a card of that type with the same keys shares it.</summary>
@@ -295,7 +311,7 @@ public static class CardSortKeys
         /// <summary>The shared-key comparison may be used in this sort (<see cref="_varsKnown"/>, <see cref="_varReads"/> unpatched).</summary>
         public bool Shared;
         /// <summary>The variables read with the keys, every card's one after another (<see cref="Entry.VarsAt"/>).</summary>
-        public DynamicVar[] VarPool = Array.Empty<DynamicVar>();
+        public DynamicVar[] VarPool = storage.Pool;
         public int VarCount;
         /// <summary>
         /// The last two cards looked up and their entries: the sort compares one pivot with each element in turn, so one of the two
@@ -344,6 +360,7 @@ public static class CardSortKeys
             if (VarCount + count > VarPool.Length)
             {
                 Array.Resize(ref VarPool, Math.Max(VarPool.Length * 2, Math.Max(64, VarCount + count)));
+                Storage.Pool = VarPool;
             }
             int at = VarCount;
             VarCount += count;
@@ -677,6 +694,30 @@ public static class CardSortKeys
         {
             return null;
         }
+        Storage storage = _spare ?? new Storage();
+        _spare = null;
+        Scope? scope = OpenWith(list, storage);
+        if (scope == null)
+        {
+            Release(storage, 0, 0);
+        }
+        return scope;
+    }
+
+    /// <summary>The storage emptied (no card held between sorts) and kept for the next sort (the larger one when two are free).</summary>
+    private static void Release(Storage storage, int entries, int vars)
+    {
+        storage.Index.Clear();
+        Array.Clear(storage.Entries, 0, Math.Min(entries, storage.Entries.Length));
+        Array.Clear(storage.Pool, 0, Math.Min(vars, storage.Pool.Length));
+        if (_spare == null || _spare.Entries.Length < storage.Entries.Length)
+        {
+            _spare = storage;
+        }
+    }
+
+    private static Scope? OpenWith(List<CardModel> list, Storage storage)
+    {
         try
         {
             Type[]? watchedGates = null;
@@ -725,7 +766,8 @@ public static class CardSortKeys
                     costGates = costGates == null ? gates : costGates.Concat(gates).ToArray();
                 }
             }
-            Dictionary<CardModel, int> cards = new(list.Count, ReferenceEqualityComparer.Instance);
+            Dictionary<CardModel, int> cards = storage.Index;
+            cards.EnsureCapacity(list.Count);
             List<ICombatState>? combats = null;
             ICombatState? last = null;
             // R3-2: a card's combat is judged only when it can be in a combat pile or a combat preview (no other mod's code on the
@@ -783,8 +825,12 @@ public static class CardSortKeys
                     }
                 }
             }
-            Scope scope = new(cards, _scope);
-            for (int i = 0; i < scope.Entries.Length; i++)
+            if (storage.Entries.Length < cards.Count)
+            {
+                storage.Entries = new Entry[cards.Count];
+            }
+            Scope scope = new(storage, _scope);
+            for (int i = 0; i < cards.Count; i++)
             {
                 scope.Entries[i].VarsAt = -1;
             }
@@ -895,6 +941,7 @@ public static class CardSortKeys
         {
             Sorts++;
         }
+        Release(scope.Storage, scope.Index.Count, scope.VarCount);
     }
 
     // --- What a sort may rely on ---

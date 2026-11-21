@@ -156,56 +156,77 @@ public static class SortKeysBench
             cards = cards.Take(count).ToList();
         }
         long sorts = CardSortKeys.Sorts, answered = CardSortKeys.Answered, mismatches = CardSortKeys.Mismatches;
-        double sharedMs = 0, loopMs = 0;
+        var sharedMs = new List<double>();
+        var loopMs = new List<double>();
+        var lines = new List<string>();
         long sharedReads = 0, loopReads = 0, sharedCompares = 0;
         bool different = false;
+        List<CardModel>? last = null;
         try
         {
-            for (int pass = 0; pass < passes; pass++)
+            // One sort of each first, not counted (JIT tiers, first-use caches), then the two alternating, the order swapped at each
+            // pass; each sort's collections (gen 0/1/2) printed, so an outlier can be told from a real difference.
+            for (int pass = -1; pass < passes; pass++)
             {
+                string line = pass < 0 ? "  warm-up:" : $"  pass {pass + 1}:";
                 foreach (bool shared in pass % 2 == 0 ? new[] { true, false } : new[] { false, true })
                 {
                     List<CardModel> mine = cards.ToList();
                     CardSortKeys.NoSharedKeysForTest = !shared;
                     long reads = CardSortKeys.CostReads, compares = CardSortKeys.SharedKeyCompares, before = CardSortKeys.Answered;
+                    int gc0 = GC.CollectionCount(0), gc1 = GC.CollectionCount(1), gc2 = GC.CollectionCount(2);
                     long t0 = Stopwatch.GetTimestamp();
                     bool opened = CardSortKeys.SortInScope(mine);
                     double ms = Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+                    string gcs = $"{GC.CollectionCount(0) - gc0}/{GC.CollectionCount(1) - gc1}/{GC.CollectionCount(2) - gc2}";
                     if (!opened || (mine.Count > 1 && CardSortKeys.Answered == before))
                     {
                         return new CmdResult(success: true, $"{CardSortKeys.Name} left this sort to the game ({CardSortKeys.LastRefusal ?? "nothing answered"}): nothing to time.");
                     }
-                    if (shared)
+                    line += $" {(shared ? "shared" : "loop")} {ms:F1} ms (gc {gcs})";
+                    if (pass >= 0)
                     {
-                        sharedMs += ms;
-                        sharedReads += CardSortKeys.CostReads - reads;
-                        sharedCompares += CardSortKeys.SharedKeyCompares - compares;
+                        if (shared)
+                        {
+                            sharedMs.Add(ms);
+                            sharedReads += CardSortKeys.CostReads - reads;
+                            sharedCompares += CardSortKeys.SharedKeyCompares - compares;
+                        }
+                        else
+                        {
+                            loopMs.Add(ms);
+                            loopReads += CardSortKeys.CostReads - reads;
+                        }
                     }
-                    else
-                    {
-                        loopMs += ms;
-                        loopReads += CardSortKeys.CostReads - reads;
-                    }
-                    _partOnlyLast ??= mine;
-                    different |= Different(_partOnlyLast, mine);
-                    _partOnlyLast = mine;
+                    last ??= mine;
+                    different |= Different(last, mine);
+                    last = mine;
                 }
+                lines.Add(line);
             }
         }
         finally
         {
             CardSortKeys.NoSharedKeysForTest = false;
             CardSortKeys.RestoreCounters(sorts, answered);
-            _partOnlyLast = null;
         }
         long ownMismatches = CardSortKeys.Mismatches - mismatches;
         bool ok = !different && ownMismatches == 0 && CardSortKeys.Enabled;
-        return new CmdResult(ok, $"SORTKEYS partonly {cards.Count} cards, {cards.Select(c => c.Id).Distinct().Count()} kinds: shared keys {sharedMs / passes:F1} ms, "
-            + $"variable loop {loopMs / passes:F1} ms per sort; cost reads per sort {sharedReads / passes} / {loopReads / passes}, shared-key comparisons {sharedCompares / passes} per sort, "
-            + $"checks {CardSortKeys.Checks}: {(ok ? "OK: identical orders" : $"MISMATCH: orders {(different ? "differ" : "same")}, own check mismatches {ownMismatches}")}");
+        return new CmdResult(ok, $"SORTKEYS partonly {cards.Count} cards, {cards.Select(c => c.Id).Distinct().Count()} kinds: median shared keys {Median(sharedMs):F1} ms, "
+            + $"variable loop {Median(loopMs):F1} ms per sort ({passes} each); cost reads per sort {sharedReads / passes} / {loopReads / passes}, shared-key comparisons "
+            + $"{sharedCompares / passes} per sort, checks {CardSortKeys.Checks}: {(ok ? "OK: identical orders" : $"MISMATCH: orders {(different ? "differ" : "same")}, own check mismatches {ownMismatches}")}"
+            + "\n" + string.Join("\n", lines));
     }
 
-    private static List<CardModel>? _partOnlyLast;
+    private static double Median(List<double> values)
+    {
+        if (values.Count == 0)
+        {
+            return 0;
+        }
+        List<double> sorted = values.OrderBy(v => v).ToList();
+        return sorted.Count % 2 == 1 ? sorted[sorted.Count / 2] : (sorted[sorted.Count / 2 - 1] + sorted[sorted.Count / 2]) / 2;
+    }
 
     private static CmdResult RunDeckCore()
     {
