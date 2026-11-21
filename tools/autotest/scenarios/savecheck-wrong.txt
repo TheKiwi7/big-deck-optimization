@@ -1,0 +1,28 @@
+# Positive control of SaveBackupCheck (game v0.113+ only: not applied before): its answers inverted on purpose (bdperf savecheck
+# wrong), every answer checked (verify 1), must be caught by the part's own check: it turns itself off with an error line and
+# hands the game's own answer back (the backup is decided as the game decides), and its counters line fails. On v0.111.1
+# requiregame logs SKIPPED and the session ends there (its first line: the expect lines after it never run there, judge.py
+# doesn't require them).
+requiregame v0.113
+expect SaveBackupCheck disabled, saves check the previous save as the game does: MISMATCH
+expect SAVECHECK counters .*mismatches [1-9]
+timeout 900
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+cmd bdperf savecheck verify 1
+cmd bdperf savecheck wrong
+enemyhp 1
+selector ui
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+automap
+autoroom 900
+automap
+wait 3
+onfail continue
+cmd bdperf savecheck counters
+quit

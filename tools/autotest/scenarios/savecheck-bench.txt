@@ -1,0 +1,23 @@
+# bdperf savecheck (SaveBackupCheck against the game's check of the previous save): after a fight and a map room at ~1,900
+# cards, the run save this session wrote last (the game's verdict and time, the part's judgment of the same bytes and its time,
+# the main thread's cost on a shortcut), the synthetic set (gate and verdicts against Godot's own text and the game's check) and
+# the part's own call on a kept scratch file. Must say OK: identical verdicts. Not a compared pair: the synthetic set's invalid
+# UTF-8 makes Godot log its own decoding errors. On v0.111.1 the part is not applied ("not needed on this game version").
+expect ok: (SAVECHECK OK: identical verdicts|SaveBackupCheck not applied \(not needed on this game version\))
+timeout 900
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 1
+selector ui
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+automap
+autoroom 900
+cmd bdperf savecheck
+cmd bdperf savecheck counters
+quit
