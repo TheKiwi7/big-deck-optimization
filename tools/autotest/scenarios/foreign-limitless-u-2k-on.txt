@@ -7,14 +7,14 @@
 # and rebuilds and compares some (constant verified; a difference would turn it off: `bdperf clonememo` enabled True). G3 for drops
 # (2026-11-21): the postfix runs last (the default priority, installed after Limitless's), so LimitlessHookSkip drops a stacked
 # enchantment holding level-1 inner cards too (1 <= 99: `capped drops` grows; a level-100 content still counts patched), while its
-# type-level verdict keeps backing off (99 isn't int.MaxValue: its back-off recorded under its own name, anyknown's chain groups
-# True). Compare foreign-limitless-u-2k-off and foreign-limitless-u-2k-on: CHECKSUM/STATE identical (the cap and the upgraded inner
+# type-level verdict counts the type as reacting (99 isn't int.MaxValue: anyknown's chain groups True). Shown as a kept note under
+# its name, not a back-off (review of 2026-11-21). The type-level verdict with int.MaxValue: foreign-limitless-umax-2k. Compare foreign-limitless-u-2k-off and foreign-limitless-u-2k-on: CHECKSUM/STATE identical (the cap and the upgraded inner
 # cards change the game alike on both sides). The memo was cleared once because the patch set changed.
 timeout 1500
 expect FOREIGN clonememo filled: entries [1-9]
 expect FOREIGN clonememo end: entries [0-9]+, patch stamp clears [1-9]
 expect LimitlessCloneMemo: CardModel\.get_MaxUpgradeLevel \(bdtest\.foreign\.lim-constant-postfix-release\): patched only with a constant result
-expect LimitlessHookSkip: CardModel\.get_MaxUpgradeLevel is also patched by bdtest\.foreign\.lim-constant-postfix-release \(patches gated on the listener.s type not enough\)
+expect LimitlessHookSkip: other mods' code on CardModel\.get_MaxUpgradeLevel only answers 99 \(the last of its patches\).*: kept
 expect FOREIGN reach end storage Sharp 0: kept True, reaches Spine, Enchant, hookskip patched False
 expect FOREIGN reach end storage Sharp 1: kept True, reaches Spine, Enchant, Upgrade, hookskip patched False
 expect FOREIGN reach end storage Sharp 100: kept True, reaches Spine, Enchant, Upgrade, hookskip patched True

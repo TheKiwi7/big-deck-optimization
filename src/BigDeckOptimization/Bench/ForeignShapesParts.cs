@@ -29,11 +29,16 @@ public static class ForeignShapesParts
         "ro-postfix", "ro-chain-postfix", "ro-call-postfix",
         // Rule RO for bool prefixes (2026-11-21), on a Creature method returning a value (get_IsPlayer, GetVfxContainer).
         "ro-prefix", "ro-release-prefix", "ro-static-prefix", "ro-chain-prefix", "ro-write-prefix", "ro-runoriginal-prefix", "ro-storetrue-prefix",
+        "ro-nullstore-prefix",
+        // Not a shape: "foreignpatch ro-prefix-flash <shape>" installs that shape on a Creature member of RelicFlashMerge's strict sets
+        // returning a primitive or an enum (get_IsPlayer when there), named in its output.
+        "ro-prefix-flash",
         // Not a shape: "foreignpatch ro-prefix-selftest <label>" judges each of those shapes' IL on Creature.get_IsPlayer (offline too).
         "ro-prefix-selftest",
-        // Not a shape: "foreignpatch walkgetters-check <label>" (in a combat): FastListeners' walk mirrors call the walks' player
-        // getters as often as the game's walks (2026-11-21).
-        "walkgetters-check",
+        // Not shapes: "foreignpatch walkgetters-install <label>" (before a run: counting postfixes on the walks' player getters, removed
+        // by "foreignpatch remove"), then "foreignpatch walkgetters-check <label>" (in a combat): FastListeners' walk mirrors call
+        // those getters as often as the game's walks (2026-11-21).
+        "walkgetters-install", "walkgetters-check",
         // Not a shape: "foreignpatch c0-override constant|patch|subclass|stateful" (rule C0: classes of "another mod" emitted into a
         // dynamic assembly, overriding PowerModel.OwnerIsSecondaryEnemy, which CardFlightLimit's combat-end check reaches).
         "c0-override",
@@ -101,9 +106,23 @@ public static class ForeignShapesParts
         {
             return ReadOnlyPrefixSelfTest(parts[1]);
         }
+        if (shape == "walkgetters-install")
+        {
+            return WalkGettersInstall(parts[1], installed);
+        }
         if (shape == "walkgetters-check")
         {
             return WalkGettersCheck(parts[1]);
+        }
+        if (shape == "ro-prefix-flash")
+        {
+            MethodBase[] members = RelicFlashMerge.StrictCreatureMembersForTest().Where(m => m is MethodInfo { IsStatic: false } info
+                && info.GetParameters().Length == 0 && (info.ReturnType == typeof(bool) || info.ReturnType == typeof(int))).ToArray();
+            MethodBase flashTarget = members.FirstOrDefault(m => m.Name == "get_IsPlayer") ?? members.FirstOrDefault()
+                ?? throw new InvalidOperationException("ro-prefix-flash: no Creature member returning a bool or an int in RelicFlashMerge's strict sets");
+            var flashLines = new List<string> { $"FOREIGN roprefix flash target {flashTarget.DeclaringType?.Name}.{flashTarget.Name} (of {members.Length})" };
+            flashLines.AddRange(Install(new[] { parts[1], $"{flashTarget.DeclaringType!.FullName}:{flashTarget.Name}" }, installed, count));
+            return flashLines;
         }
         if (shape == "parts-report")
         {
@@ -256,10 +275,12 @@ public static class ForeignShapesParts
             case "ro-write-prefix":
             case "ro-runoriginal-prefix":
             case "ro-storetrue-prefix":
+            case "ro-nullstore-prefix":
             {
                 // Rule RO for bool prefixes (GensokyoSpire's CreatureIsPlayerPatch on Creature.get_IsPlayer): see EmitReadOnlyPrefix.
-                // On get_IsPlayer (HookSkip's choice-context helpers) or GetVfxContainer (RelicFlashMerge's creature effect). No game
-                // state changes: the type tested is never a monster's, so each lets the original run.
+                // On get_IsPlayer (HookSkip's choice-context helpers, RelicFlashMerge's creature effect): ro-prefix and
+                // ro-release-prefix really answer for monster creatures, false, what the game answers (a creature has a monster or a
+                // player, never both). Elsewhere they test a never-true type: no game state changes either way.
                 if (target.DeclaringType != typeof(MegaCrit.Sts2.Core.Entities.Creatures.Creature) || target is not MethodInfo { IsStatic: false } method
                     || method.ReturnType == typeof(void))
                 {
@@ -438,11 +459,17 @@ public static class ForeignShapesParts
                 throw new ArgumentException("ro prefixes: a reference, bool or int result");
             }
         }
+        // GensokyoSpire's own test (`__instance.Monster != null`) on get_IsPlayer and get_Player, where the answer it gives (false,
+        // null) is the game's own for a monster; a never-true type test elsewhere.
+        bool monsterGate = target.Name is "get_IsPlayer" or "get_Player";
         void MonsterTest()
         {
             il.Emit(System.Reflection.Emit.OpCodes.Ldarg_0);
             il.Emit(System.Reflection.Emit.OpCodes.Callvirt, AccessTools.PropertyGetter(creature, "Monster")!);
-            il.Emit(System.Reflection.Emit.OpCodes.Isinst, typeof(ForeignShapesParts));
+            if (!monsterGate)
+            {
+                il.Emit(System.Reflection.Emit.OpCodes.Isinst, typeof(ForeignShapesParts));
+            }
         }
         if (shape == "ro-prefix")
         {
@@ -516,11 +543,14 @@ public static class ForeignShapesParts
         Type creature = typeof(MegaCrit.Sts2.Core.Entities.Creatures.Creature);
         MethodInfo isPlayer = AccessTools.PropertyGetter(creature, "IsPlayer") ?? throw new MissingMethodException(creature.Name, "get_IsPlayer");
         MethodInfo vfx = AccessTools.Method(creature, "GetVfxContainer") ?? throw new MissingMethodException(creature.Name, "GetVfxContainer");
+        MethodInfo player = AccessTools.PropertyGetter(creature, "Player") ?? throw new MissingMethodException(creature.Name, "get_Player");
         var lines = new List<string>();
         var failures = new List<string>();
         foreach ((string shape, MethodInfo target, bool expected) in new[]
         {
-            ("ro-prefix", isPlayer, true), ("ro-release-prefix", isPlayer, true), ("ro-prefix", vfx, true), ("ro-release-prefix", vfx, true),
+            ("ro-prefix", isPlayer, true), ("ro-release-prefix", isPlayer, true),
+            // Review of 2026-11-21: reference results refused (a null answer could make skipped code throw where the game's does).
+            ("ro-prefix", vfx, false), ("ro-release-prefix", vfx, false), ("ro-nullstore-prefix", player, false),
             ("ro-static-prefix", isPlayer, false), ("ro-chain-prefix", isPlayer, false), ("ro-write-prefix", isPlayer, false),
             ("ro-runoriginal-prefix", isPlayer, false), ("ro-storetrue-prefix", isPlayer, false),
         })
@@ -548,50 +578,65 @@ public static class ForeignShapesParts
     public static void CountIsPlayer() => IsPlayerCalls++;
 
     /// <summary>
-    /// <c>foreignpatch walkgetters-check &lt;label&gt;</c> (in a combat; 2026-11-21): counting postfixes on CombatState.get_Players,
-    /// RunState.get_Players and Creature.get_IsPlayer for the time of the check, then one walk of FastListeners' unpatched combat
-    /// mirror and one of the game's own (ListenerCache.RunVanilla: every listener optimization off), the same for the run walk
-    /// (no child combat): each getter must run as many times in the mirror as in the game (the game's walks start with
-    /// <c>new List(Players.Count * 50)</c>, which the mirrors once left out). Throws on a difference, or when a mirror can't answer.
+    /// <c>foreignpatch walkgetters-install &lt;label&gt;</c>: counting postfixes on CombatState.get_Players, RunState.get_Players and
+    /// Creature.get_IsPlayer, before a run (fix of 2026-11-21: installed in a combat, the counts missed calls from code the JIT had
+    /// already compiled with those getters inlined, tier 1, which a mod's patch at load never meets; the first check counted 0 or 1
+    /// mirror calls by version). Removed by <c>foreignpatch remove</c>.
+    /// </summary>
+    private static IReadOnlyList<string> WalkGettersInstall(string label, Action<string, MethodBase> installed)
+    {
+        string id = ForeignPatches.IdPrefix + "walkgetters";
+        var harmony = new Harmony(id);
+        foreach ((MethodInfo getter, string counter) in new[]
+        {
+            (AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Combat.CombatState), "Players")!, nameof(CountCombatPlayers)),
+            (AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Runs.RunState), "Players")!, nameof(CountRunPlayers)),
+            (AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Entities.Creatures.Creature), "IsPlayer")!, nameof(CountIsPlayer)),
+        })
+        {
+            harmony.Patch(getter, postfix: new HarmonyMethod(typeof(ForeignShapesParts), counter));
+            installed(id, getter);
+        }
+        _walkGettersInstalled = true;
+        return new[] { $"FOREIGN walkgetters {label}: counting postfixes installed as {id}" };
+    }
+
+    private static bool _walkGettersInstalled;
+
+    /// <summary>
+    /// <c>foreignpatch walkgetters-check &lt;label&gt;</c> (in a combat, after walkgetters-install): one walk of FastListeners' unpatched
+    /// combat mirror and one of the game's own (ListenerCache.RunVanilla: every listener optimization off), the same for the run walk
+    /// (no child combat): CombatState.Players, RunState.Players and Creature.IsPlayer must run as many times in the mirror as in the
+    /// game (the game's walks start with <c>new List(Players.Count * 50)</c>, and BaseLib's card modifier subscriber reads Players:
+    /// the mirrors once left both out). Throws on a difference, or when a mirror can't answer.
     /// </summary>
     private static IReadOnlyList<string> WalkGettersCheck(string label)
     {
+        if (!_walkGettersInstalled)
+        {
+            throw new InvalidOperationException("walkgetters-check: foreignpatch walkgetters-install first (before the run)");
+        }
         if (MegaCrit.Sts2.Core.Combat.CombatManager.Instance?.DebugOnlyGetState() is not MegaCrit.Sts2.Core.Combat.CombatState combat
             || MegaCrit.Sts2.Core.Runs.RunManager.Instance.DebugOnlyGetState() is not MegaCrit.Sts2.Core.Runs.RunState run)
         {
             throw new InvalidOperationException("walkgetters-check: start a combat first");
         }
-        string id = ForeignPatches.IdPrefix + "walkgetters";
-        var harmony = new Harmony(id);
-        MethodInfo combatPlayers = AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Combat.CombatState), "Players")!;
-        MethodInfo runPlayers = AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Runs.RunState), "Players")!;
-        MethodInfo isPlayer = AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Entities.Creatures.Creature), "IsPlayer")!;
-        harmony.Patch(combatPlayers, postfix: new HarmonyMethod(typeof(ForeignShapesParts), nameof(CountCombatPlayers)));
-        harmony.Patch(runPlayers, postfix: new HarmonyMethod(typeof(ForeignShapesParts), nameof(CountRunPlayers)));
-        harmony.Patch(isPlayer, postfix: new HarmonyMethod(typeof(ForeignShapesParts), nameof(CountIsPlayer)));
-        try
+        (long Combat, long Run, long IsPlayer) Calls(Func<int> walk)
         {
-            (long Combat, long Run, long IsPlayer) Calls(Func<int> walk)
-            {
-                (long c, long r, long p) = (CombatPlayersCalls, RunPlayersCalls, IsPlayerCalls);
-                _ = walk();
-                return (CombatPlayersCalls - c, RunPlayersCalls - r, IsPlayerCalls - p);
-            }
-            var mirrorCombat = Calls(() => FastListeners.UnpatchedCombat(combat)?.Count() ?? throw new InvalidOperationException("walkgetters-check: the combat mirror can't answer now"));
-            var gameCombat = Calls(() => ListenerCache.RunVanilla(() => combat.IterateHookListeners().Count()));
-            var mirrorRun = Calls(() => FastListeners.UnpatchedRun(run, null)?.Count() ?? throw new InvalidOperationException("walkgetters-check: the run mirror can't answer now"));
-            var gameRun = Calls(() => ListenerCache.RunVanilla(() => run.IterateHookListeners(null).Count()));
-            string line = $"FOREIGN walkgetters {label}: combat walk mirror {mirrorCombat} game {gameCombat}, run walk mirror {mirrorRun} game {gameRun}";
-            if (mirrorCombat != gameCombat || mirrorRun != gameRun || gameCombat.Combat == 0 || gameRun.Run == 0)
-            {
-                throw new InvalidOperationException("walkgetters-check: " + line);
-            }
-            return new[] { line + " (same)" };
+            (long c, long r, long p) = (CombatPlayersCalls, RunPlayersCalls, IsPlayerCalls);
+            _ = walk();
+            return (CombatPlayersCalls - c, RunPlayersCalls - r, IsPlayerCalls - p);
         }
-        finally
+        var mirrorCombat = Calls(() => FastListeners.UnpatchedCombat(combat)?.Count() ?? throw new InvalidOperationException("walkgetters-check: the combat mirror can't answer now"));
+        var gameCombat = Calls(() => ListenerCache.RunVanilla(() => combat.IterateHookListeners().Count()));
+        var mirrorRun = Calls(() => FastListeners.UnpatchedRun(run, null)?.Count() ?? throw new InvalidOperationException("walkgetters-check: the run mirror can't answer now"));
+        var gameRun = Calls(() => ListenerCache.RunVanilla(() => run.IterateHookListeners(null).Count()));
+        string line = $"FOREIGN walkgetters {label}: combat walk mirror {mirrorCombat} game {gameCombat}, run walk mirror {mirrorRun} game {gameRun}";
+        if (mirrorCombat != gameCombat || mirrorRun != gameRun || gameCombat.Combat == 0 || gameRun.Run == 0)
         {
-            harmony.UnpatchAll(id);
+            throw new InvalidOperationException("walkgetters-check: " + line);
         }
+        return new[] { line + " (same)" };
     }
 
     public static void CountPileGate() => PileGateRuns++;

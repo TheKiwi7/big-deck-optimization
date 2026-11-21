@@ -1,0 +1,36 @@
+# FastListeners' walk mirrors and the game's walks' player getters (2026-11-21), mod on, one side. Counting postfixes on
+# CombatState.get_Players, RunState.get_Players and Creature.get_IsPlayer are installed before the run, as a mod's patches are at
+# load (installed in a combat, they missed calls from code the JIT had already compiled with those getters inlined: the first
+# check counted 0 or 1 mirror calls by version). In a combat, `foreignpatch walkgetters-check` walks each unpatched mirror once and
+# the game's own walk once (every listener optimization off): the counts must be equal. The game's combat walk reads Players twice:
+# `new List(Players.Count * 50)` and BaseLib's card modifier subscriber, which the mirror skips while no CardModifier type exists
+# (it now reads the getters that subscriber reads: CardModifierGetters). The counting postfixes are other mods' patches on
+# HookSkip's helpers: its constructing hooks run the game's code here (nothing else is measured).
+timeout 900
+expect FOREIGN walkgetters setup: counting postfixes installed
+expect FOREIGN walkgetters start: .* \(same\)
+expect FOREIGN walkgetters plays: .* \(same\)
+foreignpatch walkgetters-install setup
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 999999
+speed fast
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+foreignpatch walkgetters-check start
+play 3
+waitfor idle 120
+endturn
+waitfor idle 300
+foreignpatch walkgetters-check plays
+cmd kill all
+waitfor nocombat 300
+wait 2
+foreignpatch remove
+quit

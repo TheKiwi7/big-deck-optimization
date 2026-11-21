@@ -513,6 +513,7 @@ public static class LimitlessCloneMemo
         Reach patched = _allowedCallees == null ? Reach.Spine | Reach.Enchant | Reach.Upgrade : Reach.None;
         Reach memoPatched = patched, dropPatched = patched;
         int? dropCap = null;
+        (int Cap, string[] Mods)? capNote = null;
         var gated = new List<(System.Reflection.MethodBase, System.Reflection.MethodInfo[], Type[], Reach)>();
         foreach ((System.Reflection.MethodBase method, Reach reach) in _allowedCallees ?? Array.Empty<(System.Reflection.MethodBase, Reach)>())
         {
@@ -538,13 +539,15 @@ public static class LimitlessCloneMemo
             // strict check's back-off there is LimitlessHookSkip's (its drops), recorded under its name, the memo's cleared (display).
             bool constantOnly = ConstantOnlyGetter(method, allowedNow, out string[] constantMods);
             string caller = constantOnly ? HookSkipCaller : OwnCaller;
-            // G3 for drops: on get_MaxUpgradeLevel, the last postfix a constant one; with int.MaxValue no saved level can reach the
-            // cap check's throw, so the drops don't back off there at all (not recorded: the strict answer is known, every other
-            // mod's patch being a constant postfix no tolerance lets stand; a back-off recorded before is cleared, display).
+            // G3 for drops: on get_MaxUpgradeLevel, the last postfix a constant one. The drops still run there (for every inner
+            // card with int.MaxValue, else for those saved at most at the cap): no back-off recorded (the strict answer is known,
+            // every other mod's patch being a constant postfix no tolerance lets stand; a back-off recorded before is cleared), a
+            // kept note under LimitlessHookSkip's name instead (review of 2026-11-21: bdopt why and the menu showed a back-off).
             int cap = 0;
             bool capped = constantOnly && IsMaxUpgradeLevel(method) && PatchSafety.LastConstantResult(method, allowedNow, out cap);
-            if (capped && cap == int.MaxValue)
+            if (capped)
             {
+                capNote = (cap, constantMods);
                 strict = true;
                 PatchSafety.ForgetBackOff(LimitlessHookSkip.Name, method, isGated ? PatchTolerance.TypeGated : PatchTolerance.None);
             }
@@ -588,6 +591,7 @@ public static class LimitlessCloneMemo
             }
         }
         LogConstants(constants, dropCap);
+        NoteCap(capNote);
         answer = new ChainAnswer(patched, memoPatched, dropPatched, dropCap, now, stamp, gated.ToArray());
         _chainAnswer = answer;
         return answer;
@@ -607,6 +611,23 @@ public static class LimitlessCloneMemo
     private static string _constantsLogged = "";
 
     /// <summary>Logs the chain getters G3 lets the memo keep, once per change (display only; any thread).</summary>
+    /// <summary>
+    /// G3 for drops, display: LimitlessHookSkip's kept note while the drops take a constant upgrade cap (bdopt why, the menu's hover:
+    /// not a back-off), cleared otherwise. Only while LimitlessHookSkip is applied. Never throws.
+    /// </summary>
+    private static void NoteCap((int Cap, string[] Mods)? cap)
+    {
+        if (cap is not { } known || !LimitlessHookSkip.Applied)
+        {
+            PatchSafety.ClearKept(LimitlessHookSkip.Name, "upgrade_cap");
+            return;
+        }
+        string which = known.Cap == int.MaxValue ? "every stacked enchantment"
+            : $"stacked enchantments whose inner cards are saved at upgrade level {known.Cap} or less (the others run as in the game)";
+        PatchSafety.Kept(LimitlessHookSkip.Name, "upgrade_cap", $"other mods' code on CardModel.get_MaxUpgradeLevel only answers {(known.Cap == int.MaxValue ? "int.MaxValue" : known.Cap.ToString())} "
+            + $"(the last of its patches): skipping a stacked enchantment's rebuild leaves out nothing of it for {which}", known.Mods);
+    }
+
     /// <param name="dropCap">G3 for drops: get_MaxUpgradeLevel's last postfix's constant, when LimitlessHookSkip's drops take it.</param>
     private static void LogConstants(List<string> constants, int? dropCap)
     {
@@ -707,12 +728,12 @@ public static class LimitlessCloneMemo
     }
 
     /// <summary>
-    /// G3 for drops, the preflight under LimitlessHookSkip's name: true when its drops never back off on that getter (capped at
-    /// int.MaxValue: <see cref="DropPatchedFor"/> for any level), and clears its recorded back-off there.
+    /// G3 for drops, the preflight under LimitlessHookSkip's name: true when its drops take a constant cap on that getter (any
+    /// constant: <see cref="DropPatchedFor"/>; a kept note shows it, NoteCap), and clears its recorded back-off there.
     /// </summary>
     private static bool UncappedForDisplay(System.Reflection.MethodBase method, System.Reflection.MethodInfo[] allowed)
     {
-        if (!IsMaxUpgradeLevel(method) || !PatchSafety.LastConstantResult(method, allowed, out int cap) || cap != int.MaxValue)
+        if (!IsMaxUpgradeLevel(method) || !PatchSafety.LastConstantResult(method, allowed, out _))
         {
             return false;
         }
