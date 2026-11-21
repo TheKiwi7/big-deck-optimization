@@ -34,8 +34,10 @@ namespace BigDeckOptimization.Patches;
 /// <c>List.Contains</c> compares with each element's <c>Equals</c>: the set answers by reference, which is the same while every
 /// card of the list has a type keeping <c>object.Equals</c> (CardModel and AbstractModel do) or overriding it with only
 /// <c>this == obj</c> (<see cref="CardEquality"/>): other overrides are counted per set, and any one leaves the answers to the
-/// game. Main thread only. One answer in <see cref="VerifyEvery"/> is compared with the game's scan; a difference turns this off
-/// for the session.
+/// game. A set behind its list while it counts one is not rebuilt (no rebuild could answer while that card is there): the
+/// game's scan for the rest of that combat, unless the card is a <c>this == obj</c> one whose other mod's patch goes away. Main
+/// thread only. One answer in <see cref="VerifyEvery"/> is compared with the game's scan; a difference turns this off for the
+/// session.
 /// </summary>
 public static class CombatCardSet
 {
@@ -324,6 +326,14 @@ public static class CombatCardSet
             }
             if (!set.Built || !ReferenceEquals(set.List, list) || set.Version != _listVersion!(list) || set.Total != list.Count || set.Generation != _generation)
             {
+                if (set.Built && !ByReference(set))
+                {
+                    // A card not answering Equals by reference held the list when the set was last in step: every RemoveCard
+                    // since left the set behind (AfterRemove can't count one then), and a rebuild couldn't answer either while
+                    // it is there. The game's scan, no rebuild (one per few answers would cost more than the scans).
+                    Fallbacks++;
+                    return true;
+                }
                 if (set.Built && set.BehindScans++ < ScansBeforeRebuild)
                 {
                     Fallbacks++;
@@ -506,7 +516,8 @@ public static class CombatCardSet
 /// is only <c>this == obj</c> on references (<c>ldarg.0; ldarg.1; ceq; ret</c>, or the Debug compiler's
 /// <c>nop; ldarg.0; ldarg.1; ceq; stloc.0; br.s next; ldloc.0; ret</c>), as Guzhenren's cards have. Such an override answers by
 /// reference only while no other mod patches it (<see cref="ReferenceOverridePatched"/>, asked at each Patch or Unpatch). Any other
-/// override: not by reference.
+/// override, a hiding <c>new Equals(object)</c> (reflection finds it, <c>List</c> calls the override), or a type reflection can't
+/// read: not by reference.
 /// </summary>
 internal static class CardEquality
 {
@@ -574,11 +585,21 @@ internal static class CardEquality
             {
                 return Kind.Reference;
             }
+            // Only the virtual override of object.Equals is what List.Contains calls (through the default comparer). GetMethod
+            // returns a hiding `new bool Equals(object)` (virtual or not) in its place: the override then runs elsewhere, unread.
+            if (!method.IsVirtual || (method.Attributes & MethodAttributes.NewSlot) != 0 || method.GetBaseDefinition().DeclaringType != typeof(object))
+            {
+                method = null;
+                return Kind.Other;
+            }
             return method.DeclaringType is { IsClass: true } && !method.IsGenericMethod && method.GetMethodBody()?.GetILAsByteArray() is { } il
                 && IsReferenceComparison(il) ? Kind.ReferenceOverride : Kind.Other;
         }
-        catch (Exception e) when (e is AmbiguousMatchException or InvalidOperationException or NotSupportedException or BadImageFormatException)
+        catch
         {
+            // Anything reflection throws (an ambiguous match, a type of a missing optional dependency in an Equals overload:
+            // FileNotFound, TypeLoad...): not known to answer by reference. Never thrown on: it runs on the game's card moves.
+            method = null;
             return Kind.Other;
         }
     }

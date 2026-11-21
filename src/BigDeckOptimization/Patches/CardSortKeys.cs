@@ -532,6 +532,9 @@ public static class CardSortKeys
         PatchSafety.WatchAll(Name, MetCostHooks);
         PatchSafety.WatchNote(Name, NoteModTypes);
         PatchSafety.WatchNote(Name, NoteCostChain);
+        // The variables' reads (OpenScope's runtime check, no tolerance): another mod's patch there leaves the shared-key
+        // comparison the game's loop, the rest of each sort answered. Shown from the menu on, as the runtime records it.
+        PatchSafety.Watch(Name, _varReads);
     }
 
     /// <summary>

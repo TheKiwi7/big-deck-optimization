@@ -84,6 +84,8 @@ public static class PileIndex
     private static MethodBase?[] _listMethods = Array.Empty<MethodBase?>();
     private static long _othersAt = long.MinValue / 2;
     private static bool _others;
+    /// <summary><see cref="_others"/> was true once this session: the single scan stays off (<see cref="ListOthers"/>).</summary>
+    private static bool _othersSeen;
 
     /// <summary>
     /// Every add, remove and clear is checked by its effect: a list method changed (<see cref="_selfCheck"/>), or another
@@ -151,6 +153,7 @@ public static class PileIndex
                 : PatchSafety.IsPatchedByOthers(method);
         }
         _others = others;
+        _othersSeen |= others;
         // Any other mod's patch, not recorded as a back-off: the index keeps answering, only a card whose own move is under way
         // gets the game's scan (a prefix after this class's could read card.Pile before the list changes).
         _moveOthers = (_addMethod != null && PatchSafety.HasOtherPatches(_addMethod))
@@ -271,7 +274,8 @@ public static class PileIndex
         try
         {
             MethodInfo addInternal = Reflect.Method(typeof(CardPile), nameof(CardPile.AddInternal))!;
-            PatchGuard.Patch(harmony, addInternal, transpiler: Method(nameof(AddInternalTranspiler)));
+            // Last among transpilers, as this mod's others: another mod's transpiler sees the game's call.
+            PatchGuard.Patch(harmony, addInternal, transpiler: new HarmonyMethod(typeof(PileIndex), nameof(AddInternalTranspiler)) { priority = Priority.Last });
             Log.Info($"[{ModEntry.Id}] {Name}: AddInternal duplicate check {(_duplicateCheckPatched ? "patched" : "left vanilla (call not found)")}");
         }
         catch (Exception e)
@@ -286,7 +290,8 @@ public static class PileIndex
         {
             try
             {
-                PatchGuard.Patch(harmony, _removeMethod!, transpiler: Method(nameof(RemoveInternalTranspiler)));
+                // Last among transpilers, as this mod's others: another mod's transpiler sees the game's two calls.
+                PatchGuard.Patch(harmony, _removeMethod!, transpiler: new HarmonyMethod(typeof(PileIndex), nameof(RemoveInternalTranspiler)) { priority = Priority.Last });
                 if (!_singleScanPatched)
                 {
                     Log.Info($"[{ModEntry.Id}] {Name}: RemoveInternal single scan left vanilla (calls not found)");
@@ -417,9 +422,12 @@ public static class PileIndex
     /// <summary>
     /// <c>RemoveInternal</c>'s single scan (<see cref="RemoveInternalTranspiler"/>): its own switch, set with the pile_lookup switch by
     /// <c>Settings</c>. It reads no index: only <see cref="_failed"/> (a pile changed in a way the index's checks didn't expect) and
-    /// a card type whose <c>Equals</c> may not answer by reference (<see cref="ByReference"/>) stop it. It keeps running while
-    /// PileIndex backs off from another mod's patch (<see cref="SelfChecking"/>, <see cref="GetterPatched"/>): exact by its own
-    /// checks (the collection's exact type, the list's version between the two calls), whatever runs around the method.
+    /// a card type whose <c>Equals</c> may not answer by reference (<see cref="ByReference"/>) stop it, and so does another mod's
+    /// patch PileIndex backs off from on a list method (<see cref="_others"/>): <see cref="ByReference"/> relies on
+    /// <see cref="BeforeAdd"/> seeing every card that enters a pile, which such a patch may bypass (a skipping prefix adding
+    /// through <c>__instance.Cards</c>, a transpiler). Its own checks (the collection's exact type, the list's version between the
+    /// two calls) keep it exact whatever runs around the method otherwise; it keeps running while only the getter backs off
+    /// (<see cref="GetterPatched"/>).
     /// </summary>
     public static bool SingleScanEnabled { get; set; } = true;
     /// <summary>Removes made with the duplicate check's own search (the effects check).</summary>
@@ -462,6 +470,17 @@ public static class PileIndex
     /// <summary>Every card that entered a pile this session answers <c>Equals</c> by reference now.</summary>
     private static bool ByReference() => !_equalsSeen && (!_referenceOverrideSeen || !CardEquality.ReferenceOverridePatched());
 
+    /// <summary>
+    /// Another mod's patch on a list method PileIndex backs off from was seen this session (<see cref="_others"/>, rechecked each
+    /// second; <see cref="_othersSeen"/>): a card may have entered a pile without <see cref="BeforeAdd"/> noting its type, and may
+    /// still be there after that patch is gone.
+    /// </summary>
+    private static bool ListOthers()
+    {
+        RefreshOthers();
+        return _othersSeen;
+    }
+
     /// <summary>List&lt;T&gt;._version: bumped by every change of a list.</summary>
     private static AccessTools.FieldRef<List<CardModel>, int>? _listVersion;
 
@@ -479,9 +498,10 @@ public static class PileIndex
     /// same card (a reshuffle moving a whole pile: the cards are searched twice each). Its <c>Enumerable.Contains</c> call goes
     /// through <see cref="ContainsBeingRemoved"/> and its <c>List.Remove</c> through <see cref="RemoveFound"/>, which removes at the
     /// index the first search found when the list is still as it was then: what <c>List.Remove</c> does (its own <c>IndexOf</c>, then
-    /// <c>RemoveAt</c> there). Only when both calls are found, once each. Another mod's transpiler sorted after this one no longer
-    /// sees those two calls (it sees this class's two methods in their place): one looking for them finds nothing to change there,
-    /// as on a game version without them.
+    /// <c>RemoveAt</c> there). Only when both calls are found, once each. Runs last among transpilers (<c>Priority.Last</c>), so
+    /// another mod's transpiler sees the game's two calls; only one also at <c>Priority.Last</c> and registered later no longer
+    /// sees them (it sees this class's two methods in their place): one looking for them finds nothing to change there, as on a
+    /// game version without them. Any other mod's transpiler there stops the scan anyway (<see cref="SingleScanEnabled"/>).
     /// </summary>
     private static IEnumerable<CodeInstruction> RemoveInternalTranspiler(IEnumerable<CodeInstruction> instructions)
     {
@@ -519,7 +539,7 @@ public static class PileIndex
         _foundList = null;
         _foundCard = null;
         // A null card: the game's call (List.IndexOf finds a null element, a search by reference would too, but nothing to gain).
-        if (SingleScanEnabled && !_failed && !ListenerCache.IsSuspended && card != null && cards != null && ByReference()
+        if (SingleScanEnabled && !_failed && !ListenerCache.IsSuspended && card != null && cards != null && ByReference() && !ListOthers()
             && cards.GetType() == typeof(List<CardModel>))
         {
             var list = (List<CardModel>)cards;
@@ -764,14 +784,21 @@ public static class PileIndex
     }
 #endif
 
-    /// <summary>Only called while the original is still to run (Harmony skips it after another prefix returned false).</summary>
-    private static void BeforeAdd(CardPile __instance, CardModel card, bool __runOriginal, ref Saved __state)
+    /// <summary>
+    /// Only called while the original is still to run: Harmony skips it after another prefix returned false (it takes the card,
+    /// so it isn't a prefix Harmony always runs). A prefix sorted after it may still skip the add (judged by <see cref="AfterAdd"/>).
+    /// </summary>
+    private static void BeforeAdd(CardPile __instance, CardModel card, ref Saved __state)
     {
-        // Before the skip test: a card's type is noted even for an add that may not happen (conservative).
-        NoteAddedType(card);
-        if (!__runOriginal)
+        try
         {
-            return;
+            // Noted even when a later prefix skips the add (conservative). Its own try: a card type whose Equals can't be read
+            // (CardEquality answers Other then) must never break the game's add, nor stop the index's update below.
+            NoteAddedType(card);
+        }
+        catch
+        {
+            _equalsSeen = true;
         }
         try
         {
