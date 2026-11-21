@@ -60,7 +60,7 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
 
     public override string CmdName => "bdperf";
 
-    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | costcolors [iterations:int] | verify [off|sample|all] | snapnet | combatstart | grid [cards:int] | probe [reset|log|on|off|nodes|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | sortkeys [wrong] | checks on|off | opt on|off [yes] | listeners [iterations:int] | costwrites | fault piles|walk | badges [clear|guard off|on] | snapgameerror <n> | reserialize [verify <n>] | clonememo [verify <n>] | conflicts | states | roomleft | modorder [none|<owner>] | firstturn inner | foreign <shape> <Type:Method> [gate] [priority N] | foreign remove|report|classify <Type:Method>";
+    public override string Args => "checksum [iterations:int] | refresh [iterations:int] | costcolors [iterations:int] | verify [off|sample|all] | snapnet | combatstart | grid [cards:int] | probe [reset|log|on|off|nodes|hitch <ms>] | pile [verify <n>] | plaque [cards:int] | sortkeys [wrong] | combatcards [passes:int] | checks on|off | opt on|off [yes] | listeners [iterations:int] | costwrites | fault piles|walk | badges [clear|guard off|on] | snapgameerror <n> | reserialize [verify <n>] | clonememo [verify <n>] | conflicts | states | roomleft | modorder [none|<owner>] | firstturn inner | foreign <shape> <Type:Method> [gate] [priority N] | foreign remove|report|classify <Type:Method>";
 
     public override string Description => "[BigDeckOptimization] Measures the multiplayer post-action checksum cost, vanilla vs optimized, or shows/sets live snapshot verification.";
 
@@ -202,7 +202,7 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
     public override CmdResult Process(Player? issuingPlayer, string[] args)
     {
         string sub = args.Length > 0 ? args[0].ToLowerInvariant() : "";
-        if (sub is "checksum" or "refresh" or "listeners" or "pile" or "text" or "scan" or "plaque" or "grid" or "sortkeys" or "snapnet" && !(sub is "pile" or "sortkeys" && args.Length > 1) && ModOff() is { } off)
+        if (sub is "checksum" or "refresh" or "listeners" or "pile" or "text" or "scan" or "plaque" or "grid" or "sortkeys" or "snapnet" or "combatcards" && !(sub is "pile" or "sortkeys" && args.Length > 1) && ModOff() is { } off)
         {
             return off;
         }
@@ -221,7 +221,7 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
         }
         // Effect counters as the game's own calls left them (see EffectCounters); the benches read their own deltas inside.
         using IDisposable? frozen = sub is "checksum" or "refresh" or "listeners" or "pile" or "text" or "scan" or "plaque" or "grid" or "sortkeys"
-            or "relics" or "upgradebench" or "shufflebench" or "costhooks" or "snapnet" or "joinmsg"
+            or "relics" or "upgradebench" or "shufflebench" or "costhooks" or "snapnet" or "joinmsg" or "combatcards"
             ? EffectCounters.Freeze() : null;
         // Positive controls and limits of the safety nets (Bench/PerfInjections.cs).
         if (Injection(sub, args, coop) is { } injected)
@@ -423,6 +423,9 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                 }
                 return new CmdResult(success: deckCountOk, $"DECKCOUNT enabled {DeckCountMemo.Enabled}, kept {DeckCountMemo.Kept}, updated {DeckCountMemo.Updated}, walks {DeckCountMemo.Walks}, "
                     + $"unsure {DeckCountMemo.Unsure}, checks {DeckCountMemo.Checks}, mismatches {DeckCountMemo.Mismatches}{deckCountCheck}");
+            case "combatcards":
+                // bdperf combatcards [passes]: CombatCardSet and RemoveInternal's single scan against the game's code (Bench/CombatCardsBench.cs).
+                return CombatCardsBench.Run(args.Length >= 2 && int.TryParse(args[1], out int containsPasses) && containsPasses > 0 ? containsPasses : 3);
             case "shufflebench":
                 return ShuffleBench.Run(args.Length >= 2 && int.TryParse(args[1], out int shufflePasses) && shufflePasses > 0 ? shufflePasses : 5);
             case "upgradebench":

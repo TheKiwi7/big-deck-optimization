@@ -663,12 +663,14 @@ public static class Settings
         new("pile_lookup", "Card pile lookup",
             "Finds which pile a card is in without scanning every card (used by costs, keywords, playability...), and checks a card added to a pile (draws, reshuffles, clones) without scanning that pile.",
             new[] { PileIndex.Name }, on => PileIndex.Enabled = on,
-            () => NoneApplied(PileIndex.Name, CardSortKeys.Name),
+            () => NoneApplied(PileIndex.Name, CardSortKeys.Name, CombatCardSet.Name),
             // Sorting a pile before a reshuffle (game v0.113's card comparison): its own part, not needed on earlier versions.
             // The sort's listener walks (ListenerCache's scope around an answered sort): needed where the sort is.
-            parts: new OptionPart[] { new(CardSortKeys.Name, NotNeeded: () => CardSortKeys.NotNeeded), new(ListenerCache.SortWalksName, NotNeeded: () => CardSortKeys.NotNeeded) },
+            parts: new OptionPart[] { new(CardSortKeys.Name, NotNeeded: () => CardSortKeys.NotNeeded), new(ListenerCache.SortWalksName, NotNeeded: () => CardSortKeys.NotNeeded), new(CombatCardSet.Name) },
             // PileIndex.ContainsCardEnabled: the RunState.ContainsCard shortcut reads no index, so a PileIndex fault doesn't stop it.
-            setParts: on => { Flag(() => CardSortKeys.Enabled = Part(on, CardSortKeys.Name)); Flag(() => ListenerCache.SortWalksEnabled = Part(on, ListenerCache.SortWalksName)); Flag(() => PileIndex.ContainsCardEnabled = on); }),
+            // PileIndex.SingleScanEnabled: RemoveInternal's single scan reads no index (a PileIndex fault still stops it, from inside).
+            // CombatCardSet: CombatState.ContainsCard answered from a per-combat card set (a reshuffle checks each moved card).
+            setParts: on => { Flag(() => CardSortKeys.Enabled = Part(on, CardSortKeys.Name)); Flag(() => ListenerCache.SortWalksEnabled = Part(on, ListenerCache.SortWalksName)); Flag(() => PileIndex.ContainsCardEnabled = on); Flag(() => PileIndex.SingleScanEnabled = on); Flag(() => CombatCardSet.Enabled = Part(on, CombatCardSet.Name)); }),
         new("card_ids", "Combat card IDs",
             "Skips re-scanning whole card piles for new cards on every card move (reshuffles, end of combat).",
             new[] { CardDbScan.Name }, on => CardDbScan.Enabled = on,

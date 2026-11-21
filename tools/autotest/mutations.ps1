@@ -37,7 +37,7 @@ $Data = Join-Path $GameDir "data_sts2_windows_x86_64"
 $env:PATH = "C:\Program Files\dotnet;$env:PATH"; $env:DOTNET_CLI_TELEMETRY_OPTOUT = "1"
 
 # What leaves when the whole pile tracking does: the listener cache watches the same methods, hook lists are built inside it.
-$PileWriters = "ListenerCache(\.(Creatures|Suspended))?|HookFilter|PileIndex(\.Duplicates)?|CardDbScan|DeckCountMemo(\.Checks)?|FastListeners\.(Cache|Moves)|LimitlessRecalcSkip\.Passes|SnapshotCardReuse\.(Trust|Moved|Dirty|Hooks|Piles|PileBits|Blocks)"
+$PileWriters = "ListenerCache(\.(Creatures|Suspended))?|HookFilter|PileIndex(\.(Duplicates|Removes))?|CardDbScan|DeckCountMemo(\.Checks)?|FastListeners\.(Cache|Moves)|LimitlessRecalcSkip\.Passes|SnapshotCardReuse\.(Trust|Moved|Dirty|Hooks|Piles|PileBits|Blocks)"
 # Target, pattern every "left vanilla" line must match ("" = nothing may be left vanilla), effects allowed to drop to zero ("" = none).
 $Expected = [ordered]@{
     "renumber-hooks"  = @("game", "", "")
@@ -48,7 +48,7 @@ $Expected = [ordered]@{
     "default-task"    = @("game", "AfterCardPlayed", "")
     "helper-push"     = @("game", "choice context helpers changed|PushModel", "")
     "pile-add"        = @("game", "CardPile.AddInternal changed", "FastListeners\.Moves|LimitlessHookSkip\.Saved|DeckCountMemo(\.Checks)?")
-    "pile-remove"     = @("game", "CardPile.RemoveInternal changed", "FastListeners\.Moves|LimitlessHookSkip\.Saved|DeckCountMemo(\.Checks)?")
+    "pile-remove"     = @("game", "CardPile.RemoveInternal changed", "FastListeners\.Moves|LimitlessHookSkip\.Saved|DeckCountMemo(\.Checks)?|PileIndex\.Removes")
     "pile-writer"     = @("game", "_cards", $PileWriters)
     "sync-body"       = @("game", "SyncedCardRelease|SyncWithSerializedPlayer", "")
     "allcards-reader" = @("game", "SyncedCardRelease|_allCards", "")
