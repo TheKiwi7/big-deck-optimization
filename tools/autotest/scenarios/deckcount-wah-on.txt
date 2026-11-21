@@ -1,0 +1,62 @@
+# Wah Symphony (game v0.113+: it counts the Wah, Cho and Ki cards of its owner's combat piles) kept in hand at ~945
+# cards while cards move between piles, Wah, Cho and Ki cards in every pile. Compare with deckcount-wah-off: CHECKSUM lines
+# identical. `bdperf deckcount answered wah` fails when its own count never ran (verify 1: every answer compared), `scope`
+# unless calculations ran inside the card redraw and outside it with a free check.
+timeout 2400
+# Wah Symphony exists from game v0.113: both sides stop here on an older game.
+requiregame v0.113
+newrun NECROBINDER
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bdperf checks off
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+cmd bigdeck tank
+wait 1
+cmd power NO_DRAW_POWER 1 0
+cmd bdperf deckcount verify 1
+cmd card WAH_CHO draw
+cmd card KI_WHIP discard
+cmd card WAH_KI exhaust
+cmd card CHO_KI draw
+checksum start
+emptyhand
+cmd card WAH_SYMPHONY hand
+cmd card WAH_TOUCH hand
+setenergy 5
+cmd card ALL_FOR_ONE hand
+playcard ALL_FOR_ONE free
+checksum after ALL_FOR_ONE
+emptyhand
+cmd card WAH_SYMPHONY hand
+cmd card WAH_TOUCH hand
+setenergy 5
+cmd card ANOINTED hand
+playcard ANOINTED free
+checksum after ANOINTED
+emptyhand
+cmd card WAH_SYMPHONY hand
+cmd card WAH_TOUCH hand
+setenergy 5
+cmd card ARMAMENTS hand
+playcard ARMAMENTS free
+checksum after ARMAMENTS
+emptyhand
+cmd card WAH_SYMPHONY hand
+cmd card WAH_TOUCH hand
+setenergy 5
+cmd card CALCULATED_GAMBLE hand
+playcard CALCULATED_GAMBLE free
+checksum after CALCULATED_GAMBLE
+emptyhand
+cmd card WAH_SYMPHONY hand
+setenergy 5
+playcard WAH_SYMPHONY free
+checksum after WAH_SYMPHONY
+cmd bdperf deckcount answered wah
+cmd bdperf deckcount scope
+cmd bdperf deckcount
+quit
