@@ -15,6 +15,11 @@
 # running (SoulsPower contents are never kept next to BaseLib and Limitless: its closure reaches methods they patch themselves,
 # PlayerCombatState.get_AllPiles, CardPile.Get, ModelDb.GetEntry...; the worker's walk stops there, `reach ... closures` says where);
 # (l3) CardModel.get_MaxUpgradeLevel: a level-1 content no longer kept, a level-0 one still is.
+# G3 (2026-11-21): constant-result postfixes on CardModel.get_MaxUpgradeLevel (Bench/ForeignShapesLimitless.cs lim-constant-postfix):
+# (u1) `__result = 99` and (u2) Infinite Upgrades' `__result = int.MaxValue`: a level-1 content kept by LimitlessCloneMemo, still
+# counted patched by LimitlessHookSkip (its drops keep the strict answer); controls, a level-1 content not kept: (u3) a static read
+# (`__result = Flag ? 1 : 0`), (u4) `Math.Max(__result, 5)`, (u5) its class's initializer reading the clock, (u6) an __instance
+# parameter too. `foreignpatch limitless constant selftest`: every variant's shape verdict.
 # Review of 2026-11-19 (C2): a counting postfix on one closed instantiation of a generic member (Bench/ForeignShapesLimitless.cs
 # lim-generic-count-postfix: Harmony patches the instantiation, the chain and the closures name the definition, on which Harmony
 # finds nothing): (g2) <>z__ReadOnlySingleElementList<int>'s
@@ -59,6 +64,15 @@ expect FOREIGN reach l2 storage Goopy 0: kept True
 expect FOREIGN reach l2 storage Sharp 0: kept True
 expect FOREIGN reach l3 storage Sharp 1: kept False
 expect FOREIGN reach l3 storage Sharp 0: kept True
+expect FOREIGN limitless constant selftest: \d+ cases as expected
+expect LimitlessCloneMemo: CardModel\.get_MaxUpgradeLevel \(bdtest\.foreign\.lim-constant-postfix-release\): patched only with a constant result
+expect FOREIGN reach u1 storage Sharp 1: kept True, reaches Spine, Enchant, Upgrade, hookskip patched True
+expect FOREIGN reach u1 storage Sharp 0: kept True, reaches Spine, Enchant, hookskip patched False
+expect FOREIGN reach u2 storage Sharp 1: kept True, reaches Spine, Enchant, Upgrade, hookskip patched True
+expect FOREIGN reach u3 storage Sharp 1: kept False
+expect FOREIGN reach u4 storage Sharp 1: kept False
+expect FOREIGN reach u5 storage Sharp 1: kept False
+expect FOREIGN reach u6 storage Sharp 1: kept False
 expect FOREIGN reach g2 storage Goopy 0: kept False
 expect FOREIGN reach g2 storage Sharp 0: kept True
 expect FOREIGN reach g3 storage Goopy 0: kept False
@@ -181,6 +195,39 @@ wait 3
 foreignpatch limitless reach storage Sharp 1 l3
 foreignpatch limitless reach storage Sharp 0 l3
 foreignpatch remove
+wait 3
+# G3: constant-result postfixes on get_MaxUpgradeLevel (u1, u2 kept by the memo; u3 to u6 controls).
+foreignpatch limitless constant selftest
+foreignpatch lim-constant-postfix MegaCrit.Sts2.Core.Models.CardModel:get_MaxUpgradeLevel release
+wait 3
+foreignpatch limitless reach storage Sharp 1 u1
+foreignpatch limitless reach storage Sharp 0 u1
+foreignpatch limitless remove
+wait 3
+foreignpatch lim-constant-postfix MegaCrit.Sts2.Core.Models.CardModel:get_MaxUpgradeLevel max
+wait 3
+foreignpatch limitless reach storage Sharp 1 u2
+foreignpatch limitless remove
+wait 3
+foreignpatch lim-constant-postfix MegaCrit.Sts2.Core.Models.CardModel:get_MaxUpgradeLevel staticread
+wait 3
+foreignpatch limitless reach storage Sharp 1 u3
+foreignpatch limitless remove
+wait 3
+foreignpatch lim-constant-postfix MegaCrit.Sts2.Core.Models.CardModel:get_MaxUpgradeLevel mathmax
+wait 3
+foreignpatch limitless reach storage Sharp 1 u4
+foreignpatch limitless remove
+wait 3
+foreignpatch lim-constant-postfix MegaCrit.Sts2.Core.Models.CardModel:get_MaxUpgradeLevel impure
+wait 3
+foreignpatch limitless reach storage Sharp 1 u5
+foreignpatch limitless remove
+wait 3
+foreignpatch lim-constant-postfix MegaCrit.Sts2.Core.Models.CardModel:get_MaxUpgradeLevel instance
+wait 3
+foreignpatch limitless reach storage Sharp 1 u6
+foreignpatch limitless remove
 wait 3
 # (s1) Full audit B-1: a strict patch on a spine method's own callee (CardModel.AfterCloned's set_HasBeenRemovedFromState).
 foreignpatch count-postfix MegaCrit.Sts2.Core.Models.CardModel:set_HasBeenRemovedFromState

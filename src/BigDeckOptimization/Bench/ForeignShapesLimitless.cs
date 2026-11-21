@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Reflection.Emit;
 using BigDeckOptimization.Patches;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Models;
@@ -36,6 +37,12 @@ namespace BigDeckOptimization.Bench;
 /// it reaches); <c>foreignpatch limitless memo [label]</c>: the contents kept and the clears because the patch set changed.</item>
 /// <item>Review C2: <c>lim-generic-count-postfix &lt;Namespace.Type:Method&gt; &lt;TypeArgument&gt;</c>, a counting postfix on one
 /// closed instantiation of a generic member (<see cref="GenericCountPostfix"/>).</item>
+/// <item>G3 (2026-11-21): <c>lim-constant-postfix &lt;variant&gt;</c> on <c>CardModel:get_MaxUpgradeLevel</c>, emitted (Reflection.Emit):
+/// <c>release</c> (<c>ldarg.0; ldc.i4.s 99; stind.i4; ret</c>), <c>max</c> (Infinite Upgrades' <c>__result = int.MaxValue</c>),
+/// <c>debug</c> (nops first) are kept by LimitlessCloneMemo for upgraded contents (not by LimitlessHookSkip's drops); controls:
+/// <c>staticread</c> (<c>__result = Flag ? 1 : 0</c>), <c>mathmax</c> (<c>Math.Max(__result, 5)</c>), <c>impure</c> (its class's
+/// initializer reads the clock), <c>instance</c> (an <c>__instance</c> parameter too). <c>foreignpatch limitless constant
+/// selftest</c>: each variant's shape verdict (offline too).</item>
 /// </list>
 /// </summary>
 public static class ForeignShapesLimitless
@@ -43,8 +50,116 @@ public static class ForeignShapesLimitless
     public static readonly string[] Shapes =
     {
         "lim-result-gated-postfix", "lim-enchantment-gated-postfix", "lim-cardmodel-gated-postfix", "lim-write-then-gated-postfix",
-        "lim-twin", "lim-twin-prefix", "lim-inner-count-postfix", "lim-generic-count-postfix",
+        "lim-twin", "lim-twin-prefix", "lim-inner-count-postfix", "lim-generic-count-postfix", "lim-constant-postfix",
     };
+
+    // --- G3 (2026-11-21): constant-result postfixes on a chain getter ---
+
+    private static ModuleBuilder? _constantModule;
+    private static int _constantSerial;
+
+    /// <summary>
+    /// A constant-result postfix variant for an int getter (see the class summary), each in an emitted class of its own (no
+    /// initializer but <c>impure</c>'s).
+    /// </summary>
+    internal static MethodInfo ConstantPostfix(string variant)
+    {
+        lock (_installed)
+        {
+            if (_constantModule == null)
+            {
+                var assembly = AssemblyBuilder.DefineDynamicAssembly(new AssemblyName("BdoForeignShapesConstant"), AssemblyBuilderAccess.Run);
+                _constantModule = assembly.DefineDynamicModule("BdoForeignShapesConstant");
+            }
+            TypeBuilder type = _constantModule.DefineType($"BdoConstant.{variant}_{++_constantSerial}",
+                TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed | TypeAttributes.Class | TypeAttributes.BeforeFieldInit);
+            bool instance = variant == "instance";
+            Type[] parameters = instance ? new[] { typeof(CardModel), typeof(int).MakeByRefType() } : new[] { typeof(int).MakeByRefType() };
+            MethodBuilder method = type.DefineMethod("Postfix", MethodAttributes.Public | MethodAttributes.Static, typeof(void), parameters);
+            if (instance)
+            {
+                method.DefineParameter(1, ParameterAttributes.None, "__instance");
+            }
+            method.DefineParameter(parameters.Length, ParameterAttributes.None, "__result");
+            ILGenerator il = method.GetILGenerator();
+            OpCode result = instance ? OpCodes.Ldarg_1 : OpCodes.Ldarg_0;
+            switch (variant)
+            {
+                case "release":
+                case "instance":
+                    il.Emit(result);
+                    il.Emit(OpCodes.Ldc_I4_S, (sbyte)99);
+                    break;
+                case "max":
+                    il.Emit(result);
+                    il.Emit(OpCodes.Ldc_I4, int.MaxValue);
+                    break;
+                case "debug":
+                    il.Emit(OpCodes.Nop);
+                    il.Emit(result);
+                    il.Emit(OpCodes.Ldc_I4_S, (sbyte)99);
+                    break;
+                case "staticread":
+                {
+                    Label one = il.DefineLabel(), store = il.DefineLabel();
+                    il.Emit(result);
+                    il.Emit(OpCodes.Ldsfld, typeof(GatesCounter).GetField(nameof(GatesCounter.Flag))!);
+                    il.Emit(OpCodes.Brtrue_S, one);
+                    il.Emit(OpCodes.Ldc_I4_0);
+                    il.Emit(OpCodes.Br_S, store);
+                    il.MarkLabel(one);
+                    il.Emit(OpCodes.Ldc_I4_1);
+                    il.MarkLabel(store);
+                    break;
+                }
+                case "mathmax":
+                    il.Emit(result);
+                    il.Emit(result);
+                    il.Emit(OpCodes.Ldind_I4);
+                    il.Emit(OpCodes.Ldc_I4_5);
+                    il.Emit(OpCodes.Call, typeof(Math).GetMethod(nameof(Math.Max), new[] { typeof(int), typeof(int) })!);
+                    break;
+                case "impure":
+                {
+                    FieldBuilder started = type.DefineField("Started", typeof(long), FieldAttributes.Public | FieldAttributes.Static);
+                    ILGenerator cctor = type.DefineTypeInitializer().GetILGenerator();
+                    cctor.Emit(OpCodes.Call, typeof(Environment).GetProperty(nameof(Environment.TickCount64))!.GetGetMethod()!);
+                    cctor.Emit(OpCodes.Stsfld, started);
+                    cctor.Emit(OpCodes.Ret);
+                    il.Emit(result);
+                    il.Emit(OpCodes.Ldc_I4_S, (sbyte)99);
+                    break;
+                }
+                default:
+                    throw new ArgumentException("lim-constant-postfix variant: release, max, debug, staticread, mathmax, impure or instance");
+            }
+            il.Emit(OpCodes.Stind_I4);
+            il.Emit(OpCodes.Ret);
+            return type.CreateType()!.GetMethod("Postfix")!;
+        }
+    }
+
+    /// <summary><c>foreignpatch limitless constant selftest</c>: each variant's verdict (G3's shape and class rules), against the expected one.</summary>
+    internal static IReadOnlyList<string> ConstantSelfTest()
+    {
+        var lines = new List<string>();
+        var failures = new List<string>();
+        foreach ((string variant, bool kept) in new[] { ("release", true), ("max", true), ("debug", true), ("staticread", false), ("mathmax", false), ("impure", false), ("instance", false) })
+        {
+            bool found = PatchSafety.ConstantResultShapeForTest(ConstantPostfix(variant), typeof(int));
+            lines.Add($"FOREIGN limitless constant selftest {(found == kept ? "ok" : "WRONG")}: {variant}: {(found ? "a constant result" : "not")}");
+            if (found != kept)
+            {
+                failures.Add(variant);
+            }
+        }
+        if (failures.Count > 0)
+        {
+            throw new InvalidOperationException("limitless constant selftest: " + string.Join(", ", failures) + " || " + string.Join(" || ", lines));
+        }
+        lines.Add($"FOREIGN limitless constant selftest: {lines.Count} cases as expected");
+        return lines;
+    }
 
     /// <summary>
     /// <c>foreignpatch lim-generic-count-postfix &lt;Namespace.Type:Method&gt; &lt;TypeArgument&gt;</c> (review C2): a counting postfix
@@ -168,10 +283,11 @@ public static class ForeignShapesLimitless
                 "twin" when parts.Length > 2 => TwinCommand(parts[2], parts.Length > 3 ? parts[3] : null),
                 "reach" when parts.Length > 4 => ReachCommand(parts[2], parts[3], int.Parse(parts[4]), parts.Length > 5 ? parts[5] : "now"),
                 "anyknown" => new[] { $"FOREIGN anyknown {(parts.Length > 2 ? parts[2] : "now")}: {LimitlessHookSkip.AnyKnownForTest()}" },
-                "memo" => new[] { $"FOREIGN clonememo {(parts.Length > 2 ? parts[2] : "now")}: entries {LimitlessCloneMemo.MemoCount}, patch stamp clears {LimitlessCloneMemo.PatchStampClears}, reused {LimitlessCloneMemo.Reused}" },
+                "memo" => new[] { $"FOREIGN clonememo {(parts.Length > 2 ? parts[2] : "now")}: entries {LimitlessCloneMemo.MemoCount}, patch stamp clears {LimitlessCloneMemo.PatchStampClears}, reused {LimitlessCloneMemo.Reused}, constant kept {LimitlessCloneMemo.ConstantKept}" },
+                "constant" when parts.Length > 2 && parts[2] == "selftest" => ConstantSelfTest(),
                 // Full audit A-L1, B-3: the patched-methods maps act as if Harmony couldn't list its patched methods (within 2 s).
                 "cantlist" when parts.Length > 2 && parts[2] is "on" or "off" => CantList(parts[2] == "on"),
-                _ => throw new ArgumentException("foreignpatch limitless report [label] | remove | twin status|register|patchcallee [label] | reach <storage|CardClass> <EnchantmentClass|none> <level> [label] | memo [label] | anyknown [label] | cantlist on|off"),
+                _ => throw new ArgumentException("foreignpatch limitless report [label] | remove | twin status|register|patchcallee [label] | reach <storage|CardClass> <EnchantmentClass|none> <level> [label] | memo [label] | anyknown [label] | cantlist on|off | constant selftest"),
             };
         }
         string shape = parts[0];
@@ -224,6 +340,14 @@ public static class ForeignShapesLimitless
                 LimitlessShapeCounts.Ensure("lim-inner-count-postfix inner " + LimitlessShapeCounts.Name(target));
                 harmony.Patch(target, postfix: new HarmonyMethod(typeof(LimitlessGates), target.IsStatic ? nameof(LimitlessGates.InnerCountStaticPostfix)
                     : nameof(LimitlessGates.InnerCountPostfix)) { priority = priority });
+                break;
+            case "lim-constant-postfix":
+                // G3: on an int getter of the chain (CardModel:get_MaxUpgradeLevel).
+                if (target is not MethodInfo { ReturnType: var constantType } || constantType != typeof(int))
+                {
+                    throw new ArgumentException(shape + " goes on an int getter (CardModel:get_MaxUpgradeLevel)");
+                }
+                harmony.Patch(target, postfix: new HarmonyMethod(ConstantPostfix(gate)) { priority = priority });
                 break;
             case "lim-twin-prefix":
                 // Control: the accepted twin's postfix installed as a prefix (rule B lets a twin stand as a postfix only).

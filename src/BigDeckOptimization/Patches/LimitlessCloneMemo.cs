@@ -331,26 +331,29 @@ public static class LimitlessCloneMemo
     /// <summary>
     /// The chain's answer, published as one object (LimitlessHookSkip may ask from another thread): the groups (<see cref="Reach"/>)
     /// holding another mod's patch no rule lets stand, and the card methods whose other mods' patches are all gated on the card's
-    /// type, with those types and their group (<see cref="ChainPatchedFor"/>).
+    /// type, with those types and their group (<see cref="ChainPatchedFor"/>). <see cref="MemoPatched"/>: the same groups for this
+    /// memo, less those patched only by constant-result postfixes on chain getters (G3).
     /// </summary>
     private sealed class ChainAnswer
     {
         public readonly Reach Patched;
+        public readonly Reach MemoPatched;
         public readonly long CheckedAt;
         /// <summary>The patch stamp it was made at (<see cref="PatchStamp"/>): a Harmony change makes it stale at once.</summary>
         public readonly long Stamp;
         public readonly (System.Reflection.MethodBase Method, System.Reflection.MethodInfo[] Allowed, Type[] Gates, Reach Reach)[] Gated;
 
-        public ChainAnswer(Reach patched, long checkedAt, long stamp, (System.Reflection.MethodBase, System.Reflection.MethodInfo[], Type[], Reach)[] gated)
+        public ChainAnswer(Reach patched, Reach memoPatched, long checkedAt, long stamp, (System.Reflection.MethodBase, System.Reflection.MethodInfo[], Type[], Reach)[] gated)
         {
             Patched = patched;
+            MemoPatched = memoPatched;
             CheckedAt = checkedAt;
             Stamp = stamp;
             Gated = gated;
         }
     }
 
-    private static volatile ChainAnswer _chainAnswer = new(Reach.None, long.MinValue / 2, -1, Array.Empty<(System.Reflection.MethodBase, System.Reflection.MethodInfo[], Type[], Reach)>());
+    private static volatile ChainAnswer _chainAnswer = new(Reach.None, Reach.None, long.MinValue / 2, -1, Array.Empty<(System.Reflection.MethodBase, System.Reflection.MethodInfo[], Type[], Reach)>());
 
     /// <summary>
     /// The chain's card methods run on the inner card itself: the upgrade cap (get_MaxUpgradeLevel, the card's own), so a patch
@@ -379,16 +382,23 @@ public static class LimitlessCloneMemo
     /// or dropped. The groups are judged per content (<see cref="ChainPatchedFor"/>). Answered from a result rechecked each second
     /// and at each patch stamp.
     /// </summary>
-    internal static bool ChainPatched() => (CurrentChainAnswer().Patched & Reach.Spine) != 0;
+    /// <param name="memo">This memo's own question (G3: constant-result postfixes on chain getters don't count), not the drops'.</param>
+    internal static bool ChainPatched(bool memo = false) => ((memo ? CurrentChainAnswer().MemoPatched : CurrentChainAnswer().Patched) & Reach.Spine) != 0;
 
     /// <summary>
     /// For a content of that card type reaching those groups: a patched group it reaches, or a gated card method of a group it
     /// reaches whose gate the card's type matches (then the strict check of that method answers and records the back-off).
+    /// <paramref name="memo"/>: this memo's question (G3), where a group patched only by constant-result postfixes on its getters
+    /// doesn't count: a kept content's build is the one made under that same patch set (the memo is cleared when
+    /// <see cref="PatchStamp"/> changes; a build that throws is never kept), and such a postfix reads, writes and calls nothing, so
+    /// building again would give the same saved card. Not for LimitlessHookSkip's drops (they skip the build the game's code does
+    /// and keep the old saved list: a constant <c>get_CurrentUpgradeLevel</c> makes the game's forwarder rewrite it; a
+    /// <c>get_MaxUpgradeLevel</c> below a saved level throws in <c>set_CurrentUpgradeLevel</c>).
     /// </summary>
-    internal static bool ChainPatchedFor(Type cardType, Reach reach)
+    internal static bool ChainPatchedFor(Type cardType, Reach reach, bool memo = false)
     {
         ChainAnswer answer = CurrentChainAnswer();
-        if ((answer.Patched & (reach | Reach.Spine)) != 0)
+        if (((memo ? answer.MemoPatched : answer.Patched) & (reach | Reach.Spine)) != 0)
         {
             return true;
         }
@@ -423,6 +433,7 @@ public static class LimitlessCloneMemo
         // Until the allowed patches' callees are known (a worker reads them at Apply), every group counts as patched. SecondEnchant isn't
         // judged here (no entry holds it): its contents are never kept (KnownTypes, ContentPatched).
         Reach patched = _allowedCallees == null ? Reach.Spine | Reach.Enchant | Reach.Upgrade : Reach.None;
+        Reach memoPatched = patched;
         var gated = new List<(System.Reflection.MethodBase, System.Reflection.MethodInfo[], Type[], Reach)>();
         foreach ((System.Reflection.MethodBase method, Reach reach) in _allowedCallees ?? Array.Empty<(System.Reflection.MethodBase, Reach)>())
         {
@@ -430,36 +441,69 @@ public static class LimitlessCloneMemo
             if ((patched & reach) != reach && (PatchSafety.IsPatchedByOthers(method) || InstancePatched(method, m => PatchSafety.IsPatchedByOthers(m))))
             {
                 patched |= reach;
+                memoPatched |= reach;
             }
         }
+        var constants = new List<string>();
         foreach ((System.Reflection.MethodBase method, System.Reflection.MethodInfo[] allowed, bool isGated, Reach reach) in ChainMethods())
         {
             // Every group asked (each records its back-off); a method only reached inside a closure is judged there.
-            if (reach == Reach.None || (patched & reach) == reach)
+            if (reach == Reach.None || ((patched & reach) == reach && (memoPatched & reach) == reach))
             {
                 continue;
             }
+            bool strict;
+            System.Reflection.MethodInfo[] allowedNow = isGated ? allowed : AllowedNow(method, allowed);
             if (isGated)
             {
-                if (PatchSafety.IsPatchedByOthers(method, allowed, out Type[] gates))
-                {
-                    patched |= reach;
-                }
-                else if (gates.Length > 0)
+                strict = PatchSafety.IsPatchedByOthers(method, allowed, out Type[] gates);
+                if (!strict && gates.Length > 0)
                 {
                     gated.Add((method, allowed, gates, reach));
                 }
             }
             // No tolerance: the clone chain is skipped for a kept content (CardCmd.Enchant<T>: each patched instantiation too).
-            else if (PatchSafety.IsPatchedByOthers(method, AllowedNow(method, allowed))
-                || InstancePatched(method, m => PatchSafety.IsPatchedByOthers(m, AllowedNow(method, allowed))))
+            else
             {
-                patched |= reach;
+                strict = PatchSafety.IsPatchedByOthers(method, allowedNow) || InstancePatched(method, m => PatchSafety.IsPatchedByOthers(m, allowedNow));
+            }
+            if (!strict)
+            {
+                continue;
+            }
+            patched |= reach;
+            // G3 (2026-11-21): a chain getter whose other mods' patches are all constant-result postfixes stays this memo's.
+            if (PatchSafety.ConstantResultPostfixesOnly(method, allowedNow, out string[] constantMods))
+            {
+                constants.Add($"{method.DeclaringType?.Name}.{method.Name} ({string.Join(", ", constantMods)})");
+            }
+            else
+            {
+                memoPatched |= reach;
             }
         }
-        answer = new ChainAnswer(patched, now, stamp, gated.ToArray());
+        LogConstants(constants);
+        answer = new ChainAnswer(patched, memoPatched, now, stamp, gated.ToArray());
         _chainAnswer = answer;
         return answer;
+    }
+
+    private static string _constantsLogged = "";
+
+    /// <summary>Logs the chain getters G3 lets the memo keep, once per change (display only).</summary>
+    private static void LogConstants(List<string> constants)
+    {
+        string text = string.Join("; ", constants);
+        if (text == _constantsLogged)
+        {
+            return;
+        }
+        _constantsLogged = text;
+        if (text.Length > 0)
+        {
+            Log.Info($"[{ModEntry.Id}] {Name}: {text}: patched only with a constant result, kept by this memo for the contents reaching it "
+                + $"(their builds give the same saved card); {LimitlessHookSkip.Name}'s drops still back off there");
+        }
     }
 
     /// <summary>
@@ -1274,10 +1318,17 @@ public static class LimitlessCloneMemo
         Type cardType = _cardTypeOf[cardId];
         Reach reach = ReachOf(saved, cardType);
         // A second enchantment's way (a card other than the storage card) isn't judged: never kept, nothing recorded.
-        if ((reach & Reach.SecondEnchant) != 0 || OverridesPatched(card) || ChainPatchedFor(cardType, reach))
+        if ((reach & Reach.SecondEnchant) != 0 || OverridesPatched(card) || ChainPatchedFor(cardType, reach, memo: true))
         {
             return false;
         }
+#if BENCH
+        // G3's effect: a content this memo keeps only because the groups it reaches are patched with constant results alone.
+        if (ChainPatchedFor(cardType, reach))
+        {
+            ConstantKept++;
+        }
+#endif
         if (saved.Enchantment == null)
         {
             return true;
@@ -1304,6 +1355,9 @@ public static class LimitlessCloneMemo
     /// <summary>Contents kept now, and memo clears because the patch set changed (rule L's stamp) while it held some.</summary>
     internal static int MemoCount => _memo.Count;
     public static long PatchStampClears;
+
+    /// <summary>G3: content judgments kept by this memo that the strict chain answer (LimitlessHookSkip's) refuses.</summary>
+    public static long ConstantKept;
 #endif
 
     /// <summary>The card type each saved id makes (filled by <see cref="CardTypeOf"/> before its overrides are cached). Main thread.</summary>
@@ -1351,7 +1405,7 @@ public static class LimitlessCloneMemo
     {
         if (!Enabled || ListenerCache.IsSuspended || LimitlessReserialize.Faulted || !LimitlessReserialize.CanCompareHere || !GameChainKnown() || LimitlessReserialize.PatchedByOthers()
             // No tolerance: the lambda is skipped for a kept content.
-            || PatchSafety.IsPatchedByOthers(_lambda) || ChainPatched())
+            || PatchSafety.IsPatchedByOthers(_lambda) || ChainPatched(memo: true))
         {
             return -1;
         }
