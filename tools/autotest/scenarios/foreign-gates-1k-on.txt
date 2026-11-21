@@ -23,6 +23,7 @@
 # G6 (2026-11-21): a gated C# postfix starting an async method whose MoveNext reaches an impure beforefieldinit initializer
 # (YutaMod's AfterDeath shape) on AfterSideTurnEnd: kept (the .NET 9 JIT never inlines that MoveNext). Control: the same through
 # an iterator (BeforeSideTurnEnd).
+# G2 (2026-11-21): a back-off's log line names each refused patch and why (the G1 control's initializer).
 # CHECKSUM and STATE lines identical with the off side. ~945 cards.
 expect FOREIGN gates selftest: \d+ cases as expected
 expect HookSkip: Hook\.AfterCardPlayed is also patched by bdtest\.foreign\.gates-passthrough-finalizer \(prefixes and postfixes around the transpiled body: run around this mod's code as without it\): kept
@@ -65,6 +66,7 @@ expect FOREIGN runtime HookSkip AbstractModel\.BeforeHandDraw \(TypeGated\) kept
 expect HookSkip: AbstractModel\.AfterSideTurnEnd is also patched by bdtest\.foreign\.gates-async-postfix \(patches gated on the listener's type: Squeeze treated as overriding it
 expect HookSkip: AbstractModel\.BeforeSideTurnEnd is also patched by bdtest\.foreign\.gates-iterator-postfix \(patches gated on the listener's type not enough\)
 expect FOREIGN runtime HookSkip AbstractModel\.AfterSideTurnEnd \(TypeGated\) kept [1-9]
+expect HookSkip: AbstractModel\.AfterCardDiscarded is also patched by .*: normal game for that part \(refused: bdtest\.foreign\.gates-modcomparer-postfix's init_g1_mod_comparer_\d+\.Patch: postfix gated, but its class init_g1_mod_comparer_\d+ has a static initializer
 timeout 1500
 newrun NECROBINDER 1234
 waitfor run 120

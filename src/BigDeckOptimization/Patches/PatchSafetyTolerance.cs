@@ -239,9 +239,11 @@ public static partial class PatchSafety
         public readonly string[] Mods;
         public readonly string[] ToleratedMods;
         public readonly Type[] Gates;
+        /// <summary>Why each refused patch was refused (G2: the back-off's log line), or null.</summary>
+        public readonly string? Detail;
         public readonly string?[] LoggedFor = new string?[4];
 
-        public TolerantAnswer(bool patched, int epoch, long checkedAt, string[] mods, string[] toleratedMods, Type[] gates)
+        public TolerantAnswer(bool patched, int epoch, long checkedAt, string[] mods, string[] toleratedMods, Type[] gates, string? detail)
         {
             Patched = patched;
             Epoch = epoch;
@@ -249,6 +251,7 @@ public static partial class PatchSafety
             Mods = mods;
             ToleratedMods = toleratedMods;
             Gates = gates;
+            Detail = detail;
         }
     }
 
@@ -353,7 +356,7 @@ public static partial class PatchSafety
         {
             if (cached.Patched || _anyConflict)
             {
-                RecordOnce(caller, method, cached.Mods, tolerance);
+                RecordOnce(caller, method, cached.Mods, tolerance, cached.Detail);
             }
             if (!cached.Patched && cached.ToleratedMods.Length > 0)
             {
@@ -397,26 +400,30 @@ public static partial class PatchSafety
         var remaining = new List<Patch>();
         var tolerated = new List<Patch>();
         var gateList = new List<Type>();
+        // G2 (2026-11-21): each refused patch's reason, for the back-off's log line (not the menu).
+        var reasons = new List<string>();
         foreach ((Patch patch, PatchKind kind) in others)
         {
             if (PatchMethodOf(patch) is { } patchMethod && allowedPatches.Any(a => a.MethodHandle == patchMethod.MethodHandle))
             {
                 continue;
             }
-            if (Intolerable(method, info!, patch, kind, tolerance, gateList) == null)
+            if (Intolerable(method, info!, patch, kind, tolerance, gateList) is not { } why)
             {
                 tolerated.Add(patch);
             }
             else
             {
                 remaining.Add(patch);
+                reasons.Add($"{ModName(patch)}'s {(PatchMethodOf(patch) is { } refused ? refused.DeclaringType?.Name + "." + refused.Name : patch.owner)}: {why}");
             }
         }
         string[] mods = WithHidden(method, ModNames(remaining));
         string[] toleratedMods = ModNames(tolerated);
         Type[] gateTypes = mods.Length > 0 ? Type.EmptyTypes : gateList.Distinct().ToArray();
-        RecordOnce(caller, method, mods, tolerance);
-        var answer = new TolerantAnswer(mods.Length > 0, epoch, now, mods, toleratedMods, gateTypes);
+        string? detail = reasons.Count > 0 ? string.Join("; ", reasons) : null;
+        RecordOnce(caller, method, mods, tolerance, detail);
+        var answer = new TolerantAnswer(mods.Length > 0, epoch, now, mods, toleratedMods, gateTypes, detail);
         _tolerant[(method, key, tolerance)] = answer;
         if (mods.Length == 0 && toleratedMods.Length > 0)
         {
@@ -1860,7 +1867,8 @@ public static partial class PatchSafety
 
     /// <summary>
     /// Why <see cref="TypeGates(MethodInfo, PatchKind, MethodBase?)"/> gives no gate, for the log: the IL shape first (a patch not
-    /// gated is told so, whatever its class), then the type initializers it may run (<see cref="InitializersFree"/>).
+    /// gated is told so, whatever its class), then the type initializers it may run (<see cref="InitializersFree"/>), the methods
+    /// its no-op path calls, and its name gates that didn't resolve.
     /// </summary>
     private static string GateRefusal(MethodInfo patch, PatchKind kind, MethodBase original, string listener)
     {
@@ -1883,6 +1891,13 @@ public static partial class PatchSafety
         if (shaped && PatchedPathCallee(gateKey) is { } callee)
         {
             return $"{KindText(kind, patch)} gated, but {callee.DeclaringType?.Name}.{callee.Name}, which it calls on every call, is patched (its code isn't the one read)";
+        }
+        // G2 (2026-11-21): the shape passed with name gates (the reflection-reads premise) that TypeGates couldn't resolve to loaded types.
+        if (shaped && _gates.TryGetValue(gateKey, out Type[]? shape) && shape != null && Array.IndexOf(shape, typeof(NameGateMarker)) >= 0)
+        {
+            string names = _gateNames.TryGetValue(gateKey, out (bool Full, string Name)[]? gateNames) ? string.Join(", ", gateNames.Select(n => n.Name)) : "unrecorded";
+            return $"{KindText(kind, patch)} gated on a type's name ({names}), but that name can't be resolved to the loaded types"
+                + (TypesNamedFailure is { } failure ? $" (the last type scan failed: {failure})" : " (a generic or closed generic name, a type still being built, or an unreadable assembly)");
         }
         return $"{KindText(kind, patch)} not provably gated on the listener's type" + listener;
     }

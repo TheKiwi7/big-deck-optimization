@@ -427,7 +427,7 @@ public static class ForeignShapesGates
         });
 
     /// <summary>Debug IL of the name test <c>if (__instance.GetType().Name != "Squeeze") return; Hit(key);</c>: a name gate.</summary>
-    private static MethodInfo DebugNameGatedPostfix(string key) => Emit("debug_name_gated_postfix", typeof(void), InstanceOnly, il =>
+    private static MethodInfo DebugNameGatedPostfix(string key, string typeName = "Squeeze") => Emit("debug_name_gated_postfix", typeof(void), InstanceOnly, il =>
     {
         il.DeclareLocal(typeof(bool));
         Label work = il.DefineLabel(), end = il.DefineLabel();
@@ -435,7 +435,7 @@ public static class ForeignShapesGates
         il.Emit(OpCodes.Ldarg_0);
         il.Emit(OpCodes.Callvirt, typeof(object).GetMethod(nameof(GetType))!);
         il.Emit(OpCodes.Callvirt, typeof(MemberInfo).GetProperty(nameof(MemberInfo.Name))!.GetGetMethod()!);
-        il.Emit(OpCodes.Ldstr, "Squeeze");
+        il.Emit(OpCodes.Ldstr, typeName);
         il.Emit(OpCodes.Call, typeof(string).GetMethod("op_Inequality", new[] { typeof(string), typeof(string) })!);
         il.Emit(OpCodes.Stloc_0);
         il.Emit(OpCodes.Ldloc_0);
@@ -1372,7 +1372,7 @@ public static class ForeignShapesGates
     // --- The self-test ---
 
     private readonly record struct Case(string Name, MethodInfo Patch, PatchSafety.PatchKind Kind, MethodBase Original, PatchTolerance Tolerance,
-        bool Stands, string? Gates = null, Action? Before = null, Action? After = null);
+        bool Stands, string? Gates = null, Action? Before = null, Action? After = null, string? Why = null);
 
     private static IEnumerable<Case> Cases()
     {
@@ -1406,6 +1406,9 @@ public static class ForeignShapesGates
         {
             yield return new Case("E Debug name test", DebugNameGatedPostfix("selftest"), postfix, model, gated, true, "Squeeze");
         }
+        // G2 (2026-11-21): a name gate that can't be resolved (a generic arity's name) is told so, not "not provably gated".
+        yield return new Case("G2 control: a name gate that can't be resolved (List`1) names it", DebugNameGatedPostfix("selftest", "List`1"), postfix, model, gated, false,
+            Why: "gated on a type's name (List`1), but that name can't be resolved");
         yield return new Case("E control: passthrough returning a constant", PassthroughPostfix("selftest", constant: true), postfix, model, gated, false);
         yield return new Case("E control: passthrough's first parameter not named __result", PassthroughPostfix("selftest", name: "result"), postfix, model, gated, false);
         yield return new Case("E control: a branch on another argument", GateControl("unknown-branch"), postfix, model, gated, false);
@@ -1532,12 +1535,12 @@ public static class ForeignShapesGates
                 c.After?.Invoke();
             }
             string found = string.Join("|", gates.Select(g => g.Name).Distinct().OrderBy(n => n, StringComparer.Ordinal));
-            bool ok = (why == null) == c.Stands && (c.Gates == null || c.Gates == found);
+            bool ok = (why == null) == c.Stands && (c.Gates == null || c.Gates == found) && (c.Why == null || (why?.Contains(c.Why, StringComparison.Ordinal) ?? false));
             string verdict = why == null ? "stands" + (found.Length > 0 ? " gated on " + found : "") : "backs off (" + why + ")";
             lines.Add($"FOREIGN gates selftest {(ok ? "ok" : "WRONG")}: {c.Name}: {verdict}");
             if (!ok)
             {
-                failures.Add($"{c.Name}: {verdict}, expected {(c.Stands ? "stands" + (c.Gates != null ? " gated on " + c.Gates : "") : "a back-off")}");
+                failures.Add($"{c.Name}: {verdict}, expected {(c.Stands ? "stands" + (c.Gates != null ? " gated on " + c.Gates : "") : "a back-off" + (c.Why != null ? " saying " + c.Why : ""))}");
             }
         }
         if (failures.Count > 0)
