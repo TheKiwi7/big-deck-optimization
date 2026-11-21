@@ -1187,8 +1187,9 @@ public static partial class HookSkip
             // machine: a patch there can read the machine's fields, the walk's enumerator among them, which the redirect makes
             // another object (strict, below). A postfix of an async hook subscribing to ExecutionFinished: Entry.Subscribed.
             // Invariant with HookFilter: on the hooks it mirrors (a bool prefix of this mod skipping the original), what
-            // BeforeReplace refuses (postfixes reading __runOriginal or __args or writing by reference, prefixes sorted after the
-            // mirror) stands here only because FilteredHook.IsSafe checks the same method with BeforeReplace (once per
+            // BeforeReplace refuses (postfixes reading __runOriginal or __args or writing by reference, but an out argument the
+            // mirror declares it reproduces: ShouldPlay's preventer since G4, 2026-11-21, where both bodies assign it as the game's;
+            // prefixes sorted after the mirror) stands here only because FilteredHook.IsSafe checks the same method with BeforeReplace (once per
             // ListenerCache scope), turning the mirror off (the original, transpiled, runs) whenever another mod has one there:
             // a change to either check needs the other.
             // Other mods' transpilers on the transpiled code stand only when TranspilerJudge accepts what they produce (inserted
