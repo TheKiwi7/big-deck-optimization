@@ -1358,7 +1358,11 @@ PileIndex's AddInternal transpiler back to its v1.2.0 default priority (it takes
 Battery `release` on the final tree (both versions, 113 min): 42 of 47 steps passed at once; the 5 others failed on test artifacts,
 fixed (expect lines before a version gate in `savecheck-on/off` and `deckcount-wah-serve-on`, `sortkeys-partonly-10k` without its
 gate, the synthetic hover tip without its Hotkey variable, three mutations' expected losses missing ExtraScopes) and rerun. Reruns of
-the five steps: see the final report.
+the five steps on the final tree (with PileIndex's AddInternal transpiler back at its v1.2.0 priority), both versions: the whole
+`solo-new` list plus savecheck-on/off/wrong/bench and ab-2k-on/off, 0 problems once `foreign-firstturn-controls` declared
+HarmonyWatch's warning about its stand-in control (which patches this mod's own ToListInScope on purpose); mutations pile-writer,
+rename-method, orb-enqueue, combat-contains, read-file, dynvar-tryget (v0.113 only), card-redraw, pile-add, pile-remove 8/8 (v0.111.1)
+and 9/9 (v0.113.1) as expected. Every step of the battery has now passed on both versions.
 
 
 **DeckCountMemo scoped to the card redraw (2026-11-21, owner-approved direction).** The tag premise of the shipped kinds ("a
