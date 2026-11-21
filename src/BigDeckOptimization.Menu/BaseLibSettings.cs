@@ -48,6 +48,7 @@ public sealed class BaseLibSettings : SimpleModConfig
     public static bool Listeners { get => Get(nameof(Listeners)); set => Apply(nameof(Listeners), value); }
     public static bool HookSkip { get => Get(nameof(HookSkip)); set => Apply(nameof(HookSkip), value); }
     public static bool HoverTips { get => Get(nameof(HoverTips)); set => Apply(nameof(HoverTips), value); }
+    public static bool SaveCheck { get => Get(nameof(SaveCheck)); set => Apply(nameof(SaveCheck), value); }
     // Optimizations of other mods' code (Limitless, BaseLib), at the bottom.
     [ConfigIgnoreRestoreDefaults]
     public static bool LimitlessTabs { get => Shown(nameof(LimitlessTabs)); set => ApplyShown(nameof(LimitlessTabs), value); }
