@@ -2,6 +2,8 @@
 # The game's own check of the previous save runs at every save: the part's effect counter must stay at 0. The runstate and
 # savefiles lines (the run save and its .backup) must match savecheck-on.
 timeout 1800
+# The run save was written and is a whole file (never "absent": the comparison with the other side would then pass on nothing).
+expect STATE savefiles map 4: current_run\.save whole, content [0-9A-F]+;
 requiregame v0.113
 cmd bdopt save_check off
 savefiles before the run

@@ -180,7 +180,7 @@ public static class CombatCardsBench
         ok = true;
         if (!PileIndex.Applied)
         {
-            return $"{PileIndex.Name} not applied (see the log): single scan not compared";
+            return $"{PileIndex.Name} not applied (see the log): single scan not compared: nothing to compare";
         }
         List<CardModel> cards = new[] { PileType.Draw, PileType.Discard }.SelectMany(p => p.GetPile(me).Cards).ToList();
         var random = new Random(1234);
@@ -190,6 +190,9 @@ public static class CombatCardsBench
             int k = random.Next(j + 1);
             (order[j], order[k]) = (order[k], order[j]);
         }
+        // The last few cards stay: both lists end holding them (in the same order), so the final comparison reads something.
+        int kept = Math.Min(3, order.Count / 2);
+        order.RemoveRange(order.Count - kept, kept);
         double gameMs = 0, scanMs = 0;
         long scans = 0;
         int different = 0;
@@ -232,17 +235,17 @@ public static class CombatCardsBench
                     }
                 }
             }
-            different += game.SequenceEqual(mine, ReferenceEqualityComparer.Instance) ? 0 : 1;
+            different += game.Count == cards.Count - order.Count && game.SequenceEqual(mine, ReferenceEqualityComparer.Instance) ? 0 : 1;
         }
         if (different > 0 || !PileIndex.SingleScanEnabled)
         {
             ok = different == 0;
-            return different > 0 ? $"RemoveInternal MISMATCH: the lists differ after a remove" : "RemoveInternal single scan switched off: not compared";
+            return different > 0 ? $"RemoveInternal MISMATCH: the lists differ after a remove" : "RemoveInternal single scan switched off: not compared: the game's searches only";
         }
         if (scans == 0 && cards.Count > 0)
         {
             return "RemoveInternal: the single scan ran for none of the removes (switched off, faulted, or a card type overriding Equals): nothing to compare";
         }
-        return $"RemoveInternal of {cards.Count} cards in a shuffled order: game {gameMs / passes:F2} ms, single scan {scanMs / passes:F2} ms per pass: OK: identical lists";
+        return $"RemoveInternal of {order.Count} of {cards.Count} cards in a shuffled order: game {gameMs / passes:F2} ms, single scan {scanMs / passes:F2} ms per pass: OK: identical lists";
     }
 }

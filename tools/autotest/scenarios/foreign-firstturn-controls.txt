@@ -9,9 +9,8 @@
 # on the Innate lambda (il-firstturn-lambda), combat 4 on the ToList stand-in (il-firstturn-standin): strict, both filters backed
 # off. Combat 5: il-firstturn-undo sorted after this mod's transpiler puts the Where stand-ins back to the game's call: nothing
 # marked, both filters without a scope (plain ToList). Every filter's cards identical to the same query run vanilla (the bench's
-# own comparison). Then the stand-ins' self-test over the combat cards (the game's shape scoped; another predicate, the other
-# filter's lambda, a combined delegate, an array or a subclass as source, an array left out, the part off: no scope; another
-# consumer gets the BCL's own object; the game's cards and argument exceptions in every case).
+# own comparison). The stand-ins' self-test is
+# firstturn-selftest's: its refused cases log the very note texts expected above, so it never runs in this session.
 timeout 2400
 expect FIRSTTURN imbued 4 of 4 deck cards
 expect FIRSTTURN scopes 1, refused source 0, predicate 1, except 0, plain ToList 1, backed off 0, scope failed 0, on True, faulted False
@@ -23,7 +22,6 @@ expect ExtraScopes first-turn filter \(in a scope\): [1-9][0-9]* cards, .*OK: id
 expect ExtraScopes first-turn filter \(without a scope\): [1-9][0-9]* cards, .*OK: identical to vanilla
 expect ExtraScopes: the first turn's Innate card filter is given another predicate than the game's: that filter runs without a scope
 expect ExtraScopes: the first turn's bottom-of-pile card filter reads another collection than the game's draw pile list: that filter runs without a scope
-expect FIRSTTURN selftest: [0-9]+ cases as expected
 newrun NECROBINDER 1234
 waitfor run 120
 wait 2
@@ -80,7 +78,6 @@ cmd fight CULTISTS_NORMAL
 waitfor idle 600
 wait 1
 cmd bdperf firstturn status
-cmd bdperf firstturn selftest
 cmd bdopt why
 cmd kill all
 waitfor nocombat 300

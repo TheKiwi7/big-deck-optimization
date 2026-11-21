@@ -1,0 +1,23 @@
+# ExtraScopes' stand-ins' self-test (bdperf firstturn selftest, DESIGN "ExtraScopes' first turn decided at run time"): over the
+# combat cards of one fight, the game's shape scoped; another predicate, the other filter's lambda, a combined delegate, an array or a
+# subclass as source, an array left out, the part off: no scope; another consumer gets the BCL's own object; the game's cards and
+# argument exceptions in every case. Its own session: the refused cases record and log the first-turn notes foreign-firstturn-controls
+# expects from real refused queries. ~1,016 cards, 16 Backstab (Innate), 4 deck cards with Imbued (bottom of the draw pile).
+timeout 1200
+expect FIRSTTURN selftest: [0-9]+ cases as expected
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck 1000
+cmd bigdeck 1016 BACKSTAB
+cmd bdperf firstturn imbue 4
+enemyhp 999999
+immortal
+cmd fight CULTISTS_NORMAL
+waitfor idle 600
+wait 1
+cmd bdperf firstturn selftest
+cmd bdperf firstturn status
+cmd kill all
+waitfor nocombat 300
+quit

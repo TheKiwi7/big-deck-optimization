@@ -114,34 +114,34 @@ public static class SaveCheckBench
     /// <summary>Byte sequences on both sides of the gate, written to a scratch file and read back by Godot.</summary>
     private static bool Synthetic(StringBuilder report)
     {
-        var cases = new List<(string Name, byte[] Bytes)>
+        var cases = new List<(string Name, byte[] Bytes, bool InGate)>
         {
-            ("whole", Utf8("{\"a\":1,\"b\":[true,null,\"x\"]}")),
-            ("crlf", Utf8("{\r\n  \"a\": [1, 2],\r\n  \"b\": \"c\\r\\n\"\r\n}\r\n")),
-            ("non-ascii", Utf8("{\"é\":\"日本語\",\"emoji\":\"\U0001F600\",\"nbsp\":\" \"}")),
+            ("whole", Utf8("{\"a\":1,\"b\":[true,null,\"x\"]}"), true),
+            ("crlf", Utf8("{\r\n  \"a\": [1, 2],\r\n  \"b\": \"c\\r\\n\"\r\n}\r\n"), true),
+            ("non-ascii", Utf8("{\"é\":\"日本語\",\"emoji\":\"\U0001F600\",\"nbsp\":\" \"}"), true),
             // Noncharacters and the last code point: valid UTF-8 the gate lets in, so Godot must decode them as they are.
-            ("noncharacters", Utf8("[\"￾￿﷐\U0010FFFF\"]")),
-            ("bom-inside", Utf8("{\"a\":\"﻿\"}")),
-            ("cut", Utf8("{\"a\":[1,2")),
-            ("depth-64", Utf8(new string('[', 64) + new string(']', 64))),
-            ("depth-65", Utf8(new string('[', 65) + new string(']', 65))),
-            ("comment", Utf8("{/*x*/\"a\":1}")),
-            ("trailing-comma", Utf8("{\"a\":1,}")),
-            ("two-values", Utf8("{} {}")),
-            ("empty", Array.Empty<byte>()),
-            ("whitespace", Utf8(" \r\n\t ")),
-            ("bom", new byte[] { 0xEF, 0xBB, 0xBF }.Concat(Utf8("{\"a\":1}")).ToArray()),
-            ("nul", Utf8("{\"a\":1}").Append((byte)0).Concat(Utf8("garbage")).ToArray()),
-            ("invalid-utf8", new byte[] { (byte)'{', (byte)'"', (byte)'a', (byte)'"', (byte)':', (byte)'"', 0xFF, (byte)'"', (byte)'}' }),
-            ("surrogate", new byte[] { (byte)'[', (byte)'"', 0xED, 0xA0, 0x80, (byte)'"', (byte)']' }),
-            ("overlong", new byte[] { (byte)'[', (byte)'"', 0xC0, 0xAF, (byte)'"', (byte)']' }),
-            ("cut-utf8", new byte[] { (byte)'[', (byte)'"', 0xE6, 0x97 }),
+            ("noncharacters", Utf8("[\"￾￿﷐\U0010FFFF\"]"), true),
+            ("bom-inside", Utf8("{\"a\":\"﻿\"}"), false),
+            ("cut", Utf8("{\"a\":[1,2"), true),
+            ("depth-64", Utf8(new string('[', 64) + new string(']', 64)), true),
+            ("depth-65", Utf8(new string('[', 65) + new string(']', 65)), true),
+            ("comment", Utf8("{/*x*/\"a\":1}"), true),
+            ("trailing-comma", Utf8("{\"a\":1,}"), true),
+            ("two-values", Utf8("{} {}"), true),
+            ("empty", Array.Empty<byte>(), true),
+            ("whitespace", Utf8(" \r\n\t "), true),
+            ("bom", new byte[] { 0xEF, 0xBB, 0xBF }.Concat(Utf8("{\"a\":1}")).ToArray(), false),
+            ("nul", Utf8("{\"a\":1}").Append((byte)0).Concat(Utf8("garbage")).ToArray(), false),
+            ("invalid-utf8", new byte[] { (byte)'{', (byte)'"', (byte)'a', (byte)'"', (byte)':', (byte)'"', 0xFF, (byte)'"', (byte)'}' }, false),
+            ("surrogate", new byte[] { (byte)'[', (byte)'"', 0xED, 0xA0, 0x80, (byte)'"', (byte)']' }, false),
+            ("overlong", new byte[] { (byte)'[', (byte)'"', 0xC0, 0xAF, (byte)'"', (byte)']' }, false),
+            ("cut-utf8", new byte[] { (byte)'[', (byte)'"', 0xE6, 0x97 }, false),
         };
         DirAccess.MakeDirRecursiveAbsolute(ScratchDir);
         string path = ScratchDir + "/synthetic.json";
         bool ok = true;
         var words = new List<string>();
-        foreach ((string name, byte[] bytes) in cases)
+        foreach ((string name, byte[] bytes, bool inGate) in cases)
         {
             Write(path, bytes);
             using Godot.FileAccess? file = Godot.FileAccess.Open(path, Godot.FileAccess.ModeFlags.Read);
@@ -154,11 +154,12 @@ public static class SaveCheckBench
             string text = file.GetAsText();
             bool game = SaveBackupCheck.GameIsWhole(text);
             int verdict = SaveBackupCheck.Verdict(bytes);
-            bool inGate = SaveBackupCheck.InGate(bytes);
             // Inside the gate, the premise itself: Godot's text is the UTF-8 decoding of the bytes.
             bool sameText = !inGate || text == Encoding.UTF8.GetString(bytes);
             // Outside the gate: no verdict (the game's check runs). Inside: the game's verdict.
-            bool agree = verdict == SaveBackupCheck.NoVerdict ? !inGate : inGate && (verdict == SaveBackupCheck.Whole) == game;
+            // The gate itself is pinned per case (as SaveReadBench does): the part's own InGate must say the same.
+            bool agree = inGate == SaveBackupCheck.InGate(bytes)
+                && (verdict == SaveBackupCheck.NoVerdict ? !inGate : inGate && (verdict == SaveBackupCheck.Whole) == game);
             if (!sameText || !agree)
             {
                 ok = false;

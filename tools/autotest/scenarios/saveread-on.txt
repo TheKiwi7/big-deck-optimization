@@ -6,6 +6,8 @@
 # also compared with the game's GetAsText by the part's own net in test builds (a difference turns it off with an error line, and
 # the counters line fails). Both game versions.
 timeout 1800
+# The run save was written and is a whole file (never "absent": the comparison with the other side would then pass on nothing).
+expect STATE savefiles room done: current_run\.save whole, content [0-9A-F]+;
 savefiles before the run
 newrun NECROBINDER 1234
 waitfor run 120

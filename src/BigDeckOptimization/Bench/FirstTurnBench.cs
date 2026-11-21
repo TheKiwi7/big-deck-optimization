@@ -23,7 +23,8 @@ namespace BigDeckOptimization.Bench;
 /// lambdas and with near misses: each case must give the game's own LINQ result, and a scope exactly when the query is the game's
 /// shape (a <c>List&lt;CardModel&gt;</c> source, that filter's game lambda as made by the game, a <c>List&lt;CardModel&gt;</c> to
 /// leave out). The effect counters are put back by the caller (only the game's calls count), the bench's vanilla comparison is
-/// paused (its log lines are the real first turn's), and the notes the refused cases record are cleared at the end.</item>
+/// paused (its log lines are the real first turn's), and each note key goes back to what it held before the test (the refused cases
+/// log the very note texts of a real refused query: a scenario checking those texts must not run this test).</item>
 /// <item><c>imbue &lt;n&gt;</c> (outside combat): the first <c>n</c> deck cards Imbued can enchant (not enchanted yet) enchanted with
 /// it, through the game's <c>CardCmd.Enchant</c>: a bottom-of-pile enchantment for the first turn's filter. Deterministic (deck
 /// order), this peer only.</item>
@@ -83,6 +84,26 @@ public static class FirstTurnBench
 
     private static readonly Func<CardModel, bool> OwnInnate = c => c.Keywords.Contains(CardKeyword.Innate);
 
+    private static readonly string[] NoteKeys = { "first_turn_bottom", "first_turn_innate" };
+
+    /// <summary>PatchSafety's private note table (ConcurrentDictionary of (patch, key) to (text, mods, whole)), as the non-generic IDictionary.</summary>
+    private static System.Collections.IDictionary? NoteTable() =>
+        Reflect.Field(typeof(PatchSafety), "_notes")?.GetValue(null) as System.Collections.IDictionary;
+
+    private static object? ReadNote(string key) => NoteTable() is { } table && table.Contains((ExtraScopes.Name, key)) ? table[(ExtraScopes.Name, key)] : null;
+
+    private static void RestoreNote(string key, object? value)
+    {
+        if (value != null && NoteTable() is { } table)
+        {
+            table[(ExtraScopes.Name, key)] = value;
+        }
+        else
+        {
+            PatchSafety.ClearNote(ExtraScopes.Name, key);
+        }
+    }
+
     private static CmdResult SelfTest()
     {
         if (!CombatManager.Instance.IsInProgress || RunManager.Instance.DebugOnlyGetState() is not { } run || LocalContext.GetMe(run) is not { } me)
@@ -103,6 +124,8 @@ public static class FirstTurnBench
 
         var failures = new List<string>();
         int cases = 0;
+        // The notes the first turn's real queries recorded before this test stay: the refused cases below record (and clear) their own.
+        var notesBefore = NoteKeys.Select(key => (Key: key, Value: ReadNote(key))).ToList();
         // Filter 0 (bottom of the draw pile) goes through WhereFirstFilter, filter 1 (Innate) through WhereSecondFilter.
         IEnumerable<CardModel> Where(int filter, IEnumerable<CardModel> source, Func<CardModel, bool> predicate) =>
             filter == 0 ? ExtraScopes.WhereFirstFilter(source, predicate) : ExtraScopes.WhereSecondFilter(source, predicate);
@@ -198,10 +221,10 @@ public static class FirstTurnBench
         {
             ExtraScopes.Enabled = enabled;
             ExtraScopes.BenchChecks = checks;
-            // The refused cases' notes are this test's own.
-            foreach (string key in new[] { "first_turn_bottom", "first_turn_innate" })
+            // The refused cases' notes are this test's own: each key goes back to what it held before (nothing: cleared).
+            foreach ((string key, object? value) in notesBefore)
             {
-                PatchSafety.ClearNote(ExtraScopes.Name, key);
+                RestoreNote(key, value);
             }
         }
         string summary = $"{cards.Count} combat cards, {bottoms.Count} bottom-of-pile, {innates} Innate";

@@ -7,6 +7,8 @@
 # [1-9]`), no mismatch.
 # compare-with: saveread-off
 timeout 1800
+# The run save was written and is a whole file (never "absent": the comparison with the other side would then pass on nothing).
+expect STATE savefiles room done: current_run\.save whole, content [0-9A-F]+;
 expect SAVEREAD counters decoded [0-9]+ \(run saves [1-9][0-9]*\), checks [1-9][0-9]*, mismatches 0, served without the game's read [1-9][0-9]*;
 cmd bdperf saveread verify 1000
 savefiles before the run
