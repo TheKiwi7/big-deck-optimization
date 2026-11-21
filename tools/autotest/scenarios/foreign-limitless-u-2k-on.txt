@@ -19,6 +19,9 @@ expect FOREIGN reach end storage Sharp 0: kept True, reaches Spine, Enchant, hoo
 expect FOREIGN reach end storage Sharp 1: kept True, reaches Spine, Enchant, Upgrade, hookskip patched False
 expect FOREIGN reach end storage Sharp 100: kept True, reaches Spine, Enchant, Upgrade, hookskip patched True
 expect FOREIGN anyknown end: \S+ \(chain groups patched True
+# `capped drops`: LimitlessHookSkip's real drops of a stacked enchantment holding an inner card above level 0 that only the cap
+# let through (the bench's own reach/anyknown questions below don't count: pre-release audit of 2026-11-21 evening); 0 at
+# `filled` (before the patch), 384 at `end` on both versions then.
 expect FOREIGN clonememo end: .*capped drops [1-9][0-9]*
 expect LimitlessCloneMemo: CardModel\.get_MaxUpgradeLevel \(bdtest\.foreign\.lim-constant-postfix-release\): patched only with a constant result.*drops take an inner card whose saved upgrade level is at most 99
 expect FOREIGN upgradeinner: [1-9][0-9]* inner cards at level 1 in [1-9][0-9]* stacked enchantments

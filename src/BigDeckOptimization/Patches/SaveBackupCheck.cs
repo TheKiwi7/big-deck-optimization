@@ -598,7 +598,7 @@ public static class SaveBackupCheck
         }
         Enabled = false;
         PatchSafety.Fault(Name);
-        Log.Info($"[{ModEntry.Id}] {Name} turned off for this session with SaveReadDecode (its read MISMATCH: Godot's text and the UTF-8 decoding differed), saves check the previous save as the game does");
+        Log.Info($"[{ModEntry.Id}] {Name} turned off for this session with SaveReadDecode (one of its reads found Godot's text other than the UTF-8 decoding of the bytes), saves check the previous save as the game does");
     }
 
     private static void Disable(string why)
