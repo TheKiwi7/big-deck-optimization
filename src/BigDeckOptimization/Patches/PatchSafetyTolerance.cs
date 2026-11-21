@@ -1926,10 +1926,12 @@ public static partial class PatchSafety
         {
             return $"{KindText(kind, patch)} gated, but {callee.DeclaringType?.Name}.{callee.Name}, which it calls on every call, is patched (its code isn't the one read)";
         }
-        // G2 (2026-11-21): the shape passed with name gates (the reflection-reads premise) that TypeGates couldn't resolve to loaded types.
-        if (shaped && _gates.TryGetValue(gateKey, out Type[]? shape) && shape != null && Array.IndexOf(shape, typeof(NameGateMarker)) >= 0)
+        // G2 (2026-11-21): the shape passed with name gates (the reflection-reads premise) that TypeGates couldn't resolve to loaded
+        // types: said only when that resolution (TypeGates' own step) fails now.
+        if (shaped && _gates.TryGetValue(gateKey, out Type[]? shape) && shape != null && Array.IndexOf(shape, typeof(NameGateMarker)) >= 0
+            && (!_gateNames.TryGetValue(gateKey, out (bool Full, string Name)[]? gateNames) || WithNamedTypes(shape, gateNames) == null))
         {
-            string names = _gateNames.TryGetValue(gateKey, out (bool Full, string Name)[]? gateNames) ? string.Join(", ", gateNames.Select(n => n.Name)) : "unrecorded";
+            string names = gateNames != null ? string.Join(", ", gateNames.Select(n => n.Name)) : "unrecorded";
             return $"{KindText(kind, patch)} gated on a type's name ({names}), but that name can't be resolved to the loaded types"
                 + (TypesNamedFailure is { } failure ? $" (the last type scan failed: {failure})" : " (a generic or closed generic name, a type still being built, or an unreadable assembly)");
         }
