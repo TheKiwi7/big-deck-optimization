@@ -146,6 +146,10 @@ public static class DeckCountMemo
     internal static long AnsweredInPlay { get; private set; }
     [ThreadStatic] private static int _benchKind;
     [ThreadStatic] private static bool _benchOutside;
+    [ThreadStatic] private static bool _benchDisplay;
+
+    /// <summary>Per kind, the memo's last answer to a display caller outside the redraw, or null (LastOutside stays the game's).</summary>
+    internal static readonly decimal?[] LastDisplay = new decimal?[Kinds];
 
     /// <summary><c>bdperf deckcount stackcost</c>: the stack of the next calculation outside the redraw, kept for the bench.</summary>
     internal static bool StackProbeForTest { get; set; }
@@ -171,7 +175,7 @@ public static class DeckCountMemo
     public static long Answered { get; private set; }
     /// <summary>Calculations inside the redraw (answered, compared or left to the game when unsure).</summary>
     public static long InRedrawCalls { get; private set; }
-    /// <summary>Calculations outside the redraw (an action's, a mod's): the game counts.</summary>
+    /// <summary>Calculations outside the redraw (an action's, a mod's) the memo didn't answer: the game counts.</summary>
     public static long OutsideCalls { get; private set; }
     /// <summary>Outside the redraw, the game's result compared with a count the memo held (no walk of its own).</summary>
     public static long FreeChecks { get; private set; }
@@ -406,6 +410,7 @@ public static class DeckCountMemo
 #if BENCH
         _benchKind = kind;
         _benchOutside = !inRedraw;
+        _benchDisplay = false;
         if (StackProbeForTest && !inRedraw)
         {
             LastProbe = new System.Diagnostics.StackTrace(0, false);
@@ -421,10 +426,8 @@ public static class DeckCountMemo
         {
             InRedrawCalls++;
         }
-        else
-        {
-            OutsideCalls++;
-        }
+        // Outside the redraw: counted once the memo didn't answer (a display caller's answer is AnsweredDisplay).
+        bool outsideCounted = !inRedraw;
         try
         {
             if (card.Owner.PlayerCombatState is not { } state)
@@ -482,6 +485,10 @@ public static class DeckCountMemo
             if (display)
             {
                 AnsweredDisplay++;
+                outsideCounted = false;
+#if BENCH
+                _benchDisplay = true;
+#endif
                 result = count;
                 return false;
             }
@@ -500,12 +507,23 @@ public static class DeckCountMemo
             Disable(e);
             return true;
         }
+        finally
+        {
+            if (outsideCounted)
+            {
+                OutsideCalls++;
+            }
+        }
     }
 
     private static void Postfix(decimal __result, Expected? __state)
     {
 #if BENCH
-        if (_benchOutside)
+        if (_benchDisplay)
+        {
+            LastDisplay[_benchKind] = __result;
+        }
+        else if (_benchOutside)
         {
             LastOutside[_benchKind] = __result;
         }

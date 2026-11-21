@@ -409,8 +409,11 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                 else if (args.Length >= 3 && args[1] == "display" && args[2] is "off" or "on")
                 {
                     // Test switch: display callers outside the redraw answered (on, the part's default) or counted by the game (off).
-                    DeckCountMemo.DisplayEnabled = args[2] == "on";
-                    return new CmdResult(success: true, $"DECKCOUNT display callers {args[2]} (test).");
+                    // A faulted part stays off, as the settings' Part() leaves it.
+                    bool displayFaulted = PatchSafety.IsFaulted(DeckCountMemo.DisplayName);
+                    DeckCountMemo.DisplayEnabled = args[2] == "on" && !displayFaulted;
+                    return new CmdResult(success: !(args[2] == "on" && displayFaulted),
+                        $"DECKCOUNT display callers {(DeckCountMemo.DisplayEnabled ? "on" : "off")} (test){(args[2] == "on" && displayFaulted ? ": faulted, left off" : "")}.");
                 }
                 else if (args.Length >= 2 && args[1] == "stackcost")
                 {
@@ -1716,7 +1719,8 @@ public partial class PerfConsoleCmd : AbstractConsoleCmd
                 // The display callers part off (the game counts), then on (this caller answered or refused, after a stack walk).
                 DeckCountMemo.DisplayEnabled = false;
                 previewUs = Previews(counting, passes);
-                DeckCountMemo.DisplayEnabled = true;
+                // A faulted part is never turned back on: its "on" pass is then the game's count too (answered 0, refused 0).
+                DeckCountMemo.DisplayEnabled = !PatchSafety.IsFaulted(DeckCountMemo.DisplayName);
                 long answeredBefore = DeckCountMemo.AnsweredDisplay, refusedBefore = DeckCountMemo.DisplayRefused;
                 displayUs = Previews(counting, passes);
                 answered = DeckCountMemo.AnsweredDisplay - answeredBefore;

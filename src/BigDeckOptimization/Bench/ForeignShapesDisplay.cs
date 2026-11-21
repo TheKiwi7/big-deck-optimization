@@ -108,6 +108,7 @@ public static class ForeignShapesDisplay
         }
         long answered = DeckCountMemo.AnsweredDisplay, refused = DeckCountMemo.DisplayRefused;
         DeckCountMemo.LastOutside[DeckCountMemo.StrikeKind] = null;
+        DeckCountMemo.LastDisplay[DeckCountMemo.StrikeKind] = null;
         if (viaInvoke)
         {
             typeof(CardModel).GetMethod(nameof(CardModel.UpdateDynamicVarPreview))!.Invoke(card, new object?[] { CardPreviewMode.Normal, null, card.DynamicVars });
@@ -118,7 +119,8 @@ public static class ForeignShapesDisplay
         }
         _answered = DeckCountMemo.AnsweredDisplay - answered;
         _refused = DeckCountMemo.DisplayRefused - refused;
-        _got = DeckCountMemo.LastOutside[DeckCountMemo.StrikeKind];
+        // The memo's answer (a display caller) or the game's count: never both for one call.
+        _got = DeckCountMemo.LastDisplay[DeckCountMemo.StrikeKind] ?? DeckCountMemo.LastOutside[DeckCountMemo.StrikeKind];
         _fresh = state.AllCards.Count(c => c.Tags.Contains(CardTag.Strike));
         _held = DeckCountMemo.HeldCount(state, DeckCountMemo.StrikeKind);
         _ran = true;
