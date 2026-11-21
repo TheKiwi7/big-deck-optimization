@@ -87,6 +87,10 @@ var mutations = new Dictionary<string, (string What, Action<ModuleDefinition> Ap
         Prepend(Type(m, "MegaCrit.Sts2.Core.Combat.CombatManager").NestedTypes.First(t => t.Name.StartsWith("<SetupPlayerTurn>d__")).Methods.First(x => x.Name == "MoveNext"), OpCodes.Ldarg_0, OpCodes.Pop)),
     ["relic-holder"] = ("NRelicInventoryHolder.OnRelicFlashed changed: the relic bar's merge leaves, the sound's stays", m =>
         Prepend(Method(m, "MegaCrit.Sts2.Core.Nodes.Relics.NRelicInventoryHolder", "OnRelicFlashed"), OpCodes.Ldarg_0, OpCodes.Pop)),
+    // Every supported version has CopyBackup: on v0.113 SaveBackupCheck transpiles its whole-save check; on v0.111 a CopyBackup
+    // that isn't v0.111's known one is no longer "not needed" but changed code. Either way the part is left vanilla.
+    ["save-backup"] = ("GodotFileIo.CopyBackup changed (SaveBackupCheck transpiles its check of the previous save)", m =>
+        Prepend(Method(m, "MegaCrit.Sts2.Core.Saves.GodotFileIo", "CopyBackup"), OpCodes.Ldarg_1, OpCodes.Pop)),
     ["button-input"] = ("NButton._Input changed (IdleButtonInput keeps idle buttons from receiving input)", m =>
         Prepend(Method(m, "MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton", "_Input"), OpCodes.Ldarg_0, OpCodes.Pop)),
     ["wait-body"] = ("Cmd.Wait's state machine changed (FastCombatStart skips the call)", m =>

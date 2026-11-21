@@ -54,6 +54,8 @@ $Expected = [ordered]@{
     "allcards-reader" = @("game", "SyncedCardRelease|_allCards", "")
     "squeeze-count"   = @("game", "DeckCountMemo|Squeeze", "DeckCountMemo(\.Checks)?")
     "button-input"    = @("game", "IdleButtonInput|_Input", "IdleButtonInput")
+    # SaveBackupCheck's effect is opt-in (not in effects-check): nothing may drop. Both versions: "CopyBackup changed ... left vanilla".
+    "save-backup"     = @("game", "SaveBackupCheck|CopyBackup", "")
     "wait-body"       = @("game", "FastCombatStart|Wait", "")
     "renumber-cards"  = @("game", "", "")
     "hook-rename"     = @("game", "HookFilter|ShouldAllowHitting", "")

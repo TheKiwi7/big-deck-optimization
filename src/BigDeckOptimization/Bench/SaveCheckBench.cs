@@ -64,6 +64,7 @@ public static class SaveCheckBench
             ok &= SaveFile(sub.Length > 0 ? string.Join(' ', args.Skip(1)) : null, report);
             ok &= Synthetic(report);
             ok &= OwnCall(report);
+            ok &= EndToEnd(report);
         }
         finally
         {
@@ -217,10 +218,67 @@ public static class SaveCheckBench
         return ok;
     }
 
+    /// <summary>
+    /// Through the game's own <c>GodotFileIo.WriteFile</c> (a store on the scratch folder), with the part on, then off: a file that
+    /// isn't JSON written, then a whole save over it (CopyBackup must find the previous file not whole: no <c>.backup</c>, the game's
+    /// warning), then another whole save (the <c>.backup</c> must hold the second one's bytes). Both ways must leave the same files;
+    /// the part on must have answered both checks (one not whole, one whole), off none.
+    /// </summary>
+    private static bool EndToEnd(StringBuilder report)
+    {
+        var io = new MegaCrit.Sts2.Core.Saves.GodotFileIo(ScratchDir);
+        string full = io.GetFullPath(EndToEndFile);
+        byte[] broken = Utf8("{\"cut\":[1,2"), first = Utf8("{\"save\":1}"), second = Utf8("{\"save\":2,\"more\":[true]}");
+        var outcomes = new List<string>();
+        var answers = new List<long>();
+        try
+        {
+            foreach (bool on in new[] { true, false })
+            {
+                SaveBackupCheck.Enabled = on;
+                DirAccess.RemoveAbsolute(full);
+                DirAccess.RemoveAbsolute(full + ".backup");
+                long before = SaveBackupCheck.Shortcuts;
+                io.WriteFile(EndToEndFile, broken);
+                WaitJudged(full);
+                io.WriteFile(EndToEndFile, first);
+                string afterFirst = Godot.FileAccess.FileExists(full + ".backup") ? "backup written" : "no backup";
+                WaitJudged(full);
+                io.WriteFile(EndToEndFile, second);
+                byte[]? backup = Godot.FileAccess.FileExists(full + ".backup") ? Godot.FileAccess.GetFileAsBytes(full + ".backup") : null;
+                string afterSecond = backup == null ? "no backup" : backup.AsSpan().SequenceEqual(first) ? "backup = first save" : "backup = other bytes";
+                bool saveIsSecond = Godot.FileAccess.GetFileAsBytes(full).AsSpan().SequenceEqual(second);
+                outcomes.Add($"{afterFirst}, then {afterSecond}{(saveIsSecond ? "" : ", save not the last bytes")}");
+                answers.Add(SaveBackupCheck.Shortcuts - before);
+            }
+        }
+        finally
+        {
+            // Only the part's own fault keeps it off (the bench ran with it on).
+            SaveBackupCheck.Enabled = !PatchSafety.IsFaulted(SaveBackupCheck.Name);
+            SaveBackupCheck.Forget(full);
+        }
+        bool ok = outcomes[0] == outcomes[1] && outcomes[0] == "no backup, then backup = first save" && answers[0] == 2 && answers[1] == 0;
+        report.AppendLine($"  end to end (game's WriteFile): on: {outcomes[0]} ({answers[0]} answered); off: {outcomes[1]} ({answers[1]} answered): {(ok ? "OK" : "MISMATCH")}");
+        return ok;
+    }
+
+    private const string EndToEndFile = "endtoend.save";
+
+    /// <summary>Waits (2 s at most) for the part's off-thread judgment of the bytes kept for that file, if any.</summary>
+    private static void WaitJudged(string full)
+    {
+        var clock = Stopwatch.StartNew();
+        while (SaveBackupCheck.KeptVerdict(full) == SaveBackupCheck.Pending && clock.ElapsedMilliseconds < 2000)
+        {
+            System.Threading.Thread.Sleep(1);
+        }
+    }
+
     private static void Cleanup()
     {
         SaveBackupCheck.Forget(ScratchDir + "/kept.save");
-        foreach (string file in new[] { "synthetic.json", "kept.save" })
+        foreach (string file in new[] { "synthetic.json", "kept.save", EndToEndFile, EndToEndFile + ".backup" })
         {
             DirAccess.RemoveAbsolute(ScratchDir + "/" + file);
         }

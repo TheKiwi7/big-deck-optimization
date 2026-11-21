@@ -103,6 +103,12 @@ public static class SaveBackupCheck
     private static MethodInfo? _copyBackup;
     private static MethodInfo? _isWholeMethod;
     private static MethodInfo? _getAsText;
+
+    /// <summary>
+    /// The FileAccess calls the shortcut makes and the game's check doesn't (its text is read natively by GetAsText): a mod
+    /// patching one of them (decrypting in GetBuffer, say) would show the shortcut other bytes than the game parses.
+    /// </summary>
+    private static MethodInfo[] _fileReads = Array.Empty<MethodInfo>();
     private static Func<string, bool>? _isWhole;
     private static int _replaced;
 
@@ -144,6 +150,17 @@ public static class SaveBackupCheck
         PatchSafety.RequireFingerprint(storeBuffer, StoreBufferFingerprint);
         _getAsText = Reflect.Method(typeof(Godot.FileAccess), nameof(Godot.FileAccess.GetAsText), new[] { typeof(bool) })
             ?? throw new MissingMethodException(nameof(Godot.FileAccess), nameof(Godot.FileAccess.GetAsText));
+        _fileReads = new[]
+        {
+            Reflect.Method(typeof(Godot.FileAccess), nameof(Godot.FileAccess.GetLength), Type.EmptyTypes),
+            Reflect.Method(typeof(Godot.FileAccess), nameof(Godot.FileAccess.GetPosition), Type.EmptyTypes),
+            Reflect.Method(typeof(Godot.FileAccess), nameof(Godot.FileAccess.Seek), new[] { typeof(ulong) }),
+            Reflect.Method(typeof(Godot.FileAccess), nameof(Godot.FileAccess.GetBuffer), new[] { typeof(long) }),
+        };
+        if (_fileReads.Any(m => m == null))
+        {
+            throw new MissingMethodException(nameof(Godot.FileAccess), "GetLength, GetPosition, Seek or GetBuffer");
+        }
         _isWhole = isWhole.CreateDelegate<Func<string, bool>>();
         _isWholeMethod = isWhole;
         _copyBackup = copyBackup;
@@ -168,6 +185,8 @@ public static class SaveBackupCheck
         PatchSafety.Watch(Name, copyBackup, PatchTolerance.TranspiledOnly);
         PatchSafety.Watch(Name, isWhole);
         PatchSafety.Watch(Name, _getAsText);
+        // The reads only the shortcut makes: strict (what any patch there returns could differ from what GetAsText reads).
+        PatchSafety.Watch(Name, _fileReads, PatchTolerance.None);
         Applied = true;
     }
 
@@ -199,12 +218,14 @@ public static class SaveBackupCheck
         {
             ulong position = 0;
             bool moved = false;
+            bool answered = false, answer = false, verify = false;
             try
             {
                 int verdict = Shortcut(file, fullPath, ref position, ref moved);
                 if (verdict is Whole or Broken)
                 {
-                    bool answer = verdict == Whole;
+                    answered = true;
+                    answer = verdict == Whole;
 #if BENCH
                     if (WrongForTest)
                     {
@@ -213,18 +234,7 @@ public static class SaveBackupCheck
 #endif
                     long n = Interlocked.Increment(ref Shortcuts);
                     // The first answer of the session and one in VerifyEvery after it: the game's check too.
-                    if ((n - 1) % Math.Max(1, VerifyEvery) == 0)
-                    {
-                        Interlocked.Increment(ref Checks);
-                        bool game = _isWhole!(file.GetAsText(skipCr));
-                        if (game != answer)
-                        {
-                            Interlocked.Increment(ref Mismatches);
-                            Disable($"MISMATCH on {fullPath}: answered {(answer ? "whole" : "not whole")}, the game's check {(game ? "whole" : "not whole")}");
-                            return game;
-                        }
-                    }
-                    return answer;
+                    verify = (n - 1) % Math.Max(1, VerifyEvery) == 0;
                 }
             }
             catch (Exception e)
@@ -241,17 +251,46 @@ public static class SaveBackupCheck
                     }
                 }
                 Disable(e.ToString());
+                answered = false;
+            }
+            if (answered && !verify)
+            {
+                return answer;
+            }
+            if (answered)
+            {
+                // The game's two calls, once, outside any try of this mod: whatever they throw (an OutOfMemoryException on a huge
+                // save) reaches CopyBackup unchanged, as without this mod. Their answer is the one returned.
+                Interlocked.Increment(ref Checks);
+                bool game = _isWhole!(file.GetAsText(skipCr));
+                if (game != answer)
+                {
+                    Interlocked.Increment(ref Mismatches);
+                    Disable($"MISMATCH on {fullPath}: answered {(answer ? "whole" : "not whole")}, the game's check {(game ? "whole" : "not whole")}");
+                }
+                return game;
             }
         }
         // The game's two calls (a null file throws there as it would have).
         return _isWhole!(file!.GetAsText(skipCr));
     }
 
+    /// <summary>Another mod patches one of <see cref="_fileReads"/> (each checked, so each back-off is recorded).</summary>
+    private static bool ReadsPatched()
+    {
+        bool patched = false;
+        foreach (MethodInfo read in _fileReads)
+        {
+            patched |= PatchSafety.IsPatchedByOthers(read);
+        }
+        return patched;
+    }
+
     /// <summary>The kept judgment when the file holds exactly the bytes it was made from, else <see cref="NoVerdict"/>.</summary>
     private static int Shortcut(Godot.FileAccess file, string fullPath, ref ulong position, ref bool moved)
     {
         if (PatchSafety.IsPatchedByOthers(_copyBackup, PatchTolerance.TranspiledOnly) || PatchSafety.IsPatchedByOthers(_isWholeMethod)
-            || PatchSafety.IsPatchedByOthers(_getAsText))
+            || PatchSafety.IsPatchedByOthers(_getAsText) || ReadsPatched())
         {
             Interlocked.Increment(ref MissBackOff);
             return NoVerdict;
