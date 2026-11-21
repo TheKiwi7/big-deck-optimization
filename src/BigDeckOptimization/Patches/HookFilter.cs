@@ -376,6 +376,10 @@ public static class HookFilter
         Mirror(harmony, typeof(HookFilterEnergyCost), energyHook, ModifyEnergyCostFingerprint, "ModifyEnergyCostPrefix");
         Mirror(harmony, typeof(HookFilterKeywords), keywordsHook, ModifyKeywordsFingerprint, "ModifyKeywordsPrefix");
         Mirror(harmony, typeof(HookFilterShouldPlay), shouldPlayHook, ShouldPlayFingerprint, "ShouldPlayPrefix");
+        // G4 (2026-11-21): the mirror assigns preventer on every path that skips the original, the first listener answering false
+        // in the walk's order (the filtered list keeps that order; a listener left out answers true), and nothing of this mod reads
+        // it after the postfixes: another mod's postfix taking it by reference sees and writes the caller's variable as in the game.
+        PatchSafety.SetReproducedByReference(shouldPlayHook, "preventer");
         // Game v0.111 (beta) passes a CardPlay to the damage methods: a mirror per signature, calling AbstractModel's
         // methods through delegates made at load, so this class compiles and loads on both versions.
         try
@@ -1238,7 +1242,11 @@ internal static class HookFilterKeywords
 /// uses that changes leaves only this hook vanilla. Same file, so conflicts are recorded under HookFilter.</summary>
 internal static class HookFilterShouldPlay
 {
-    /// <summary>Mirrors <see cref="Hook.ShouldPlay"/> over the filtered listeners.</summary>
+    /// <summary>
+    /// Mirrors <see cref="Hook.ShouldPlay"/> over the filtered listeners. Every path returning false (the original skipped) assigns
+    /// <paramref name="preventer"/> as the game's would: other mods' postfixes writing it stand on that (G4,
+    /// <see cref="PatchSafety.SetReproducedByReference"/>).
+    /// </summary>
     internal static bool ShouldPlayPrefix(ICombatState combatState, CardModel card, ref AbstractModel? preventer, AutoPlayType autoPlayType, ref bool __result)
     {
         if (!HookFilter.Active || combatState is not CombatState state)

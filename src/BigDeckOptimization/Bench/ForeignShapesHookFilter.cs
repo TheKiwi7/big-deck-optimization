@@ -15,9 +15,9 @@ namespace BigDeckOptimization.Bench;
 /// Synthetic patches of "another mod" for HookFilter's mirrors (DESIGN "Re-verification of the leads (2026-11-18)", rule X:
 /// BeforeReplace on the mirrored hooks), through <c>foreignpatch &lt;shape&gt; &lt;Type:Method&gt; [gate] [priority N]</c>:
 /// <list type="bullet">
-/// <item><c>hf-ref-write-postfix</c> (control): a postfix writing an out or ref argument back (the same value) on a mirrored
-/// method: <c>Hook.ShouldPlay</c>'s <c>preventer</c>, the cost color helpers' <c>hookModifiedCost</c>. A by-reference write is
-/// refused: the mirror must run the original there.</item>
+/// <item><c>hf-ref-write-postfix</c>: a postfix writing an out or ref argument back (the same value) on a mirrored method:
+/// <c>Hook.ShouldPlay</c>'s <c>preventer</c> (kept since G4, 2026-11-21: the mirror reproduces it), the cost color helpers'
+/// <c>hookModifiedCost</c> (control: no mirror declares it, the mirror must run the original there).</item>
 /// <item><c>hf-gated-damage-postfix squeeze|relic</c> (rule R3, on <c>AbstractModel:ModifyDamageAdditive</c>): a postfix adding 1 to
 /// the default's result when the listener is a Squeeze (or a relic), nothing otherwise: gated on the instance's type, so HookFilter's
 /// damage lists keep those listeners (their calls reach the patched default) and every damage changes by the same amount on or off.</item>
@@ -36,6 +36,11 @@ namespace BigDeckOptimization.Bench;
 /// through <see cref="ListenerCache.RunVanilla{T}"/> (the game's loop): both must throw the same exception after the same
 /// calls of that override, with the postfix never run, the mirror having served its list, and HookFilter neither faulted nor
 /// off. A mirror that ran the game's hook again after the throw would call the earlier listeners twice and return a value.
+/// <c>foreignpatch hookfilter outargs</c> (G4, offline too): PatchSafety's verdicts under BeforeReplace on synthetic postfixes taking
+/// the original's out argument by reference (writing it), and the controls. <c>foreignpatch hookfilter preventer</c> (in combat, with
+/// a listener overriding <c>ShouldPlay</c>, e.g. Velvet Choker): <c>Hook.ShouldPlay</c> through the mirror and through the game's
+/// loop for the combat's cards, the caller's <c>preventer</c> holding a sentinel before each call: the same answer and preventer
+/// (never the sentinel left), then again with one listener's override forced to answer false.
 /// </summary>
 public static class ForeignShapesHookFilter
 {
@@ -54,7 +59,9 @@ public static class ForeignShapesHookFilter
                 "throwonce" => ThrowOnce(),
                 "gatedlists" => GatedLists(),
                 "synthetic" when parts.Length > 2 => Synthetic(AccessTools.Method(parts[2]) ?? throw new ArgumentException("no method " + parts[2])),
-                _ => throw new ArgumentException("foreignpatch hookfilter throwonce|gatedlists|synthetic <Type:Method>"),
+                "outargs" => OutArgs(),
+                "preventer" => Preventer(),
+                _ => throw new ArgumentException("foreignpatch hookfilter throwonce|gatedlists|outargs|preventer|synthetic <Type:Method>"),
             };
         }
         string shape = parts[0];
@@ -113,6 +120,161 @@ public static class ForeignShapesHookFilter
     {
         decimal same = hookModifiedCost;
         hookModifiedCost = same;
+    }
+
+    // --- G4 (2026-11-21): postfixes taking the original's out argument by reference ---
+
+    /// <summary>newsanguo's and BetterExperience's shape on ShouldPlay: the card, preventer and __result, both written (the same values here).</summary>
+    private static void PreventerAndResultPostfix(CardModel card, ref AbstractModel? preventer, ref bool __result)
+    {
+        AbstractModel? same = preventer;
+        bool answer = __result;
+        if (card != null)
+        {
+            preventer = same;
+            __result = answer;
+        }
+    }
+
+    /// <summary>Control: a by-value argument of the original (<c>card</c>) taken by reference.</summary>
+    private static void CardByReferencePostfix(ref CardModel card)
+    {
+        CardModel same = card;
+        card = same;
+    }
+
+    /// <summary>Control: preventer written, with <c>__args</c>.</summary>
+    private static void PreventerArgsPostfix(ref AbstractModel? preventer, object[] __args)
+    {
+        AbstractModel? same = preventer;
+        preventer = __args.Length > 0 ? same : null;
+    }
+
+    /// <summary>Control: preventer written, with <c>__runOriginal</c>.</summary>
+    private static void PreventerRunOriginalPostfix(ref AbstractModel? preventer, bool __runOriginal)
+    {
+        AbstractModel? same = preventer;
+        preventer = __runOriginal ? same : null;
+    }
+
+    /// <summary>
+    /// <c>foreignpatch hookfilter outargs</c>: each case's verdict from <see cref="PatchSafety.Intolerable"/> on a synthetic patch list
+    /// holding that one postfix, against the expected one. Throws on the first list of mismatches.
+    /// </summary>
+    private static IReadOnlyList<string> OutArgs()
+    {
+        MethodBase shouldPlay = Reflect.Method(typeof(Hook), nameof(Hook.ShouldPlay)) ?? throw new MissingMethodException(nameof(Hook), nameof(Hook.ShouldPlay));
+        MethodBase? starColor = Reflect.Method(typeof(MegaCrit.Sts2.Core.Helpers.Models.CardCostHelper), "TryModifyStarCostWithHooks");
+        // HookFilter's Apply declares it; again here for an offline run (the same declaration).
+        PatchSafety.SetReproducedByReference(shouldPlay, "preventer");
+        var cases = new List<(string Name, string Postfix, MethodBase Original, PatchTolerance Tolerance, bool Stands)>
+        {
+            ("G4 preventer written back (BeforeReplace, the ShouldPlay mirror)", nameof(PreventerWritePostfix), shouldPlay, PatchTolerance.BeforeReplace, true),
+            ("G4 card, preventer and __result written (BetterExperience's shape)", nameof(PreventerAndResultPostfix), shouldPlay, PatchTolerance.BeforeReplace, true),
+            ("G4 control: a by-value argument (card) taken by reference", nameof(CardByReferencePostfix), shouldPlay, PatchTolerance.BeforeReplace, false),
+            ("G4 control: preventer written, with __args", nameof(PreventerArgsPostfix), shouldPlay, PatchTolerance.BeforeReplace, false),
+            ("G4 control: preventer written, with __runOriginal", nameof(PreventerRunOriginalPostfix), shouldPlay, PatchTolerance.BeforeReplace, false),
+            ("G4 control: preventer written under SurroundingOnly", nameof(PreventerWritePostfix), shouldPlay, PatchTolerance.SurroundingOnly, false),
+        };
+        if (starColor != null)
+        {
+            cases.Add(("G4 control: hookModifiedCost written (no mirror declares it)", nameof(CostWritePostfix), starColor, PatchTolerance.BeforeReplace, false));
+        }
+        var lines = new List<string>();
+        var failures = new List<string>();
+        foreach ((string name, string postfix, MethodBase original, PatchTolerance tolerance, bool stands) in cases)
+        {
+            var patch = new Patch(AccessTools.Method(typeof(ForeignShapesHookFilter), postfix), 0, ForeignPatches.IdPrefix + "hf-outargs-selftest", Priority.Normal, null, null, false);
+            Patch[] one = { patch }, none = Array.Empty<Patch>();
+            var info = new HarmonyLib.Patches(none, one, none, none, none, none);
+            string? why = PatchSafety.Intolerable(original, info, patch, PatchSafety.PatchKind.Postfix, tolerance, null);
+            bool ok = (why == null) == stands;
+            string verdict = why == null ? "stands" : "backs off (" + why + ")";
+            lines.Add($"FOREIGN hookfilter outargs {(ok ? "ok" : "WRONG")}: {name}: {verdict}");
+            if (!ok)
+            {
+                failures.Add($"{name}: {verdict}, expected {(stands ? "stands" : "a back-off")}");
+            }
+        }
+        if (failures.Count > 0)
+        {
+            throw new InvalidOperationException("hookfilter outargs: " + string.Join(" | ", failures) + " || " + string.Join(" || ", lines));
+        }
+        lines.Add($"FOREIGN hookfilter outargs: {lines.Count} cases as expected");
+        return lines;
+    }
+
+    private static bool FalsePrefix(ref bool __result)
+    {
+        __result = false;
+        return false;
+    }
+
+    /// <summary>
+    /// <c>foreignpatch hookfilter preventer</c>: Hook.ShouldPlay through the mirror (a refresh scope) and through the game's loop
+    /// (<see cref="ListenerCache.RunVanilla{T}"/>) for up to 40 of the combat's cards, the caller's preventer a sentinel before each
+    /// call; then with the first listener overriding ShouldPlay forced to answer false (a prefix of "another mod" on its override).
+    /// </summary>
+    private static IReadOnlyList<string> Preventer()
+    {
+        if (CombatManager.Instance.DebugOnlyGetState() is not { } combat)
+        {
+            throw new InvalidOperationException("hookfilter preventer: start a combat first");
+        }
+        MethodInfo baseMethod = Reflect.Method(typeof(AbstractModel), nameof(AbstractModel.ShouldPlay)) ?? throw new MissingMethodException(nameof(AbstractModel), nameof(AbstractModel.ShouldPlay));
+        List<AbstractModel>? listeners = null;
+        List<CardModel> cards = new();
+        bool safe = false;
+        ListenerCache.InvokeStateChangedInScope(_ =>
+        {
+            safe = HookFilter.HookSafe(HookFilter.ShouldPlay);
+            listeners = HookFilter.ForCombat(combat, HookFilter.ShouldPlay);
+            cards = ListenerCache.GetListeners(combat).OfType<CardModel>().Take(40).ToList();
+        }, combat);
+        if (!safe || listeners == null || cards.Count == 0)
+        {
+            return new[] { $"FOREIGN hookfilter preventer: ShouldPlay not mirrored here (safe {safe}, list {(listeners == null ? "none" : "built")}, cards {cards.Count})" };
+        }
+        // Never a listener: the preventer left unassigned would still hold it.
+        var sentinel = (AbstractModel)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(MegaCrit.Sts2.Core.Models.Cards.Squeeze));
+        (int Differ, int Sentinel, int False, long Served) Compare()
+        {
+            int differ = 0, left = 0, refused = 0;
+            long served = HookFilter.MirrorAnswers[HookFilter.MirrorShouldPlay];
+            foreach (CardModel card in cards)
+            {
+                AbstractModel? mirrored = sentinel, game = sentinel;
+                bool mirrorAnswer = false, gameAnswer = false;
+                ListenerCache.InvokeStateChangedInScope(_ => mirrorAnswer = Hook.ShouldPlay(combat, card, out mirrored, MegaCrit.Sts2.Core.Entities.Cards.AutoPlayType.None), combat);
+                gameAnswer = ListenerCache.RunVanilla(() => Hook.ShouldPlay(combat, card, out game, MegaCrit.Sts2.Core.Entities.Cards.AutoPlayType.None));
+                differ += mirrorAnswer != gameAnswer || !ReferenceEquals(mirrored, game) ? 1 : 0;
+                left += ReferenceEquals(mirrored, sentinel) || ReferenceEquals(game, sentinel) ? 1 : 0;
+                refused += gameAnswer ? 0 : 1;
+            }
+            return (differ, left, refused, HookFilter.MirrorAnswers[HookFilter.MirrorShouldPlay] - served);
+        }
+        var lines = new List<string>();
+        string Line(string label, (int Differ, int Sentinel, int False, long Served) r, bool forced) =>
+            $"FOREIGN hookfilter preventer {label}: {cards.Count} cards, {r.False} refused, mirror answers {r.Served}, {r.Differ} different, {r.Sentinel} left unassigned: "
+            + (r.Differ == 0 && r.Sentinel == 0 && r.Served > 0 && (!forced || r.False == cards.Count) ? "same as the game's" : "DIFFERENT");
+        lines.Add(Line("as is", Compare(), forced: false));
+        AbstractModel? overriding = listeners.FirstOrDefault(l => Override(l.GetType(), baseMethod) != null);
+        if (overriding == null)
+        {
+            lines.Add("FOREIGN hookfilter preventer forced: no listener overrides ShouldPlay in this combat (add one, e.g. cmd relic add VELVET_CHOKER)");
+            return lines;
+        }
+        string id = ForeignPatches.IdPrefix + "hf-preventer-false";
+        new Harmony(id).Patch(Override(overriding.GetType(), baseMethod)!, prefix: new HarmonyMethod(typeof(ForeignShapesHookFilter), nameof(FalsePrefix)));
+        try
+        {
+            lines.Add(Line($"forced ({overriding.GetType().Name} answers false)", Compare(), forced: true));
+        }
+        finally
+        {
+            new Harmony(id).UnpatchAll(id);
+        }
+        return lines;
     }
 
     private static bool SyntheticTruePrefix() => true;

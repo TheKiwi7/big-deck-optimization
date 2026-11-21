@@ -16,12 +16,22 @@
 # audit-conflict-display-1k-on).
 # A listener throwing once inside the energy cost mirror (foreignpatch hookfilter throwonce, Spiked Gauntlets' override): the same
 # exception as the game's loop after the same calls, no postfix run, HookFilter not faulted.
+# G4 (2026-11-21): a postfix writing ShouldPlay's out preventer back (kept: the mirror reproduces it); foreignpatch hookfilter outargs
+# (the verdicts on synthetic postfixes taking it by reference, and the controls: a by-value argument by reference, __args,
+# __runOriginal, SurroundingOnly, an argument no mirror declares); foreignpatch hookfilter preventer (Velvet Choker added: ShouldPlay
+# through the mirror and the game's loop for the combat's cards, the caller's preventer a sentinel: the same answer and preventer,
+# then with Velvet Choker's override forced to answer false).
 timeout 900
 expect HookFilter: Hook\.ShouldAllowHitting is also patched by .*bdtest\.foreign\.noop-prefix.* \(postfixes and prefixes running before this mod's: run around this mod's code as without it\): kept
 expect HookFilter: Hook\.ShouldAllowHitting is also patched by .*bdtest\.foreign\.noop-postfix.* \(postfixes and prefixes running before this mod's: run around this mod's code as without it\): kept
 expect FOREIGN classify Hook\.ShouldAllowHitting: bdtest\.foreign\.noop-prefix Prefix .*priority 400: .*BeforeReplace tolerated
 expect FOREIGN runtime HookFilter Hook\.ShouldAllowHitting \(BeforeReplace\) kept [1-9]
-expect HookFilter: Hook\.ShouldPlay is also patched by bdtest\.foreign\.bool-prefix \(postfixes and prefixes running before this mod's: run around this mod's code as without it\): kept
+expect HookFilter: Hook\.ShouldPlay is also patched by .*bdtest\.foreign\.bool-prefix.* \(postfixes and prefixes running before this mod's: run around this mod's code as without it\): kept
+expect HookFilter: Hook\.ShouldPlay is also patched by .*bdtest\.foreign\.hf-ref-write-postfix.* \(postfixes and prefixes running before this mod's: run around this mod's code as without it\): kept
+expect FOREIGN classify Hook\.ShouldPlay: bdtest\.foreign\.hf-ref-write-postfix Postfix .*BeforeReplace tolerated
+expect FOREIGN hookfilter outargs: \d+ cases as expected
+expect FOREIGN hookfilter preventer as is: .*: same as the game's
+expect FOREIGN hookfilter preventer forced \(.*\): .*: same as the game's
 expect FOREIGN runtime HookFilter Hook\.ShouldPlay \(BeforeReplace\) kept [1-9]
 expect HookFilter: Hook\.ModifyKeywordsInCombat is also patched by bdtest\.foreign\.bool-prefix \(postfixes and prefixes running before this mod's not enough\): normal game for that part
 expect FOREIGN classify Hook\.ModifyKeywordsInCombat: bdtest\.foreign\.bool-prefix Prefix .*priority 0: .*BeforeReplace backs off \(bool prefix running after a prefix of this mod
@@ -53,12 +63,15 @@ cmd bigdeck import ref all all
 # 1,016 cards: ReplayStateSkip leaves states out above 1,000 combat cards only (945 alone: its counter can't move).
 cmd bigdeck import ref 1 cards
 cmd relic add SPIKED_GAUNTLETS
+cmd relic add VELVET_CHOKER
 enemyhp 999999
 # Accepted (rule 1: a void prefix at the default priority, registered after the mirror, sorts before it; X: a no-op postfix, a bool
 # prefix sorted before the mirror).
 foreignpatch noop-prefix MegaCrit.Sts2.Core.Hooks.Hook:ShouldAllowHitting
 foreignpatch noop-postfix MegaCrit.Sts2.Core.Hooks.Hook:ShouldAllowHitting
 foreignpatch bool-prefix MegaCrit.Sts2.Core.Hooks.Hook:ShouldPlay priority 800
+foreignpatch hf-ref-write-postfix MegaCrit.Sts2.Core.Hooks.Hook:ShouldPlay
+foreignpatch hookfilter outargs
 # Controls: each on its own mirrored method.
 foreignpatch bool-prefix MegaCrit.Sts2.Core.Hooks.Hook:ModifyKeywordsInCombat priority 0
 foreignpatch noop-finalizer MegaCrit.Sts2.Core.Helpers.Models.CardCostHelper:TryModifyEnergyCostWithHooks
@@ -83,6 +96,7 @@ play 3
 waitfor idle 120
 wait 3
 foreignpatch hookfilter throwonce
+foreignpatch hookfilter preventer
 foreignpatch hookfilter gatedlists
 wait 1
 foreignpatch report end

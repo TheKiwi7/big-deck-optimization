@@ -6,9 +6,11 @@
 # Squeeze listener (gated on the instance's type: HookFilter's damage lists keep the Squeezes, whose calls reach the patched
 # default), then mid-combat a second one for each relic (other gates: the lists built with the first ones must not be reused,
 # foreignpatch hookfilter gatedlists checks each damage list against the gates of its scope). Every damage changes alike on and
-# off (the checksums see the monsters' HP).
+# off (the checksums see the monsters' HP). G4 (2026-11-21): a postfix writing ShouldPlay's out preventer back (the same value:
+# non-counting, Debug re-checks call the game's hook again) next to the bool prefix: kept, the mirror still answering.
 timeout 1800
-expect HookFilter: Hook\.ShouldPlay is also patched by bdtest\.foreign\.bool-prefix \(postfixes and prefixes running before this mod's: run around
+expect HookFilter: Hook\.ShouldPlay is also patched by .*bdtest\.foreign\.bool-prefix.* \(postfixes and prefixes running before this mod's: run around
+expect HookFilter: Hook\.ShouldPlay is also patched by .*bdtest\.foreign\.hf-ref-write-postfix.* \(postfixes and prefixes running before this mod's: run around
 expect HookFilter: Hook\.ShouldAllowHitting is also patched by bdtest\.foreign\.noop-postfix \(postfixes and prefixes running before this mod's: run around
 expect HookFilter: AbstractModel\.ModifyDamageAdditive is also patched by bdtest\.foreign\.hf-gated-damage-postfix-squeeze \(patches gated on the listener's type: Squeeze treated as overriding it
 expect HookFilter: AbstractModel\.ModifyDamageAdditive is also patched by .*bdtest\.foreign\.hf-gated-damage-postfix-relic.* \(patches gated on the listener's type: .*RelicModel.* treated as overriding it
@@ -25,6 +27,7 @@ wait 2
 cmd bigdeck import ref all all
 enemyhp 999999
 foreignpatch bool-prefix MegaCrit.Sts2.Core.Hooks.Hook:ShouldPlay priority 800
+foreignpatch hf-ref-write-postfix MegaCrit.Sts2.Core.Hooks.Hook:ShouldPlay
 foreignpatch noop-postfix MegaCrit.Sts2.Core.Hooks.Hook:ShouldAllowHitting
 foreignpatch hf-gated-damage-postfix MegaCrit.Sts2.Core.Models.AbstractModel:ModifyDamageAdditive squeeze
 cmd fight CULTISTS_NORMAL

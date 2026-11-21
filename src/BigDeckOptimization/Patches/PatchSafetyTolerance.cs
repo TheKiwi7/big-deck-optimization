@@ -781,7 +781,7 @@ public static partial class PatchSafety
             {
                 return refused;
             }
-            if (tolerance != PatchTolerance.TypeGated && ArgumentRefusal(original, method, kind) is { } argument)
+            if (tolerance != PatchTolerance.TypeGated && ArgumentRefusal(original, method, kind, tolerance) is { } argument)
             {
                 return argument;
             }
@@ -903,9 +903,11 @@ public static partial class PatchSafety
                 }
                 // An argument by reference only read through (every use of it an immediate load of the value: never written,
                 // never passed on as an address): Intolerable also requires one of the original's out/ref parameters (its value
-                // after the body, read as the game's caller would). Anything else by reference stays refused.
+                // after the body, read as the game's caller would). G4 (2026-11-21): under BeforeReplace one written too, judged
+                // per original by ArgumentRefusal (a mirror declaring it leaves that argument as the original would). Anything
+                // else by reference stays refused.
                 if ((parameter.ParameterType.IsByRef || parameter.IsOut) && parameter.Name is not ("__state" or "__result")
-                    && !(IsArgumentName(parameter.Name) && OnlyReadThrough(method, parameter.Position)))
+                    && !(IsArgumentName(parameter.Name) && (OnlyReadThrough(method, parameter.Position) || tolerance == PatchTolerance.BeforeReplace)))
                 {
                     return $"postfix taking {parameter.Name} by reference";
                 }
@@ -955,10 +957,11 @@ public static partial class PatchSafety
 
     /// <summary>
     /// For a patch's by-reference arguments the shape rules let stand (a prefix's: any of the original's parameters; a
-    /// postfix's: one of its out or ref parameters, only read through): why not, or null. Asked per original (the shape
-    /// itself is cached per patch method). Harmony would refuse to patch with a name the original lacks; checked anyway.
+    /// postfix's: one of its out or ref parameters, only read through, or under BeforeReplace one a mirror reproduces:
+    /// <see cref="SetReproducedByReference"/>, G4): why not, or null. Asked per original (the shape itself is cached per patch
+    /// method). Harmony would refuse to patch with a name the original lacks; checked anyway.
     /// </summary>
-    private static string? ArgumentRefusal(MethodBase original, MethodInfo patch, PatchKind kind)
+    private static string? ArgumentRefusal(MethodBase original, MethodInfo patch, PatchKind kind, PatchTolerance tolerance)
     {
         ParameterInfo[] arguments = original.GetParameters();
         foreach (ParameterInfo parameter in patch.GetParameters())
@@ -977,9 +980,40 @@ public static partial class PatchSafety
                 // A by-value argument's own slot, which this mod's finalizers read after it (the message the shape gave before).
                 return $"postfix taking {parameter.Name} by reference";
             }
+            // G4: under BeforeReplace (the only tolerance whose shape rule lets a written one through), a postfix writing one of the
+            // original's out/ref arguments stands only where this mod's replacement of the body leaves that argument as the original
+            // would (the postfix then reads and writes the caller's variable as without this mod); otherwise only read through.
+            if (kind == PatchKind.Postfix && tolerance == PatchTolerance.BeforeReplace && !OnlyReadThrough(patch, parameter.Position)
+                && !Reproduces(original, argument.Name))
+            {
+                return $"postfix taking {parameter.Name} by reference";
+            }
         }
         return null;
     }
+
+    /// <summary>
+    /// G4 (2026-11-21): per original, the out/ref arguments a mirror of this mod (a prefix replacing the body: BeforeReplace) assigns
+    /// on every path that skips the original, with the value the original would leave, and that no code of this mod reads after
+    /// the postfixes: HookFilter's ShouldPlay mirror and its <c>preventer</c>.
+    /// </summary>
+    private static readonly ConcurrentDictionary<MethodBase, string[]> _reproducedByReference = new();
+
+    /// <summary>
+    /// Declares that this mod's mirror of <paramref name="original"/> leaves <paramref name="arguments"/> (out/ref parameters of the
+    /// original) as the original would on every path skipping it, and that nothing of this mod reads them after the postfixes:
+    /// other mods' postfixes taking them by reference (and writing them) then stand under BeforeReplace. Never throws.
+    /// </summary>
+    internal static void SetReproducedByReference(MethodBase? original, params string[] arguments)
+    {
+        if (original != null)
+        {
+            _reproducedByReference[original] = arguments;
+        }
+    }
+
+    private static bool Reproduces(MethodBase original, string? argument) =>
+        argument != null && _reproducedByReference.TryGetValue(original, out string[]? arguments) && Array.IndexOf(arguments, argument) >= 0;
 
     /// <summary>
     /// Whether the patch method only reads through its by-reference parameter at <paramref name="position"/>: every
