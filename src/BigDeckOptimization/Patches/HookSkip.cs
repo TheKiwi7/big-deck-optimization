@@ -762,8 +762,9 @@ public static partial class HookSkip
     /// <summary>
     /// The helpers whose answer, whatever it is, only filters in the helper sets: <c>Creature.IsPlayer</c>, read only by
     /// <c>CombatState.PlayerCreatures</c>' <c>Where</c> (its lambda, in the sets and pinned with the profiles), whose list feeds
-    /// <c>Players</c>' <c>Select(c =&gt; c.Player)</c> (a creature, never null) and GetOwner's <c>FirstOrDefault()</c>: no answer can make
-    /// a dropped iteration throw. Not <c>AbstractModel.IsMutable</c>, the sets' other value-type helper (false makes
+    /// <c>Players</c>' <c>Select(c =&gt; c.Player)</c> and GetOwner's <c>FirstOrDefault()</c>: no answer can make a dropped iteration
+    /// throw (a monster answered as a player gives a null <c>Player</c>, which the selector and FirstOrDefault only pass on, never
+    /// dereference: the context's <c>Owner</c> null, in an iteration that is dropped anyway; the creatures themselves are never null). Not <c>AbstractModel.IsMutable</c>, the sets' other value-type helper (false makes
     /// <c>AssertMutable</c> throw in <c>CardModel.Owner</c>), nor the reference-type ones (RO's prefixes refuse them anyway).
     /// </summary>
     private static bool AnswerOnlyFilters(MethodBase helper) =>

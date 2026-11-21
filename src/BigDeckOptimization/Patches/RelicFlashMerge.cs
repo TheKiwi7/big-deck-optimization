@@ -211,13 +211,27 @@ public static class RelicFlashMerge
     /// Rule RO for bool prefixes (2026-11-21): on a strict member of <see cref="Creature"/> (its getters on a flash's path), other
     /// mods' prefixes that only answer in the original's place from the creature's own fields, or let it run
     /// (<see cref="PatchSafety.ReadOnlyPrefixes"/>: GensokyoSpire's on <c>Creature.get_IsPlayer</c>). A merged flash skips the
-    /// handler's calls, whose answers only fed that flash's visuals: such a prefix running fewer times changes nothing. Only
-    /// primitive and enum answers (review of 2026-11-21: a reference answered null would make a kept flash's code throw where a
-    /// merged one doesn't); what the flash code does with another value is under the display premise, as any patch on its
-    /// non-strict members. Empty for any other member and with the shape rules off. Never throws.
+    /// handler's calls, whose answers only fed that flash's code: such a prefix running fewer times changes nothing, provided no
+    /// answer it can give makes that skipped code throw where the game's wouldn't (a throw in the flash would reach the relic's
+    /// Flash caller: not display), as HookSkip's rule (audit of 2026-11-21): only on the members of
+    /// <see cref="AnswerCannotThrow"/>. Empty for any other member and with the shape rules off. Never throws.
     /// </summary>
     private static System.Reflection.MethodInfo[] ReadOnlyAllowed(System.Reflection.MethodBase method) =>
-        PatchSafety.ShapeRules && OuterType(method) == typeof(Creature) ? PatchSafety.ReadOnlyPrefixes(method) : Array.Empty<System.Reflection.MethodInfo>();
+        PatchSafety.ShapeRules && AnswerCannotThrow(method) ? PatchSafety.ReadOnlyPrefixes(method) : Array.Empty<System.Reflection.MethodInfo>();
+
+    /// <summary>
+    /// The strict Creature members of the sets whose answer, whatever it is, can't make a flash's code throw: <c>IsPlayer</c>,
+    /// <c>CurrentHp</c>, <c>MaxHp</c>, the sets' only value-type Creature members (tools/fingerprint closure over both sets' roots,
+    /// v0.111.1 and v0.113.1; the relic bar's set reaches no Creature member), read there only by <c>SentryService.AttachGameState</c>
+    /// (a crash report's extras, on an error inside the effect): <c>PlayerCreatures</c>' <c>Where(c =&gt; c.IsPlayer)</c>, then
+    /// <c>Players</c>' <c>Select(c =&gt; c.Player)</c> and <c>p.Creature.CurrentHp/MaxHp</c> into a string, the whole body in a
+    /// <c>try { } catch { }</c>: a monster answered as a player (null <c>Player</c>) throws inside that catch. The sets are pinned per
+    /// game version (<see cref="PlayerVisualSets"/>), so another reader of these members means a review. The reference-type
+    /// members (<c>Player</c>, <c>Monster</c>, <c>GetVfxContainer</c>) are refused by RO's prefixes anyway.
+    /// </summary>
+    private static bool AnswerCannotThrow(System.Reflection.MethodBase method) =>
+        method.DeclaringType == typeof(Creature) && !method.IsStatic && method.GetParameters().Length == 0
+        && method.Name is "get_IsPlayer" or "get_CurrentHp" or "get_MaxHp";
 
     private static readonly Func<System.Reflection.MethodBase, System.Reflection.MethodInfo[]> _readOnlyAllowed = ReadOnlyAllowed;
 
@@ -636,7 +650,8 @@ public static class RelicFlashMerge
                     continue;
                 }
                 // Every one asked: each back-off recorded (bdopt why names them all); a generic one on each closed instantiation
-                // Harmony patches too (D3). A Creature member: read-only bool prefixes stand (ReadOnlyAllowed).
+                // Harmony patches too (D3). A Creature member: read-only bool prefixes stand where no answer can make the flash
+                // throw (ReadOnlyAllowed: empty for any other member).
                 patched |= OuterType(method) == typeof(Creature) ? PatchSafety.IsPatchedByOthersWithInstances(method, _readOnlyAllowed, Caller)
                     : PatchSafety.IsPatchedByOthersWithInstances(method, Caller);
             }

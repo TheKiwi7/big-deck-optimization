@@ -140,6 +140,9 @@ public enum PatchTolerance
     /// prefix may leave state (a static) that a tolerated patch on a skipped callee would consume, which a reuse then leaves for
     /// another call to consume. HoverTipReuse: <c>HideHoverTips</c> strict; <c>NHoverTipSet</c>'s methods a reuse skips under the
     /// hover-tip display premise (what other mods' code there adds is display), strict with <c>ShapeRules</c> off.
+    /// Also under that premise (audit of 2026-11-21): after a reuse a prefix that reads or alters the panel registered for the
+    /// hitbox before the body meets the kept panel, not the fresh one the game would build next: what it changed there persists
+    /// on screen where the game would have dropped it with the old panel (the "seen" marks and the hide stay strict).
     /// Named AnyPrefix (2026-11-21): HookFilter's removed "PrefixesOnly" tolerance was another rule.
     /// </summary>
     AnyPrefix,
@@ -799,7 +802,8 @@ public static partial class PatchSafety
                 return null;
             }
             // AnyPrefix: a prefix runs before the transpiled body exactly as without this mod (any shape, as under TranspiledOnly);
-            // a postfix runs after a body that may have kept what the game rebuilds.
+            // a postfix runs after a body that may have kept what the game rebuilds. After a reuse a prefix reading or altering the
+            // registered panel meets the kept one, and what it changed there persists: under the caller's display premise.
             if (tolerance == PatchTolerance.AnyPrefix)
             {
                 return kind == PatchKind.Prefix ? null
@@ -829,7 +833,9 @@ public static partial class PatchSafety
             if (kind == PatchKind.Postfix && tolerance != PatchTolerance.TypeGated && ReadsThroughByReference(method)
                 && Harmony.GetPatchInfo(method) is { } patchedPostfix && AllPatches(patchedPostfix).Any())
             {
-                return $"{KindText(kind, method)} whose own method is patched (its by-reference argument judged read-only from its IL)";
+                // Neutral about how it was let through: only read through (OnlyReadThrough), or written where this mod's mirror
+                // leaves the argument as the original would (G4: HookFilter's preventer).
+                return $"{KindText(kind, method)} whose own method is patched (its by-reference argument judged from its IL)";
             }
             if (tolerance == PatchTolerance.TypeGated)
             {

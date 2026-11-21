@@ -107,15 +107,19 @@ public static partial class PatchSafety
             {
                 return false;
             }
-            Patch[] postfixes = info.Postfixes.ToArray();
-            MethodInfo?[] methods = postfixes.Select(PatchMethodOf).ToArray();
-            if (postfixes.Length == 0 || methods.Any(m => m == null || IsFactory(m)))
+            Patch[] live = info.Postfixes.ToArray();
+            MethodInfo?[] methods = live.Select(PatchMethodOf).ToArray();
+            if (live.Length == 0 || methods.Any(m => m == null || IsFactory(m)))
             {
                 return false;
             }
-            for (int i = 0; i < postfixes.Length; i++)
+            // Sorted as copies, each with its resolved method: Harmony's own Patch objects are shared with any thread patching now
+            // (this may run off the main thread) and are never written to.
+            Patch[] postfixes = new Patch[live.Length];
+            for (int i = 0; i < live.Length; i++)
             {
-                postfixes[i].PatchMethod = methods[i];
+                Patch p = live[i];
+                postfixes[i] = new Patch(methods[i]!, p.index, p.owner, p.priority, p.before, p.after, p.debug);
             }
             List<MethodInfo> sorted = PatchProcessor.GetSortedPatchMethods(method, postfixes);
             if (sorted.Count != postfixes.Length)
@@ -163,7 +167,8 @@ public static partial class PatchSafety
 #endif
 
     /// <summary>
-    /// A postfix whose whole IL is <c>nop*; ldarg __result; ldc.*|ldnull|ldstr; stind.*; ret</c> (nops anywhere): static, void, not
+    /// A postfix whose whole IL is <c>nop*; ldarg __result; ldc.*|ldnull|ldstr; stind.*; ret</c> (nops anywhere; the store the
+    /// result's type takes and a constant of its kind: <see cref="StoreFor"/>, <see cref="LoadFits"/>): static, void, not
     /// generic, no factory, no renamed parameters, its only parameter <c>ref __result</c> of the getter's type <paramref name="result"/>.
     /// It sets the result to one constant and does nothing else (Infinite Upgrades' <c>__result = int.MaxValue</c>). Refused: a
     /// static read (<c>__result = Flag ? 1 : 0</c>), the result read (<c>Math.Max(__result, x)</c>), any other parameter or call.
@@ -178,13 +183,73 @@ public static partial class PatchSafety
                 return false;
             }
             List<MethodFingerprint.Instruction> code = MethodFingerprint.Instructions(postfix).Where(i => i.Op != OpCodes.Nop).ToList();
-            return code.Count == 4 && LoadsArgument(code[0], 0) && IsConstantLoad(code[1].Op) && IsIndirectStore(code[2].Op) && code[3].Op == OpCodes.Ret;
+            // The store the result's type takes, and a constant of that store's kind (audit of 2026-11-21: a mismatched pair, an
+            // stind.i1 into an int, an ldc.i8 stored as a reference, is not the C# compiler's and its value isn't the one read).
+            return code.Count == 4 && LoadsArgument(code[0], 0) && StoreFor(result) is { } store && code[2].Op == store
+                && LoadFits(code[1].Op, store, result) && code[3].Op == OpCodes.Ret;
         }
         catch
         {
             return false;
         }
     });
+
+    /// <summary>
+    /// The indirect store the compiler emits for a value of <paramref name="result"/> through <c>ref</c> (an enum: its underlying
+    /// type's), or null for a type it stores otherwise (a struct: <c>stobj</c>).
+    /// </summary>
+    private static OpCode? StoreFor(Type result)
+    {
+        Type type = result.IsEnum ? Enum.GetUnderlyingType(result) : result;
+        if (!type.IsValueType)
+        {
+            return OpCodes.Stind_Ref;
+        }
+        if (type == typeof(IntPtr) || type == typeof(UIntPtr))
+        {
+            return OpCodes.Stind_I;
+        }
+        return Type.GetTypeCode(type) switch
+        {
+            TypeCode.Boolean or TypeCode.SByte or TypeCode.Byte => OpCodes.Stind_I1,
+            TypeCode.Int16 or TypeCode.UInt16 or TypeCode.Char => OpCodes.Stind_I2,
+            TypeCode.Int32 or TypeCode.UInt32 => OpCodes.Stind_I4,
+            TypeCode.Int64 or TypeCode.UInt64 => OpCodes.Stind_I8,
+            TypeCode.Single => OpCodes.Stind_R4,
+            TypeCode.Double => OpCodes.Stind_R8,
+            _ => null,
+        };
+    }
+
+    /// <summary>A constant load whose value <paramref name="store"/> stores as it is: an int32 load for the 1-, 2- and 4-byte stores, ldc.i8, ldc.r4, ldc.r8, ldnull (ldstr where a string fits) for a reference.</summary>
+    private static bool LoadFits(OpCode load, OpCode store, Type result)
+    {
+        if (!IsConstantLoad(load))
+        {
+            return false;
+        }
+        if (store == OpCodes.Stind_I1 || store == OpCodes.Stind_I2 || store == OpCodes.Stind_I4)
+        {
+            return load != OpCodes.Ldc_I8 && load != OpCodes.Ldc_R4 && load != OpCodes.Ldc_R8 && load != OpCodes.Ldnull && load != OpCodes.Ldstr;
+        }
+        if (store == OpCodes.Stind_I8)
+        {
+            return load == OpCodes.Ldc_I8;
+        }
+        if (store == OpCodes.Stind_R4)
+        {
+            return load == OpCodes.Ldc_R4;
+        }
+        if (store == OpCodes.Stind_R8)
+        {
+            return load == OpCodes.Ldc_R8;
+        }
+        if (store == OpCodes.Stind_Ref)
+        {
+            return load == OpCodes.Ldnull || (load == OpCodes.Ldstr && result.IsAssignableFrom(typeof(string)));
+        }
+        return false; // stind.i: a native int constant needs a conversion the shape doesn't have.
+    }
 
 #if BENCH
     /// <summary>The bench's view of <see cref="ConstantResultShape"/> and the class initializer rule (G3's self-test, offline too).</summary>
@@ -197,8 +262,4 @@ public static partial class PatchSafety
         || op == OpCodes.Ldc_I4_2 || op == OpCodes.Ldc_I4_3 || op == OpCodes.Ldc_I4_4 || op == OpCodes.Ldc_I4_5 || op == OpCodes.Ldc_I4_6
         || op == OpCodes.Ldc_I4_7 || op == OpCodes.Ldc_I4_8 || op == OpCodes.Ldc_I8 || op == OpCodes.Ldc_R4 || op == OpCodes.Ldc_R8
         || op == OpCodes.Ldnull || op == OpCodes.Ldstr;
-
-    private static bool IsIndirectStore(OpCode op) =>
-        op == OpCodes.Stind_I || op == OpCodes.Stind_I1 || op == OpCodes.Stind_I2 || op == OpCodes.Stind_I4 || op == OpCodes.Stind_I8
-        || op == OpCodes.Stind_R4 || op == OpCodes.Stind_R8 || op == OpCodes.Stind_Ref;
 }
