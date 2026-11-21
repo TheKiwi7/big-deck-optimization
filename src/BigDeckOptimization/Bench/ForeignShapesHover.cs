@@ -279,8 +279,14 @@ public static class ForeignShapesHover
     }
 
     /// <summary>The tip appended to an enemy's tips: its text holds the combat's round (the same object never: a fresh one per call).</summary>
-    private static HoverTip Synthetic() =>
-        new(new LocString("static_hover_tips", "DRAW_PILE.title"), $"BDTEST synthetic tip, round {CombatManager.Instance.DebugOnlyGetState()?.RoundNumber ?? 0}");
+    private static HoverTip Synthetic()
+    {
+        // The title's format string reads a "Hotkey" variable: set it as the game's own pile tip does (NCombatCardPile), else every
+        // format of this tip logs the game's "Localization formatting error" (a test artifact, not the mod's).
+        var title = new LocString("static_hover_tips", "DRAW_PILE.title");
+        title.Add("Hotkey", "None");
+        return new(title, $"BDTEST synthetic tip, round {CombatManager.Instance.DebugOnlyGetState()?.RoundNumber ?? 0}");
+    }
 
     /// <summary>HonkaiLib's shape: the argument rewritten by reference, lazily extended.</summary>
     public static void AppendPrefix(NCreature __instance, ref IEnumerable<IHoverTip> hoverTips)
