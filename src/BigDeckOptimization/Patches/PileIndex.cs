@@ -417,7 +417,9 @@ public static class PileIndex
     /// <summary>
     /// <c>RemoveInternal</c>'s single scan (<see cref="RemoveInternalTranspiler"/>): its own switch, set with the pile_lookup switch by
     /// <c>Settings</c>. It reads no index: only <see cref="_failed"/> (a pile changed in a way the index's checks didn't expect) and
-    /// <see cref="_equalsSeen"/> stop it.
+    /// a card type whose <c>Equals</c> may not answer by reference (<see cref="ByReference"/>) stop it. It keeps running while
+    /// PileIndex backs off from another mod's patch (<see cref="SelfChecking"/>, <see cref="GetterPatched"/>): exact by its own
+    /// checks (the collection's exact type, the list's version between the two calls), whatever runs around the method.
     /// </summary>
     public static bool SingleScanEnabled { get; set; } = true;
     /// <summary>Removes made with the duplicate check's own search (the effects check).</summary>
@@ -428,14 +430,15 @@ public static class PileIndex
     private static long _scanChecks;
 
     /// <summary>
-    /// A card whose type overrides <c>Equals(object)</c> was added to a pile this session (seen by <see cref="BeforeAdd"/>, through
-    /// which every card enters a pile's list: <c>RequireFieldWriters</c>): <c>List.IndexOf</c> calls each element's <c>Equals</c>,
-    /// which then might not answer by reference, nor twice the same. The single scan stays off for the session (none of the
-    /// Workshop mods checked has such a card).
+    /// A card whose type overrides <c>Equals(object)</c> with other code than <c>this == obj</c> (<see cref="CardEquality"/>) was
+    /// added to a pile this session (seen by <see cref="BeforeAdd"/>, through which every card enters a pile's list:
+    /// <c>RequireFieldWriters</c>): <c>List.IndexOf</c> calls each element's <c>Equals</c>, which then might not answer by reference,
+    /// nor twice the same. The single scan stays off for the session. A <c>this == obj</c> override (Guzhenren's cards) answers by
+    /// reference: <see cref="_referenceOverrideSeen"/>, off only while another mod patches such an override.
     /// </summary>
     private static bool _equalsSeen;
+    private static bool _referenceOverrideSeen;
     private static Type? _lastAddedType;
-    private static readonly Dictionary<Type, bool> _overridesEquals = new();
 
     private static void NoteAddedType(CardModel? card)
     {
@@ -444,19 +447,20 @@ public static class PileIndex
         {
             return;
         }
-        bool overrides;
-        lock (_overridesEquals)
+        switch (CardEquality.Of(type))
         {
-            if (!_overridesEquals.TryGetValue(type, out overrides))
-            {
-                MethodInfo? equals = type.GetMethod(nameof(Equals), BindingFlags.Public | BindingFlags.Instance, null, new[] { typeof(object) }, null);
-                overrides = equals == null || equals.DeclaringType != typeof(object);
-                _overridesEquals[type] = overrides;
-            }
+            case CardEquality.Kind.Other:
+                _equalsSeen = true;
+                break;
+            case CardEquality.Kind.ReferenceOverride:
+                _referenceOverrideSeen = true;
+                break;
         }
-        _equalsSeen |= overrides;
         _lastAddedType = type;
     }
+
+    /// <summary>Every card that entered a pile this session answers <c>Equals</c> by reference now.</summary>
+    private static bool ByReference() => !_equalsSeen && (!_referenceOverrideSeen || !CardEquality.ReferenceOverridePatched());
 
     /// <summary>List&lt;T&gt;._version: bumped by every change of a list.</summary>
     private static AccessTools.FieldRef<List<CardModel>, int>? _listVersion;
@@ -475,7 +479,9 @@ public static class PileIndex
     /// same card (a reshuffle moving a whole pile: the cards are searched twice each). Its <c>Enumerable.Contains</c> call goes
     /// through <see cref="ContainsBeingRemoved"/> and its <c>List.Remove</c> through <see cref="RemoveFound"/>, which removes at the
     /// index the first search found when the list is still as it was then: what <c>List.Remove</c> does (its own <c>IndexOf</c>, then
-    /// <c>RemoveAt</c> there). Only when both calls are found, once each.
+    /// <c>RemoveAt</c> there). Only when both calls are found, once each. Another mod's transpiler sorted after this one no longer
+    /// sees those two calls (it sees this class's two methods in their place): one looking for them finds nothing to change there,
+    /// as on a game version without them.
     /// </summary>
     private static IEnumerable<CodeInstruction> RemoveInternalTranspiler(IEnumerable<CodeInstruction> instructions)
     {
@@ -504,7 +510,7 @@ public static class PileIndex
     /// <summary>
     /// <c>Cards.Contains(card)</c> in <c>RemoveInternal</c>: on the pile's own list (<c>List&lt;CardModel&gt;</c> itself, whose
     /// <c>Contains</c> is <c>IndexOf(card) &gt;= 0</c>, what <c>Enumerable.Contains</c> calls for it), a search by reference (each
-    /// element's <c>Equals</c>, none overriding it: <see cref="_equalsSeen"/>) that remembers where it found the card. Anything
+    /// element's <c>Equals</c>, each answering by reference: <see cref="ByReference"/>) that remembers where it found the card. Anything
     /// else (another collection returned by a patched <c>CardPile.Cards</c>, switched off, inside ListenerCache.RunVanilla): the
     /// game's call.
     /// </summary>
@@ -513,7 +519,7 @@ public static class PileIndex
         _foundList = null;
         _foundCard = null;
         // A null card: the game's call (List.IndexOf finds a null element, a search by reference would too, but nothing to gain).
-        if (SingleScanEnabled && !_failed && !_equalsSeen && !ListenerCache.IsSuspended && card != null && cards != null
+        if (SingleScanEnabled && !_failed && !ListenerCache.IsSuspended && card != null && cards != null && ByReference()
             && cards.GetType() == typeof(List<CardModel>))
         {
             var list = (List<CardModel>)cards;

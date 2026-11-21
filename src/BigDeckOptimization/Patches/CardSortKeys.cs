@@ -30,7 +30,8 @@ namespace BigDeckOptimization.Patches;
 /// resolved cost and the ordered key list. The sort itself is the game's: the same comparisons give the same order.
 /// Two cards of one type with the same keys (a big deck's equal cards: most comparisons go down to the variables) share one key
 /// array, and their variables (read with the keys) are compared element by element without the game's two string lookups per
-/// key, while each card's variable set and its dictionary are still the ones read (<see cref="SameVars"/>); the values themselves
+/// key, while each card's variable set and its dictionary are still the ones read at its first comparison of the sort
+/// (<see cref="SameVars"/>; a variable replaced under its key during the sort is not seen: the sort's premise); the values themselves
 /// are read live. Each card's entry is found once per comparison at most (the pivot's kept from the last one).
 ///
 /// Exact because nothing changes while the sort runs: a sort is opened only when every card's type keeps
@@ -272,6 +273,7 @@ public static class CardSortKeys
         public DynamicVarSet? Set;
         public Dictionary<string, DynamicVar>? SetDictionary;
         public int SetVersion;
+        public int SetCount;
     }
 
     private sealed class Scope(Dictionary<CardModel, Entry?> cards, Scope? previous)
@@ -282,6 +284,8 @@ public static class CardSortKeys
         public long Answered;
         /// <summary>Per card type, the first ordered key array met: a card of that type with the same keys shares it.</summary>
         public readonly Dictionary<Type, string[]> SharedKeys = new();
+        /// <summary>The shared-key comparison may be used in this sort (<see cref="_varsKnown"/>, <see cref="_varReads"/> unpatched).</summary>
+        public bool Shared;
         /// <summary>
         /// The last two cards looked up and their entries: the sort compares one pivot with each element in turn, so one of the two
         /// cards of a comparison is nearly always the last one's (one dictionary lookup a comparison instead of three).
@@ -329,16 +333,23 @@ public static class CardSortKeys
     /// <summary>
     /// <c>DynamicVarSet.TryGetValue</c> and its indexer, v0.113.0 and v0.113.1: a comparison of two cards with the same keys reads
     /// their variables from the entries (<see cref="Entry.Vars"/>), these then run once per card in a sort instead of once per key
-    /// per comparison: strict, as the keys' getter.
+    /// per comparison: strict, as the keys' getter, but for the shared-key comparison only (<see cref="_varReads"/>): a changed
+    /// one or another mod's patch on one leaves that comparison the game's loop, the rest of the sort still answered.
     /// </summary>
     private const string TryGetValueFingerprint = "9ACBBAC4326E5D69";
     private const string VarIndexerFingerprint = "3951F7605C1D25AA";
+    private static MethodBase?[] _varReads = Array.Empty<MethodBase?>();
 
     /// <summary>
-    /// The fields a comparison reads to know the entry's variables are still the card's: <c>CardModel._dynamicVars</c> (the set
-    /// the getter returns once made), <c>DynamicVarSet._vars</c> and that dictionary's <c>_version</c> (bumped by every change of
-    /// it: another mod's code adding or replacing a variable by reflection). False: every comparison reads the variables as the
-    /// game does (the keys still kept).
+    /// The shared-key comparison can be used: the two methods above have their known code, and the fields a comparison reads to
+    /// know the entry's variables are still the card's were found: <c>CardModel._dynamicVars</c> (the set the getter returns once
+    /// made), <c>DynamicVarSet._vars</c>, that dictionary's <c>_version</c> (bumped by an add of a new key) and its count (a remove
+    /// or a clear; on .NET Core 3+ neither bumps the version). Not seen: a variable replaced under an existing key
+    /// (<c>_vars[key] = newVar</c>, no version bump), which Steve's, shadowverse's, yugioh's and Loadout's code do by reflection
+    /// (when a card is made or enchanted): an entry's variables are read at the card's first comparison of each sort, so such a
+    /// write between two sorts is seen; one inside a sort isn't, and rests on the sort's premise (nothing writes a card's
+    /// variables during one synchronous sort: the comparison and the known pure cost listeners only read). False: every
+    /// comparison reads the variables as the game does (the keys still kept).
     /// </summary>
     private static bool _varsKnown;
     private static AccessTools.FieldRef<CardModel, DynamicVarSet?>? _cardVars;
@@ -370,11 +381,14 @@ public static class CardSortKeys
         MethodInfo energyCost = Require(Reflect.PropertyGetter(typeof(CardModel), nameof(CardModel.EnergyCost)), EnergyCostGetterFingerprint, "CardModel.EnergyCost");
         MethodInfo dynamicVars = Require(Reflect.PropertyGetter(typeof(CardModel), nameof(CardModel.DynamicVars)), DynamicVarsGetterFingerprint, "CardModel.DynamicVars");
         MethodInfo keys = Require(Reflect.PropertyGetter(typeof(DynamicVarSet), nameof(DynamicVarSet.Keys)), KeysGetterFingerprint, "DynamicVarSet.Keys");
-        MethodInfo tryGetValue = Require(Reflect.DeclaredMethod(typeof(DynamicVarSet), nameof(DynamicVarSet.TryGetValue), new[] { typeof(string), typeof(DynamicVar).MakeByRefType() }),
-            TryGetValueFingerprint, "DynamicVarSet.TryGetValue");
-        MethodInfo varIndexer = Require(Reflect.DeclaredMethod(typeof(DynamicVarSet), "get_Item", new[] { typeof(string) }), VarIndexerFingerprint, "DynamicVarSet.get_Item");
         try
         {
+            _varReads = new MethodBase?[]
+            {
+                Require(Reflect.DeclaredMethod(typeof(DynamicVarSet), nameof(DynamicVarSet.TryGetValue), new[] { typeof(string), typeof(DynamicVar).MakeByRefType() }),
+                    TryGetValueFingerprint, "DynamicVarSet.TryGetValue"),
+                Require(Reflect.DeclaredMethod(typeof(DynamicVarSet), "get_Item", new[] { typeof(string) }), VarIndexerFingerprint, "DynamicVarSet.get_Item"),
+            };
             _cardVars = Reflect.FieldRefAccess<CardModel, DynamicVarSet?>("_dynamicVars");
             _setVars = Reflect.FieldRefAccess<DynamicVarSet, Dictionary<string, DynamicVar>?>("_vars");
             _dictionaryVersion = Reflect.FieldRefAccess<Dictionary<string, DynamicVar>, int>("_version");
@@ -383,7 +397,8 @@ public static class CardSortKeys
         catch (Exception e)
         {
             _varsKnown = false;
-            Log.Info($"[{ModEntry.Id}] {Name}: dynamic variable fields not found ({e.Message}): each comparison reads them as the game does");
+            _varReads = Array.Empty<MethodBase?>();
+            Log.Info($"[{ModEntry.Id}] {Name}: dynamic variable reads changed ({e.Message}): the shared-key comparison left vanilla, each comparison reads them as the game does");
         }
         MethodInfo pile = Require(Reflect.PropertyGetter(typeof(CardModel), nameof(CardModel.Pile)), PileGetterFingerprint, "CardModel.Pile");
         MethodInfo cardCombat = Require(Reflect.PropertyGetter(typeof(CardModel), nameof(CardModel.CombatState)), CardCombatStateFingerprint, "CardModel.CombatState");
@@ -414,7 +429,7 @@ public static class CardSortKeys
         _inScope = Reflect.Method(typeof(CardSortKeys), nameof(StableShuffleInScope));
         _watched = new MethodBase?[]
         {
-            compareTo, baseCompareTo, modelIdCompare, shuffle, shuffle.MakeGenericMethod(typeof(CardModel)), dynamicVars, keys, tryGetValue, varIndexer,
+            compareTo, baseCompareTo, modelIdCompare, shuffle, shuffle.MakeGenericMethod(typeof(CardModel)), dynamicVars, keys,
             // Bypassed by OwnerCombat's field reads: a patch there could make the cost hook walk another combat than the one judged.
             cardCombat, playerCreature, creatureCombat,
         };
@@ -748,6 +763,13 @@ public static class CardSortKeys
                 }
             }
             Scope scope = new(cards, _scope);
+            // The variables' reads, strict for the shared-key comparison only (asked once per sort).
+            bool shared = _varsKnown;
+            foreach (MethodBase? method in _varReads)
+            {
+                shared &= !PatchSafety.IsPatchedByOthers(method);
+            }
+            scope.Shared = shared;
             _scope = scope;
             return scope;
         }
@@ -1145,8 +1167,9 @@ public static class CardSortKeys
             return 0; // The game reads nothing of b's variables then: neither is it read here.
         }
         // Two cards with the same keys (one shared array: the same type and the same ordered keys), their variables still the ones
-        // read with the keys: b has each of a's keys (TryGetValue finds it), and its variable is the one read then. The values are
-        // read live, in the game's order, up to the first difference.
+        // read with the keys (SameVars; a variable replaced under its key inside the sort rests on the sort's premise): b has each of
+        // a's keys (TryGetValue finds it), and its variable is the one read then. The values are read live, in the game's order, up
+        // to the first difference.
         if (other!.Keys == null)
         {
             Read(scope, b, other);
@@ -1213,7 +1236,7 @@ public static class CardSortKeys
             scope.SharedKeys[type] = keys;
         }
         entry.Keys = keys;
-        if (_varsKnown && ReferenceEquals(_cardVars!(card), set) && _setVars!(set) is { } vars)
+        if (scope.Shared && ReferenceEquals(_cardVars!(card), set) && _setVars!(set) is { } vars)
         {
             var read = new DynamicVar[keys.Length];
             for (int i = 0; i < keys.Length; i++)
@@ -1224,13 +1247,16 @@ public static class CardSortKeys
             entry.Set = set;
             entry.SetDictionary = vars;
             entry.SetVersion = _dictionaryVersion!(vars);
+            entry.SetCount = vars.Count;
         }
         return keys;
     }
 
     /// <summary>
-    /// The card's variables are still those of the entry: its <c>_dynamicVars</c> is the set they were read from (no clone or
-    /// downgrade replaced it), that set's dictionary is the same one and wasn't changed since (its version).
+    /// The card's variables are, as far as can be seen at no cost, still those of the entry: its <c>_dynamicVars</c> is the set they
+    /// were read from (no clone or downgrade replaced it), that set's dictionary is the same one, with the same version (no key
+    /// added) and count (none removed, no clear). A variable replaced under an existing key bumps neither (.NET Core 3+): not seen
+    /// here, see <see cref="_varsKnown"/> (the sort's premise).
     /// </summary>
     private static bool SameVars(CardModel card, Entry entry)
     {
@@ -1239,7 +1265,7 @@ public static class CardSortKeys
             return false;
         }
         Dictionary<string, DynamicVar>? vars = _setVars!(entry.Set!);
-        return vars != null && ReferenceEquals(vars, entry.SetDictionary) && _dictionaryVersion!(vars) == entry.SetVersion;
+        return vars != null && ReferenceEquals(vars, entry.SetDictionary) && _dictionaryVersion!(vars) == entry.SetVersion && vars.Count == entry.SetCount;
     }
 
     /// <summary>The game's answer for this pair (nothing in the sort can change what it reads: see <see cref="Open"/>).</summary>
