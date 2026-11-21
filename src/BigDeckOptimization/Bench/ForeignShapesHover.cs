@@ -94,12 +94,19 @@ public static class ForeignShapesHover
                 if (parts[1] == "mark")
                 {
                     _readsMark = _reads;
+                    _blockedCallsMark = _blockedCalls;
                     return new[] { $"FOREIGN tips reads mark: {_reads}" };
                 }
-                string line = $"FOREIGN tips reads since the mark: {_reads - _readsMark}";
+                // Zero reads prove nothing unless ShowHoverTips' body really ran in the window with the block on, outside a card play.
+                long calls = _blockedCalls - _blockedCallsMark;
+                string line = $"FOREIGN tips reads since the mark: {_reads - _readsMark} ({calls} ShowHoverTips calls outside a card play while blocked)";
                 if (_reads != _readsMark)
                 {
                     throw new InvalidOperationException(line + " (MISMATCH: the game reads no tip while they are blocked)");
+                }
+                if (calls < 1)
+                {
+                    throw new InvalidOperationException(line + " (NOTHING CHECKED: no ShowHoverTips call ran in the window while blocked, outside a card play)");
                 }
                 return new[] { line };
             }
@@ -204,11 +211,15 @@ public static class ForeignShapesHover
         _identityArgument = null;
     }
 
-    private static long _reads, _readsMark;
+    private static long _reads, _readsMark, _blockedCalls, _blockedCallsMark;
 
     /// <summary>The argument wrapped in an enumerable counting its reads (each <c>GetEnumerator</c>).</summary>
     public static void CountReadsPrefix(ref IEnumerable<IHoverTip> hoverTips)
     {
+        if (NHoverTipSet.shouldBlockHoverTips && MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom.Instance?.Ui.Hand.InCardPlay == false)
+        {
+            _blockedCalls++;
+        }
         if (hoverTips != null)
         {
             hoverTips = new CountingTips(hoverTips);

@@ -14,7 +14,8 @@ expect FOREIGN classify NCreature\.ShowHoverTips: bdtest\.foreign\.tips-append-p
 expect FOREIGN classify NCreature\.ShowHoverTips: bdtest\.foreign\.tips-false-prefix Prefix .*AnyPrefix tolerated
 expect FOREIGN TIPS OK t2:
 expect FOREIGN TIPS OK after block:
-expect FOREIGN tips reads since the mark: 0
+expect FOREIGN tips reads since the mark: 0 \([1-9][0-9]* ShowHoverTips calls outside a card play while blocked\)
+expect FOREIGN tips appended [1-9][0-9]*, false returns [1-9][0-9]*, panels checked
 expect FOREIGN TIPS OK after ui block:
 expect EFFECTCHECK HoverTipReuse grew since 'start': [0-9]+ -> [1-9]
 newrun NECROBINDER 1234

@@ -1,0 +1,48 @@
+# SaveReadDecode's serving path (A/B, on; with saveread-off): saveread-on with `bdperf saveread verify 1000`. Test builds compare
+# every decoded read with the game's text and return the game's string (verify 1: the default there), so the path players run,
+# the part's own text handed to ReadFile's caller, is never reached by saveread-on. Here only the session's first decoded read
+# and one in 1,000 after it are compared: the others are served from the part's decode. The runstate and savefiles lines must
+# still match saveread-off, where the game reads every file (the run save, its .backup, the menu's load and the continued run
+# are served from the part). The counters line must show reads served without the game's read (`served without the game's read
+# [1-9]`), no mismatch.
+# compare-with: saveread-off
+timeout 1800
+expect SAVEREAD counters decoded [0-9]+ \(run saves [1-9][0-9]*\), checks [1-9][0-9]*, mismatches 0, served without the game's read [1-9][0-9]*;
+cmd bdperf saveread verify 1000
+savefiles before the run
+newrun NECROBINDER 1234
+waitfor run 120
+wait 2
+cmd bigdeck import ref all all
+cmd bigdeck import ref all cards
+cmd bdperf checks off
+enemyhp 1
+selector ui
+runstate start
+wait 2
+savefiles start
+cmd fight CULTISTS_NORMAL
+waitfor combat 300
+autoroom 900
+runstate after fight
+automap
+wait 3
+runstate before save
+wait 2
+savefiles before menu
+effects before menu
+tomenu
+wait 3
+continuerun 600
+wait 3
+runstate after load
+savefiles after load
+effects loaded
+autoroom 900
+runstate room done
+wait 2
+savefiles room done
+effects end
+effectcheck SaveReadDecode.RunSave grew before menu
+cmd bdperf saveread counters
+quit

@@ -38,7 +38,7 @@ internal static class EffectCounters
         (typeof(SnapshotCardReuse), nameof(SnapshotCardReuse.PilesWithHooks)), (typeof(SnapshotCardReuse), nameof(SnapshotCardReuse.BlockCopiedCards)),
         (typeof(SnapshotCardReuse), nameof(SnapshotCardReuse.BitsReused)), (typeof(SnapshotCardReuse), nameof(SnapshotCardReuse.UpgradeBitsPatched)),
         (typeof(SnapshotCardReuse), nameof(SnapshotCardReuse.PileBitsReused)), (typeof(SnapshotCardReuse), nameof(SnapshotCardReuse.PileBitsComposed)),
-        (typeof(DeckCountMemo), nameof(DeckCountMemo.Kept)), (typeof(DeckCountMemo), nameof(DeckCountMemo.Updated)),
+        (typeof(DeckCountMemo), nameof(DeckCountMemo.Answered)),
         (typeof(DeckCountMemo), nameof(DeckCountMemo.Checks)),
         (typeof(LimitlessHookSkip), nameof(LimitlessHookSkip.Dropped)), (typeof(LimitlessHookSkip), nameof(LimitlessHookSkip.NotesFromSaved)),
         (typeof(LimitlessCloneMemo), nameof(LimitlessCloneMemo.Reused)), (typeof(TextPoolReuse), nameof(TextPoolReuse.Served)),

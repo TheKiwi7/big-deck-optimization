@@ -45,7 +45,7 @@ public static class SaveReadBench
             case "counters":
                 bool clean = SaveReadDecode.Mismatches == 0;
                 return new CmdResult(clean, $"SAVEREAD counters decoded {SaveReadDecode.Decoded} (run saves {SaveReadDecode.RunSaveReads}), checks {SaveReadDecode.Checks}, "
-                    + $"mismatches {SaveReadDecode.Mismatches}; left to the game: outside the gate {SaveReadDecode.MissGate}, short read {SaveReadDecode.MissShort}, "
+                    + $"mismatches {SaveReadDecode.Mismatches}, served without the game's read {Math.Max(0, SaveReadDecode.Decoded - SaveReadDecode.Checks)}; left to the game: outside the gate {SaveReadDecode.MissGate}, short read {SaveReadDecode.MissShort}, "
                     + $"other mods {SaveReadDecode.MissBackOff}: " + (clean ? "OK: no difference with the game's text" : "the part's net found a difference"));
         }
         if (!SaveReadDecode.Applied)
