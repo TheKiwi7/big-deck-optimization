@@ -85,6 +85,10 @@ def check(results, version, names):
             if os.path.getmtime(path) > os.path.getmtime(log) + SLACK_SEC:
                 changed.append(n)
                 continue
+            sys.path.insert(0, ROOT)
+            import judge
+            if judge.is_skipped(log):  # SKIPPED: the rest of the scenario does not apply to this game version: no drift to find
+                continue
             logs += 1
             for pattern, near in expect_misses(log, n):
                 expects.append((n, pattern, near))
