@@ -27,7 +27,10 @@ expect FOREIGN classify PlayerChoiceContext\.PushModel: bdtest\.foreign\.model-g
 expect HookSkip: PlayerChoiceContext\.PushModel is also patched by bdtest\.foreign\.model-gated-prefix-squeeze \(patches gated on the listener's type not enough\): normal game for that part
 expect HookSkip: CardModel\.get_Owner is also patched by bdtest\.foreign\.count-postfix: normal game for that part
 expect FOREIGN classify HookPlayerChoiceContext\.\.ctor: bdtest\.foreign\.ctor-impure-cctor-gated-squeeze Postfix .*TypeGated backs off \(postfix gated, but its class SourceImpureGate has a static initializer that could run at another time
-expect FOREIGN classify HookPlayerChoiceContext\.\.ctor: bdtest\.foreign\.ctor-throwing-cctor-gated-squeeze Postfix .*TypeGated backs off \(postfix gated, but its class SourceThrowingGate has a static initializer
+# P1's lookup by a unique name (AccessTools.Method(typeof(Squeeze), "OnUpgrade")): R2 (2026-11-18) repeats it at judge time, so
+# it can't throw at another time and stands; an ambiguous name stays refused (Bench/ForeignShapesGates.cs, gates-init-ambiguous).
+# Hidden until 2026-11-22 by ForeignPatches' impure initializer (every gated control here backed off for that reason).
+expect FOREIGN classify HookPlayerChoiceContext\.\.ctor: bdtest\.foreign\.ctor-throwing-cctor-gated-squeeze Postfix .*TypeGated tolerated, gates Squeeze
 expect FOREIGN classify HookPlayerChoiceContext\.\.ctor: bdtest\.foreign\.ctor-reach-gated-squeeze Postfix .*TypeGated backs off \(postfix gated, but it reaches ImpureClock, whose static initializer
 expect FOREIGN classify HookPlayerChoiceContext\.\.ctor: bdtest\.foreign\.ctor-lambda-gated-squeeze Postfix .*TypeGated tolerated, gates Squeeze
 expect FOREIGN classify HookPlayerChoiceContext\.\.ctor: bdtest\.foreign\.ctor-accesstools-gated-squeeze Postfix .*TypeGated tolerated, gates Squeeze

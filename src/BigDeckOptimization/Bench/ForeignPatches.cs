@@ -2113,7 +2113,8 @@ public static class ForeignPatches
 
     /// <summary>
     /// The source-gated shape in a beforefieldinit class whose initializer looks a method up by name (P1: AccessTools.Method can
-    /// throw on an ambiguous name, at whatever time the runtime runs the initializer). Must back off.
+    /// throw on an ambiguous name, at whatever time the runtime runs the initializer). Backed off until R2 (2026-11-18), which repeats
+    /// the lookup at judge time: a unique name stands (tolerated), an ambiguous one stays refused (ForeignShapesGates, gates-init-ambiguous).
     /// </summary>
     private static class SourceThrowingGate
     {
