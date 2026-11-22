@@ -4,8 +4,14 @@
 # CHECKSUM, STATE, CARDPLAY, AutoSlay's rooms) with no problem in either log. It is what lets every A/B and sweep run its
 # mod-off side vanilla and reuse it from the baselines while their key is unchanged (parlib.ps1's Get-BaselineKey leaves this
 # mod's patches out). A disabled patch that still changed the game would show on both sides of an A/B; here it differs.
-# Once per release on every supported game version. No baselines: every session runs. Exit code 1 on any difference or problem.
-#   powershell -ExecutionPolicy Bypass -File tools/autotest/vanillacheck.ps1 -GameDir <copy> [-Jobs n] [-Names ab-2k-off,outside-2k-off] [-SweepKind potions|none]
+# Once per release on every supported game version. Exit code 1 on any difference or problem.
+#   powershell -ExecutionPolicy Bypass -File tools/autotest/vanillacheck.ps1 -GameDir <copy> [-Jobs n] [-Names ab-2k-off,outside-2k-off] [-SweepKind potions|none] [-Fresh]
+# What runs each time and what comes from the baselines: the vanilla side of every scenario and of the sweep's "off" parts is a
+# vanilla log that depends only on the game, the data, the Workshop mods, the scenario and the test runner code it uses, never on
+# this mod's patches (parlib.ps1's Get-BaselineKey): it is reused from results/baselines/<version>/ when the same key holds (the
+# solo steps and parsweep-all keep them as they run) and made, then kept, when it does not. The patched-off side (every patch
+# installed, then 'bdopt off') always runs: it is the side under test. -Fresh: every session runs, vanilla ones included (once per
+# release and version, the battery's -Fresh passes it).
 # -Names: solo mod-off scenarios (their first console command 'cmd bdopt off'). -PrefixNames: those the game itself may not finish
 # mod off: compared up to what both sessions reached, a failure both share listed, not counted (compare.py --prefix), a session
 # that timed out or stalled accepted. None by default: outside-2k-off, which needed it on v0.113 (its rest site's clone makes
@@ -13,7 +19,7 @@
 # -SweepKind: a whole sweep both ways (parsweep.ps1 -PatchedOff; parts and report in results/<version>/vanillacheck/), none to skip.
 param([string]$GameDir = "", [int]$Jobs = 0, [string[]]$Names = @("ab-2k-off", "outside-2k-off"),
     [string[]]$PrefixNames = @(), [ValidateSet("cards", "relics", "potions", "encounters", "powers", "none")][string]$SweepKind = "potions",
-    [int]$TimeoutSec = 3600, [int]$StallSec = 600)
+    [int]$TimeoutSec = 3600, [int]$StallSec = 600, [switch]$Fresh)
 $Names = @($Names | ForEach-Object { $_ -split "," } | Where-Object { $_ })  # "-Names a,b" through powershell -File is one string
 $PrefixNames = @($PrefixNames | ForEach-Object { $_ -split "," } | Where-Object { $_ })
 $copy = $GameDir
@@ -35,8 +41,9 @@ $list = foreach ($name in $Names) {
     $vanilla
     [pscustomobject]@{ Name = "$name-patched"; Script = $script; Log = Join-Path $out "$name-patched.log"; PatchedOff = $true }
 }
-# A fresh vanilla log is kept as a baseline as any other (Invoke-Sessions); none is read.
-$runs = Invoke-Sessions -Jobs $list -GameDir $GameDir -MaxJobs $Jobs -TimeoutSec $TimeoutSec -StallSec $StallSec -Label "vanillacheck $(Get-GameTag $GameDir)"
+# A vanilla log is read from the baselines unless -Fresh, and a fresh one is kept as a baseline as any other (Invoke-Sessions);
+# the patched-off jobs are never baseline jobs (Test-BaselineJob), so they always run.
+$runs = Invoke-Sessions -Jobs $list -GameDir $GameDir -MaxJobs $Jobs -TimeoutSec $TimeoutSec -StallSec $StallSec -UseBaselines:(-not $Fresh) -Label "vanillacheck $(Get-GameTag $GameDir)"
 Remove-TestMods $GameDir
 # Every job has its result: one that never ran left no log to compare (Invoke-Sessions deletes a queued job's old log).
 $missing = @(Get-MissingResults $list $runs)
@@ -47,7 +54,7 @@ foreach ($r in $runs) {
     # How it ran: not ended, not launched as its side says (Get-LaunchProblem), a test mod missing, an earlier session that ended
     # early or froze in this mod's code. A --prefix scenario's other problems (judge.py's) are compare.py's to weigh, both sides.
     $failed = @($r.Failed | Where-Object { -not $prefix -or $_ -match '^(ended early|froze|test mod |launched with|its log has the BDVANILLA|a patched-off session)' })
-    $ok = $r.State -eq "done" -or ($prefix -and $r.State -in "TIMEOUT", "STALLED")
+    $ok = $r.State -in "done", "cached" -or ($prefix -and $r.State -in "TIMEOUT", "STALLED")
     Write-Output ("{0,-28} {1,-8} {2,5} s{3}" -f $r.Name, $r.State, $r.Seconds, $(if ($failed.Count) { "  " + $failed[0] } else { "" }))
     if (-not $ok -or $failed.Count) {
         $bad++
@@ -66,7 +73,10 @@ foreach ($name in $Names) {
 }
 if ($SweepKind -ne "none") {
     # The mod-off parts vanilla ("off" side), the same parts patched-off ("on" side): sweepreport.py's verdict, its exit code.
-    & (Join-Path $PSScriptRoot "parsweep.ps1") -Kind $SweepKind -GameDir $GameDir -Jobs $Jobs -PatchedOff
+    # -UseBaselines: the "off" parts are the same vanilla parts as the real sweep's (same script text): from the baselines.
+    $sweepArgs = @("-Kind", $SweepKind, "-GameDir", $GameDir, "-Jobs", $Jobs, "-PatchedOff")
+    if (-not $Fresh) { $sweepArgs += "-UseBaselines" }
+    & (Join-Path $PSScriptRoot "parsweep.ps1") @sweepArgs
     if ($LASTEXITCODE) { $bad++; Write-Output "sweep $SweepKind vanilla vs patched-off: DIFFERENT or a problem (report above, results/$(Get-GameTag $GameDir)/vanillacheck/report-$SweepKind.md)" }
     else { Write-Output "sweep $SweepKind vanilla vs patched-off: IDENTICAL" }
 }
