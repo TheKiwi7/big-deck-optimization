@@ -74,8 +74,9 @@ foreach ($name in $Names) {
 if ($SweepKind -ne "none") {
     # The mod-off parts vanilla ("off" side), the same parts patched-off ("on" side): sweepreport.py's verdict, its exit code.
     # -UseBaselines: the "off" parts are the same vanilla parts as the real sweep's (same script text): from the baselines.
-    $sweepArgs = @("-Kind", $SweepKind, "-GameDir", $GameDir, "-Jobs", $Jobs, "-PatchedOff")
-    if (-not $Fresh) { $sweepArgs += "-UseBaselines" }
+    # A hashtable splat: an array would hand "-Kind" over as a positional value.
+    $sweepArgs = @{ Kind = $SweepKind; GameDir = $GameDir; Jobs = $Jobs; PatchedOff = $true }
+    if (-not $Fresh) { $sweepArgs.UseBaselines = $true }
     & (Join-Path $PSScriptRoot "parsweep.ps1") @sweepArgs
     if ($LASTEXITCODE) { $bad++; Write-Output "sweep $SweepKind vanilla vs patched-off: DIFFERENT or a problem (report above, results/$(Get-GameTag $GameDir)/vanillacheck/report-$SweepKind.md)" }
     else { Write-Output "sweep $SweepKind vanilla vs patched-off: IDENTICAL" }
