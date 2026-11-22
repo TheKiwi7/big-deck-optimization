@@ -56,8 +56,10 @@
             # Only coopfast has a mod-off twin: coop and coopclone play the full reference deck, whose vanilla combat start outlasts
             # the network timeout (their twins could never pass): their peers are compared only.
             @{ Name = 'coop'; Script = 'parcoop.ps1'; Args = @('-Names', 'coop,coopclone,coopfast', '-GameDir', '{copy}', '-OnOff', '-OnOffNames', 'coopfast', '-UseBaselines', '-OffJobs', '1', '-Jobs', '3') }
-            # The foreign patches in co-op: the STATE foreign lines of each peer identical to the mod-off twin's.
-            @{ Name = 'coop-foreign'; Script = 'parcoop.ps1'; Args = @('-Names', 'coop-foreign', '-GameDir', '{copy}', '-OnOff', '-OnOffNames', 'coop-foreign', '-UseBaselines', '-OffJobs', '1', '-Jobs', '3') }
+            # The foreign patches in co-op, peers compared only: its mod-off twin (the reference run's deck) stalled on both copies on
+            # 2026-11-22 (host frames of 11-12 s, a peer left), as coop's and coopclone's twins can't finish; the foreign shapes'
+            # on/off equivalence is the solo foreign-* pairs' (solo-premises).
+            @{ Name = 'coop-foreign'; Script = 'parcoop.ps1'; Args = @('-Names', 'coop-foreign', '-GameDir', '{copy}', '-Jobs', '3') }
             # audit-coopdeath: peers only (its players' actions interleave, RELEASE.md), added 2026-11-21.
             @{ Name = 'coop-misc'; Script = 'parcoop.ps1'; Args = @('-Names', 'audit-cooptoggle,coopinstant,effects-coop,audit-coopdeath', '-GameDir', '{copy}') }
             @{ Script = 'coop-modetag.ps1'; Args = @('-GameDir', '{copy}') }
