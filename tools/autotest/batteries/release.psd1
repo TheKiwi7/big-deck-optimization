@@ -48,7 +48,11 @@
         # ~25 min the first time, then from the baselines), a few paths only run at large sizes. A small pool (-Jobs 3): four 8,400-card
         # sessions are memory-heavy. turns-off with hookskip-on (compare-with), pile-cards-off with -on and -verify, the hover tips at 8k.
         @{ Name = 'big-ab'; Mode = 'Parallel'; Copies = @('pub'); Steps = @(
-            @{ Name = 'ab-8k'; Script = 'par.ps1'; Args = @('-Names', 'turns-off,hookskip-on,pile-cards-off,pile-cards-on,pile-cards-verify,hover-tips-8k', '-GameDir', '{copy}', '-Jobs', '3', '-UseBaselines', '-TimeoutSec', '3000') }
+            # -AloneNames: turns-off and pile-cards-off, the 8,400-card vanilla sides, are made first, one at a time, when their baseline
+            # is missing (every battery with -Fresh, or the first after a change of the game, the mods or those scenarios): beside
+            # the other sessions pile-cards-off ran 2,417 s and hit its 2,400 s timeout (now 5,400 s). The step's own timeout covers
+            # both made alone one after the other, then the rest (the baselines make later batteries read them: ~7 min here).
+            @{ Name = 'ab-8k'; Script = 'par.ps1'; TimeoutSec = 14400; Args = @('-Names', 'turns-off,hookskip-on,pile-cards-off,pile-cards-on,pile-cards-verify,hover-tips-8k', '-GameDir', '{copy}', '-Jobs', '3', '-UseBaselines', '-AloneNames', 'turns-off,pile-cards-off', '-TimeoutSec', '3000') }
         ) }
         # Both copies at once: the pace-independent steps (each takes its own kept slot of 80-89; mutations' sessions use the pool).
         @{ Name = 'both-at-once'; Mode = 'Parallel'; Steps = @(
