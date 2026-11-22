@@ -1292,7 +1292,9 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
         # Held while this series has sessions to start (each start mirrors the user data into its slot again), released when none is left.
         foreach ($slot in @($locked)) { Unlock-Slot $slot }
         $queueStream.Dispose()
-        Remove-Item (Join-Path $queueDir $queueName) -Force -ErrorAction SilentlyContinue
+        # Another series' Get-OtherSeriesHeads deletes a queue file nobody holds open: one that does so between the Dispose above
+        # and this line left "the object does not exist" thrown here (v1.3.0 battery, 2026-11-22): a missing file is the goal.
+        try { Remove-Item (Join-Path $queueDir $queueName) -Force -ErrorAction Stop } catch { }
     }
     $done
 }
