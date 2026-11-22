@@ -63,6 +63,9 @@ line limits it to the game versions that regex matches (the log's `release=v0.11
     # effects-zero-ok: <regex> [on <v>]   those effects may stay at zero (the scenario can't make them run there)
     # uncompared: <regex> [on <v>]        a comparison line saying it compared nothing that the regex matches is expected
     # compare-with: <name>                par.ps1: compare this scenario's log with <name>'s (judge.py ignores it)
+    # tolerated-error: <regex>            compare.py: a game error line B logs alone that the regex matches (every such line)
+                                          is printed as tolerated, not counted. For an error that is only the scenario's timing
+                                          (Limitless's 45 s watchdog on a slow verify walk), never for a failure: keep it narrow
 """
 import os
 import re
@@ -112,7 +115,7 @@ VERSION = re.compile(r'\brelease=(v\d+(?:\.\d+)+)')
 RELEASE_INFO = re.compile(r'^\[INFO\] Found release_info\.json at: (.+?)\s*$')
 EFFECT = re.compile(CLOCK + r'EFFECT (\S+) (\d+)\s*$')
 BALANCE = re.compile(CLOCK + r'BALANCE (\S+) (-?\d+)\s*$')
-DIRECTIVE = re.compile(r'^\s*#\s*(effects-ran|effects-zero-ok|uncompared|compare-with):\s*(.*?)\s*$')
+DIRECTIVE = re.compile(r'^\s*#\s*(effects-ran|effects-zero-ok|uncompared|compare-with|tolerated-error):\s*(.*?)\s*$')
 LEAK = re.compile(CLOCK + r'LEAKCHECK (.+?): (REACHED|INCONCLUSIVE|no static|nothing to look for)')
 # A path of a `leakcheck game...` walk (they come right after its LEAKCHECK line) that goes through an object of this mod outside
 # the test tooling: a closure or handler the game holds, or a static of the Menu DLL, holding a left run. AutoTestLeak marks it
@@ -395,6 +398,23 @@ def expect_patterns(path):
                         pass
     except OSError:
         pass
+    return found
+
+
+def tolerated_errors(path):
+    """The compiled regexes of the `# tolerated-error:` directives of the scenario a log ran (compare.py); [] when none or unknown."""
+    try:
+        with open(path, encoding='utf-8', errors='replace') as f:
+            text = f.read().splitlines()
+    except OSError:
+        return []
+    found = []
+    for kind, value, _ in read_directives(scenario_of(text)) or []:
+        if kind == 'tolerated-error':
+            try:
+                found.append(re.compile(value))
+            except re.error:
+                pass
     return found
 
 

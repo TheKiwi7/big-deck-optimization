@@ -4,6 +4,10 @@
 # every card play (CARDPLAY lines, auto-plays included) and the combat checksum after each, to compare with
 # pile-cards-off. Not here: Grand Finale (needs an empty draw pile) and Regret (unplayable curse, end of turn).
 # compare-with: pile-cards-off
+# Timing only: with every cached walk compared with a fresh one, Catastrophe's play at ~8,448 cards takes ~58 s of one action, past
+# Limitless's 45 s watchdog (a constant there: no setting), which logs an ERROR though the run goes on and every checked line equals
+# the mod-off side's. compare.py prints it as tolerated (still listed), counts nothing; any other game error still fails.
+# tolerated-error: ACTION EXECUTOR STUCK: no action has finished or paused for \d+s\. .*Stuck action: PlayCardAction card: CARD\.CATASTROPHE
 timeout 5400
 newrun NECROBINDER
 waitfor run 120

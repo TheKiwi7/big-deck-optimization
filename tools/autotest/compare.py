@@ -139,9 +139,14 @@ def main(a_path, b_path, times=True, lines_only=False, prefix=False):
     # B is the side under test (par.ps1: mod on): a game error it logs alone, or far more often, is a problem. But one its own
     # expect lines match on every line logged (a positive control's provoked error, judge.py's expected): listed, not counted.
     b_expects = judge.expect_patterns(b_path)
+    b_tolerated = judge.tolerated_errors(b_path)
     for text, count in errors_grown(a_errors, b_errors).items():
         if b_expects and all(any(rx.search(line) for rx in b_expects) for line in b_raw.get(text, [])):
             print(f'expected in B (game error, its expect lines): {count}x {text}')
+            continue
+        # Or the scenario's own `# tolerated-error:` (a timing-only error, judge.py's docstring): listed, not counted.
+        if b_tolerated and all(any(rx.search(line) for rx in b_tolerated) for line in b_raw.get(text, [])):
+            print(f'tolerated in B (game error, its scenario\'s # tolerated-error): {count}x {text}')
             continue
         problems += 1
         if problems <= 8:

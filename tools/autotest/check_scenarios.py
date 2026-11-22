@@ -413,8 +413,8 @@ def argument_problem(command, arg, kinds):
 
 
 # judge.py's and par.ps1's directive comments ('# name: value'); a comment that looks like one with another name is a typo.
-DIRECTIVE = re.compile(r'^#\s*(effects-ran|effects-zero-ok|uncompared|compare-with):\s*(.*?)\s*$')
-LOOKS_LIKE_DIRECTIVE = re.compile(r'^#\s*((effects?[-_ ]\w+|uncompared\w*|compare[-_ ]?with)\s*:|(effects?-\w+|uncompared|compare-with)\b)', re.I)
+DIRECTIVE = re.compile(r'^#\s*(effects-ran|effects-zero-ok|uncompared|compare-with|tolerated-error):\s*(.*?)\s*$')
+LOOKS_LIKE_DIRECTIVE = re.compile(r'^#\s*((effects?[-_ ]\w+|uncompared\w*|compare[-_ ]?with|tolerated[-_ ]errors?)\s*:|(effects?-\w+|uncompared|compare-with|tolerated-error)\b)', re.I)
 
 
 def directive_problem(kind, value, names, commands):

@@ -82,7 +82,7 @@ function Compare-Pair([string]$reference, [string]$tested) {
     $verdict = $cmp | Where-Object { $_ -match "^(IDENTICAL|SKIPPED|DIFFERENT|NOT COMPARED|PROBLEMS)$" }
     Write-Output ("{0} vs {1}: {2} / {3}" -f $reference, $tested, ($cmp | Where-Object { $_ -match "^checked lines" }), $verdict)
     if (-not $same) { $script:bad++; $cmp | Where-Object { $_ -match "^\s+(#|A:|B:|differs:)|^problem in" } | Select-Object -First 8 | ForEach-Object { Write-Output "  $_" } }
-    $cmp | Where-Object { $_ -match "^(errors only|expected in)" } | ForEach-Object { Write-Output "  $_" }
+    $cmp | Where-Object { $_ -match "^(errors only|expected in|tolerated in)" } | ForEach-Object { Write-Output "  $_" }
 }
 $compared = [Collections.Generic.HashSet[string]]::new()
 foreach ($name in $Names | Where-Object { $_ -match '-off$' }) {
