@@ -92,6 +92,9 @@
         ) }
         # Extra Workshop mods most players combine: same scenarios with the mods enabled.
         @{ Name = 'extra-mods'; Mode = 'Exclusive'; Steps = @(
+            # Not duplicates of solo-ab / solo-pace / solo-new although the scenario names repeat: BDTEST_EXTRA_MODS puts other mods in
+            # the game (what is patched, the baseline key), and effects-check here checks the effects next to them. Checked 2026-11-22:
+            # no other scenario of this battery runs twice with the same mods and settings (names and script bodies compared).
             @{ Name = 'extra-ab'; Par = 'ab-2k-off,ab-2k-on,outside-2k-off,outside-2k-on,effects-check'; Args = @('-UseBaselines'); Env = @{ BDTEST_EXTRA_MODS = 'SpeedX,ModConfig,sts2unlimited' } }
             # RitsuLib's hidden IL hooks next to ExtraScopes' first-turn filters.
             @{ Name = 'extra-ritsu'; Par = 'firstturn-real-2k-on,firstturn-real-2k-off'; Args = @('-UseBaselines'); Env = @{ BDTEST_EXTRA_MODS = 'STS2-RitsuLib' } }
