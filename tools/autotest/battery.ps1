@@ -296,13 +296,23 @@ function Complete-Step($s, [bool]$timedOut, [int]$othersRunning = 0) {
     Say "STEP $($s.Label) $($s.Copy.Name) exit $exit problems $k$(if (-not $closingLine) { ' no-closing-line' })"
     if ($exit -ne 0 -or $k -gt 0 -or -not $closingLine) {
         $script:failed++
-        $since = $s.Started.AddMinutes(-1).ToString("HH:mm")
         $dirs = @(@(if ($s.Copy.Versions) { $s.Copy.Versions } else { $s.Copy.Version }) | ForEach-Object { Join-Path $Results $_ })
-        $first = ""
-        try {
-            $tri = @(& python -I (Join-Path $auto "triage.py") @dirs --since $since --lines 8 2>&1 | ForEach-Object { "$_" })
-            $first = ($tri | Where-Object { $_ -match "^(LOOK|ALARM)" } | Select-Object -First 1)
-        } catch { $first = "triage.py failed: $($_.Exception.Message)" }
+        # The runner's own error first, then triage.py on the logs of the sessions this step's own output names (written since its
+        # start): never a scan of the version folder, where another step running beside this one (or an older run) has logs too.
+        $first = ($lines | Where-Object { $_ -match "RUNNER ERROR" } | Select-Object -First 1)
+        if (-not $first) {
+            $began = $s.Started.AddSeconds(-5)
+            $names = @($lines | ForEach-Object { if ($_ -match '^(\S+)\s+(done|cached|TIMEOUT|STALLED|FROZEN|CRASHED|ONE PEER LEFT)\b') { $Matches[1] } } | Select-Object -Unique)
+            $logs = @(foreach ($d in $dirs) {
+                foreach ($n in $names) { foreach ($suffix in ".log", "-host.log", "-client.log") { $f = Join-Path $d "$n$suffix"; if ((Test-Path $f) -and (Get-Item $f).LastWriteTime -ge $began) { $f } } }
+            })
+            if ($logs.Count) {
+                try {
+                    $tri = @(& python -I (Join-Path $auto "triage.py") @logs --lines 8 2>&1 | ForEach-Object { "$_" })
+                    $first = ($tri | Where-Object { $_ -match "^(LOOK|ALARM)" } | Select-Object -First 1)
+                } catch { $first = "triage.py failed: $($_.Exception.Message)" }
+            }
+        }
         if (-not $first) { $first = ($lines | Where-Object { $_ -match "RUNNER ERROR|PROBLEM|FAILED|TIMEOUT|DIFFERENT|timed out|no closing line" } | Select-Object -First 1) }
         if ($first -and $first.Length -gt 200) { $first = $first.Substring(0, 200) }
         Say "FAIL $($s.Label) $($s.Copy.Name) exit $exit problems $k | $first"
