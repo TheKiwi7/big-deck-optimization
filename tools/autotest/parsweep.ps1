@@ -164,5 +164,6 @@ $reportOutput = python -I (Join-Path $PSScriptRoot "sweepreport.py") $reportDir 
 $bad = $LASTEXITCODE
 $reportOutput | ForEach-Object { Write-Output $_ }
 $sessionProblems | ForEach-Object { Write-Output "session problem: $_" }
+Write-Output ("{0}: {1} of {2} sessions read from the baselines (a vanilla part with the same key; the patched-off and mod-on parts always run)" -f $Kind, @($outcome | Where-Object { $_.State -eq "cached" }).Count, $count)
 Write-Output ("{0}: {1} sessions in {2:F1} min" -f $Kind, $count, ((Get-Date) - $started).TotalMinutes)
 exit $(if ($bad -or $sessionProblems.Count) { 1 } else { 0 })
