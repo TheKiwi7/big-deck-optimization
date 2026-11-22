@@ -92,7 +92,8 @@ $Expected = [ordered]@{
     # HoverTipReuse: ShowHoverTips is fingerprinted with the hide and the panel's Init; the transpiler (the only effect) is not applied.
     "show-hover-tips"    = @("game", "HoverTipReuse|ShowHoverTips", "HoverTipReuse")
     # GridSortCache: only the index orders leave (the part stays, cost and title orders still answer): its effect may stay above 0.
-    "grid-setcards"      = @("game", "GridSortCache|SetCards", "GridSortCache")
+    # The grid bench then says so too ("(Ascending, Descending left vanilla: not compared)"), first battery run 2026-11-22.
+    "grid-setcards"      = @("game", "GridSortCache|SetCards|Descending left vanilla: not compared", "GridSortCache")
     # CombatCardSet: a changed AddCard(CardModel) or RemoveCard leaves the whole part vanilla (no set, no ContainsCard answer).
     "combat-add-card"    = @("game", "CombatCardSet|AddCard", "CombatCardSet")
     "combat-remove-card" = @("game", "CombatCardSet|RemoveCard", "CombatCardSet")
