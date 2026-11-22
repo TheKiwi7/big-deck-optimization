@@ -1,6 +1,8 @@
 # A declared battery of test steps on the game copies, with checks before it starts and output meant for a Monitor.
 #
-#   battery.ps1 -File <battery.psd1 | battery.json> [-DryRun] [-SkipChecks] [-Only <block name>] [-Build <dir>] [-Log <file>]
+#   battery.ps1 -File <battery.psd1 | battery.json> [-DryRun] [-SkipChecks] [-Only <block name>] [-Build <dir>] [-Log <file>] [-Fresh]
+# -Fresh (or Fresh = $true in the file): no baseline is read, the once-per-release-and-version run (docs/RELEASE.md, "Baselines");
+# every step's -UseBaselines is dropped and vanillacheck.ps1 is given -Fresh. Without it, steps read the baselines they ask for.
 #
 # The file (see batteries\release.psd1) declares:
 #   Name, Jobs (the shared -Jobs pool: every par of the battery gets the same value, slots 0..Jobs-1), TimeoutSec (default per
@@ -27,7 +29,7 @@
 # that tree (started through WMI: rendered ones) are closed too only when no other step is running.
 #   BATTERY DONE <name> steps S failed F        the last line
 # Exit code: 0 all steps passed, 1 a step failed, 2 a check failed.
-param([Parameter(Mandatory)][string]$File, [switch]$DryRun, [switch]$SkipChecks, [string]$Only = "", [string]$Build = "", [string]$Log = "")
+param([Parameter(Mandatory)][string]$File, [switch]$DryRun, [switch]$SkipChecks, [string]$Only = "", [string]$Build = "", [string]$Log = "", [switch]$Fresh)
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "common.ps1")
 $auto = $PSScriptRoot
@@ -43,6 +45,9 @@ function Get-Pairs($obj) {
     @($obj.PSObject.Properties | ForEach-Object { [pscustomobject]@{ Name = $_.Name; Value = "$($_.Value)" } })
 }
 $bat = Read-Battery $File
+# -Fresh (or Fresh = $true in the file): the once-per-release-and-version run RELEASE.md asks for, no mod-off side read from the
+# baselines (they are still kept as they are made): every step's '-UseBaselines' is dropped, vanillacheck.ps1 gets '-Fresh'.
+$fresh = [bool]($Fresh -or $bat.Fresh)
 $batName = if ($bat.Name) { "$($bat.Name)" } else { [IO.Path]::GetFileNameWithoutExtension($File) }
 $jobsPool = if ($bat.Jobs) { [int]$bat.Jobs } else { 14 }
 $config = if ($bat.Config) { "$($bat.Config)" } else { "Debug" }
@@ -95,6 +100,10 @@ function Expand-Step($step, $copy, $blockCopies) {
         $argList = @("-Names", "$($step.Par)", "-GameDir", "{copy}", "-Jobs", "{jobs}") + $argList
     }
     if (-not $script) { throw "A step of the battery has neither Script nor Par: $($step | Out-String)" }
+    if ($fresh) {
+        $argList = @($argList | Where-Object { $_ -ne "-UseBaselines" })
+        if ([IO.Path]::GetFileName($script) -eq "vanillacheck.ps1") { $argList += "-Fresh" }
+    }
     $argList = @($argList | ForEach-Object { $_.Replace("{copies}", (@($blockCopies | ForEach-Object { $_.Dir }) -join ",")).Replace("{copy}", $copy.Dir).Replace("{jobs}", "$jobsPool").Replace("{version}", $copy.Version) })
     $first = if ($step.Par) { "$($step.Par)" } elseif ($argList -contains "-Names") { $argList[[array]::IndexOf($argList, "-Names") + 1] } elseif ($argList -contains "-Name") { $argList[[array]::IndexOf($argList, "-Name") + 1] } else { "" }
     $label = if ($step.Name) { "$($step.Name)" } else { ([IO.Path]::GetFileNameWithoutExtension($script) + $(if ($first) { ":" + $first } else { "" })) }
