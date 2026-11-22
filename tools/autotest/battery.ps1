@@ -1,6 +1,13 @@
 # A declared battery of test steps on the game copies, with checks before it starts and output meant for a Monitor.
 #
-#   battery.ps1 -File <battery.psd1 | battery.json> [-DryRun] [-SkipChecks] [-Only <block name>] [-Build <dir>] [-Log <file>]
+#   battery.ps1 -File <battery.psd1 | battery.json> [-DryRun] [-SkipChecks] [-Only <block name>] [-Build <dir>] [-Log <file>] [-Fresh]
+# Before the first step (-SkipPrecheck leaves it out; -DryRun shows it): PRECHECK <copy> NEW|CHANGED <scenario> (never ran on the
+# copy's version / its file is newer than its last log: it starts first in the pool, so a drifted test fails in minutes) and
+# PRECHECK <copy> EXPECT <scenario>: <pattern> (an expect line its last log never matched: a lead, the code may have changed on
+# purpose), then PRECHECK <copy> SUMMARY ...; tools/autotest/precheck.py. Never a failure. While steps run, EARLY <version> <name>
+# <state>: <first problem> appears as soon as a session ends with a problem, not when its step ends (the first 40 are shown).
+# -Fresh (or Fresh = $true in the file): no baseline is read, the once-per-release-and-version run (docs/RELEASE.md, "Baselines");
+# every step's -UseBaselines is dropped and vanillacheck.ps1 is given -Fresh. Without it, steps read the baselines they ask for.
 #
 # The file (see batteries\release.psd1) declares:
 #   Name, Jobs (the shared -Jobs pool: every par of the battery gets the same value, slots 0..Jobs-1), TimeoutSec (default per
@@ -27,7 +34,7 @@
 # that tree (started through WMI: rendered ones) are closed too only when no other step is running.
 #   BATTERY DONE <name> steps S failed F        the last line
 # Exit code: 0 all steps passed, 1 a step failed, 2 a check failed.
-param([Parameter(Mandatory)][string]$File, [switch]$DryRun, [switch]$SkipChecks, [string]$Only = "", [string]$Build = "", [string]$Log = "")
+param([Parameter(Mandatory)][string]$File, [switch]$DryRun, [switch]$SkipChecks, [string]$Only = "", [string]$Build = "", [string]$Log = "", [switch]$Fresh, [switch]$SkipPrecheck)
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "common.ps1")
 $auto = $PSScriptRoot
@@ -43,6 +50,9 @@ function Get-Pairs($obj) {
     @($obj.PSObject.Properties | ForEach-Object { [pscustomobject]@{ Name = $_.Name; Value = "$($_.Value)" } })
 }
 $bat = Read-Battery $File
+# -Fresh (or Fresh = $true in the file): the once-per-release-and-version run RELEASE.md asks for, no mod-off side read from the
+# baselines (they are still kept as they are made): every step's '-UseBaselines' is dropped, vanillacheck.ps1 gets '-Fresh'.
+$fresh = [bool]($Fresh -or $bat.Fresh)
 $batName = if ($bat.Name) { "$($bat.Name)" } else { [IO.Path]::GetFileNameWithoutExtension($File) }
 $jobsPool = if ($bat.Jobs) { [int]$bat.Jobs } else { 14 }
 $config = if ($bat.Config) { "$($bat.Config)" } else { "Debug" }
@@ -86,6 +96,57 @@ function Test-Battery {
     $problems
 }
 
+# ---- precheck and early failures ----------------------------------------------------------------------------------------
+# The scenario names a (expanded) step runs: its -Names or -Name value.
+function Get-StepScenarioNames($s) {
+    $a = @($s.Args)
+    foreach ($flag in "-Names", "-Name") {
+        $i = [array]::IndexOf($a, $flag)
+        if ($i -ge 0 -and $i + 1 -lt $a.Count) { "$($a[$i + 1])" -split "," | Where-Object { $_ } }
+    }
+}
+
+# Before the first block, per copy: the scenarios that never ran on its version or changed since their last log, and the expects of
+# the other logs that never matched (precheck.py): PRECHECK lines, leads for the owner, never a failure. The new and changed ones
+# start first in the pool (parlib.ps1's Test-ScenarioChanged), so a drifted test fails in minutes (EARLY lines below).
+function Invoke-Precheck($plan) {
+    foreach ($c in $copies) {
+        $names = @(@(foreach ($b in $plan) {
+            if (@($b.Copies | Where-Object { $_.Name -eq $c.Name }).Count -eq 0) { continue }
+            foreach ($step in $b.Steps) { Get-StepScenarioNames (Expand-Step $step $c $b.Copies) }
+        }) | Select-Object -Unique)
+        if (-not $names.Count) { continue }
+        try {
+            $out = @(& python -I (Join-Path $auto "precheck.py") --version $c.Version --results $Results @names 2>&1 | ForEach-Object { "$_" })
+            foreach ($line in $out) { Say "PRECHECK $($c.Name) $line" }
+        } catch { Say "PRECHECK $($c.Name) precheck.py failed: $($_.Exception.Message)" }
+    }
+}
+
+# A session that ended with a problem says so at once (parlib.ps1's Invoke-Sessions writes one line to BDTEST_EARLYDIR/early-<pid>.txt):
+# EARLY <version> <name> <state>: <first problem>, printed as it appears, not when the step ends. Hints; the STEP line still counts.
+$script:earlySeen = @{}
+$script:earlyCount = 0
+function Read-Early {
+    $dir = Join-Path $outDir "early"
+    if (-not (Test-Path $dir)) { return }
+    foreach ($f in @(Get-ChildItem $dir -Filter "early-*.txt" -File -ErrorAction SilentlyContinue)) {
+        $text = ""
+        try {
+            $stream = [IO.File]::Open($f.FullName, "Open", "Read", "ReadWrite")
+            try { $text = (New-Object IO.StreamReader($stream)).ReadToEnd() } finally { $stream.Dispose() }
+        } catch { continue }
+        $lines = @($text -split "`r?`n" | Where-Object { $_ })
+        $seen = [int]$script:earlySeen[$f.Name]
+        foreach ($line in ($lines | Select-Object -Skip $seen)) {
+            $script:earlyCount++
+            if ($script:earlyCount -le 40) { Say "EARLY $line" }
+            elseif ($script:earlyCount -eq 41) { Say "EARLY (more not shown: see $dir)" }
+        }
+        $script:earlySeen[$f.Name] = $lines.Count
+    }
+}
+
 # ---- steps --------------------------------------------------------------------------------------------------------------
 function Expand-Step($step, $copy, $blockCopies) {
     $script = "$($step.Script)"
@@ -95,13 +156,17 @@ function Expand-Step($step, $copy, $blockCopies) {
         $argList = @("-Names", "$($step.Par)", "-GameDir", "{copy}", "-Jobs", "{jobs}") + $argList
     }
     if (-not $script) { throw "A step of the battery has neither Script nor Par: $($step | Out-String)" }
+    if ($fresh) {
+        $argList = @($argList | Where-Object { $_ -ne "-UseBaselines" })
+        if ([IO.Path]::GetFileName($script) -eq "vanillacheck.ps1") { $argList += "-Fresh" }
+    }
     $argList = @($argList | ForEach-Object { $_.Replace("{copies}", (@($blockCopies | ForEach-Object { $_.Dir }) -join ",")).Replace("{copy}", $copy.Dir).Replace("{jobs}", "$jobsPool").Replace("{version}", $copy.Version) })
     $first = if ($step.Par) { "$($step.Par)" } elseif ($argList -contains "-Names") { $argList[[array]::IndexOf($argList, "-Names") + 1] } elseif ($argList -contains "-Name") { $argList[[array]::IndexOf($argList, "-Name") + 1] } else { "" }
     $label = if ($step.Name) { "$($step.Name)" } else { ([IO.Path]::GetFileNameWithoutExtension($script) + $(if ($first) { ":" + $first } else { "" })) }
     $label = $label -replace "\s+", "_"
     if ($label.Length -gt 60) { $label = $label.Substring(0, 57) + "..." }
     $timeout = if ($step.TimeoutSec) { [int]$step.TimeoutSec } elseif ($bat.TimeoutSec) { [int]$bat.TimeoutSec } else { 7200 }
-    [pscustomobject]@{ Label = $label; Script = $script; Args = $argList; Env = (@(Get-Pairs $bat.Env) + @(Get-Pairs $step.Env)); Timeout = $timeout; Copy = $copy; Closing = $(if ($step.Closing) { "$($step.Closing)" } else { "" }) }
+    [pscustomobject]@{ Label = $label; Script = $script; Args = $argList; Env = (@(Get-Pairs $bat.Env) + @(Get-Pairs $step.Env) + @([pscustomobject]@{ Name = "BDTEST_EARLYDIR"; Value = (Join-Path $outDir "early") })); Timeout = $timeout; Copy = $copy; Closing = $(if ($step.Closing) { "$($step.Closing)" } else { "" }) }
 }
 
 $jobBody = {
@@ -248,6 +313,7 @@ function Complete-Step($s, [bool]$timedOut, [int]$othersRunning = 0) {
 function Wait-Steps($running) {
     $pending = @($running)
     while ($pending.Count) {
+        Read-Early
         $still = @()
         foreach ($s in $pending) {
             if ($s.Job.State -ne "Running") { Complete-Step $s $false }
@@ -284,6 +350,7 @@ foreach ($b in $blocks) {
 # Every step's closing line is known before anything starts: a step without one could never pass.
 $unknownClosing = @(foreach ($b in $plan) { foreach ($step in $b.Steps) { $s = Expand-Step $step $b.Copies[0] $b.Copies; if (-not (Get-ClosingPattern $s)) { "$($b.Name)/$($s.Label) ($($s.Script))" } } })
 if ($unknownClosing.Count) { Say "BATTERY ABORT no closing line known for $($unknownClosing -join ', '): add the script's to battery.ps1's `$ClosingLines or give the step Closing = '<regex>'"; exit 2 }
+if (-not $SkipPrecheck) { Invoke-Precheck $plan }
 if ($DryRun) {
     foreach ($b in $plan) {
         Say "BLOCK $($b.Name) $($b.Mode) on $(($b.Copies | ForEach-Object { $_.Name }) -join ',')"
@@ -293,6 +360,7 @@ if ($DryRun) {
     exit 0
 }
 $began = Get-Date
+Remove-Item (Join-Path $outDir "early") -Recurse -Force -ErrorAction SilentlyContinue
 foreach ($b in $plan) {
     Say "BLOCK $($b.Name) $($b.Mode) $(Get-Date -Format HH:mm)"
     switch ($b.Mode) {

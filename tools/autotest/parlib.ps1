@@ -985,6 +985,14 @@ function Save-Durations([string]$file, [hashtable]$new) {
     finally { $mutex.ReleaseMutex(); $mutex.Dispose() }
 }
 
+# A scenario of scenarios/ whose file is newer than its job's last log (more than 2 s: a copied log keeps its time): the log, and
+# the length it gave, belong to an older script. A checkout or a merge touching the file counts too (it then starts first: harmless).
+function Test-ScenarioChanged($job) {
+    if (-not $job.Script -or -not $job.Log -or -not (Test-Path $job.Script) -or -not (Test-Path $job.Log)) { return $false }
+    if ((Split-Path -Parent (Resolve-Path $job.Script).Path) -ne (Resolve-Path $Scenarios).Path) { return $false }
+    ((Get-Item $job.Script).LastWriteTimeUtc - (Get-Item $job.Log).LastWriteTimeUtc).TotalSeconds -gt 2
+}
+
 # A session's length from its log, when that log ran this same script: its last AutoTest time plus the game's start (~15 s).
 function Get-LogDuration([string]$log, [string]$script) {
     if (-not $log -or -not $script -or -not (Test-Path $log)) { return $null }
@@ -1067,6 +1075,8 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
         if (-not $job.PSObject.Properties["ExpectedSec"]) {
             $key = Get-DurationKey $job $Rendered.IsPresent
             $seconds = if ($durations.ContainsKey($key)) { $durations[$key] } else { Get-LogDuration $job.Log $job.Script }
+            # A scenario edited since its last log counts as unknown (new): it starts first, so a drifted test fails in minutes.
+            if ($null -ne $seconds -and (Test-ScenarioChanged $job)) { $seconds = $null }
             $job | Add-Member -NotePropertyName ExpectedSec -NotePropertyValue $(if ($null -ne $seconds) { [double]$seconds } else { $UnknownLength }) -Force
         }
         $job.ExpectedSec
@@ -1094,6 +1104,16 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
     $finish = {
         param($finishedJob, $result)
         $done.Add($result)
+        # battery.ps1's early failure line (BDTEST_EARLYDIR): this session's problem told when it ends, not when the step does. A
+        # session on a mutated game fails on purpose (mutations.ps1 judges it). Never lets a write error stop a series.
+        if ($env:BDTEST_EARLYDIR -and ($result.State -notin "done", "cached" -or @($result.Failed).Count) -and -not (Test-MutatedJob $finishedJob)) {
+            try {
+                New-Item -ItemType Directory -Force $env:BDTEST_EARLYDIR | Out-Null
+                $why = "$(@($result.Failed)[0])" -replace '\s+', ' '
+                [IO.File]::AppendAllText((Join-Path $env:BDTEST_EARLYDIR "early-$PID.txt"), "$(Get-GameTag $GameDir) $($finishedJob.Name) $($result.State): $($why.Substring(0, [Math]::Min(200, $why.Length)))`r`n", (New-Object Text.UTF8Encoding $false))
+            }
+            catch { }
+        }
         if (-not $OnFinish) { return }
         $added = @(& $OnFinish $finishedJob $result | Where-Object { $_ })
         foreach ($newJob in $added) { $allJobs.Add($newJob) }

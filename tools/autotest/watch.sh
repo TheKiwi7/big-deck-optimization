@@ -5,6 +5,8 @@
 #
 # Reads <log> (battery.ps1's output file, results/battery/<name>.log) as it grows and prints
 #   - FAIL lines (a failed STEP line too when no FAIL line follows it), CHECK FAILED, BATTERY ABORT;
+#   - PRECHECK lines (new or changed scenarios, expects that never matched in their last log: leads before the start) and EARLY
+#     lines (a session that ended with a problem, told when it ends, before its step's STEP line);
 #   - STALL when the grace period has passed and no file under the results folder changed for 10 minutes (once per 10 minutes);
 #   - the line holding <done-marker> (e.g. "BATTERY DONE"), then exits 0 (1 for "BATTERY ABORT").
 # Any file under the results folder counts as activity (the sessions' logs, results/<version>/mutation-*.log, status-par-<v>.txt, status-coop-<v>.txt, status-<kind>-<v>.txt).
@@ -39,7 +41,7 @@ while true; do
                 fi
                 case "$line" in
                     *"$marker"*) echo "$line"; case "$line" in *ABORT*) exit 1;; *) exit 0;; esac ;;
-                    "FAIL "*|"CHECK FAILED"*|"BATTERY ABORT"*) echo "$line" ;;
+                    "FAIL "*|"CHECK FAILED"*|"BATTERY ABORT"*|"PRECHECK "*|"EARLY "*) echo "$line" ;;
                     "STEP "*) if [[ "$line" =~ exit\ ([0-9]+)\ problems\ ([0-9]+) ]] && { [ "${BASH_REMATCH[1]}" != 0 ] || [ "${BASH_REMATCH[2]}" != 0 ]; }; then pending="$line"; fi ;;
                 esac
             done <<< "$chunk"
