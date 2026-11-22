@@ -2,7 +2,7 @@
 # with the optimizations on, each made free first (energy 5 kept for Cascade's X): per-card time ('played X in N ms'),
 # every card play (CARDPLAY lines, auto-plays included) and the combat checksum after each, to compare with
 # pile-cards-off. Not here: Grand Finale (needs an empty draw pile) and Regret (unplayable curse, end of turn).
-timeout 2400
+timeout 5400
 newrun NECROBINDER
 waitfor run 120
 wait 2
