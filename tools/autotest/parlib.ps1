@@ -1106,7 +1106,8 @@ function Invoke-Sessions($Jobs, [string]$GameDir, [int]$MaxJobs = 8, [int]$Timeo
         $done.Add($result)
         # battery.ps1's early failure line (BDTEST_EARLYDIR): this session's problem told when it ends, not when the step does. A
         # session on a mutated game fails on purpose (mutations.ps1 judges it). Never lets a write error stop a series.
-        if ($env:BDTEST_EARLYDIR -and ($result.State -notin "done", "cached" -or @($result.Failed).Count) -and -not (Test-MutatedJob $finishedJob)) {
+        if ($env:BDTEST_EARLYDIR -and ($result.State -notin "done", "cached" -or @($result.Failed).Count) -and -not (Test-MutatedJob $finishedJob) -and -not ((Test-Path $finishedJob.Log) -and (Select-String -Path $finishedJob.Log -Pattern 'SWEEP ABORT next=' -Quiet))) {
+            # (a sweep part an item stopped goes on in a new part, parsweep.ps1's OnFinish: its "did not reach its end" is no failure)
             try {
                 New-Item -ItemType Directory -Force $env:BDTEST_EARLYDIR | Out-Null
                 $why = "$(@($result.Failed)[0])" -replace '\s+', ' '
