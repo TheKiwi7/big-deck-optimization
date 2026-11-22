@@ -1699,6 +1699,28 @@ Proof (Debug, BaseLib 3.4.8, Limitless 1.2.1, the final DLL, no baselines; three
 
 **Release checks v1.2.0 (2026-11-21; the owner chose v1.2.0 over v1.1.1).** Content since v1.1.0: JoinMismatchNote, LazyGuard, the settings summary without counts, the generic rules of the top-500 study and their two reviews and full audit since v1.1.0 (sections "Rules implemented from the top-500 study" to "Card sorts and stacked enchantments next to walk-wrapping mods"), UnchangedTranspilers (Unlimited without a fingerprint, Unlimited no longer in the version check), startup P1/P2, the safe leads, ListenerCache.SortWalks and LimitlessHookSkip.HeldInactive, the test-tooling fixes (mutations running again, stale logs, closing lines, baseline keys). Versions: game v0.111.1 public and v0.113.1 beta, BaseLib 3.4.8, Limitless 1.2.1, BetterSpire2 1.83.14 unchanged (`check_versions.py`). Full release battery (`batteries/release.psd1`, both versions, Debug, every mod-off baseline renewed): 41 steps, 0 failed, 101 min, mutations 45/45 on both. Real-mod rescan of 40 groups: 136 part/method kinds recovered, no new back-off but the documented ones. Release package in game (`release-incopy.ps1`): `Initialized v1.2.0`; v0.111.1 40 patches, HookSkip 148 / 148, InlineGuard 177 recompiled (2 not), 625 ms over 152 frames; v0.113.1 41 patches, HookSkip 154 / 154, InlineGuard 181 (2 not), 686 ms over 156 frames; no patch skipped, failed or disabled.
 
+**Release checks v1.3.0 (2026-11-22; the owner chose v1.3.0 over v1.2.1).** Content since v1.2.0: the leads of 2026-11-21 and their
+revisited part (SaveBackupCheck, SaveReadDecode under option `save_check`, CombatCardSet + PileIndex single scan, CardSortKeys shared
+keys, GridSortCache, DeckCountMemo inside the card redraw only, ExtraScopes' first turn decided at run time, HoverTipReuse inside
+`ShowHoverTips`, generic rules G1-G6, RO bool prefixes, walk getters), then a pre-release audit (five independent auditors on
+f29442e..5c4f3b6, no critical; two majors fixed: PileIndex's single scan stopping on any PileIndex fault, LimitlessCloneMemo's capped
+drops counted only on real drops; the minors fixed, a delta review and its fixes: "Pre-release audit of 2026-11-21 (evening)"). The
+DeckCountMemo display callers were built and removed before it ("DeckCountMemo display callers: implemented, then removed").
+Versions: game v0.111.1 public and v0.113.1 beta, BaseLib 3.4.8, Limitless 1.2.1, BetterSpire2 1.83.14 unchanged
+(`check_versions.py`). Battery: the release battery extended by the audit (solo-premises, solo-controls, big-ab on the public copy,
+coop-foreign, five new mutations; RELEASE.md says what stays manual): 54 steps in 190 min, 47 passed at once; the 7 failures were
+test-side and were fixed and rerun clean on both versions (`rerun1122` and a last control rerun): ForeignPatches' class initializer
+made impure by dc1d591 (`long _sortSerial = -1`: ldc.i4.m1 + conv.i8) had every gated synthetic control back off (foreign-shapes-2k,
+foreign-helpers-2k/-controls, foreign-namegate-1k, coop-foreign), now `long.MinValue` and checked by the name-gate self-test; under it
+foreign-helpers-controls' P1 expectation had gone stale since R2 (a unique-name AccessTools.Method lookup stands; the ambiguous one
+stays refused by gates-init-ambiguous); foreign-walkreuse-ctl and sortkeys-violate-1k-on declared the nets their faults trip;
+coop-foreign's mod-off twin stalls with the reference run's deck (peers compared only now); mutation grid-setcards' pattern (55/55 and
+54/54 after); pile-cards-off at 8,400 cards needed to run alone (5,400 s timeout): pile-cards-off vs -on IDENTICAL (191 lines).
+Known test limit: `pile-cards-verify` (every cached walk compared with a fresh one) logs Limitless's "ACTION EXECUTOR STUCK" on a
+58 s Catastrophe at 8,448 cards, its lines identical to the mod-off side. Release package in game (`release-incopy.ps1`):
+`Initialized v1.3.0`; v0.111.1 42 patches, HookSkip 148 / 148, InlineGuard 178 recompiled (2 not), 649 ms over 154 frames; v0.113.1
+44 patches, HookSkip 154 / 154, InlineGuard 183 (2 not), 706 ms over 163 frames; no patch skipped, failed or disabled.
+
 **Owner decisions of 2026-11-17 (morning).** Creature-side relic-flash premise: approved. The premise notes in the menu: rewritten in plain language (what the player sees, then that the game isn't changed), no colour (not a back-off). CardSortKeys' 1-in-1,024 live check: kept everywhere (it re-runs one comparison through the game's `CompareTo`, so another mod's cost code runs a few more times). Impure cost listeners (ARAM's run modifier): left to the game, named in `bdopt why`. Walk reuse inside CombatStateChanged with other mods subscribed: strict for now (replaced the same day by the per-handler rule: the game's handlers keep the reuse, other mods' run with it suspended and see the game's walks; "Owner-approved premises", Walks Tier 2). Foreign postfixes on display-scope methods (D4): accepted under the walk premise. Zone's `OwnerIsSecondaryEnemy`: left as is. Model stack: made exact (A4). InlineGuard for this mod's own late patches: later; its rebuild stays at the end of the frame. Name gates for Skin Changer and Minty: left to the game (initializer rules). CardSortKeys' narrow judgment with BaseLib's or RitsuLib's `get_AllPiles` transpiler: strict. Walk-reuse fps: measured before the release (above). Version: v1.1.0.
 
 ### Co-op with a player without the mod (2026-10-24, verified)
