@@ -11,6 +11,8 @@ cmd bdperf checks off
 foreignpatch count-prefix MegaCrit.Sts2.Core.Entities.Players.Player:OnRelicFlashed
 checksum before player
 state before player optional
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 restsite CloneRestSiteOption
@@ -31,6 +33,8 @@ cmd bdperf checks off
 foreignpatch count-prefix MegaCrit.Sts2.Core.Nodes.Relics.NRelicInventoryHolder:OnRelicFlashed
 checksum before holder
 state before holder optional
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 restsite CloneRestSiteOption
@@ -51,6 +55,8 @@ cmd bdperf checks off
 foreignpatch noop-prefix MegaCrit.Sts2.Core.Random.Rng::get_Chaotic()
 checksum before rng
 state before rng optional
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 restsite CloneRestSiteOption
@@ -71,6 +77,8 @@ cmd bdperf checks off
 foreignpatch count-prefix MegaCrit.Sts2.Core.Entities.Creatures.Creature:GetVfxContainer
 checksum before container
 state before container optional
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 restsite CloneRestSiteOption

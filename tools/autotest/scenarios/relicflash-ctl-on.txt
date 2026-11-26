@@ -40,6 +40,8 @@ foreignpatch count-prefix MegaCrit.Sts2.Core.Entities.Players.Player:OnRelicFlas
 checksum before player
 state before player optional
 effects player
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 restsite CloneRestSiteOption
@@ -65,6 +67,8 @@ foreignpatch count-prefix MegaCrit.Sts2.Core.Nodes.Relics.NRelicInventoryHolder:
 checksum before holder
 state before holder optional
 effects holder
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 restsite CloneRestSiteOption
@@ -89,6 +93,8 @@ foreignpatch noop-prefix MegaCrit.Sts2.Core.Random.Rng::get_Chaotic()
 checksum before rng
 state before rng optional
 effects rng
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 restsite CloneRestSiteOption
@@ -113,6 +119,8 @@ foreignpatch count-prefix MegaCrit.Sts2.Core.Entities.Creatures.Creature:GetVfxC
 checksum before container
 state before container optional
 effects container
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 restsite CloneRestSiteOption

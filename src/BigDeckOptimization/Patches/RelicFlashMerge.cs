@@ -50,7 +50,9 @@ public static class RelicFlashMerge
 
     /// <summary>
     /// The sets' fingerprints reviewed on the decompiled game (tools/fingerprint <c>closure</c>, same roots), per version:
-    /// v0.107.1, v0.111.0, v0.113.1. Sound: <c>SfxCmd.Play(string, float)</c> down to <c>NAudioManager.PlayOneShot</c> (both
+    /// v0.107.1, v0.111.0, v0.113.1, then v0.114.0 for the visual sets (the sound one is v0.113.1's). v0.114.0 changed nothing a flash
+    /// does: AssetCache.LoadAsset's `is AtlasTexture` moved into IsOwnedByAtlasManager, one more save migration counted, a test mock's
+    /// constructor, renumbered lambdas of the same code. Sound: <c>SfxCmd.Play(string, float)</c> down to <c>NAudioManager.PlayOneShot</c> (both
     /// overloads), the combat's end check it makes (<c>CombatManager.IsEnding</c>, which walks the combat's listeners through
     /// <c>Hook.ShouldStopCombatFromEnding</c>), <c>RelicModel.FlashSfx</c> and every game override of it (roots: tools/fingerprint closure "+RelicModel::get_FlashSfx()"); its delegates: the test
     /// hook <c>NonInteractiveMode.AutoSlayerCheck</c> and the mods' combat hook subscriptions (<see cref="GameHookDelegates"/>). Its
@@ -59,14 +61,19 @@ public static class RelicFlashMerge
     /// only (an exception inside the effect's own code).
     /// </summary>
     private static readonly string[] SoundSets = { "2873577A4A091527", "0AD730D8720F68E2", "299951257EABB67E" };
-    private static readonly string[] PlayerVisualSets = { "B6B57C3676C5CC07", "B697AD41E405A702", "406A71DF5B8272CB" };
+    private static readonly string[] PlayerVisualSets = { "B6B57C3676C5CC07", "B697AD41E405A702", "406A71DF5B8272CB", "27C66D82A0D04F02" };
     /// <summary>
     /// The relic bar effect's set: the handler, <c>DoFlash</c> and the script of the scene it instantiates (relic_inventory_flash_vfx's
     /// root, <c>NVfxParticleSystem</c>: its <c>_Ready</c>, <c>TryPlayParticles</c>, <c>AfterExpired</c> and what they reach, the node
     /// pool's free path among it), roots <c>NRelicInventoryHolder::OnRelicFlashed</c>, <c>::DoFlash</c>, <c>NVfxParticleSystem::*</c>
-    /// (2026-11-17; 388, 385 and 436 methods). The scene's scripts are checked at the first merge (<see cref="ShownNodeKnown"/>).
+    /// (2026-11-17; 388, 385 and 436 methods; v0.114.0: 437). The scene's scripts are checked at the first merge (<see cref="ShownNodeKnown"/>).
     /// </summary>
-    private static readonly string[] HolderVisualSets = { "3E6CEA48350E180B", "FF7071D0C212513F", "A08B6E492A7A55A6" };
+    private static readonly string[] HolderVisualSets = { "3E6CEA48350E180B", "FF7071D0C212513F", "A08B6E492A7A55A6", "EE08947F1D832000" };
+
+    /// <summary>The two visual sets' second fingerprints (<see cref="SetEffects"/>: what they touch, asked when a game update changed
+    /// the first; tools/fingerprint <c>effects</c>, same roots, "!SaveManager::ConstructDefault()"): v0.111.1; v0.113.1 and v0.114.0.</summary>
+    private static readonly string[] PlayerEffects = { "CF0714845C8CEFCA", "0406F47AAB65F183" };
+    private static readonly string[] HolderEffects = { "6D44C9879E1B9107", "47AB2F26A84565BB" };
 
     /// <summary>
     /// The flash scene's script (<c>NVfxParticleSystem</c>'s declared methods with a body), the holder set's roots with the
@@ -388,12 +395,12 @@ public static class RelicFlashMerge
             Reflect.Method(typeof(Creature), nameof(Creature.GetVfxContainer), Type.EmptyTypes),
             Reflect.Method(typeof(MegaCrit.Sts2.Core.Helpers.GodotTreeExtensions), nameof(MegaCrit.Sts2.Core.Helpers.GodotTreeExtensions.AddChildSafely), new[] { typeof(Node), typeof(Node) }),
         }).ToArray();
-        var player = CodeSet.Compute(Name + " (creature effect)", playerRoots, SetLimit, PlayerVisualSets);
+        var player = CodeSet.Compute(Name + " (creature effect)", playerRoots, SetLimit, PlayerVisualSets, reviewedEffects: PlayerEffects);
         // The relic bar effect: the handler, DoFlash, and the whole class of its scene's script (NVfxParticleSystem: its
         // instances in that scene only exist through flashes; the same class elsewhere runs as before, only a merged flash's
         // calls are left out).
         System.Reflection.MethodBase?[] holderRoots = new System.Reflection.MethodBase?[] { _holderFlash, _doFlash }.Concat(_holderScript).ToArray();
-        var holderSet = CodeSet.Compute(Name + " (relic bar effect)", holderRoots, SetLimit, HolderVisualSets);
+        var holderSet = CodeSet.Compute(Name + " (relic bar effect)", holderRoots, SetLimit, HolderVisualSets, reviewedEffects: HolderEffects);
         System.Reflection.MethodBase[] playerStrict = player.Methods.Where(StrictMember).ToArray();
         System.Reflection.MethodBase[] holderStrict = holderSet.Methods.Where(StrictMember).ToArray();
         System.Reflection.MethodInfo[] strictVirtuals = player.Virtuals.Concat(holderSet.Virtuals).Where(StrictMember).Distinct().ToArray();

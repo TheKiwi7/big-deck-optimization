@@ -4,7 +4,7 @@
 # the baselines; each has its own parts folder, report and live progress (results/status-<kind>-<version>.txt: status.ps1 shows
 # them all). The long mod-off parts of one kind no longer wait for the end of another kind: the sweeps end about when the longest
 # kind would alone. Other series may run at the same time on the same pool (par.ps1 on each copy: a battery's solo block).
-#   powershell -ExecutionPolicy Bypass -File tools/autotest/parsweep-all.ps1 -GameDir C:\Games\StS2-public-0.111.1,C:\Games\StS2-beta-0.113.1 [-Kinds cards,relics,potions,encounters,powers] [-Jobs 14] [-Speed instant|fast] [-ItemTimeout 45] [-TimeoutSec 2700] [-UseBaselines]
+#   powershell -ExecutionPolicy Bypass -File tools/autotest/parsweep-all.ps1 -GameDir C:\Games\StS2-public-0.111.1,C:\Games\StS2-beta-0.114.0 [-Kinds cards,relics,potions,encounters,powers] [-Jobs 14] [-Speed instant|fast] [-ItemTimeout 45] [-TimeoutSec 2700] [-UseBaselines]
 # -Jobs: each kind's own cap (default: the whole pool). Each kind's whole output: results/<game version>/parsweep-<kind>.out (its
 # report: report-<kind>.md). Exit code 1 when any kind found a problem (its parsweep.ps1's exit code), or didn't end.
 # -TimeoutSec: per session, longer than parsweep.ps1's own default (1800): five series at once load the PC, and a mod-off part

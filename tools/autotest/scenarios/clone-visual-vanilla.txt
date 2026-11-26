@@ -22,6 +22,8 @@ cmd bdopt listeners off
 cmd bdopt hook_skip off
 cmd bdopt hover_tips off
 cmd bdopt limitless_saves off
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 watch 45

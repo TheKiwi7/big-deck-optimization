@@ -7,16 +7,22 @@ wait 2
 cmd bigdeck import ref all all
 cmd bigdeck import ref all all
 cmd bdperf checks off
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 restsite CloneRestSiteOption
 gcstat clone 1
 waitfor deckcount 1800
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 restsite CloneRestSiteOption
 gcstat clone 2
 waitfor deckcount 1800
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 restsite CloneRestSiteOption

@@ -37,6 +37,8 @@ eventoption SHATTER 900
 waitfor deckcount 900
 wait 30
 checksum after shatter
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 waitfor restsite 300
 wait 5

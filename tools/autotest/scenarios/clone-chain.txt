@@ -7,6 +7,8 @@ wait 2
 cmd bigdeck import ref all all
 cmd bigdeck import ref all all
 cmd bdperf checks off
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 gcstat
@@ -18,6 +20,8 @@ wait 10
 fpsstat
 wait 5
 fpsstat after clone 1
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 gcstat
@@ -29,6 +33,8 @@ wait 10
 fpsstat
 wait 5
 fpsstat after clone 2
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 gcstat
@@ -40,6 +46,8 @@ wait 10
 fpsstat
 wait 5
 fpsstat after clone 3
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 gcstat
@@ -51,6 +59,8 @@ wait 10
 fpsstat
 wait 5
 fpsstat after clone 4
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 gcstat

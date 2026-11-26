@@ -6,17 +6,18 @@
   "BetterSpire2": "v1.83.14",
   "SpeedX": "0.11.12",
   "game_buildid": "26655341",
-  "beta_buildid": "26660232",
+  "beta_buildid": "26909018",
   "BaseLib_updated": "1794487315",
   "Limitless_updated": "1794546498",
   "BetterSpire2_updated": "1794676515",
   "SpeedX_updated": "1790050991",
   "betas": {
-    "v0.113.1": 358281912
+    "v0.114.0": -1918903744
   },
   "former_betas": {
     "v0.111.0": 222455745,
-    "v0.113.0": 2138858832
+    "v0.113.0": 2138858832,
+    "v0.113.1": 358281912
   },
-  "verified": "2026-11-17"
+  "verified": "2026-11-26"
 }

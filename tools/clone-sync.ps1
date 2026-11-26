@@ -14,7 +14,7 @@
 param([Parameter(Mandatory)][string]$Clone, [Parameter(Mandatory)][string]$Branch, [string]$Base = "", [switch]$Force, [switch]$NoBuild, [switch]$Deploy, [string]$Main = "")
 $ErrorActionPreference = "Stop"
 $main = if ($Main) { (Resolve-Path $Main).Path } else { Split-Path -Parent $PSScriptRoot }
-$copies = @("C:\Games\StS2-public-0.111.1", "C:\Games\StS2-beta-0.113.1")
+$copies = @("C:\Games\StS2-public-0.111.1", "C:\Games\StS2-beta-0.114.0")
 $project = Join-Path $main "src\BigDeckOptimization\BigDeckOptimization.csproj"
 if (Test-Path "C:\Program Files\dotnet") { $env:PATH = "C:\Program Files\dotnet;$env:PATH" }
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = "1"

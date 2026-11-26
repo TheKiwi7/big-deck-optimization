@@ -49,7 +49,7 @@ GAME = Path(os.environ.get("STS2_GAME_DIR", r"C:\Program Files (x86)\Steam\steam
 
 def steamapps() -> Path:
     """The steamapps folder holding the Workshop items and manifests: the game's own library, or, for a game copy outside
-    Steam's library (STS2_GAME_DIR, e.g. C:\\Games\\StS2-beta-0.113.1), Steam's main one (as tools/autotest/common.ps1)."""
+    Steam's library (STS2_GAME_DIR, e.g. C:\\Games\\StS2-beta-0.114.0), Steam's main one (as tools/autotest/common.ps1)."""
     library = GAME.parent.parent
     if (library / "workshop").exists():
         return library
@@ -88,7 +88,7 @@ VANILLA = re.compile(r"\[BigDeckOptimization\].*(Patch \w+ skipped|could not be 
                      r"|missing or changed|getter kept|is also patched by|read through the game's own calls|read every time|not reused"
                      r"|not skipped|never skipped|left uncached|not found, it sets|stays? the game's|as the game does|(counted|written|read|serialized) by the game"
                      r"|stays? vanilla|falling back to|no longer shuffles|clone code changed|the game's \w+ changed|rebuilt at every clone"
-                     r"|as Limitless does|stay registered|scope unavailable|scope not installed|postfixes changed|disabled)")
+                     r"|as Limitless does|the game code it relies on changed|stay registered|scope unavailable|scope not installed|postfixes changed|disabled)")
 # Normal: an optional mod absent, a summary with nothing left vanilla, a scenario's `expect` line echoed by AutoTest (the
 # command, then its EXPECT line).
 EXPECTED = re.compile(r"(Limitless|BaseLib) not loaded|no --bdtest argument| 0 left vanilla|skipped: not needed"

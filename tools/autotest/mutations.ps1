@@ -66,12 +66,17 @@ $Expected = [ordered]@{
     "rename-method"   = @("game", "RemoveInternal|AutoTest", $PileWriters)
     # CombatState's getters reading _allies are in HookSkip's per-hook helper sets (fingerprinted): those hooks' helpers go vanilla;
     # in CardFlightLimit's computed set too (not reviewed: no soul skipped).
-    "rename-field"    = @("game", "combat walk left vanilla|choice context helpers changed", "FastListeners\.CombatWalk|CardFlightLimit")
+    "rename-field"    = @("game", "combat walk left vanilla|choice context helpers changed|CardFlightLimit[^:]*: the game code it relies on changed|RelicFlashMerge[^:]*: the game code it relies on changed", "FastListeners\.CombatWalk|CardFlightLimit")
     # The walk's iterator is also in CardFlightLimit's computed set (CombatManager.IsEnding walks the listeners): not reviewed, no soul skipped.
-    "combat-walk"     = @("game", "combat walk left vanilla", "FastListeners\.CombatWalk|CardFlightLimit")
+    "combat-walk"     = @("game", "combat walk left vanilla|(CardFlightLimit|RelicFlashMerge)[^:]*: the game code it relies on changed", "FastListeners\.CombatWalk|CardFlightLimit")
     "run-walk"        = @("game", "run walk left vanilla", "FastListeners\.RunWalk")
     "internal-member" = @("game", "HookFilter|GetWithModifiers", "SnapshotCardReuse\.(Release|Piles|Trust|Moved|Dirty|Hooks|Blocks|CardBits|UpgradeBits|PileBits)")
     "signature"       = @("game", "HookFilter|ShouldPlay", "")
+    # SetEffects (2026-11-25): shared display code cut into another method (what v0.114.0 did): the sets touch the same, nothing leaves.
+    # A new field read there: the sets' parts leave (a flash kept, a soul flown), nothing else. Exact part (game code): they leave too.
+    "display-helper"  = @("game", "", "")
+    "display-access"  = @("game", "(RelicFlashMerge|CardFlightLimit)[^:]*: the game code it relies on changed", "RelicFlashMerge|CardFlightLimit")
+    "display-state"   = @("game", "RelicFlashMerge \(creature effect\): the game code it relies on changed", "")
     "flight-count"    = @("game", "CardFlightLimit|AddCard", "CardFlightLimit")
     "replay-record"   = @("game", "ReplayStateSkip|RecordChecksum", "ReplayStateSkip")
     "theme-rename"    = @("game", "ThemeColorSkip|RefreshText", "")

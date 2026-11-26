@@ -70,6 +70,18 @@ public static class UpgradeBench
         }
 
         // An upgrade's steps on fresh copies: each pass copies them again, timed apart.
+        // UpgradeInternal() up to v0.113, UpgradeInternal(bool silent) from v0.114: never named in code.
+        System.Reflection.MethodInfo upgradeInternal = HarmonyLib.AccessTools.Method(typeof(CardModel), "UpgradeInternal");
+        Action<CardModel> upgradeCard;
+        if (upgradeInternal.GetParameters().Length == 0)
+        {
+            upgradeCard = upgradeInternal.CreateDelegate<Action<CardModel>>();
+        }
+        else
+        {
+            var withSilent = upgradeInternal.CreateDelegate<Action<CardModel, bool>>();
+            upgradeCard = c => withSilent(c, false);
+        }
         double copy = 0, upgradable = 0, upgrade = 0, finalize = 0;
         int upgraded = 0;
         for (int i = 0; i <= iterations; i++)
@@ -79,7 +91,7 @@ public static class UpgradeBench
             long t1 = Stopwatch.GetTimestamp();
             List<CardModel> eligible = copies.Where(c => c.IsUpgradable).ToList();
             long t2 = Stopwatch.GetTimestamp();
-            foreach (CardModel c in eligible) c.UpgradeInternal();
+            foreach (CardModel c in eligible) upgradeCard(c);
             long t3 = Stopwatch.GetTimestamp();
             foreach (CardModel c in eligible) c.FinalizeUpgradeInternal();
             long t4 = Stopwatch.GetTimestamp();

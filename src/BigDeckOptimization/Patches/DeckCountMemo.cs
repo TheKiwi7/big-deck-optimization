@@ -81,6 +81,9 @@ public static class DeckCountMemo
     /// </summary>
     private const string WahFingerprint = "4F023E398297CBA2";
     private const string WahCountsFingerprint = "6200908F542A0E45";
+    /// <summary>v0.114.0 <c>WahSymphony</c>: the same multiplier, counting the tags 7 and 8 only (<c>Cho</c>, <c>Ki</c>).</summary>
+    private const string WahFingerprintV114 = "007EC147A45D6722";
+    private const string WahCountsFingerprintV114 = "6C2320D0D15218D6";
     /// <summary>
     /// <c>NCard.UpdateVisuals</c>, the redraw the memo answers in: what it calls (portrait, title, costs, enchantment, the
     /// dynamic-variable preview, the description for the pile or the upgrade preview, the label) is display. v0.107.1; v0.111.1
@@ -106,7 +109,7 @@ public static class DeckCountMemo
     internal const int Kinds = 4;
     internal static readonly string[] KindNames = { "Squeeze", "PerfectedStrike", "CrescentSpear", "WahSymphony" };
 
-    /// <summary>What Wah Symphony's lambda checks (its fingerprint pins the constants): Wah, Cho, Ki on game v0.113.</summary>
+    /// <summary>What Wah Symphony's lambda checks (its fingerprint pins the constants): Wah, Cho, Ki on game v0.113, Cho, Ki on v0.114.</summary>
     private const CardTag WahTag = (CardTag)6;
     private const CardTag ChoTag = (CardTag)7;
     private const CardTag KiTag = (CardTag)8;
@@ -179,8 +182,11 @@ public static class DeckCountMemo
         c => c.Tags.Contains(CardTag.OstyAttack),
         c => c.Tags.Contains(CardTag.Strike),
         c => c.CanonicalStarCost >= 0 || c.HasStarCostX,
+        // v0.113's; v0.114's (WahCountedV114) is chosen at load with its fingerprints.
         c => c.Tags.Contains(WahTag) || c.Tags.Contains(ChoTag) || c.Tags.Contains(KiTag),
     };
+
+    private static readonly Func<CardModel, bool> WahCountedV114 = c => c.Tags.Contains(ChoTag) || c.Tags.Contains(KiTag);
 
     /// <summary>What may change over a card's life, per type (<see cref="FlagsOf"/>): its tags, its star cost.</summary>
     private const byte TagsMove = 1;
@@ -259,7 +265,7 @@ public static class DeckCountMemo
         bool squeeze = Card(SqueezeKind, typeof(Squeeze), nameof(SqueezePrefix), harmony, SqueezeFingerprint, SqueezeCountsFingerprint);
         bool strike = Card(StrikeKind, typeof(PerfectedStrike), nameof(StrikePrefix), harmony, StrikeFingerprint, StrikeCountsFingerprint);
         bool spear = Card(SpearKind, typeof(CrescentSpear), nameof(SpearPrefix), harmony, SpearFingerprint, SpearCountsFingerprint);
-        bool wah = Card(WahKind, Reflect.TypeByName("MegaCrit.Sts2.Core.Models.Cards.WahSymphony"), nameof(WahPrefix), harmony, WahFingerprint, WahCountsFingerprint);
+        bool wah = Wah(harmony);
         if (!squeeze && !strike && !spear && !wah)
         {
             throw new PatchSkippedException("none of its cards has the known code");
@@ -312,6 +318,33 @@ public static class DeckCountMemo
 
     /// <summary>Whether a calculation now is the card redraw's (where the memo answers).</summary>
     internal static bool InRedraw => _inRedraw;
+
+    /// <summary>Wah Symphony counts other tags since v0.114: the fingerprint of what it counts chooses the mirror, both
+    /// fingerprints of that version are then required (<see cref="Card"/>).</summary>
+    private static bool Wah(Harmony harmony)
+    {
+        Type? card = Reflect.TypeByName("MegaCrit.Sts2.Core.Models.Cards.WahSymphony");
+        string multiplier = WahFingerprint;
+        string counts = WahCountsFingerprint;
+        if (card != null && LambdaMatches(card, typeof(bool), WahCountsFingerprintV114))
+        {
+            (multiplier, counts) = (WahFingerprintV114, WahCountsFingerprintV114);
+            _counted[WahKind] = WahCountedV114;
+        }
+        return Card(WahKind, card, nameof(WahPrefix), harmony, multiplier, counts);
+    }
+
+    private static bool LambdaMatches(Type card, Type returns, string fingerprint)
+    {
+        try
+        {
+            return PatchSafety.FingerprintMatches(MethodFingerprint.Of(Lambda(card, returns)), fingerprint);
+        }
+        catch (MissingMemberException)
+        {
+            return false; // Card says so.
+        }
+    }
 
     /// <summary>One card, on its own: a card that changed only leaves that card to the game.</summary>
     private static bool Card(int kind, Type? card, string prefix, Harmony harmony, string fingerprint, string countsFingerprint)

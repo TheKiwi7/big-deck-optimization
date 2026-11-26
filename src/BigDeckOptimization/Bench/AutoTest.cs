@@ -62,9 +62,10 @@ public static partial class AutoTest
             postfix: new HarmonyMethod(typeof(AutoTest), nameof(InitProfilePostfix)));
         PatchGuard.Patch(harmony, AccessTools.Method(typeof(CombatManager), nameof(CombatManager.SetUpCombat)),
             postfix: new HarmonyMethod(typeof(AutoTest), nameof(SetUpCombatPostfix)));
-        PatchGuard.Patch(harmony, AccessTools.Method(typeof(Creature), nameof(Creature.LoseHpInternal)),
+        MethodInfo loseHp = AccessTools.Method(typeof(Creature), nameof(Creature.LoseHpInternal));
+        PatchGuard.Patch(harmony, loseHp,
             prefix: new HarmonyMethod(typeof(AutoTest), nameof(ImmortalPrefix)),
-            postfix: new HarmonyMethod(typeof(AutoTest), nameof(ImmortalPostfix)));
+            postfix: new HarmonyMethod(typeof(AutoTest), HasDryRun(loseHp) ? nameof(ImmortalPostfixDryRun) : nameof(ImmortalPostfix)));
         // Timings must not depend on which window has focus: no 30 fps cap while the game is in the background.
         PatchGuard.Patch(harmony, AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.NBackgroundModeHandler), "EnterBackgroundMode"),
             prefix: new HarmonyMethod(typeof(AutoTest), nameof(StayForeground)));
@@ -966,6 +967,18 @@ public static partial class AutoTest
         if (Immortal(__instance) && __instance.CurrentHp < __instance.MaxHp / 2)
         {
             __instance.SetCurrentHpInternal(__instance.MaxHp);
+        }
+    }
+
+    /// <summary>From v0.114 the damage previews (card redraws) and the damage command's first pass run it dry, changing
+    /// nothing: no heal then, a redraw must not touch the state.</summary>
+    private static bool HasDryRun(MethodInfo loseHp) => loseHp.GetParameters().Any(p => p.Name == "dryRun");
+
+    private static void ImmortalPostfixDryRun(Creature __instance, bool dryRun)
+    {
+        if (!dryRun)
+        {
+            ImmortalPostfix(__instance);
         }
     }
 

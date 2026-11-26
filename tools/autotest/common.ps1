@@ -4,7 +4,7 @@ $GameExe = Join-Path $GameDir "SlayTheSpire2.exe"
 $AppId = "2868840"
 $SteamExe = (Get-ItemProperty "HKCU:\Software\Valve\Steam" -ErrorAction SilentlyContinue).SteamExe
 $Workshop = Join-Path (Split-Path -Parent (Split-Path -Parent $GameDir)) "workshop\content\$AppId"
-# A game copy outside Steam's library (STS2_GAME_DIR, e.g. C:\Games\StS2-beta-0.113.1): Steam's own Workshop folder.
+# A game copy outside Steam's library (STS2_GAME_DIR, e.g. C:\Games\StS2-beta-0.114.0): Steam's own Workshop folder.
 if (-not (Test-Path $Workshop) -and $SteamExe) { $Workshop = Join-Path (Split-Path -Parent $SteamExe) "steamapps\workshop\content\$AppId" }
 # BDTEST_WORKSHOP: another folder of Workshop items (a SteamCMD download folder, steamapps\workshop\content\<appid>), for mods the
 # account isn't subscribed to; test sessions copy what they need from it into a copy's mods_STEAMTEST, never into the Steam install.

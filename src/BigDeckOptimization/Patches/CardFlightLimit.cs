@@ -94,10 +94,13 @@ public static class CardFlightLimit
     private static CodeSet? _addCardSet;
     private static readonly string[] AddCardSets = { "A49A31223F8E575A" };
 
-    /// <summary>The flight set's fingerprints reviewed on the decompiled game (tools/fingerprint closure): v0.107.1, v0.111.0, v0.113.1.</summary>
-    /// <remarks>Roots since the re-audit round 2 (A2): the trail scenes' line script <c>NCardTrail</c> too (card_trail_*.tscn's
+    /// <summary>The flight set's fingerprints reviewed on the decompiled game (tools/fingerprint closure): v0.107.1, v0.111.0, v0.113.1, v0.114.0.</summary>
+    /// <remarks>v0.114.0: only AssetCache.LoadAsset's `is AtlasTexture` moved into IsOwnedByAtlasManager. Roots since the re-audit round 2 (A2): the trail scenes' line script <c>NCardTrail</c> too (card_trail_*.tscn's
     /// OuterTrail and InnerTrail nodes, read from the game's pck: a skipped soul's trail never has them).</remarks>
-    private static readonly string[] FlightSets = { "B2945863B3FC581A", "A889670CD281D0F1", "FD9ED6B9CD933ECF" };
+    private static readonly string[] FlightSets = { "B2945863B3FC581A", "A889670CD281D0F1", "FD9ED6B9CD933ECF", "D9EF95F80E5A04A2" };
+    /// <summary>The flight set's second fingerprints (<see cref="SetEffects"/>: what it touches, asked when a game update changed
+    /// the first; tools/fingerprint <c>effects</c>, same roots): v0.111.1; v0.113.1 and v0.114.0.</summary>
+    private static readonly string[] FlightEffects = { "BAF743B303EDE98D", "C314408A92AEE305" };
     /// <summary>
     /// The soul's own display code a skipped soul never runs besides its _Ready: its flight (<c>PlayAnim</c> and its state
     /// machine) and its trail's factory (<c>NCardTrailVfx.Create</c>). Other mods' patches here (and on _Ready) are taken as
@@ -574,7 +577,7 @@ public static class CardFlightLimit
         progress?.Invoke(head, walk);
         // _Ready is checked with SpeedX's allowed postfix; the pile's event and the button's AddCard are still called (Flush).
         CodeSet flight = CodeSet.Compute(Name, Whole(typeof(NCardFlyShuffleVfx)).Concat(Whole(typeof(NCardTrailVfx))).Concat(Whole(typeof(NCardTrail))), 1500, FlightSets,
-            new System.Reflection.MethodBase?[] { _readyMethod, _invokeAddFinished, _addCard });
+            new System.Reflection.MethodBase?[] { _readyMethod, _invokeAddFinished, _addCard }, reviewedEffects: FlightEffects);
         return new BuiltSets(head, walk, flight);
     }
 

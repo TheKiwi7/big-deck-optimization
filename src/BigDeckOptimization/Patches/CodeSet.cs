@@ -28,8 +28,15 @@ internal sealed class CodeSet
     public readonly string[] Delegates;
     /// <summary>The set's fingerprint (<see cref="MethodFingerprint.SetFingerprint"/>, the delegates' names included).</summary>
     public readonly string Fingerprint;
-    /// <summary>The fingerprint is one of the reviewed ones (the set is the one reviewed for this game version).</summary>
-    public readonly bool Reviewed;
+    /// <summary>
+    /// The fingerprint is one of the reviewed ones (the set is the one reviewed for this game version), or, for a display set,
+    /// what it touches is (<see cref="SetEffects"/>: a game update only rearranged its display code), asked then per use: the
+    /// lazily built instances whose builders that second fingerprint leaves out exist (<see cref="LazyGuard.Shut"/>).
+    /// </summary>
+    public bool Reviewed => _exact || (_effectsGuards is { } guards && Array.TrueForAll(guards, LazyGuard.Shut));
+    private readonly bool _exact;
+    /// <summary>The second fingerprint is a reviewed one: the guards of the code it leaves out (null: not asked, or not reviewed).</summary>
+    private LazyGuard.Guard[]? _effectsGuards;
     /// <summary>
     /// Rule C0 (2026-11-18, opt-in per set: CardFlightLimit's combat-end check): another assembly's override whose whole code is
     /// one constant returned (<see cref="ConstantBody"/>: <c>nop*; ldc.*|ldnull|ldstr; ret</c>), not patched by anyone (its
@@ -62,7 +69,7 @@ internal sealed class CodeSet
         Virtuals = virtuals;
         Delegates = delegates;
         Fingerprint = fingerprint;
-        Reviewed = reviewed;
+        _exact = reviewed;
         ConstantOverridesHarmless = constantOverridesHarmless;
     }
 
@@ -80,21 +87,20 @@ internal sealed class CodeSet
     /// </summary>
     /// <paramref name="stopAt"/>: methods the closure neither adds nor follows (a subtree judged as a set of its own).
     /// <paramref name="constantOverridesHarmless"/>: <see cref="ConstantOverridesHarmless"/> (rule C0).
+    /// <paramref name="reviewedEffects"/> (display sets only, without stopAt): the reviewed second fingerprints
+    /// (<see cref="SetEffects"/>, tools/fingerprint <c>effects</c>), asked when the first is unknown.
     public static CodeSet Compute(string name, IEnumerable<MethodBase?> roots, int limit, string[] reviewed, IEnumerable<MethodBase?>? checkedElsewhere = null,
-        bool interfaces = false, IEnumerable<MethodBase?>? stopAt = null, bool constantOverridesHarmless = false)
+        bool interfaces = false, IEnumerable<MethodBase?>? stopAt = null, bool constantOverridesHarmless = false, string[]? reviewedEffects = null)
     {
+        MethodBase[] rootList = roots.Where(r => r != null).Select(r => r!).ToArray();
         Assembly game = typeof(MegaCrit.Sts2.Core.Hooks.Hook).Assembly;
         var delegates = new List<MethodInfo>();
         var dispatches = new List<(MethodInfo Callee, List<MethodBase> Implementations)>();
-        List<MethodBase> closure = MethodFingerprint.GameClosure(game, roots.Where(r => r != null)!, limit, delegates, initializers: false, dispatch: false,
+        List<MethodBase> closure = MethodFingerprint.GameClosure(game, rootList, limit, delegates, initializers: false, dispatch: false,
             dispatches: dispatches, stopAt: stopAt == null ? null : new HashSet<MethodBase>(stopAt.Where(m => m != null).Select(m => MethodFingerprint.Definition(m!))));
         string[] delegateNames = delegates.Select(d => MethodFingerprint.MemberName(d)).Distinct().OrderBy(n => n, StringComparer.Ordinal).ToArray();
         string fingerprint = MethodFingerprint.SetFingerprint(closure, delegateNames);
         bool known = Array.IndexOf(reviewed, fingerprint) >= 0;
-        if (!known)
-        {
-            Log.Info($"[{ModEntry.Id}] {name}: the game code it relies on changed ({closure.Count} methods, set {fingerprint}): reviewed per game version");
-        }
         IEnumerable<MethodInfo> virtualMethods = closure.OfType<MethodInfo>().Where(m => m.IsVirtual && !m.IsFinal && m.Module.Assembly == game);
         if (interfaces)
         {
@@ -103,8 +109,39 @@ internal sealed class CodeSet
         }
         MethodInfo[] virtuals = virtualMethods.Distinct().ToArray();
         var elsewhere = new HashSet<MethodBase>((checkedElsewhere ?? Enumerable.Empty<MethodBase?>()).Where(m => m != null)!);
-        return new CodeSet(closure.ToArray(), closure.Where(m => !elsewhere.Contains(m)).ToArray(), virtuals, delegateNames, fingerprint, known,
+        var set = new CodeSet(closure.ToArray(), closure.Where(m => !elsewhere.Contains(m)).ToArray(), virtuals, delegateNames, fingerprint, known,
             constantOverridesHarmless);
+        if (!known)
+        {
+            string effects = reviewedEffects == null || stopAt != null ? "" : set.JudgeEffects(game, rootList, limit, reviewedEffects);
+            Log.Info(set._effectsGuards != null
+                ? $"[{ModEntry.Id}] {name}: its display code was rearranged by a game update ({closure.Count} methods, set {fingerprint}), what it touches is as reviewed ({effects})"
+                : $"[{ModEntry.Id}] {name}: the game code it relies on changed ({closure.Count} methods, set {fingerprint}{(effects.Length > 0 ? ", " + effects : "")}): reviewed per game version");
+        }
+        return set;
+    }
+
+    /// <summary>The second fingerprint (<see cref="SetEffects"/>) of the set without what only a lazily built instance's builder
+    /// reaches (<see cref="LazyGuard"/>, the guards then kept); described for the log. Never throws: unreadable code isn't reviewed.</summary>
+    private string JudgeEffects(Assembly game, MethodBase[] roots, int limit, string[] reviewed)
+    {
+        try
+        {
+            LazyGuard.Guard[] guards = LazyGuard.Find(roots, this, Methods, limit).Values.Distinct().ToArray();
+            var delegates = new List<MethodInfo>();
+            List<MethodBase> closure = MethodFingerprint.GameClosure(game, roots, limit, delegates, initializers: false, dispatch: false,
+                stopAt: new HashSet<MethodBase>(guards.Select(g => g.Builder)));
+            string effects = SetEffects.Fingerprint(game, roots, closure, delegates.Select(d => MethodFingerprint.MemberName(d)).Distinct());
+            if (Array.IndexOf(reviewed, effects) >= 0)
+            {
+                _effectsGuards = guards;
+            }
+            return "effects " + effects;
+        }
+        catch (Exception e)
+        {
+            return $"effects not worked out: {e.GetType().Name}: {e.Message}";
+        }
     }
 
     private static bool Fresh(Answer? answer) =>

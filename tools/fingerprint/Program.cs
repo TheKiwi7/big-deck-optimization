@@ -86,8 +86,11 @@ if (args[1] == "callees")
     }
     return;
 }
-if (args[1] == "closure")
+if (args[1] is "closure" or "effects")
 {
+    // effects <dll> effects <limit> <root>...: the second fingerprint of a display set (SetEffects), its lines, then the fields
+    // the exact part writes (a value is pinned only when none is the game's state). Give "!Key" for each lazily built instance's
+    // builder (CodeSet leaves out what only it reaches: !MegaCrit.Sts2.Core.Saves.SaveManager::ConstructDefault()).
     // closure <dll> closure <limit> <root>...: the game methods reached from the roots (MethodFingerprint.GameClosure), each
     // with its fingerprint, the delegates invoked, and the set's fingerprint (MethodFingerprint.SetFingerprint). A root is a
     // Resolve key (Namespace.Type::Name(ParamType,...)), or Namespace.Type::* for every method and constructor the type declares.
@@ -139,6 +142,24 @@ if (args[1] == "closure")
         {
             Console.WriteLine("  from " + MethodFingerprint.MemberName(at));
         }
+        return;
+    }
+    if (args[1] == "effects")
+    {
+        string[] invoked = delegates.Select(d => MethodFingerprint.MemberName(d)).Distinct().ToArray();
+        HashSet<Type> rootTypes = SetEffects.RootTypes(roots);
+        foreach (string line in SetEffects.Lines(asm, roots, closure, invoked))
+        {
+            Console.WriteLine(line);
+        }
+        foreach (MethodBase m in closure.Where(m => !SetEffects.IsDisplay(m, rootTypes) && m.GetMethodBody() != null))
+        {
+            foreach (MethodFingerprint.Instruction ins in MethodFingerprint.Instructions(m).Where(i => i.Operand is FieldInfo && (i.Op == System.Reflection.Emit.OpCodes.Stfld || i.Op == System.Reflection.Emit.OpCodes.Stsfld)))
+            {
+                Console.WriteLine($"exact-write {MethodFingerprint.MemberName(m)} -> {MethodFingerprint.MemberName((FieldInfo)ins.Operand!)}");
+            }
+        }
+        Console.WriteLine($"{closure.Count} methods, effects {SetEffects.Fingerprint(asm, roots, closure, invoked)}");
         return;
     }
     foreach (MethodBase m in closure.OrderBy(m => MethodFingerprint.MemberName(m), StringComparer.Ordinal))

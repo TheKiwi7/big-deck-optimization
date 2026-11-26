@@ -94,6 +94,8 @@ cmd bdperf checks off
 foreignpatch ro-prefix-flash ro-release-prefix
 wait 3
 foreignpatch parts-mark roflash mergedcreature
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 restsite CloneRestSiteOption
@@ -114,6 +116,8 @@ cmd bdperf checks off
 foreignpatch ro-prefix-flash ro-chain-prefix
 wait 3
 foreignpatch parts-mark roflashctl mergedcreature
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 restsite CloneRestSiteOption

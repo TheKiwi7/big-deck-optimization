@@ -10,6 +10,8 @@ cmd bdperf checks off
 foreignpatch sfx-observer-prefix MegaCrit.Sts2.Core.Commands.SfxCmd::Play(String,Single)
 checksum before
 state before optional
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 restsite CloneRestSiteOption

@@ -68,7 +68,12 @@ public static partial class PatchSafety
         ["08693739A0C17DF7"] = new[] { "1F618FE1B94D5D18" },
 
         // CardModel.UpgradeInternal, game v0.113 (beta): OnUpgrade runs inside a try/finally setting _isUpgrading (not
-        // saved); the level still goes up by one before it. Same GameChain use as above.
-        ["61E294C9661E9368"] = new[] { "3002363B9818A138" },
+        // saved); the level still goes up by one before it. Same GameChain use as above. v0.114 (beta): a `silent` parameter
+        // skips the Upgraded event when true (only DowngradeInternal's replayed upgrades pass it); false is v0.113's code.
+        ["61E294C9661E9368"] = new[] { "3002363B9818A138", "4C6BB6EBBB22B7DF" },
+
+        // CardModel.FromSerializable, game v0.114 (beta): calls UpgradeInternal(silent: false), the parameterless one's code
+        // (above). Nothing else changed. LimitlessCloneMemo, LimitlessHookSkip.
+        ["663431D80AC6CCDF"] = new[] { "7326C73D6E866981" },
     };
 }

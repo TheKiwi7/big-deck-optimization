@@ -121,6 +121,32 @@ var mutations = new Dictionary<string, (string What, Action<ModuleDefinition> Ap
     ["relic-doflash"] = ("NRelicInventoryHolder.DoFlash changed: the relic bar's merge leaves (it pins the flash's own code), the player handler's stays", m =>
         Prepend(Method(m, "MegaCrit.Sts2.Core.Nodes.Relics.NRelicInventoryHolder", "DoFlash"), OpCodes.Ldarg_0, OpCodes.Pop)),
     // --- game, v0.9.0 patches: only that part may leave ---
+    // The display sets' second fingerprint (SetEffects): shared display code cut into another method keeps it, a new access changes it.
+    ["display-helper"] = ("AssetCache.LoadAsset calls a new private helper that touches nothing (the flash and flight sets' code changed, not what they touch)", m =>
+    {
+        TypeDefinition cache = Type(m, "MegaCrit.Sts2.Core.Assets.AssetCache");
+        MethodDefinition load = Method(m, "MegaCrit.Sts2.Core.Assets.AssetCache", "LoadAsset");
+        var helper = new MethodDefinition("IsNamedForTest", MethodAttributes.Private | MethodAttributes.Static | MethodAttributes.HideBySig, m.TypeSystem.Boolean);
+        helper.Parameters.Add(new ParameterDefinition("path", ParameterAttributes.None, m.TypeSystem.String));
+        ILProcessor il = helper.Body.GetILProcessor();
+        il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Ldnull); il.Emit(OpCodes.Cgt_Un); il.Emit(OpCodes.Ret);
+        cache.Methods.Add(helper);
+        ILProcessor at = load.Body.GetILProcessor();
+        Instruction first = load.Body.Instructions[0];
+        at.InsertBefore(first, at.Create(OpCodes.Ldarg_1)); at.InsertBefore(first, at.Create(OpCodes.Call, helper)); at.InsertBefore(first, at.Create(OpCodes.Pop));
+    }),
+    ["display-access"] = ("AssetCache.LoadAsset reads a field no reviewed set touches (the flash and flight sets touch something new)", m =>
+    {
+        TypeDefinition cache = Type(m, "MegaCrit.Sts2.Core.Assets.AssetCache");
+        var field = new FieldDefinition("_readForTest", FieldAttributes.Private | FieldAttributes.Static, m.TypeSystem.Int32);
+        cache.Fields.Add(field);
+        MethodDefinition load = Method(m, "MegaCrit.Sts2.Core.Assets.AssetCache", "LoadAsset");
+        ILProcessor at = load.Body.GetILProcessor();
+        Instruction first = load.Body.Instructions[0];
+        at.InsertBefore(first, at.Create(OpCodes.Ldsfld, field)); at.InsertBefore(first, at.Create(OpCodes.Pop));
+    }),
+    ["display-state"] = ("the relic flash's own class calls a game method again (Creature.GetVfxContainer's body changed: exact part)", m =>
+        Prepend(Method(m, "MegaCrit.Sts2.Core.Entities.Creatures.Creature", "GetVfxContainer"), OpCodes.Ldarg_0, OpCodes.Pop)),
     ["flight-count"] = ("NCombatCardPile.AddCard changed (CardFlightLimit adds to its count)", m =>
         Prepend(Method(m, "MegaCrit.Sts2.Core.Nodes.Combat.NCombatCardPile", "AddCard"), OpCodes.Ldarg_0, OpCodes.Pop)),
     ["replay-record"] = ("CombatReplayWriter.RecordChecksum changed (ReplayStateSkip skips it)", m =>

@@ -11,7 +11,7 @@
     Env = @{ BDTEST_WORKSHOP = 'C:\steamcmd\steamapps\workshop\content\2868840' }
     Copies = @(
         @{ Name = 'pub';  Dir = 'C:\Games\StS2-public-0.111.1' }
-        @{ Name = 'beta'; Dir = 'C:\Games\StS2-beta-0.113.1' }
+        @{ Name = 'beta'; Dir = 'C:\Games\StS2-beta-0.114.0' }
     )
     Blocks = @(
         # Solo sessions: the par lists of both copies and the sweeps of both copies (one parsweep-all -GameDir pub,beta), in one pool.

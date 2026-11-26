@@ -24,6 +24,8 @@ cmd bigdeck import ref all cards
 cmd bdperf checks off
 cmd bdperf probe off
 cmd bdperf segments verify off
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 gcstat

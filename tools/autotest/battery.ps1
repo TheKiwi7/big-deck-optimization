@@ -57,7 +57,7 @@ $batName = if ($bat.Name) { "$($bat.Name)" } else { [IO.Path]::GetFileNameWithou
 $jobsPool = if ($bat.Jobs) { [int]$bat.Jobs } else { 14 }
 $config = if ($bat.Config) { "$($bat.Config)" } else { "Debug" }
 $copies = if ($bat.Copies) { @($bat.Copies | ForEach-Object { [pscustomobject]@{ Name = "$($_.Name)"; Dir = "$($_.Dir)" } }) }
-          else { @([pscustomobject]@{ Name = "pub"; Dir = "C:\Games\StS2-public-0.111.1" }, [pscustomobject]@{ Name = "beta"; Dir = "C:\Games\StS2-beta-0.113.1" }) }
+          else { @([pscustomobject]@{ Name = "pub"; Dir = "C:\Games\StS2-public-0.111.1" }, [pscustomobject]@{ Name = "beta"; Dir = "C:\Games\StS2-beta-0.114.0" }) }
 foreach ($c in $copies) { $c | Add-Member Version (Get-GameTag $c.Dir) }
 $outDir = Join-Path (Join-Path $Results "battery") $batName
 if (-not $Log) { $Log = Join-Path (Join-Path $Results "battery") "$batName.log" }

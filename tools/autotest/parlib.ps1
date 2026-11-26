@@ -457,6 +457,7 @@ $BaselineBenchParts = [ordered]@{
     'RelicBench.cs'         = '^\s*(cmd|autoslayfirst)\s+bdperf\s+relics\b'
     'ShuffleBench.cs'       = '^\s*(cmd|autoslayfirst)\s+bdperf\s+shufflebench\b'
     'UpgradeBench.cs'       = '^\s*(cmd|autoslayfirst)\s+bdperf\s+upgradebench\b'
+    'CloneReadyConsoleCmd.cs' = '^\s*(cmd|autoslayfirst)\s+bdclonable\b'
     'SortKeysBench.cs'      = '^\s*(cmd|autoslayfirst)\s+bdperf\s+sortkeys\b'
     'SaveCheckBench.cs'     = '^\s*(cmd|autoslayfirst)\s+bdperf\s+savecheck\b'
     'SaveReadBench.cs'      = '^\s*(cmd|autoslayfirst)\s+bdperf\s+saveread\b'

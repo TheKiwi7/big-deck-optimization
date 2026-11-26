@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.3.1
+
+- Supports the game's new beta, v0.114: every speed-up works there as on the public version (v0.111).
+- On the beta, Wah Symphony's number on its card follows the game's new rule (it now counts Cho and Ki cards only).
+- The merged relic flashes and the limited stream of flying cards no longer turn themselves off when a game update only rearranges the game's display code without changing what it does: v0.114 did exactly that, and they would have stayed on.
+- On the beta, two other mods have problems of their own with v0.114, not caused by this mod: Limitless 1.2.1 (a combat gets stuck when a card is upgraded, and the campfire's Clone option no longer appears with stacked enchantments) and RitsuLib (it refuses to load). Until they update, this mod runs the normal game for the parts RitsuLib touched.
+
 ## v1.3.0
 
 - Faster run saves and loads with a huge deck, through a new option, "Faster run saves and loads" (on by default):

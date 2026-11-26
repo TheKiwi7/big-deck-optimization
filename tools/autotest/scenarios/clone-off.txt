@@ -8,6 +8,8 @@ cmd bigdeck import ref all all
 cmd bigdeck import ref all all
 checksum before
 state before optional
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 restsite CloneRestSiteOption

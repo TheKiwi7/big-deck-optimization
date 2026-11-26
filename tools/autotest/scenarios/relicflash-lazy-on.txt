@@ -20,6 +20,8 @@ cmd bigdeck import ref all all
 cmd bdperf checks off
 foreignpatch count-postfix MegaCrit.Sts2.Core.Saves.SaveManager:ConstructDefault
 effects shut
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 restsite CloneRestSiteOption
@@ -42,6 +44,8 @@ cmd bdperf checks off
 foreignpatch count-postfix MegaCrit.Sts2.Core.Saves.SaveManager:ConstructDefault
 foreignpatch lazyguard open
 effects open
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 restsite CloneRestSiteOption

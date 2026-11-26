@@ -15,6 +15,8 @@ foreignpatch count-prefix MegaCrit.Sts2.Core.Helpers.NonInteractiveMode::get_IsA
 checksum before
 state before optional
 effects start
+# Game v0.114+: the clone option needs a card enchanted with Clone itself (nothing on an older game).
+cmd bdclonable
 cmd room RestSite
 wait 5
 restsite CloneRestSiteOption

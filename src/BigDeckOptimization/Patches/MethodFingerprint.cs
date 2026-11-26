@@ -83,7 +83,7 @@ public static class MethodFingerprint
     /// <summary>Compiler-generated numbering: d__N, DisplayClassN_M, b__N_M, &lt;&gt;9__N_M, local functions |N_M, &lt;N&gt;__ caches, anonymous types.</summary>
     private static readonly Regex _generatedNumber = new(@"(d__|DisplayClass|b__|9__|\||AnonymousType|<)\d+(_\d+)?(?=\W|$)", RegexOptions.Compiled);
 
-    private static string Normalize(string name) => name.Contains('<') ? _generatedNumber.Replace(name, "$1#") : name;
+    internal static string Normalize(string name) => name.Contains('<') ? _generatedNumber.Replace(name, "$1#") : name;
 
     /// <summary>Queues the generated code a member of the same module stands for (the lambda itself, a state machine's MoveNext).</summary>
     private static void Enqueue(MemberInfo member, Module module, HashSet<MethodBase> seen, Queue<MethodBase> queue)
@@ -115,7 +115,7 @@ public static class MethodFingerprint
 
     private static bool IsGenerated(MethodBase m) => m.Name.Contains('<') || (m.DeclaringType != null && IsGeneratedType(m.DeclaringType));
 
-    private static bool IsGeneratedType(Type type)
+    internal static bool IsGeneratedType(Type type)
     {
         for (Type? t = type; t != null; t = t.DeclaringType)
         {
